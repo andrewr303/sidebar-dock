@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="still-build" content="still-0.2.0">
+  <title>Sidebar Dock · Still — your connected workspace</title>
+  <link rel="icon" href="icons/icon48.png">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="editor.css">
+  <link rel="stylesheet" href="ai.css">
+  <link rel="stylesheet" href="provider-settings.css">
+  <link rel="stylesheet" href="rich-blocks.css">
+  <link rel="stylesheet" href="spaces.css">
+  <link rel="stylesheet" href="design.css">
+</head>
+<body>
+  <a class="skip-link" href="#library">Skip to library</a>
+  <div id="app" aria-busy="true"><div class="boot"><span class="boot-mark">s.</span><p>Making a little room…</p></div></div>
+  <div id="overlay-root"></div>
+  <div id="toast-root" role="status" aria-live="polite"></div>
+  <input id="import-input" type="file" accept=".json,.html,.htm,.csv" hidden>
+  <input id="file-input" type="file" multiple hidden>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

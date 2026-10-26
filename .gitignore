@@ -1,0 +1,24 @@
+bridge/.local/
+artifacts/
+*.log
+.DS_Store
+
+# Supplied third-party software and local reverse-engineering material.
+/ahadiiopbcjabglpneichihaeblciokh/
+/ldgfbffkinooeloadekpmfoklnobpien/
+/manepajkigmpagiaojaidaikajcnchhe/
+/fabric/
+/research/
+/.acceptances/
+/ghidra-re-work/
+/docs/fabric-desktop-analysis.md
+/docs/fabric-extension-analysis.md
+/docs/reverse-engineering.md
+/docs/design/
+
+# Device-local credentials and transient files never belong in the repository.
+**/.local/
+.env
+.env.*
+!.env.example
+*.tmp
