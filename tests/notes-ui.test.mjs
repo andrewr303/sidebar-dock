@@ -5,7 +5,7 @@ import {
   draftDecision, mergeTagList, AI_ACTIONS,
 } from '../extension/ui/note-editor.js';
 import {
-  NO_COLLECTION, filterNotes, collectionCounts, previewSource, groupTasks, taskTotals, shortAgo, editedLabel, pageNoteDraft,
+  NO_COLLECTION, inCollection, filterNotes, collectionCounts, previewSource, groupTasks, taskTotals, shortAgo, editedLabel, pageNoteDraft,
 } from '../extension/ui/notes.js';
 
 const note = (id, patch = {}) => ({ id, type: 'note', title: id, content: '', collectionId: '', tags: [], pinned: false,
@@ -99,6 +99,13 @@ test('note lists filter by collection and search, then sort with pinned notes fi
   assert.deepEqual(filterNotes(notes, { query: 'kyoto' }).map(n => n.id), ['c']);
   assert.deepEqual(filterNotes(notes, { query: '#ux' }).map(n => n.id), ['b']);
   assert.deepEqual(collectionCounts(notes), { total: 3, none: 1, byId: { c1: 2 } });
+});
+
+test('the collection filter matches all notes, notes without a collection or one collection', () => {
+  const filed = note('f', { collectionId: 'c1' }), loose = note('l');
+  assert.ok(inCollection(filed, '') && inCollection(loose, ''));
+  assert.ok(!inCollection(filed, NO_COLLECTION) && inCollection(loose, NO_COLLECTION));
+  assert.ok(inCollection(filed, 'c1') && !inCollection(loose, 'c1') && !inCollection(filed, 'c2'));
 });
 
 test('previews skip a leading heading that repeats the title', () => {

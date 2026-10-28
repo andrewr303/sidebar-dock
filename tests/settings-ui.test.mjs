@@ -4,10 +4,10 @@ import { readFile } from 'node:fs/promises';
 import {
   SETTINGS_SECTIONS, normalizeSection, ACCENTS, MCP_TOOLS, MCP_CLIENTS, CHROME_COMMANDS, connectionStatus, providerGroups, choiceValue, parseChoice,
   modelChoices, findModel, effortFor, embeddingConnections, indexSummary, embeddingNote, bridgeSummary, authText, verificationLink, groupShortcuts,
-  chromeCommandRows, clientStatus,
+  chromeCommandRows, clientStatus, providerConnection, maskedKey, integrationGroups,
 } from '../extension/ui/settings.js';
 import { CATALOG, getProvider } from '../extension/lib/ai/catalog.js';
-import { getMcpSetup } from '../extension/lib/integrations.js';
+import { getMcpSetup, INTEGRATION_CATALOG } from '../extension/lib/integrations.js';
 import { TOOLS } from '../bridge/protocol.mjs';
 
 test('settings sections match the openSettings contract', () => {
@@ -23,7 +23,7 @@ test('accent swatches are exactly the presets tokens.css defines (no violet)', a
   const presets = new Set([...css.matchAll(/\[data-accent="([a-z]+)"\]/g)].map(match => match[1]));
   presets.delete('amber'); // alias of gold
   assert.deepEqual(new Set(ACCENTS.map(accent => accent.id)), presets);
-  assert.equal(ACCENTS[0].id, 'blue');
+  assert.deepEqual(ACCENTS.map(accent => accent.label), ['Blue', 'Teal', 'Green', 'Raindrop gold', 'Orange', 'Pink', 'Graphite']);
   assert.equal(ACCENTS.find(accent => accent.id === 'gold').label, 'Raindrop gold');
   assert.ok(!ACCENTS.some(accent => accent.id === 'violet'));
 });
@@ -129,6 +129,7 @@ test('embedding notes name where text goes and estimate cost only with a price',
 test('bridge summary: unpaired, paused, connected, offline, connecting', () => {
   assert.equal(bridgeSummary({ integration: { bridgeConfigured: false } }).state, 'unpaired');
   assert.equal(bridgeSummary({ integration: { bridgeConfigured: true, bridgeEnabled: false } }).state, 'paused');
+  assert.match(bridgeSummary({ integration: { bridgeConfigured: true, bridgeEnabled: false, pausedHere: true } }).detail, /^Paused in this window/);
   const connected = bridgeSummary({ integration: { bridgeConfigured: true, bridgeEnabled: true }, live: { connected: true, syncedAt: new Date().toISOString() } });
   assert.equal(connected.state, 'connected');
   assert.equal(connected.detail, 'Synced just now.');
@@ -197,4 +198,41 @@ test('settings source and styles follow the copy and token rules', async () => {
   const code = css.replace(/\/\*[\s\S]*?\*\//g, '');
   assert.ok(!/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(|oklch\(/i.test(code), 'no color literals outside tokens.css');
   assert.ok(!/backdrop-filter|transition:\s*all/.test(code));
+});
+
+test('provider tiles edit the working connection and custom servers always add one', () => {
+  const connections = [
+    { id: 'a1', via: 'direct', providerId: 'anthropic', status: 'error' },
+    { id: 'a2', via: 'direct', providerId: 'anthropic', status: 'ok' },
+    { id: 'o1', via: 'direct', providerId: 'openai', status: 'untested' },
+    { id: 'c1', via: 'direct', providerId: 'custom-openai', status: 'ok' },
+    { id: 'bridge:x', via: 'bridge', providerId: 'bridge', status: 'ok' },
+  ];
+  assert.equal(providerConnection(connections, getProvider('anthropic')).id, 'a2');
+  assert.equal(providerConnection(connections, getProvider('openai')).id, 'o1');
+  assert.equal(providerConnection(connections, getProvider('custom-openai')), null);
+  assert.equal(providerConnection(connections, getProvider('voyage')), null);
+  assert.equal(providerConnection(connections, null), null);
+  assert.equal(providerConnection([{ id: 'e', via: 'direct', providerId: 'xai', status: 'error' }, { id: 'u', via: 'direct', providerId: 'xai' }], getProvider('xai')).id, 'e');
+});
+
+test('saved keys are masked and never show more than their last four characters', () => {
+  assert.equal(maskedKey(''), '••••••••');
+  assert.equal(maskedKey(undefined), '••••••••');
+  assert.equal(maskedKey('a1b2'), '••••••••a1b2');
+  assert.equal(maskedKey('sk-ant-api03-secret-value-WXYZ'), '••••••••WXYZ');
+  assert.equal(maskedKey(' 9z '), '••••••••9z');
+});
+
+test('integration groups split catalog apps into Raindrop guides, backups and the rest', () => {
+  const groups = integrationGroups(INTEGRATION_CATALOG);
+  const ids = groups.flatMap(group => group.entries.map(entry => entry.id));
+  assert.ok(!ids.some(id => ['claude', 'codex', 'raindrop'].includes(id)), 'built-in integrations have their own rows');
+  assert.equal(new Set(ids).size, ids.length);
+  assert.equal(ids.length, INTEGRATION_CATALOG.length - 3);
+  const byId = Object.fromEntries(groups.map(group => [group.id, group.entries.map(entry => entry.id)]));
+  assert.ok(byId.raindrop.includes('notion') && byId.raindrop.includes('zapier'));
+  assert.deepEqual(byId.backup, ['drive', 'dropbox']);
+  assert.deepEqual(integrationGroups([{ id: 'x', name: 'X', category: 'Misc', url: 'https://example.com/' }]).map(group => group.id), ['other']);
+  assert.deepEqual(integrationGroups([]), []);
 });

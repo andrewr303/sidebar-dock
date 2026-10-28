@@ -671,6 +671,9 @@
 
 /* Side panel and narrow content: controls drop under their label, aligned with the text. */
 @container settings-content (max-width: 560px) {
+  .settings-group-head:has(> .btn) { flex-wrap: wrap; align-items: flex-start; }
+  .settings-group-head:has(> .btn) > .settings-group-heading { flex-basis: 100%; }
+  .settings-group-head > .btn-ghost.btn-sm { margin-inline-start: calc(var(--space-4) * -1); }
   .settings-row { padding-inline: var(--space-6); }
   .settings-row:not(.is-stacked) > .settings-row-control { flex-basis: 100%; justify-content: flex-start; margin-inline-start: 0; }
   .settings-row:has(> .settings-mark, > .settings-row-icon):not(.is-stacked) > .settings-row-control { padding-inline-start: calc(32px + var(--space-6)); }

@@ -41,7 +41,11 @@ test('suggestions adapt to the context and templates keep their gaps', () => {
   assert.equal(suggestionsFor('items', { count: 1 })[0].label, 'Summarize this item');
   assert.equal(suggestionsFor('items', { count: 4 })[0].label, 'Summarize these 4 items');
   const general = suggestionsFor('library');
-  assert.equal(general.length, 4);
+  for (const list of [general, suggestionsFor('page'), suggestionsFor('collection'), suggestionsFor('items', { count: 1 }), suggestionsFor('items', { count: 3 })]) {
+    assert.equal(list.length, 4, 'four rows in every context, like Notion AI');
+  }
+  assert.deepEqual(general.map(s => s.label).slice(2), ['Organize Inbox', 'Tag untagged items']);
+  assert.equal(suggestionsFor('collection', { collectionName: 'Travel' })[3].label, 'Organize Travel');
   assert.ok(general.some(s => s.prompt.includes('…')), 'general starters are templates to finish');
   for (const s of [...general, ...suggestionsFor('page'), ...suggestionsFor('collection'), ...suggestionsFor('items', { count: 2 })]) {
     assert.doesNotMatch(s.label, /—|!/, 'copy rules: no em dashes or exclamation marks');
@@ -60,6 +64,13 @@ test('numbered citation chips replace markdown.js source chips and keep markup e
   assert.match(markup, /<span class="ai-cite" data-tooltip="Tom &amp; &quot;Jerry&quot;"><button type="button" class="ai-citation is-numbered" data-action="ai\.cite" data-id="item_1" aria-label="Source 1: Tom &amp; &quot;Jerry&quot;">1<\/button><\/span>/);
   assert.match(markup, /data-id="page:current"[^>]*>2<\/button>/);
   assert.match(markup, /ai-citation-unavailable/, 'unknown ids keep the markdown.js fallback');
+  assert.match(markup, /<span class="ai-cite-run">three <span class="ai-citation-unavailable"[^>]*>source unavailable<\/span>\.<\/span>/, 'shown without brackets');
+  assert.match(markup, /<span class="ai-cite-run">One <span class="ai-cite"/, 'a chip stays on the line of the word before it');
+  assert.match(markup, /<span class="ai-cite-run">two <span class="ai-cite" data-tooltip="This page">/);
+  const long = numberCitations(renderMarkdown(`${'x'.repeat(40)} [[item_1]].`, { citations }), citations);
+  assert.match(long, /x{16}<span class="ai-cite-run">x{24} <span class="ai-cite"/, 'only the end of a long word joins the chip');
+  const entity = numberCitations(renderMarkdown('AT&T [[item_1]]', { citations }), citations);
+  assert.match(entity, /AT&amp;<span class="ai-cite-run">T <span class="ai-cite"/, 'character references are never split');
   assert.doesNotMatch(markup, /data-ai-action/);
 });
 
@@ -86,6 +97,8 @@ test('error kinds come from the engine code or its message', () => {
   assert.equal(classifyError({ message: 'Ollama blocked the request. Start Ollama with OLLAMA_ORIGINS=chrome-extension://* and try again.' }), 'origin_blocked');
   assert.equal(classifyError({ message: 'Anthropic could not find the model x. Pick another model in AI settings.' }), 'not_found');
   assert.equal(classifyError({ message: 'The model declined to answer this request.' }), 'refusal');
+  assert.equal(classifyError({ message: 'Claude declined this request. Try rephrasing it.' }), 'refusal');
+  assert.equal(classifyError({ code: 'refusal', message: 'Anything' }), 'refusal', 'the engine code wins');
   assert.equal(classifyError({ message: 'Something odd' }), 'other');
 });
 

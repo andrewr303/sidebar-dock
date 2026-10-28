@@ -134,6 +134,7 @@
   overflow-wrap: anywhere;
 }
 .notes-row-preview.is-empty { color: var(--fg-subtle); }
+.notes-list-empty { margin: 0; padding: var(--space-7) var(--space-4); color: var(--fg-subtle); font-size: var(--text-sm); }
 .notes-row-meta { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1) var(--space-5); min-width: 0; margin-block-start: var(--space-1); }
 .notes-meta-item {
   display: inline-flex; align-items: center; gap: var(--space-2);
@@ -374,7 +375,8 @@
 
 /* Meta row: quiet property chips that become controls on hover. */
 .ne-meta { display: flex; flex-direction: column; gap: var(--space-3); margin-block-start: var(--space-5); }
-.ne-props { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-inline-start: calc(var(--space-3) * -1); }
+/* The first control hangs into the gutter by its padding and border so its icon starts on the title's edge. */
+.ne-props { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-inline-start: calc((var(--space-3) + 1px) * -1); }
 .ne-prop {
   display: inline-flex; align-items: center; gap: var(--space-3);
   min-width: 0; max-width: 100%;
@@ -432,13 +434,15 @@
 .ne-meta .ne-tags .tag-input {
   min-height: var(--control-h-sm);
   padding: var(--space-1) var(--space-3);
-  margin-inline-start: calc(var(--space-3) * -1);
+  margin-inline-start: calc((var(--space-3) + 1px) * -1);
   border-color: transparent;
   background: transparent;
 }
 .ne-meta .ne-tags .tag-input:hover:not(:focus-within) { border-color: transparent; background: var(--bg-hover); }
 .ne-meta .ne-tags .tag-input:focus-within { background: var(--bg-field); }
 .ne-meta .ne-tags .tag-input-field { min-width: 72px; font-size: var(--text-xs); }
+/* Without chips the placeholder starts on the title's edge. */
+.ne-meta .ne-tags .tag-input-field:first-child { padding-inline-start: 0; }
 .ne-meta .ne-tags .tag-input-field::placeholder { color: var(--fg-subtle); }
 
 /* ---------- Body ---------- */
@@ -478,10 +482,10 @@
 .ne-ai-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: var(--space-5) var(--space-6); }
 .ne-ai-text.markdown-body { --be-text: var(--text-sm); }
 .ne-ai-wait { display: flex; flex-direction: column; gap: var(--space-3); padding-block: var(--space-2); }
-.ne-ai-wait > span { display: block; height: 10px; border-radius: var(--radius-xs); background: var(--bg-skeleton); animation: ne-pulse 1.2s ease-in-out infinite alternate; }
+.ne-ai-wait > span { display: block; height: 10px; border-radius: var(--radius-xs); background: var(--bg-skeleton); animation: ne-pulse calc(var(--dur-slow) * 5) var(--ease-in-out) infinite alternate; }
 .ne-ai-wait > span:nth-child(1) { width: 92%; }
-.ne-ai-wait > span:nth-child(2) { width: 78%; animation-delay: 120ms; }
-.ne-ai-wait > span:nth-child(3) { width: 54%; animation-delay: 240ms; }
+.ne-ai-wait > span:nth-child(2) { width: 78%; animation-delay: var(--dur-fast); }
+.ne-ai-wait > span:nth-child(3) { width: 54%; animation-delay: var(--dur-slow); }
 @keyframes ne-pulse { to { opacity: 0.45; } }
 .ne-ai-error { display: flex; align-items: flex-start; gap: var(--space-3); margin: 0; color: var(--danger); line-height: var(--lh-sm); }
 .ne-ai-error > .icon { flex: none; margin-block-start: 3px; }
@@ -638,18 +642,27 @@
 .note-card-open:hover { text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
 .note-card-open:focus-visible { outline-offset: 2px; border-radius: var(--radius-xs); }
 .note-card-pin { flex: none; display: inline-flex; color: var(--fg-subtle); }
-.note-card-body.markdown-body {
+/* Card previews read at UI size (13px, muted prose as in the mock); .note-card raises specificity over editor.css,
+   which loads after this file and sizes .markdown-body.is-compact for the side panel editor. */
+.note-card .note-card-body.markdown-body {
   --be-text: var(--text-sm);
-  --be-leading: 1.54;
+  --be-leading: var(--lh-sm);
   --be-gutter: 0px;
+  --be-indent: var(--space-8);
   position: relative;
   max-height: calc(var(--card-line) * var(--clamp));
-  overflow: hidden;
-  color: var(--fg-default);
+  /* clip, not hidden: focus or find-in-page never scrolls the preview inside its clamp. */
+  overflow: clip;
+  color: var(--fg-muted);
   cursor: pointer;
 }
-.note-card-body.markdown-body h1, .note-card-body.markdown-body h2, .note-card-body.markdown-body h3 { margin-block: var(--space-3) var(--space-1); font-size: var(--text-sm); line-height: var(--lh-sm); }
-.note-card-body.markdown-body p { margin-block-end: var(--space-2); }
+.note-card .note-card-body.markdown-body :is(h1, h2, h3) { margin-block: var(--space-5) var(--space-1); color: var(--fg-default); font-size: var(--text-sm); line-height: var(--lh-sm); }
+.note-card .note-card-body.markdown-body > :is(h1, h2, h3):first-child { margin-block-start: 0; }
+.note-card .note-card-body.markdown-body :is(strong, .task-line) { color: var(--fg-default); }
+.note-card .note-card-body.markdown-body .task-line.done > span:last-child { color: var(--fg-subtle); }
+.note-card .note-card-body.markdown-body :is(p, ul, ol, blockquote, .markdown-table-wrap) { margin-block-end: var(--space-3); }
+.note-card .note-card-body.markdown-body blockquote { padding-inline-start: var(--space-5); border-inline-start-width: 2px; }
+.note-card .note-card-body.markdown-body .paragraph-space { block-size: var(--space-2); }
 .note-card.is-clamped .note-card-body { -webkit-mask-image: linear-gradient(to bottom, black calc(100% - var(--card-line) * 1.5), transparent); mask-image: linear-gradient(to bottom, black calc(100% - var(--card-line) * 1.5), transparent); }
 .note-card.is-expanded .note-card-body { max-height: none; }
 .note-card-empty { margin: 0; color: var(--fg-subtle); font-size: var(--text-sm); }
@@ -773,13 +786,15 @@
 .task-group-open:hover { text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
 .task-group-meta { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1) var(--space-5); min-width: 0; }
 .task-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+/* The 16px box (centered in its 24px target) lines up with the group title. */
+.task-group > .task-list { margin-inline-start: calc(var(--space-2) * -1); }
 .task-row {
   display: flex; align-items: flex-start; gap: var(--space-3);
   min-height: 32px;
   padding: var(--space-1) 0 var(--space-1) calc(var(--indent, 0) * var(--space-9));
   font-size: var(--text-sm); line-height: var(--lh-sm);
 }
-.task-check { position: relative; display: inline-grid; place-items: center; flex: none; width: 24px; height: 24px; margin-block-start: -2px; cursor: pointer; }
+.task-check { position: relative; display: inline-grid; place-items: center; flex: none; width: var(--control-h-xs); height: var(--control-h-xs); cursor: pointer; }
 .task-check > input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
 .task-box {
   display: grid; place-items: center;
@@ -799,6 +814,7 @@
 .task-text code { padding: 0 var(--space-1); border-radius: var(--radius-xs); background: var(--bg-sunken); font-family: var(--font-mono); font-size: 0.92em; }
 .task-list.is-rail { margin-inline: calc(var(--space-2) * -1); }
 .task-list.is-rail .task-row { min-height: 28px; font-size: var(--text-xs); line-height: var(--lh-xs); }
+.task-list.is-rail .task-text { padding-block-start: var(--space-2); }
 [data-surface="side"] .tasks-head { padding: var(--space-5); }
 [data-surface="side"] .tasks-body { padding: var(--space-5); }
 

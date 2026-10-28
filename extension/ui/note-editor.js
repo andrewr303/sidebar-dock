@@ -172,9 +172,6 @@ export function openNote(ctx, id, { focus, from } = {}) {
     ctx.render();
     return;
   }
-  const note = latestItem(ctx, id);
-  const filter = ctx.state.notes.collectionId;
-  if (note && filter && (filter === '__none' ? note.collectionId : note.collectionId !== filter)) ctx.state.notes.collectionId = '';
   if (ctx.state.panel?.kind === 'item') ctx.state.panel = null;
   if (ctx.state.view !== 'notes') ctx.navigate('notes', { keep: true }); else ctx.render();
 }
@@ -1043,7 +1040,7 @@ function createEditor(host, ctx) {
 function renderMeta(ctx, instance, record, surface) {
   const collection = record.collectionId ? ctx.select.collection(record.collectionId) : null;
   const picker = typeof pickers.renderCollectionPickerTrigger === 'function'
-    ? pickers.renderCollectionPickerTrigger({ ctx, value: record.collectionId || '', action: 'editor.set-collection', id: `${instance.key}-collection`, size: 'sm', label: 'Collection', className: 'ne-prop ne-collection' })
+    ? pickers.renderCollectionPickerTrigger({ ctx, value: record.collectionId || '', action: 'editor.set-collection', id: `${instance.key}-collection`, size: 'sm', label: 'Collection', className: 'ne-collection' })
     : html`<span class="ne-prop"><span class="ne-dot" style="--dot:${collection ? colorVar(collection.color) : 'var(--fg-faint)'}" aria-hidden="true"></span>${collection?.name || 'Inbox'}</span>`;
   const page = record.url
     ? html`<span class="ne-prop ne-page"><button type="button" class="ne-page-open" data-action="app.open-url" data-url="${record.url}" title="${record.url}" aria-label="Open ${domainOf(record.url) || 'linked page'}">

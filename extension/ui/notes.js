@@ -12,6 +12,9 @@ import { renderNoteEditor, openNote, closeNote, createNoteItem, editorFor, lates
 import { renderMarkdown, renderInline } from '../lib/markdown.js';
 import { extractTasks, toggleTask, taskProgress, noteExcerpt, noteTitleFromContent, outline, wordCount, dailyNoteTitle, noteTemplates } from '../lib/notes.js';
 
+// Other modules open notes through these (shell Today, detail "Open in notes", the AI panel).
+export { openNote, closeNote };
+
 export const NO_COLLECTION = '__none';
 export const NOTE_SORTS = [
   { value: 'updated', label: 'Last edited' },
@@ -30,11 +33,13 @@ const SORTERS = {
   title: (a, b) => titleKey(a).localeCompare(titleKey(b), undefined, { sensitivity: 'base', numeric: true }),
 };
 
+/** Whether a note passes the collection filter ('' all, NO_COLLECTION, or a collection id). */
+export const inCollection = (note, collectionId) => (!collectionId ? true : collectionId === NO_COLLECTION ? !note.collectionId : note.collectionId === collectionId);
+
 /** Notes for a list: collection filter ('' all, NO_COLLECTION, or an id), search syntax as in the library, pinned first. */
 export function filterNotes(notes, { query = '', collectionId = '', sort = 'updated', collections } = {}) {
   let rows = notes || [];
-  if (collectionId === NO_COLLECTION) rows = rows.filter(note => !note.collectionId);
-  else if (collectionId) rows = rows.filter(note => note.collectionId === collectionId);
+  if (collectionId) rows = rows.filter(note => inCollection(note, collectionId));
   if (String(query).trim()) rows = searchRows(rows, query, collections);
   const by = SORTERS[sort] || SORTERS.updated;
   return [...rows].sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || by(a, b));
@@ -269,14 +274,21 @@ function noteCard(ctx, note, { clamp = 8, showPage = true, from = '' } = {}) {
 }
 const expandedCards = new Set();
 
-// Shows "Show more" only on cards whose rendered preview is taller than the clamp (one read pass, then writes).
+// Shows "Show more" only on cards whose rendered preview is taller than the clamp, and takes checkboxes and links
+// cut off by the clamp out of the tab order (one read pass, then writes).
 registerMount('notes.clamp', el => {
   const measure = () => {
     const reads = [...el.querySelectorAll('.note-card')].map(card => {
       const body = card.querySelector('.note-card-body');
-      return { card, more: card.querySelector('.note-card-more'), expanded: card.classList.contains('is-expanded'), overflow: !!body && body.scrollHeight > body.clientHeight + 2 };
+      const overflow = !!body && body.scrollHeight > body.clientHeight + 2;
+      const limit = overflow ? body.getBoundingClientRect().bottom : 0;
+      const controls = body ? [...body.querySelectorAll('a[href], input, button, summary')].map(control => ({ control, cut: overflow && control.getBoundingClientRect().bottom > limit + 1 })) : [];
+      return { card, more: card.querySelector('.note-card-more'), expanded: card.classList.contains('is-expanded'), overflow, controls };
     });
-    for (const { card, more, expanded, overflow } of reads) {
+    for (const { card, more, expanded, overflow, controls } of reads) {
+      for (const { control, cut } of controls) {
+        if (cut && !expanded) control.setAttribute('tabindex', '-1'); else if (control.getAttribute('tabindex') === '-1') control.removeAttribute('tabindex');
+      }
       if (expanded) continue;
       card.classList.toggle('is-clamped', overflow);
       if (more) more.hidden = !overflow;
@@ -301,17 +313,22 @@ export function renderNotesWorkspace(ctx) {
     ctx.syncUrl?.();
     ctx.render();
   }
+  let selected = s.noteId ? latestItem(ctx, s.noteId) : null;
+  if (selected && (selected.type !== 'note' || selected.deletedAt)) selected = null;
+  if (selected && selected.id !== shownNoteId && s.collectionId && !inCollection(selected, s.collectionId)) {
+    // A note opened from elsewhere (Today, "Open in notes", a link) shows in the list too, not behind a filter.
+    s.collectionId = '';
+  }
   const all = allNotes(ctx);
   const counts = cached(ctx, 'counts:all', () => collectionCounts(all));
   const list = cached(ctx, `list:${s.collectionId}|${s.query}|${s.sort}`, () => filterNotes(all, { query: s.query, collectionId: s.collectionId, sort: s.sort, collections: collectionMap(ctx) }));
-  let selected = s.noteId ? latestItem(ctx, s.noteId) : null;
-  if (selected && (selected.type !== 'note' || selected.deletedAt)) selected = null;
   if (!selected && list.length) {
     // Reopen the note this device had open last (reloads keep only the view in the URL), else the newest.
     const last = ctx.prefs.get('lastNote', '');
     selected = (last && list.find(note => note.id === last)) || list[0];
     s.noteId = selected.id;
   }
+  shownNoteId = selected?.id || null;
   if (selected && ctx.prefs.get('lastNote', '') !== selected.id) ctx.prefs.set('lastNote', selected.id);
   const railOpen = ctx.prefs.get('notesRail', true) !== false;
   return html`<div class="${cx('notes-ws', railOpen && selected && 'has-rail')}" data-key="notes-ws">
@@ -335,7 +352,8 @@ function renderListPane(ctx, { all, counts, list, selectedId }) {
   const shownRest = rest.slice(0, Math.max(0, limit - pinned.length));
   const filterName = s.collectionId === NO_COLLECTION ? 'No collection' : ctx.select.collection(s.collectionId)?.name || '';
   let body;
-  if (!all.length) body = emptyState({ icon: 'sticky-note', title: 'No notes yet', body: 'Write what you learn while you browse. Notes can link to pages and to each other.', compact: true });
+  // With no notes at all the editor pane carries the call to action; the list only says so.
+  if (!all.length) body = html`<p class="notes-list-empty">No notes yet</p>`;
   else if (!list.length && s.query.trim()) body = emptyState({ icon: 'search', title: `No notes match “${s.query.trim()}”`, compact: true, actions: button({ label: 'Clear search', variant: 'secondary', size: 'sm', action: 'notes.clear-query' }) });
   else if (!list.length) body = emptyState({ icon: 'folder', title: `No notes in ${filterName || 'this collection'}`, compact: true, actions: button({ label: 'Show all notes', variant: 'secondary', size: 'sm', action: 'notes.filter', data: { collection: '' } }) });
   else {
@@ -366,6 +384,7 @@ function renderListPane(ctx, { all, counts, list, selectedId }) {
 }
 
 let listLimit = PAGE_SIZE;
+let shownNoteId = null;
 
 function renderChips(ctx, counts) {
   const s = notesState(ctx);
@@ -418,7 +437,24 @@ function railSection(id, title, content, countValue) {
 }
 
 let railPeek = false;
+let railPeekOff = null;
 const RAIL_INLINE_MIN = 1040;
+
+/** The overlay rail of narrow workspaces closes on a press anywhere outside it (its own toggle handles itself). */
+function setRailPeek(ctx, on) {
+  railPeek = on;
+  railPeekOff?.();
+  railPeekOff = null;
+  if (on) {
+    const outside = event => {
+      if (event.target?.closest?.('.notes-rail, .notes-rail-strip')) return;
+      setRailPeek(ctx, false);
+    };
+    document.addEventListener('pointerdown', outside, true);
+    railPeekOff = () => document.removeEventListener('pointerdown', outside, true);
+  }
+  ctx.render();
+}
 
 function renderRail(ctx, note, { peek = false } = {}) {
   const content = note.content || '';
@@ -451,7 +487,8 @@ function renderRail(ctx, note, { peek = false } = {}) {
       ${tasks.length ? railSection('tasks', 'Tasks', html`<div class="notes-rail-progress">${progressMarkup({ done, total: tasks.length }, { label: false })}<span>${done} of ${tasks.length} done</span></div>
         <ul class="task-list is-rail">${tasks.filter(task => !task.done).slice(0, 8).map(task => taskRow(ctx, note, task))}</ul>
         ${tasks.length - done > 8 ? button({ label: `All ${tasks.length - done} open tasks`, variant: 'ghost', size: 'sm', action: 'app.navigate', data: { view: 'tasks' } }) : ''}`) : ''}
-      ${railSection('backlinks', 'Linked from', backlinks.length ? html`<ul class="notes-rail-links">${backlinks.slice(0, 12).map(linkRow)}</ul>` : html`<p class="notes-rail-hint">Link this note from another with [[${noteName(note)}]].</p>`, backlinks.length)}
+      ${railSection('backlinks', 'Linked from', backlinks.length ? html`<ul class="notes-rail-links">${backlinks.slice(0, 12).map(linkRow)}</ul>`
+        : html`<p class="notes-rail-hint">${titleValue(note.title).trim() ? `Link this note from another with [[${titleValue(note.title).trim()}]].` : 'Notes that link here show up here.'}</p>`, backlinks.length)}
       ${outgoing.length ? railSection('outgoing', 'Links to', html`<ul class="notes-rail-links">${outgoing.slice(0, 12).map(linkRow)}</ul>`, outgoing.length) : ''}
       ${railSection('details', 'Details', html`<dl class="notes-rail-details">
         <div><dt>Created</dt><dd>${shortDate(note.createdAt)}</dd></div><div><dt>Edited</dt><dd>${relativeDate(note.updatedAt)}</dd></div><div><dt>Words</dt><dd>${words.toLocaleString()}</dd></div></dl>`)}
@@ -484,9 +521,9 @@ export function renderTasks(ctx) {
   else body = html`${shown.map(group => taskGroup(ctx, group))}${groups.length > shown.length ? html`<div class="notes-more">${button({ label: `Show ${Math.min(50, groups.length - shown.length)} more notes`, variant: 'ghost', size: 'sm', action: 'notes.tasks-more' })}</div>` : ''}`;
   return html`<div class="tasks-view" data-key="tasks-view">
     <header class="tasks-head"><div class="tasks-head-inner">
-      <div class="tasks-title-row"><h1 class="tasks-title">Tasks</h1><span class="tasks-subtitle">${totals.open.toLocaleString()} open · ${totals.done.toLocaleString()} done</span></div>
-      ${segmented({ name: 'task-filter', value: filter, size: 'sm', action: 'notes.task-filter', ariaLabel: 'Show tasks',
-        options: [{ value: 'open', label: 'Open', count: totals.open }, { value: 'done', label: 'Done', count: totals.done }, { value: 'all', label: 'All', count: totals.all }] })}
+      <div class="tasks-title-row"><h1 class="tasks-title">Tasks</h1>${totals.all ? html`<span class="tasks-subtitle">${totals.open.toLocaleString()} open · ${totals.done.toLocaleString()} done</span>` : ''}</div>
+      ${totals.all ? segmented({ name: 'task-filter', value: filter, size: 'sm', action: 'notes.task-filter', ariaLabel: 'Show tasks',
+        options: [{ value: 'open', label: 'Open', count: totals.open }, { value: 'done', label: 'Done', count: totals.done }, { value: 'all', label: 'All', count: totals.all }] }) : ''}
     </div></header>
     <div class="tasks-body">${body}</div>
   </div>`;
@@ -539,8 +576,8 @@ function renderSideList(ctx) {
   const all = allNotes(ctx);
   const pageNotes = url ? ctx.select.notesForUrl(url) : [];
   const notes = scope === 'page' ? pageNotes : all;
-  const counts = collectionCounts(notes);
-  const list = filterNotes(notes, { query: s.query, collectionId: s.collectionId, sort: s.sort, collections: collectionMap(ctx) });
+  const list = cached(ctx, `side:${scope}|${url}|${s.collectionId}|${s.query}|${s.sort}`,
+    () => filterNotes(notes, { query: s.query, collectionId: s.collectionId, sort: s.sort, collections: collectionMap(ctx) }));
   const shown = list.slice(0, listLimit);
   const filterName = !s.collectionId ? 'All collections' : s.collectionId === NO_COLLECTION ? 'No collection' : ctx.select.collection(s.collectionId)?.name || 'All collections';
   const filterColor = s.collectionId && s.collectionId !== NO_COLLECTION ? ctx.select.collection(s.collectionId)?.color : '';
@@ -555,18 +592,20 @@ function renderSideList(ctx) {
   else body = html`<div class="side-notes-list" data-mount="notes.clamp" data-key="side-notes-list">${shown.map(note => noteCard(ctx, note, { clamp: 8, showPage: scope !== 'page' }))}</div>
     ${list.length > shown.length ? html`<div class="notes-more">${button({ label: `Show ${Math.min(PAGE_SIZE, list.length - shown.length)} more`, variant: 'ghost', size: 'sm', action: 'notes.list-more' })}</div>` : ''}`;
   const popOpen = ctx.state.popover?.name === 'notes.collections';
+  // An empty scope shows one call to action (the empty state), so the filter, search and floating button step aside.
+  const hasNotes = notes.length > 0;
   return html`<div class="side-notes" data-key="side-notes">
     <div class="side-notes-top">
       ${segmented({ name: 'notes-scope', value: scope, action: 'notes.scope', ariaLabel: 'Show notes', className: 'is-block side-notes-scope',
         options: [{ value: 'page', label: 'This page', icon: 'globe', count: url ? pageNotes.length : undefined }, { value: 'all', label: 'All notes', icon: 'layers', count: all.length }] })}
-      <div class="side-notes-tools">
+      ${hasNotes ? html`<div class="side-notes-tools">
         <button type="button" class="side-notes-filter" data-action="notes.filter-menu" aria-haspopup="menu" aria-expanded="${popOpen ? 'true' : 'false'}" aria-label="Collection: ${filterName}. Change">
           ${s.collectionId === NO_COLLECTION ? icon('inbox', { size: 14 }) : s.collectionId ? dot(filterColor) : icon('layers', { size: 14 })}<span class="side-notes-filter-label">${filterName}</span>${icon('chevron-down', { size: 14, className: 'side-notes-filter-chevron' })}</button>
         ${searchField({ value: s.query, placeholder: 'Search', action: 'notes.query', keydown: 'notes.search-key', id: 'notes-search', label: 'Search notes', clearAction: 'notes.clear-query', className: 'side-notes-search' })}
-      </div>
+      </div>` : ''}
     </div>
     <div class="side-notes-body">${body}</div>
-    ${scope === 'page' && !url ? '' : html`<div class="notes-fab-wrap"><button type="button" class="btn btn-primary notes-fab" data-action="notes.fab" aria-keyshortcuts="N">${icon('plus', { size: 16 })}<span class="btn-label">${scope === 'page' ? 'Note on this page' : 'New note'}</span></button></div>`}
+    ${!hasNotes ? '' : html`<div class="notes-fab-wrap"><button type="button" class="btn btn-primary notes-fab" data-action="notes.fab" aria-keyshortcuts="N">${icon('plus', { size: 16 })}<span class="btn-label">${scope === 'page' ? 'Note on this page' : 'New note'}</span></button></div>`}
   </div>`;
 }
 
@@ -588,8 +627,8 @@ registerPopover('notes.collections', renderCollectionMenu, { role: 'menu', class
 
 /* ------------------------------------------------------------------ This page tab */
 
-/** Notes about `url` for the side panel This page tab: compact cards and a one-line composer. */
-export function renderPageNotes(ctx, url) {
+/** Notes about `url` (default: the active tab) for the side panel This page tab: compact cards and a one-line composer. */
+export function renderPageNotes(ctx, url = pageUrl(ctx)) {
   const notes = url ? ctx.select.notesForUrl(url) : [];
   return html`<div class="page-notes" data-key="page-notes">
     ${notes.length ? html`<div class="page-notes-list" data-mount="notes.clamp" data-key="page-notes-list">${notes.slice(0, 20).map(note => noteCard(ctx, note, { clamp: 6, showPage: false, from: 'page' }))}</div>` : ''}
@@ -709,16 +748,14 @@ registerActions({
   'notes.rail': ({ ctx, el }) => {
     // Below the inline width the rail opens over the editor for a moment instead of changing the saved preference.
     const narrow = (el?.closest?.('.notes-ws')?.clientWidth || innerWidth) < RAIL_INLINE_MIN;
-    if (narrow) railPeek = !railPeek;
-    else { railPeek = false; ctx.prefs.set('notesRail', ctx.prefs.get('notesRail', true) === false); }
-    ctx.render();
+    if (narrow) setRailPeek(ctx, !railPeek);
+    else { setRailPeek(ctx, false); ctx.prefs.set('notesRail', ctx.prefs.get('notesRail', true) === false); ctx.render(); }
     if (narrow && railPeek) ctx.nextFrame(() => document.querySelector('.notes-rail.is-peek .notes-rail-head .icon-btn')?.focus({ preventScroll: true }));
   },
   'notes.rail-key': ({ ctx, event }) => {
     if (event.key !== 'Escape' || !railPeek) return;
     event.preventDefault();
-    railPeek = false;
-    ctx.render();
+    setRailPeek(ctx, false);
     ctx.nextFrame(() => document.querySelector('.notes-rail-strip .icon-btn')?.focus({ preventScroll: true }));
   },
   'notes.outline': ({ data }) => editorFor(data.id)?.scrollToHeading(data.text, Number(data.nth) || 0),

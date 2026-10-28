@@ -60,21 +60,23 @@
 }
 .ai-scroll:focus-visible { outline-offset: -2px; }
 .ai-scroll > * { flex: none; }
-.ai-start { justify-content: flex-end; }
+/* Auto margins rather than justify-content, so content taller than the panel still scrolls from its top. */
+.ai-start > :first-child { margin-block-start: auto; }
+.ai-unavailable > :first-child { margin-block: auto; }
 
 /* ---------- Empty, setup and unavailable states ---------- */
 .ai-empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); }
 .ai-mark {
   display: inline-grid; place-items: center;
-  width: 32px; height: 32px;
+  width: 36px; height: 36px;
   margin-block-end: var(--space-4);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-full);
   background: var(--accent-soft);
   color: var(--accent-soft-fg);
 }
 .ai-empty-title { font-size: var(--text-lg); line-height: var(--lh-lg); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-title); }
 .ai-empty-body { max-width: 42ch; color: var(--fg-muted); font-size: var(--text-sm); line-height: var(--lh-sm); }
-.ai-suggestions { display: flex; flex-direction: column; gap: 1px; align-self: stretch; margin-block-start: var(--space-6); margin-inline: calc(var(--space-4) * -1); }
+.ai-suggestions { display: flex; flex-direction: column; gap: 1px; align-self: stretch; margin-block-start: var(--space-4); margin-inline: calc(var(--space-4) * -1); }
 .ai-suggestion {
   display: flex; align-items: center; gap: var(--space-5);
   width: 100%;
@@ -159,12 +161,14 @@
 .ai-md.markdown-body strong { font-weight: var(--weight-semibold); }
 .ai-md.markdown-body li::marker { color: var(--fg-subtle); }
 .ai-md.markdown-body pre { max-width: 100%; overflow-x: auto; }
-.ai-md.is-typing > :last-child::after {
+/* The typing caret follows the last line of text, inside a list's last item rather than below the list. */
+.ai-md.is-typing > :not(ul, ol, pre, table, .paragraph-space):last-child::after,
+.ai-md.is-typing > :is(ul, ol):last-child > li:last-child::after {
   content: "";
   display: inline-block;
   width: 6px; height: 1em;
   margin-inline-start: var(--space-1);
-  border-radius: 1px;
+  border-radius: calc(var(--radius-xs) / 4);
   background: var(--fg-subtle);
   vertical-align: text-bottom;
   animation: ai-caret 1s steps(2, jump-none) infinite;
@@ -172,6 +176,7 @@
 @keyframes ai-caret { from { opacity: 1; } to { opacity: 0; } }
 
 /* Numbered source chips; the title shows in a tooltip on the wrapper. */
+.ai-cite-run { white-space: nowrap; }
 .ai-cite { display: inline; white-space: nowrap; }
 .ai-cite:has(> :focus-visible)::after { display: block; }
 .ai-a .ai-citation.is-numbered {
@@ -188,6 +193,19 @@
 }
 .ai-a .ai-citation.is-numbered:hover { background: var(--accent-soft); color: var(--accent-soft-fg); }
 .ai-a .ai-citation.is-numbered::after { inset: calc((var(--ai-hit) - 18px) / -2) calc(var(--space-1) * -1); }
+
+/* A citation the engine could not match to anything the assistant read. */
+.ai-a .ai-citation-unavailable {
+  display: inline-flex; align-items: center;
+  height: 18px;
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-xs);
+  box-shadow: inset 0 0 0 1px var(--border-default);
+  color: var(--fg-subtle);
+  font-size: var(--text-xs); line-height: 1;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
 
 /* Thinking */
 .ai-thought { display: flex; flex-direction: column; gap: var(--space-3); }
@@ -400,21 +418,20 @@ button.ai-thought-toggle:hover:not(:disabled), button.ai-tool-row:hover { backgr
 .ai-review-meta { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-subtle); font-size: var(--text-xs); }
 .ai-review-more { padding-inline: var(--space-2); color: var(--fg-subtle); font-size: var(--text-xs); line-height: var(--lh-xs); }
 
-/* Receipts: applied, discarded, undone, failed */
+/* Receipts: one quiet row where the card was ("Applied 2 changes · Undo"), with what changed underneath. */
 .ai-receipt {
-  display: flex; align-items: flex-start; gap: var(--space-4);
-  padding: var(--space-4) var(--space-4) var(--space-4) var(--space-5);
-  border-radius: var(--radius-md);
-  box-shadow: inset 0 0 0 1px var(--border-default);
-  font-size: var(--text-sm); line-height: var(--lh-sm);
+  display: flex; align-items: flex-start; gap: var(--space-3);
+  color: var(--fg-muted);
+  font-size: var(--text-xs); line-height: var(--lh-xs);
 }
-.ai-receipt-icon { flex: none; margin-block-start: 2px; color: var(--fg-subtle); }
+.ai-receipt-icon { flex: none; margin-block-start: 1px; color: var(--fg-subtle); }
 .ai-receipt[data-status="applied"] .ai-receipt-icon { color: var(--success); }
 .ai-receipt[data-status="failed"] .ai-receipt-icon { color: var(--danger); }
-.ai-receipt-text { display: flex; flex-direction: column; gap: var(--space-1); flex: 1; min-width: 0; padding-block: 1px; }
-.ai-receipt:not([data-status="applied"]) .ai-receipt-title { color: var(--fg-muted); }
-.ai-receipt-lines { display: flex; flex-direction: column; gap: var(--space-1); color: var(--fg-muted); font-size: var(--text-xs); line-height: var(--lh-xs); }
-.ai-receipt .btn { flex: none; margin-block: calc(var(--space-1) * -1); }
+.ai-receipt-text { display: flex; flex-direction: column; gap: var(--space-1); flex: 1; min-width: 0; }
+.ai-receipt-title { color: var(--fg-muted); font-weight: var(--weight-medium); overflow-wrap: anywhere; }
+.ai-receipt-lines { display: flex; flex-direction: column; gap: 1px; color: var(--fg-subtle); }
+.ai-receipt .btn { flex: none; --btn-h: var(--control-h-xs); margin-block: calc((var(--control-h-xs) - 16px) / -2); padding-inline: var(--space-3); color: var(--fg-muted); }
+.ai-receipt .btn:hover { color: var(--fg-default); }
 
 /* ---------- Composer dock ---------- */
 .ai-dock { flex: none; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-2) var(--ai-gutter) var(--space-4); }
@@ -448,7 +465,7 @@ button.ai-thought-toggle:hover:not(:disabled), button.ai-tool-row:hover { backgr
   position: relative;
   display: inline-grid; place-items: center; flex: none;
   width: 16px; height: 16px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   color: var(--fg-subtle);
 }
 .ai-chip-x::before { content: ""; position: absolute; inset: calc((var(--ai-hit) - 16px) / -2); }
@@ -605,7 +622,7 @@ button.ai-thought-toggle:hover:not(:disabled), button.ai-tool-row:hover { backgr
 /* ---------- Motion, contrast ---------- */
 @media (prefers-reduced-motion: reduce) {
   .ai-shimmer::after { display: none; }
-  .ai-md.is-typing > :last-child::after { animation: none; }
+  .ai-md.is-typing li::after, .ai-md.is-typing > ::after { animation: none; }
 }
 @media (prefers-contrast: more) {
   .ai-bubble, .ai-composer, .ai-proposal, .ai-setup-path, .ai-notice { box-shadow: inset 0 0 0 1px var(--border-strong); }

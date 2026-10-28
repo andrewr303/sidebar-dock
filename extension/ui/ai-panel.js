@@ -72,7 +72,7 @@ export function resolveContext({ explicit = null, added = [], selectionIds = [],
   return { kind: 'library', chips: [{ key: 'library', kind: 'library', removable: false }], scope: { scope: 'library' } };
 }
 
-/** Starting points for an empty conversation, adapted to the primary context. Prompts with "…" are templates to finish. */
+/** Four starting points for an empty conversation, adapted to the primary context. Prompts with "…" are templates to finish. */
 export function suggestionsFor(kind, { collectionName = 'this collection', count = 0 } = {}) {
   if (kind === 'page') return [
     { icon: 'file-text', label: 'Summarize this page', prompt: 'Summarize this page in a few short paragraphs.' },
@@ -84,6 +84,7 @@ export function suggestionsFor(kind, { collectionName = 'this collection', count
     { icon: 'book-open', label: `Digest of ${collectionName}`, prompt: `Write a short digest of ${collectionName}: the main themes, standout items and anything that looks outdated.` },
     { icon: 'hash', label: 'Suggest tags', prompt: `Suggest tags for the items in ${collectionName} that need them.` },
     { icon: 'copy', label: 'Find duplicates', prompt: `Find duplicate or near-duplicate items in ${collectionName}.` },
+    { icon: 'folder-tree', label: `Organize ${collectionName}`, prompt: `Suggest how to organize ${collectionName} into sub-collections and propose the moves.` },
   ];
   if (kind === 'items') {
     const one = count === 1;
@@ -91,12 +92,13 @@ export function suggestionsFor(kind, { collectionName = 'this collection', count
       { icon: 'file-text', label: one ? 'Summarize this item' : `Summarize these ${count} items`, prompt: one ? 'Summarize this item.' : 'Summarize these items and what they have in common.' },
       { icon: 'layers', label: one ? 'Find related items' : 'Find what connects them', prompt: one ? 'Find items in my library related to this one.' : 'What connects these items? Point out overlaps and differences.' },
       { icon: 'hash', label: 'Suggest tags', prompt: one ? 'Suggest tags for this item.' : 'Suggest tags for these items.' },
+      { icon: 'folder-input', label: one ? 'Find a collection for it' : 'Find a collection for them', prompt: one ? 'Which collection should this item go in? Propose the move.' : 'Which collection should these items go in? Propose the moves.' },
     ];
   }
   return [
     { icon: 'search', label: 'What did I save about …', prompt: 'What did I save about …' },
     { icon: 'folder-input', label: 'Find everything about … and move it to …', prompt: 'Find everything about … and move it to …' },
-    { icon: 'inbox', label: 'Suggest tags for Inbox', prompt: 'Suggest tags for the items in my Inbox.' },
+    { icon: 'inbox', label: 'Organize Inbox', prompt: 'Organize my Inbox: suggest a collection and tags for each item and propose the changes.' },
     { icon: 'tags', label: 'Tag untagged items', prompt: 'Find items without tags and propose tags for them.' },
   ];
 }
@@ -112,17 +114,23 @@ export function streamingCitations(answer, resolve) {
   return [...seen.values()];
 }
 
-/** Turns markdown.js source chips into compact numbered chips (title in a tooltip) that open their source. */
+/**
+ * Turns markdown.js source chips into compact numbered chips (title in a tooltip) that open their source. Each chip is
+ * kept on one line with the word before it and the punctuation after it, and a source the assistant never read shows
+ * as a quiet "source unavailable" note.
+ */
 export function numberCitations(markup, citations = []) {
   const numbers = new Map(citations.map((source, index) => [String(source.id), source.n || index + 1]));
-  return String(markup).replace(/<button([^>]*)class="ai-citation"([^>]*)>[\s\S]*?<\/button>/g, (match, before, after) => {
+  const run = (word, space, chip, punct) => `<span class="ai-cite-run">${word}${space}${chip}${punct}</span>`;
+  return String(markup).replace(/([^\s<>&;]{0,24})( ?)<button([^>]*)class="ai-citation"([^>]*)>[\s\S]*?<\/button>([.,;:!?)]*)/g, (match, word, space, before, after, punct) => {
     const attributes = `${before} ${after}`;
     const id = attributes.match(/data-id="([^"]*)"/)?.[1];
     if (!id || !numbers.has(id)) return match;
     const title = attributes.match(/title="([^"]*)"/)?.[1] || 'Source';
     const n = numbers.get(id);
-    return `<span class="ai-cite" data-tooltip="${title}"><button type="button" class="ai-citation is-numbered" data-action="ai.cite" data-id="${id}" aria-label="Source ${n}: ${title}">${n}</button></span>`;
-  });
+    return run(word, space, `<span class="ai-cite" data-tooltip="${title}"><button type="button" class="ai-citation is-numbered" data-action="ai.cite" data-id="${id}" aria-label="Source ${n}: ${title}">${n}</button></span>`, punct);
+  }).replace(/([^\s<>&;]{0,24})( ?)<span class="ai-citation-unavailable">\[source unavailable\]<\/span>([.,;:!?)]*)/g,
+    (match, word, space, punct) => run(word, space, '<span class="ai-citation-unavailable" data-tooltip="The assistant cited something it did not read">source unavailable</span>', punct));
 }
 
 const cleanTitle = value => text(value).replace(/[[\]|]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -156,7 +164,7 @@ export function classifyError({ code = '', message = '', aborted = false } = {})
   if (/is turned off/i.test(value)) return 'disabled';
   if (/^Rate limited/i.test(value)) return 'rate_limit';
   if (/having trouble right now|did not respond in time|took too long/i.test(value)) return 'provider_down';
-  if (/declined to answer/i.test(value)) return 'refusal';
+  if (/declined (to answer|this request)/i.test(value)) return 'refusal';
   if (/^Could not reach/i.test(value)) return 'network';
   return 'other';
 }
@@ -277,8 +285,10 @@ function contextFor(ctx) {
   if (!side && view === 'inbox') viewCollectionId = '';
   else if (!side && view.startsWith('collection:') && ctx.select?.collection?.(view.slice(11))) viewCollectionId = view.slice(11);
   const exists = id => !!liveItem(ctx, id);
+  // The full tab has a page only when askAi named one (ctx.state.page is the side panel's active tab).
+  const page = isWebUrl(ctx.state.page?.url) && (side || s.explicit?.scope === 'page') ? ctx.state.page : null;
   return resolveContext({ explicit: s.explicit, added: s.added.filter(exists), selectionIds: side ? [] : [...(ctx.state.selection || [])].filter(exists),
-    page: side && isWebUrl(ctx.state.page?.url) ? ctx.state.page : null, viewCollectionId, dismissed: s.dismissed });
+    page, viewCollectionId, dismissed: s.dismissed });
 }
 
 const collectionName = (ctx, id) => id ? ctx.select?.collection?.(id)?.name || 'this collection' : 'Inbox';
@@ -355,7 +365,13 @@ async function pageContext(ctx, scope) {
     const saved = ctx.select?.savedForUrl?.(page.url);
     return { context: { ...scope, page: { ...page, text: text(saved?.articleContent || saved?.content || saved?.excerpt) } } };
   }
-  const result = await ctx.chrome('getPageContext', { tabId: current.tabId, windowId: current.windowId });
+  let result;
+  try { result = await ctx.chrome('getPageContext', { tabId: current.tabId, windowId: current.windowId }); }
+  catch (error) {
+    // Pages Chrome keeps scripts out of (the Web Store, PDFs, some error pages): answer from the title and saved items.
+    console.warn('[still] page text unavailable', error);
+    return { context: { ...scope, page: { ...page, text: '' } }, note: 'Still could not read this page, so the answer uses its title and your library.' };
+  }
   if (result?.needsPermission) return { needsPermission: result.needsPermission };
   return { context: { ...scope, page: { url: text(result?.url) || page.url, title: text(result?.title) || page.title, text: text(result?.text) } } };
 }
@@ -407,6 +423,7 @@ async function startRun(ctx, { question, scope, replaceFrom, access, fromDraft }
       announce(ctx, 'Still needs access to this page.');
       return;
     }
+    if (prepared.note) run.notes.push(prepared.note);
     run.started = true;
     if (replaceFrom && s.conversation?.id) s.conversation = await ctx.ai.saveConversation(s.conversation);
     const t = s.target || {};
@@ -417,7 +434,7 @@ async function startRun(ctx, { question, scope, replaceFrom, access, fromDraft }
     });
     for (const proposal of result?.message?.proposals || []) { const ui = proposalUi.get(proposal.id); if (ui) ui.resolve = null; }
     if (s.run !== run) return;
-    s.conversation = await finalize(ctx, result);
+    s.conversation = await finalize(ctx, run, result);
     announce(ctx, result.message?.error ? (result.message.error === 'Stopped' ? 'Stopped' : result.message.error) : 'Answer ready');
     refreshHistory(ctx, { quiet: true });
   } catch (error) {
@@ -433,8 +450,9 @@ async function startRun(ctx, { question, scope, replaceFrom, access, fromDraft }
   }
 }
 
-// Keeps what only this view knows (where each card sat in the answer, Review exclusions, undo) on the saved message.
-async function finalize(ctx, result) {
+// Keeps what only this view knows on the saved message: where each card sat in the answer, Review exclusions and
+// undo. The item ids each read step found and the run's notes stay in memory only (the engine saves neither).
+async function finalize(ctx, run, result) {
   const { conversation, message } = result || {};
   if (!conversation || !message) return conversation || null;
   let changed = false;
@@ -447,9 +465,16 @@ async function finalize(ctx, result) {
     if (JSON.stringify(next) !== JSON.stringify(proposal)) changed = true;
     return next;
   });
-  if (!changed) return conversation;
-  const next = { ...conversation, messages: conversation.messages.map(entry => entry.id === message.id ? { ...entry, proposals } : entry) };
-  try { return await ctx.ai.saveConversation(next); } catch (error) { console.error(error); return next; }
+  let saved = conversation;
+  if (changed) {
+    const next = { ...conversation, messages: conversation.messages.map(entry => entry.id === message.id ? { ...entry, proposals } : entry) };
+    try { saved = await ctx.ai.saveConversation(next); } catch (error) { console.error(error); saved = next; }
+  }
+  const withResults = tools => (tools || []).map((tool, index) => {
+    const live = run.message.tools[index];
+    return live?.name === tool.name && live.result && !tool.result ? { ...tool, result: live.result } : tool;
+  });
+  return { ...saved, messages: saved.messages.map(entry => entry.id === message.id ? { ...entry, tools: withResults(entry.tools), notes: [...run.notes] } : entry) };
 }
 
 function onEvent(ctx, run, event) {
@@ -645,7 +670,7 @@ export function renderAiPanel(ctx, { surface = ctx.env?.isSidepanel ? 'side' : '
   const resolved = contextFor(ctx);
   return html`<section class="ai-panel" data-surface="${surface}" aria-label="Assistant">
     ${renderHead(ctx, surface, hasThread)}
-    ${!ready ? html`<div class="ai-scroll ai-start" data-key="ai.unavailable">${emptyState({ icon: 'sparkles', title: 'The assistant is not available',
+    ${!ready ? html`<div class="ai-scroll ai-unavailable" data-key="ai.unavailable">${emptyState({ icon: 'sparkles', title: 'The assistant is not available',
       body: 'Still could not load its AI engine. Reload Still to try again.', actions: button({ label: 'Reload', icon: 'refresh-cw', action: 'app.retry-boot', size: 'sm' }) })}</div>`
       : hasThread ? html`<div class="ai-scroll ai-thread" data-mount="ai.transcript" data-morph="skip" data-key="ai.transcript" role="region" aria-label="Conversation" tabindex="-1"></div>`
         : html`<div class="ai-scroll ai-start" data-key="ai.start">${s.target === null ? renderSetup() : renderEmpty(ctx, resolved)}</div>`}
@@ -673,14 +698,9 @@ function renderEmpty(ctx, resolved) {
   const s = st(ctx);
   const count = resolved.scope.ids?.length || 0;
   s.suggestions = suggestionsFor(resolved.kind, { collectionName: collectionName(ctx, resolved.scope.collectionId), count });
-  const body = resolved.kind === 'page' ? 'Answers use this page and what you saved, with sources you can open.'
-    : resolved.kind === 'collection' ? `Answers use what is in ${collectionName(ctx, resolved.scope.collectionId)}, with sources you can open.`
-      : resolved.kind === 'items' ? `Answers use ${count === 1 ? 'this item' : 'these items'}, with sources you can open.`
-        : 'Answers cite the items they come from. Changes to your library always wait for your approval.';
   return html`<div class="ai-empty">
-    <span class="ai-mark" aria-hidden="true">${icon('sparkles', { size: 18 })}</span>
-    <h2 class="ai-empty-title">Ask about your library</h2>
-    <p class="ai-empty-body">${body}</p>
+    <span class="ai-mark" aria-hidden="true">${icon('sparkles', { size: 20 })}</span>
+    <h2 class="ai-empty-title">How can I help?</h2>
     <ul class="ai-suggestions" role="list" aria-label="Suggestions">
       ${s.suggestions.map((suggestion, index) => html`<li><button type="button" class="ai-suggestion" data-action="ai.suggest" data-index="${index}">
         ${icon(suggestion.icon, { size: 16 })}<span>${suggestion.label}</span></button></li>`)}
@@ -743,9 +763,11 @@ function footnote(ctx) {
   if (t === null) return 'Connect a model to ask here. Another app opens your question in a new tab.';
   if (!t) return 'Retrieved items are included as context.';
   const model = t.modelLabel || t.model;
+  // A custom server is known by the name its connection was given; catalog providers by their own name.
+  const where = String(t.providerId || '').startsWith('custom-') ? t.label || t.providerName : t.providerName;
   if (t.via === 'agent' || t.via === 'bridge') return `Sent to ${t.label || t.providerName} through the local bridge${model ? ` · ${model}` : ''}. Retrieved items are included as context.`;
-  if (t.local) return `Runs on this computer with ${t.providerName}${model ? ` · ${model}` : ''}. Retrieved items are included as context.`;
-  return `Sent to ${t.providerName}${model ? ` · ${model}` : ''}. Retrieved items are included as context.`;
+  if (t.local) return `Runs on this computer with ${where}${model ? ` · ${model}` : ''}. Retrieved items are included as context.`;
+  return `Sent to ${where}${model ? ` · ${model}` : ''}. Retrieved items are included as context.`;
 }
 
 function renderModelButton(ctx) {
@@ -873,7 +895,9 @@ function renderAnswer(ctx, view, message, { last }) {
   const pushText = (part, from, tail = false) => {
     if (!part.trim()) return;
     const key = live ? `md:${message.id}:${from}:${part.length}${tail ? ':tail' : ''}` : `md:${message.id}:${from}:${signature}`;
-    blocks.push(skipBlock(view, key, cx('ai-md markdown-body is-compact', tail && 'is-typing'), () => renderMd(ctx, part, citations)));
+    // Blank lines at a card boundary would render as empty spacer paragraphs.
+    const trimmed = part.replace(/^(?:[ \t]*\n)+/, '').replace(/(?:\n[ \t]*)+$/, '');
+    blocks.push(skipBlock(view, key, cx('ai-md markdown-body is-compact', tail && 'is-typing'), () => renderMd(ctx, trimmed, citations)));
   };
   for (const { proposal, at } of cards) {
     pushText(body.slice(cursor, at), cursor);
@@ -888,11 +912,19 @@ function renderAnswer(ctx, view, message, { last }) {
     ${renderThought(ctx, message, run)}
     ${renderTools(ctx, message)}
     ${blocks}
-    ${(run?.notes || []).map(note => html`<p class="ai-note">${icon('info', { size: 14 })}<span>${note}</span></p>`)}
+    ${notesFor(message, run).map(note => html`<p class="ai-note">${icon('info', { size: 14 })}<span>${note}</span></p>`)}
     ${showStatus ? html`<p class="ai-status"><span class="ai-shimmer">${statusLabel(message, run)}</span></p>` : ''}
     ${renderError(ctx, message, { last })}
     ${renderActions(ctx, message, { last, citations })}
   </article>`;
+}
+
+const CUT_OFF = 'The answer reached the length limit and may be cut off.';
+// Notes the engine sent while answering; a reopened chat only knows that an answer was cut off.
+function notesFor(message, run) {
+  if (run) return run.notes;
+  if (message.notes) return message.notes;
+  return message.stopReason === 'max_tokens' ? [CUT_OFF] : [];
 }
 
 function statusLabel(message, run) {
@@ -1071,7 +1103,7 @@ function renderProposal(ctx, proposal) {
   const titleId = `ai-pr-${proposal.id}`;
   return html`<section class="ai-proposal" data-key="pr:${proposal.id}" aria-labelledby="${titleId}">
     <header class="ai-proposal-head">${icon('list-checks', { size: 16 })}<h3 class="ai-proposal-title" id="${titleId}">Proposed changes</h3>
-      ${badge({ label: 'Needs approval', tone: 'warning', className: 'ai-proposal-badge' })}</header>
+      ${badge({ label: 'Needs approval', className: 'ai-proposal-badge' })}</header>
     <ul class="ai-changes" role="list">${changes.map((change, index) => {
       const out = ui.excluded.get(index) || new Set();
       const included = changeCount(change) - out.size;
@@ -1113,6 +1145,14 @@ function renderReview(ctx, proposal, change, index, ui) {
   </div>`;
 }
 
+// The live undo from this session, else the engine's saved undo record (after a reload or for a reopened chat).
+function undoFor(ctx, proposal) {
+  const ui = proposalUi.get(proposal.id);
+  if (ui?.undone) return null;
+  if (ui?.undo) return ui.undo;
+  return proposal.undo && typeof ctx.ai?.undoProposal === 'function' ? () => ctx.ai.undoProposal(proposal.undo) : null;
+}
+
 function renderReceipt(ctx, proposal, status) {
   const ui = proposalUi.get(proposal.id);
   const lines = ui?.lines || proposal.appliedLines || appliedLines(Array.isArray(proposal.applied) ? { changes: proposal.applied } : proposal);
@@ -1120,16 +1160,16 @@ function renderReceipt(ctx, proposal, status) {
   if (status === 'applied') {
     const title = lines.length === 1 ? `Applied: ${lowerFirst(lines[0])}` : `Applied ${plural(lines.length, 'change')}`;
     return html`<div class="ai-receipt" data-status="applied" data-key="pr:${proposal.id}">
-      ${icon('circle-check', { size: 16, className: 'ai-receipt-icon' })}
+      ${icon('circle-check', { size: 14, className: 'ai-receipt-icon' })}
       <div class="ai-receipt-text"><p class="ai-receipt-title">${title}</p>
         ${lines.length > 1 ? html`<ul class="ai-receipt-lines" role="list">${lines.map(line => html`<li>${line}</li>`)}</ul>` : ''}</div>
-      ${ui?.undo ? button({ label: 'Undo', icon: 'undo-2', variant: 'ghost', size: 'sm', action: 'ai.proposal-undo', data: { id: proposal.id }, loading: undoing }) : ''}
+      ${undoFor(ctx, proposal) ? button({ label: 'Undo', icon: 'undo-2', variant: 'ghost', size: 'sm', action: 'ai.proposal-undo', data: { id: proposal.id }, loading: undoing }) : ''}
     </div>`;
   }
-  const copy = { discarded: ['circle-x', 'Discarded the proposed changes. Nothing was changed.'], undone: ['undo-2', 'Undone. Your library is back as it was.'],
+  const copy = { discarded: ['circle-x', 'Discarded. Nothing was changed.'], undone: ['undo-2', 'Undone. Your library is back as it was.'],
     failed: ['circle-alert', `Changes failed. Nothing was changed.${ui?.error || proposal.error ? ` ${ui?.error || proposal.error}` : ''}`] }[status]
     || ['circle-x', 'These changes were not applied.'];
-  return html`<div class="ai-receipt" data-status="${status}" data-key="pr:${proposal.id}">${icon(copy[0], { size: 16, className: 'ai-receipt-icon' })}
+  return html`<div class="ai-receipt" data-status="${status}" data-key="pr:${proposal.id}">${icon(copy[0], { size: 14, className: 'ai-receipt-icon' })}
     <div class="ai-receipt-text"><p class="ai-receipt-title">${copy[1]}</p></div></div>`;
 }
 
@@ -1683,12 +1723,16 @@ registerActions({
     bump(ctx, { render: true });
   },
   'ai.proposal-undo': async ({ ctx, data }) => {
-    const ui = proposalUi.get(data.id);
-    if (!ui?.undo || ui.undone || ui.undoing) return;
+    const proposal = findProposal(ctx, data.id);
+    const undo = proposal ? undoFor(ctx, proposal) : null;
+    if (!undo) return;
+    const ui = proposalUi.get(data.id) || { open: false, excluded: new Map(), status: 'applied' };
+    proposalUi.set(data.id, ui);
+    if (ui.undoing) return;
     ui.undoing = true;
     bump(ctx);
     try {
-      const result = await ui.undo();
+      const result = await undo();
       ui.undone = true;
       ui.undo = null;
       const kept = Number(result?.kept) || 0;
