@@ -120,3 +120,44 @@ test('router timeout aborts the generator and returns a bounded terminal error e
   assert.equal(signal.aborted, true); assert.equal(stream.at(-1).type, 'error'); assert.equal(stream.at(-1).aborted, true); assert.equal(stream.at(-1).partialText, 'Partial');
   assert.equal(stream.some(event => event.type === 'done'), false);
 });
+
+test('reasoning summaries stream as thinking events between start and done without entering the answer text', async t => {
+  const { request } = await harness(t, { providers: { generate: async input => { input.onThinking('Comparing the sources.'); input.onDelta('Answer'); return { text: 'Answer', model: 'claude-opus-5', fallback: { from: 'claude-opus-5-5', to: 'claude-opus-5' } }; } } });
+  const stream = await events(await request('/ai/chat', { method: 'POST', body: BASE_REQUEST }));
+  assert.deepEqual(stream.map(event => event.type), ['start', 'thinking', 'delta', 'done']);
+  assert.equal(stream[1].text, 'Comparing the sources.'); assert.equal(stream.at(-1).text, 'Answer');
+  assert.deepEqual(stream.at(-1).fallback, { from: 'claude-opus-5-5', to: 'claude-opus-5' });
+});
+
+test('a provider refusal ends the stream with an error that names the stop reason', async t => {
+  const { request } = await harness(t, { providers: { generate: async input => { input.onDelta('Partly'); throw Object.assign(new Error('Claude declined this request (cyber).'), { partialText: 'Partly', stopReason: 'refusal' }); } } });
+  const stream = await events(await request('/ai/chat', { method: 'POST', body: BASE_REQUEST }));
+  assert.deepEqual(stream.map(event => event.type), ['start', 'delta', 'error']);
+  assert.equal(stream.at(-1).stopReason, 'refusal'); assert.match(stream.at(-1).message, /declined/);
+});
+
+test('embeddings route returns vectors from the provider service, validates the provider and aborts with the client', async t => {
+  const { request, calls } = await harness(t, { providers: { embed: async input => { calls.push(['embed', input]); return { vectors: input.inputs.map(() => [0.6, 0.8]), model: 'voyage-4', dimensions: 2, usage: { inputTokens: 4 } }; } } });
+  const response = await request('/ai/embeddings', { method: 'POST', body: { providerId: 'provider_test', inputs: ['one', 'two'], inputType: 'query', dimensions: 2, model: 'voyage-4' } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { vectors: [[0.6, 0.8], [0.6, 0.8]], model: 'voyage-4', dimensions: 2, usage: { inputTokens: 4 } });
+  const sent = calls.find(call => call[0] === 'embed')[1];
+  assert.deepEqual([sent.providerId, sent.inputs, sent.inputType, sent.dimensions, sent.model], ['provider_test', ['one', 'two'], 'query', 2, 'voyage-4']);
+  assert.ok(sent.signal instanceof AbortSignal);
+  assert.equal((await request('/ai/embeddings', { method: 'POST', body: { providerId: 'cli:codex', inputs: ['x'] } })).status, 400);
+  assert.equal((await request('/ai/embeddings', { method: 'POST', body: ['not', 'an', 'object'] })).status, 400);
+  assert.equal((await request('/ai/embeddings')).status, 405);
+  const failing = await harness(t, { providers: { embed: async () => { throw new Error('Anthropic offers no embeddings API.'); } } });
+  const failed = await failing.request('/ai/embeddings', { method: 'POST', body: { providerId: 'provider_test', inputs: ['x'] } });
+  assert.equal(failed.status, 400); assert.match((await failed.json()).error, /no embeddings/);
+});
+
+test('provider listing reports the runtime paths the extension needs for exact MCP setup snippets', async t => {
+  const { request } = await harness(t);
+  const { runtime, catalog } = await (await request('/ai/providers')).json();
+  assert.equal(runtime.nodePath, process.execPath); assert.match(runtime.mcpEntry, /bridge[\\/]mcp\.mjs$/); assert.ok(runtime.mcpEntry.startsWith(runtime.projectRoot.replace(/[\\/]$/, '')));
+  assert.equal(runtime.features.embeddings, true); assert.equal(runtime.features.anthropicVersion, '2026-10-21');
+  for (const type of ['xai', 'mistral', 'groq', 'deepseek', 'voyage']) assert.ok(catalog.some(entry => entry.type === type), type);
+  assert.equal(catalog.find(entry => entry.type === 'anthropic').temperature, false);
+  assert.equal(catalog.find(entry => entry.type === 'voyage').transport, 'none');
+});

@@ -292,6 +292,8 @@ export function createCliService({ spawn = nativeSpawn, which = findCliOnPath, c
     ...(job.status === 'user_action_needed' && job.verificationUri ? { verificationUri: job.verificationUri, userCode: job.userCode } : {}), ...(job.error ? { error: job.error } : {}) });
   async function startCodexLogin() {
     for (const job of loginJobs.values()) if (['pending', 'user_action_needed'].includes(job.status)) return publicLogin(job);
+    // Finished sign-in jobs are kept for an hour so status polls still resolve, then dropped.
+    for (const [id, job] of loginJobs) if (Date.now() - Date.parse(job.startedAt) > 3600000) loginJobs.delete(id);
     const { agent, launcher } = await select('codex');
     if (!agent.capabilities.oauthLogin) throw new Error('This Codex CLI does not expose app-server login. Update Codex to use in-app sign-in.');
     const cwd = await tempDirectory('codex');

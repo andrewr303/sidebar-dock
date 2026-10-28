@@ -10,12 +10,15 @@ export async function runStdio({ input = process.stdin, output = process.stdout,
     let message;
     try { message = JSON.parse(line); } catch { send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); return; }
     try {
-      const response = await fetcher(`${config.url}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json', Accept: 'application/json,text/event-stream' }, body: JSON.stringify(message), signal: AbortSignal.timeout(20000) });
+      // semantic_search can wait up to 15 s for the extension, so the per-message limit leaves headroom above that.
+      const response = await fetcher(`${config.url}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json', Accept: 'application/json,text/event-stream' }, body: JSON.stringify(message), signal: AbortSignal.timeout(30000) });
       if (response.status === 202) return;
       if (!response.ok) throw new Error(`Bridge returned HTTP ${response.status}. Verify the bridge token and local configuration.`);
       const result = await response.json();
       if (result) send(result);
-    } catch (error) { if (message.id !== undefined) send({ jsonrpc: '2.0', id: message.id, error: { code: -32000, message: `Still bridge unavailable: ${error.message}. Start bridge/server.mjs and keep a syncing Still view open.` } }); }
+    } catch (error) {
+      if (message.id !== undefined) send({ jsonrpc: '2.0', id: message.id, error: { code: -32000, message: `Still bridge unavailable: ${error.message}. Start it with \`npm run bridge\` (node bridge/server.mjs) and keep a syncing Still view open.` } });
+    }
   }
   input.setEncoding('utf8');
   for await (const chunk of input) {

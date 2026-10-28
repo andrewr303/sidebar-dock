@@ -12,6 +12,8 @@ export const CLIENT_CATALOG = Object.freeze([
   { id: 'opencode', name: 'OpenCode', mode: 'json-merge', config: ['.config', 'opencode', 'opencode.json'], skill: ['.config', 'opencode', 'skills'], docs: 'https://opencode.ai/docs/mcp-servers/' },
   { id: 'cursor', name: 'Cursor', mode: 'json-merge', config: ['.cursor', 'mcp.json'], skill: ['.cursor', 'skills'], docs: 'https://cursor.com/docs/mcp' },
   { id: 'gemini', name: 'Gemini CLI', mode: 'json-merge', config: ['.gemini', 'settings.json'], skill: ['.gemini', 'skills'], docs: 'https://geminicli.com/docs/tools/mcp-server/' },
+  // Claude Desktop keeps its config in the per-platform app-data folder and reads no personal skills folder.
+  { id: 'claude-desktop', name: 'Claude Desktop', mode: 'json-merge', config: { darwin: ['Library', 'Application Support', 'Claude', 'claude_desktop_config.json'], win32: ['AppData', 'Roaming', 'Claude', 'claude_desktop_config.json'], linux: ['.config', 'Claude', 'claude_desktop_config.json'] }, skill: null, docs: 'https://modelcontextprotocol.io/docs/develop/connect-local-servers' },
 ]);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const own = (object, key) => Object.hasOwn(object, key);
@@ -100,13 +102,18 @@ function commandArgs(client, action, nodeCommand, entry) {
   return [];
 }
 
-export function createConnectionsService({ homeDir = homedir(), projectRoot = DEFAULT_ROOT, spawn = nativeSpawn, resolveExecutable = resolveAgentExecutable, env = process.env, timeoutMs = 20000 } = {}) {
+export function createConnectionsService({ homeDir = homedir(), projectRoot = DEFAULT_ROOT, spawn = nativeSpawn, resolveExecutable = resolveAgentExecutable, env = process.env, timeoutMs = 20000, platform = process.platform } = {}) {
   const home = resolve(homeDir), root = resolve(projectRoot), entry = join(root, 'bridge', 'mcp.mjs'), nodeCommand = process.execPath;
   let queue = Promise.resolve();
   const serialize = work => { const task = queue.then(work, work); queue = task.catch(() => {}); return task; };
   const identify = id => CLIENT_CATALOG.find(client => client.id === id) || (() => { throw error('UNKNOWN_CLIENT', 'Choose a supported client from the connection catalog.'); })();
-  const pathFor = client => join(home, ...client.config);
-  const skillPathFor = client => join(home, ...client.skill, 'still-workspace');
+  const pathFor = client => {
+    if (Array.isArray(client.config)) return join(home, ...client.config);
+    // %APPDATA% outside the home directory fails the symlink/home check and falls back to manual setup.
+    if (platform === 'win32' && env.APPDATA) return join(resolve(env.APPDATA), ...client.config.win32.slice(2));
+    return join(home, ...(client.config[platform] || client.config.linux));
+  };
+  const skillPathFor = client => client.skill ? join(home, ...client.skill, 'still-workspace') : null;
   const receipt = async data => {
     const path = join(home, '.still', 'connection-receipts', `${Date.now()}-${randomUUID()}.json`);
     await rejectSymlinks(home, path); await mkdir(dirname(path), { recursive: true });
@@ -132,14 +139,14 @@ export function createConnectionsService({ homeDir = homedir(), projectRoot = DE
     }
     const expected = expectedEntry(client, entry, nodeCommand), configured = matchesEntry(client, parsed?.entry, expected), conflict = !!parsed?.hasEntry && !configured;
     let skillInstalled = false;
-    try { await rejectSymlinks(home, join(skillPath, 'SKILL.md')); skillInstalled = (await lstat(join(skillPath, 'SKILL.md'))).isFile(); } catch (failure) { if (failure.code !== 'ENOENT') reason ||= failure.message; }
+    if (skillPath) try { await rejectSymlinks(home, join(skillPath, 'SKILL.md')); skillInstalled = (await lstat(join(skillPath, 'SKILL.md'))).isFile(); } catch (failure) { if (failure.code !== 'ENOENT') reason ||= failure.message; }
     const commands = client.mode === 'native-cli' ? [{ command: launcher?.command || client.id, args: [...(launcher?.prefix || []), ...commandArgs(client, 'connect', nodeCommand, entry)] }] : [];
     const configSnippet = client.id === 'codex' ? `[mcp_servers.still]\ncommand = ${JSON.stringify(nodeCommand)}\nargs = [${JSON.stringify(entry)}]\n`
       : JSON.stringify({ [client.id === 'opencode' ? 'mcp' : 'mcpServers']: { still: expected } }, null, 2);
     const result = { clientId: client.id, id: client.id, name: client.name, configPath, target: configPath, configHash: current.hash, previewHash: current.hash,
       mode: client.mode, configured, configurationStatus: reason ? 'manual' : conflict ? 'conflict' : configured ? 'configured' : 'not_configured',
       canConnect: !reason && !conflict, conflict, reason: reason || (conflict ? 'An existing still entry has a different configuration. Preserve it and choose manual setup.' : null),
-      configSnippet, commands, backupRequired: current.exists && !configured, skillPath, skillInstalled, restartRequired: true, runtimeConnected: false,
+      configSnippet, commands, backupRequired: current.exists && !configured, skillPath, skillInstalled, skillSupported: !!skillPath, restartRequired: true, runtimeConnected: false,
       installed: client.mode === 'native-cli' ? !!launcher : current.exists, docs: client.docs };
     return { client, current, parsed, expected, launcher, result };
   }
@@ -197,6 +204,7 @@ export function createConnectionsService({ homeDir = homedir(), projectRoot = DE
   async function installSkills(id) {
     return serialize(async () => {
       const client = identify(id), destination = skillPathFor(client), source = join(root, 'agent-skills', 'still-workspace');
+      if (!destination) throw error('SKILL_UNSUPPORTED', `${client.name} does not read a personal skills folder, so Still cannot install the skill there. Add it from ${client.name}'s own settings if your plan supports skills.`);
       await rejectSymlinks(home, destination);
       const files = await Promise.all(sourceSkillFiles.map(async path => {
         const sourcePath = join(source, path); if ((await lstat(sourcePath)).isSymbolicLink()) throw error('UNSAFE_PATH', 'The bundled skill contains a symbolic link.');

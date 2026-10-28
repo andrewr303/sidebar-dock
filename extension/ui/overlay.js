@@ -1,0 +1,252 @@
+// Dialogs, popovers, menus, confirm/prompt and toasts. Overlays live in ctx.state so they re-render with the app;
+// this module adds focus management, Escape/outside-click dismissal, focus trapping and anchored positioning.
+import { html, cx, esc } from './html.js';
+import { icon } from './icons.js';
+import { registerActions } from './runtime.js';
+
+const dialogs = new Map();
+const popovers = new Map();
+let ctx = null;
+let runtime = null;
+const restoreFocus = new WeakMap();
+
+/** Register a dialog body: render(ctx, props) returns the dialog's inner markup (use dialogFrame from components). */
+export const registerDialog = (name, render, options = {}) => dialogs.set(name, { render, ...options });
+/** Register a popover body: render(ctx, props) returns inner markup. options: { role: 'dialog'|'menu'|'listbox', className } */
+export const registerPopover = (name, render, options = {}) => popovers.set(name, { render, ...options });
+
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
+const focusables = el => [...el.querySelectorAll(FOCUSABLE)].filter(n => n.offsetParent !== null || n === document.activeElement);
+
+export function openDialog(name, props = {}) {
+  if (!dialogs.has(name)) throw new Error(`Unknown dialog: ${name}`);
+  const opener = document.activeElement;
+  closePopover();
+  const entry = { name, props, id: `dialog-${name}-${ctx.state.dialogs.length}` };
+  restoreFocus.set(entry, opener);
+  ctx.state.dialogs = [...ctx.state.dialogs, entry];
+  runtime.nextFrame(() => {
+    const el = document.getElementById(entry.id);
+    if (!el) return;
+    const target = el.querySelector('[autofocus], [data-autofocus]') || focusables(el.querySelector('.dialog-body') || el)[0] || el;
+    target.focus({ preventScroll: true });
+    if (target.select && target.dataset.selectOnFocus !== undefined) target.select();
+  });
+}
+
+/** Closes the top dialog (or the named one). Returns false if a dialog's beforeClose vetoed it. */
+export function closeDialog(name) {
+  const stack = ctx.state.dialogs;
+  const index = name ? stack.map(d => d.name).lastIndexOf(name) : stack.length - 1;
+  if (index < 0) return true;
+  const entry = stack[index];
+  const spec = dialogs.get(entry.name);
+  if (spec?.beforeClose && spec.beforeClose(ctx, entry.props) === false) return false;
+  ctx.state.dialogs = stack.filter((_, i) => i !== index);
+  entry.props.onClose?.();
+  const opener = restoreFocus.get(entry);
+  runtime.nextFrame(() => { if (opener?.isConnected) opener.focus({ preventScroll: true }); });
+  return true;
+}
+export const isDialogOpen = name => ctx.state.dialogs.some(d => !name || d.name === name);
+export const updateDialog = (name, patch) => {
+  ctx.state.dialogs = ctx.state.dialogs.map(d => d.name === name ? { ...d, props: { ...d.props, ...patch } } : d);
+  ctx.render();
+};
+
+/**
+ * Open a popover anchored to an element or a {x, y} point (context menus).
+ * placement: 'bottom-start' (default) | 'bottom-end' | 'top-start' | 'right-start' | 'bottom'.
+ */
+export function openPopover(name, anchor, props = {}, { placement = 'bottom-start', focus = true } = {}) {
+  if (!popovers.has(name)) throw new Error(`Unknown popover: ${name}`);
+  const opener = document.activeElement;
+  const anchorEl = anchor instanceof Element ? anchor : null;
+  if (ctx.state.popover?.anchorEl && ctx.state.popover.anchorEl === anchorEl && ctx.state.popover.name === name) { closePopover(); return; }
+  anchorEl?.setAttribute('aria-expanded', 'true');
+  ctx.state.popover = { name, props, anchorEl, point: anchorEl ? null : anchor, placement, opener };
+  runtime.nextFrame(() => {
+    const el = document.getElementById('still-popover');
+    if (!el || !focus) return;
+    const target = el.querySelector('[autofocus], [data-autofocus]') || el.querySelector('[role="menuitem"]:not([aria-disabled="true"]), [role="option"]') || focusables(el)[0];
+    target?.focus({ preventScroll: true });
+  });
+}
+export function closePopover({ restore = true } = {}) {
+  const current = ctx?.state.popover;
+  if (!current) return;
+  current.anchorEl?.setAttribute('aria-expanded', 'false');
+  ctx.state.popover = null;
+  current.props.onClose?.();
+  ctx.render();
+  if (restore) runtime.nextFrame(() => { const back = current.anchorEl || current.opener; if (back?.isConnected) back.focus({ preventScroll: true }); });
+}
+
+/** Generic menu: items = [{ label, icon, action, data:{...}, shortcut, danger, checked, disabled, hint } | { separator: true } | { heading }] */
+export const openMenu = (anchor, items, options = {}) => openPopover('menu', anchor, { items, label: options.label || 'Menu' }, options);
+
+export function confirm({ title, body = '', confirmLabel = 'Confirm', cancelLabel = 'Cancel', tone = 'default' } = {}) {
+  return new Promise(resolve => openDialog('confirm', { title, body, confirmLabel, cancelLabel, tone, resolve, onClose: () => resolve(false) }));
+}
+export function prompt({ title, label = '', value = '', placeholder = '', confirmLabel = 'Save', multiline = false } = {}) {
+  return new Promise(resolve => openDialog('prompt', { title, label, value, placeholder, confirmLabel, multiline, resolve, onClose: () => resolve(null) }));
+}
+
+let toastSeq = 0;
+/** toast('Saved'), toast('Could not save', { tone: 'danger' }), toast('Moved 3 items', { action: { label: 'Undo', run } }) */
+export function toast(message, { tone = 'default', action = null, duration = tone === 'danger' ? 7000 : 4000 } = {}) {
+  const root = document.getElementById('toast-root');
+  if (!root) return;
+  const id = `toast-${++toastSeq}`;
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.id = id;
+  el.dataset.tone = tone;
+  el.setAttribute('role', tone === 'danger' ? 'alert' : 'status');
+  el.innerHTML = `${icon(tone === 'danger' ? 'alert-circle' : tone === 'success' ? 'check-circle' : 'info', { size: 16 })}<span class="toast-message">${esc(message)}</span>${action ? `<button type="button" class="btn btn-ghost btn-sm toast-action">${esc(action.label)}</button>` : ''}<button type="button" class="icon-btn icon-btn-sm toast-close" aria-label="Dismiss">${icon('x', { size: 14 })}</button>`;
+  const remove = () => { el.dataset.state = 'closing'; setTimeout(() => el.remove(), 160); };
+  el.querySelector('.toast-close').addEventListener('click', remove);
+  if (action) el.querySelector('.toast-action').addEventListener('click', async () => { remove(); try { await action.run(); } catch (error) { toast(error.message || 'That did not work.', { tone: 'danger' }); } });
+  root.append(el);
+  while (root.children.length > 4) root.firstElementChild.remove();
+  let timer = setTimeout(remove, duration);
+  el.addEventListener('pointerenter', () => clearTimeout(timer));
+  el.addEventListener('pointerleave', () => { timer = setTimeout(remove, 2000); });
+}
+
+function renderMenu(_ctx, { items, label }) {
+  return html`<div class="menu" role="menu" aria-label="${label}">${items.map((item, index) => item.separator
+    ? html`<div class="menu-separator" role="separator"></div>`
+    : item.heading ? html`<div class="menu-heading" role="presentation">${item.heading}</div>`
+    : html`<button type="button" class="${cx('menu-item', item.danger && 'is-danger')}" role="${item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}"
+        ${item.checked !== undefined ? html`aria-checked="${item.checked ? 'true' : 'false'}"` : ''} ${item.disabled ? html`aria-disabled="true"` : ''}
+        data-action="overlay.menu-item" data-index="${index}" tabindex="-1">
+        ${item.icon ? icon(item.icon, { size: 16 }) : item.checked !== undefined ? icon(item.checked ? 'check' : 'blank', { size: 16 }) : ''}
+        <span class="menu-label">${item.label}</span>${item.hint ? html`<span class="menu-hint">${item.hint}</span>` : ''}${item.shortcut ? html`<kbd class="kbd">${item.shortcut}</kbd>` : ''}
+      </button>`)}</div>`;
+}
+
+function renderConfirm(_ctx, { title, body, confirmLabel, cancelLabel, tone }) {
+  return html`<header class="dialog-header"><h2 class="dialog-title" id="dialog-title-confirm">${title}</h2></header>
+    ${body ? html`<div class="dialog-body"><p class="dialog-text">${body}</p></div>` : ''}
+    <footer class="dialog-footer"><button type="button" class="btn btn-secondary" data-action="overlay.confirm-cancel">${cancelLabel}</button>
+      <button type="button" class="${cx('btn', tone === 'danger' ? 'btn-danger' : 'btn-primary')}" data-action="overlay.confirm-ok" data-autofocus>${confirmLabel}</button></footer>`;
+}
+function renderPrompt(_ctx, { title, label, value, placeholder, confirmLabel, multiline }) {
+  return html`<form data-submit="overlay.prompt-ok" class="dialog-form"><header class="dialog-header"><h2 class="dialog-title" id="dialog-title-prompt">${title}</h2></header>
+    <div class="dialog-body"><label class="field"><span class="field-label">${label || title}</span>
+      ${multiline ? html`<textarea class="textarea" name="value" rows="4" placeholder="${placeholder}" data-autofocus>${value}</textarea>`
+        : html`<input class="input" name="value" value="${value}" placeholder="${placeholder}" data-autofocus data-select-on-focus autocomplete="off">`}</label></div>
+    <footer class="dialog-footer"><button type="button" class="btn btn-secondary" data-action="overlay.dismiss">Cancel</button><button type="submit" class="btn btn-primary">${confirmLabel}</button></footer></form>`;
+}
+
+/** View fragment for app.js: dialogs stack + one popover. */
+export function renderOverlays(viewCtx) {
+  const stack = viewCtx.state.dialogs;
+  const pop = viewCtx.state.popover;
+  const popSpec = pop && popovers.get(pop.name);
+  return html`${stack.map((entry, i) => {
+    const spec = dialogs.get(entry.name);
+    const size = entry.props.size || spec.size || 'md';
+    return html`<div class="dialog-layer" data-key="${entry.id}-layer" style="z-index:${100 + i * 2}">
+      <div class="dialog-backdrop" data-action="overlay.backdrop" data-dialog="${entry.name}"></div>
+      <div class="${cx('dialog', spec.className)}" id="${entry.id}" data-key="${entry.id}" role="${spec.role || 'dialog'}" aria-modal="true"
+        aria-labelledby="dialog-title-${entry.name}" data-size="${size}" tabindex="-1">${spec.render(viewCtx, entry.props)}</div></div>`;
+  })}${popSpec ? html`<div class="${cx('popover', popSpec.className)}" id="still-popover" data-key="popover-${pop.name}" role="${popSpec.role === 'menu' ? 'none' : popSpec.role || 'dialog'}"
+      data-placement="${pop.placement}" style="position:fixed;left:-9999px;top:0">${popSpec.render(viewCtx, pop.props)}</div>` : ''}`;
+}
+
+function place() {
+  const pop = ctx.state.popover;
+  const el = document.getElementById('still-popover');
+  if (!pop || !el) return;
+  if (pop.anchorEl && !pop.anchorEl.isConnected) { closePopover({ restore: false }); return; }
+  const rect = pop.anchorEl ? pop.anchorEl.getBoundingClientRect() : { left: pop.point.x, right: pop.point.x, top: pop.point.y, bottom: pop.point.y, width: 0, height: 0 };
+  const gap = 6, margin = 8, vw = innerWidth, vh = innerHeight;
+  const box = el.getBoundingClientRect();
+  let [side, align] = pop.placement.split('-');
+  let top = side === 'top' ? rect.top - box.height - gap : side === 'right' ? rect.top : rect.bottom + gap;
+  let left = side === 'right' ? rect.right + gap : align === 'end' ? rect.right - box.width : align === 'start' ? rect.left : rect.left + rect.width / 2 - box.width / 2;
+  if (side === 'bottom' && top + box.height > vh - margin && rect.top - box.height - gap > margin) top = rect.top - box.height - gap;
+  if (side === 'top' && top < margin) top = rect.bottom + gap;
+  if (side === 'right' && left + box.width > vw - margin) left = rect.left - box.width - gap;
+  left = Math.max(margin, Math.min(left, vw - box.width - margin));
+  top = Math.max(margin, Math.min(top, vh - box.height - margin));
+  el.style.left = `${Math.round(left)}px`;
+  el.style.top = `${Math.round(top)}px`;
+  el.style.maxHeight = `${vh - margin * 2}px`;
+}
+
+function moveMenuFocus(menu, delta, absolute) {
+  const items = [...menu.querySelectorAll('[role^="menuitem"]:not([aria-disabled="true"]), [role="option"]:not([aria-disabled="true"])')];
+  if (!items.length) return;
+  const index = items.indexOf(document.activeElement);
+  const next = absolute !== undefined ? (absolute < 0 ? items.length - 1 : 0) : (index + delta + items.length) % items.length;
+  items[next].focus();
+}
+
+export function initOverlays(appCtx, appRuntime) {
+  ctx = appCtx;
+  runtime = appRuntime;
+  ctx.state.dialogs ||= [];
+  ctx.state.popover ||= null;
+  registerPopover('menu', renderMenu, { role: 'menu', className: 'popover-menu' });
+  registerDialog('confirm', renderConfirm, { size: 'sm', role: 'alertdialog' });
+  registerDialog('prompt', renderPrompt, { size: 'sm' });
+  runtime.onRendered(place);
+  addEventListener('resize', () => ctx.state.popover && place());
+
+  registerActions({
+    'overlay.dismiss': () => closeDialog(),
+    'overlay.backdrop': ({ data }) => { const spec = dialogs.get(data.dialog); if (spec?.dismissable !== false) closeDialog(data.dialog); },
+    'overlay.confirm-ok': () => { const top = ctx.state.dialogs.at(-1); const resolve = top.props.resolve; top.props.onClose = null; closeDialog(); resolve(true); },
+    'overlay.confirm-cancel': () => closeDialog(),
+    'overlay.prompt-ok': ({ el }) => { const top = ctx.state.dialogs.at(-1); const value = new FormData(el).get('value'); const resolve = top.props.resolve; top.props.onClose = null; closeDialog(); resolve(String(value ?? '')); },
+    'overlay.menu-item': async ({ data, event }) => {
+      const pop = ctx.state.popover;
+      const item = pop?.props.items?.[Number(data.index)];
+      if (!item || item.disabled) return;
+      const anchor = pop.anchorEl;
+      closePopover({ restore: !item.keepFocus });
+      if (item.run) await item.run(event);
+      else if (item.action) await ctx.dispatch(item.action, { el: anchor || document.body, event, ctx, data: { ...(item.data || {}) } });
+    },
+  });
+
+  document.addEventListener('pointerdown', event => {
+    const pop = ctx.state.popover;
+    if (!pop) return;
+    const el = document.getElementById('still-popover');
+    if (el?.contains(event.target) || pop.anchorEl?.contains(event.target)) return;
+    closePopover({ restore: false });
+  }, true);
+
+  document.addEventListener('keydown', event => {
+    const popEl = document.getElementById('still-popover');
+    if (event.key === 'Escape') {
+      if (ctx.state.popover) { event.preventDefault(); event.stopPropagation(); closePopover(); return; }
+      const top = ctx.state.dialogs.at(-1);
+      if (top && dialogs.get(top.name)?.dismissable !== false) { event.preventDefault(); event.stopPropagation(); closeDialog(); }
+      return;
+    }
+    if (popEl && popEl.contains(document.activeElement)) {
+      const menu = popEl.querySelector('[role="menu"], [role="listbox"]');
+      if (menu && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) && !event.target.matches('input, textarea')) {
+        event.preventDefault();
+        moveMenuFocus(menu, event.key === 'ArrowDown' ? 1 : -1, event.key === 'Home' ? 0 : event.key === 'End' ? -1 : undefined);
+        return;
+      }
+      if (event.key === 'Tab' && menu && popEl.getAttribute('role') === 'none') { closePopover({ restore: false }); return; }
+    }
+    if (event.key === 'Tab') {
+      const top = ctx.state.dialogs.at(-1);
+      const el = top && document.getElementById(top.id);
+      if (!el || ctx.state.popover) return;
+      const list = focusables(el);
+      if (!list.length) { event.preventDefault(); el.focus(); return; }
+      const first = list[0], last = list.at(-1);
+      if (event.shiftKey && (document.activeElement === first || !el.contains(document.activeElement))) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && (document.activeElement === last || !el.contains(document.activeElement))) { event.preventDefault(); first.focus(); }
+    }
+  }, true);
+}

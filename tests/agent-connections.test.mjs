@@ -29,7 +29,8 @@ test('connection discovery and preview are read-only, token-free and distinguish
   const config = await put(home, ['.cursor', 'mcp.json'], JSON.stringify({ secret: 'private-existing-token', mcpServers: { other: { command: 'keep', env: { TOKEN: 'private-other' } } } }));
   const before = await readFile(config, 'utf8');
   const connections = service(home, { spawn: (...args) => calls.push(args) });
-  const list = await connections.listConnections(); assert.equal(list.length, 5); assert.equal(CLIENT_CATALOG.length, 5);
+  const list = await connections.listConnections(); assert.equal(list.length, 6); assert.equal(CLIENT_CATALOG.length, 6);
+  assert.deepEqual(CLIENT_CATALOG.map(client => client.id), ['codex', 'claude', 'opencode', 'cursor', 'gemini', 'claude-desktop']);
   assert.equal(list.find(c => c.id === 'codex').configurationStatus, 'manual');
   assert.equal(list.find(c => c.id === 'cursor').runtimeConnected, false);
   const preview = await connections.previewConnection('cursor'); assert.equal(preview.canConnect, true); assert.equal(preview.backupRequired, true);
@@ -139,4 +140,24 @@ test('symlinked client targets are refused instead of writing through another co
   catch (failure) { if (['EPERM', 'EACCES', 'ENOTSUP'].includes(failure.code)) { t.skip('Host does not permit test symlinks.'); return; } throw failure; }
   const connections = service(home), preview = await connections.previewConnection('cursor'); assert.equal(preview.canConnect, false); assert.match(preview.reason, /symbolic link/);
   await assert.rejects(connections.connectClient('cursor', { expectedHash: preview.previewHash }), /no preview|symbolic link/); assert.deepEqual(await readdir(elsewhere), []);
+});
+
+test('Claude Desktop merges a type-less stdio entry into its per-platform config and declines skill installs cleanly', async t => {
+  const { home } = await temporary(t);
+  const linux = service(home, { platform: 'linux' });
+  const path = await put(home, ['.config', 'Claude', 'claude_desktop_config.json'], '{"preferences":{"keep":true},"mcpServers":{"other":{"command":"keep"}}}');
+  const preview = await linux.previewConnection('claude-desktop');
+  assert.equal(preview.configPath, path); assert.equal(preview.canConnect, true); assert.equal(preview.skillPath, null); assert.equal(preview.skillSupported, false); assert.deepEqual(preview.commands, []);
+  assert.deepEqual(JSON.parse(preview.configSnippet).mcpServers.still, { command: process.execPath, args: [join(ROOT, 'bridge', 'mcp.mjs')] });
+  const applied = await linux.connectClient('claude-desktop', { expectedHash: preview.previewHash });
+  assert.equal(applied.configured, true); assert.ok(applied.backupPath);
+  const written = JSON.parse(await readFile(path, 'utf8'));
+  assert.deepEqual(written.mcpServers.still, { command: process.execPath, args: [join(ROOT, 'bridge', 'mcp.mjs')] }); assert.equal(written.preferences.keep, true); assert.equal(written.mcpServers.other.command, 'keep');
+  assert.equal((await linux.previewConnection('claude-desktop')).configurationStatus, 'configured');
+  await assert.rejects(linux.installSkills('claude-desktop'), error => error.code === 'SKILL_UNSUPPORTED');
+  assert.equal((await service(home, { platform: 'darwin' }).previewConnection('claude-desktop')).configPath, join(home, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'));
+  assert.equal((await service(home, { platform: 'win32' }).previewConnection('claude-desktop')).configPath, join(home, 'AppData', 'Roaming', 'Claude', 'claude_desktop_config.json'));
+  assert.equal((await service(home, { platform: 'win32', env: { APPDATA: join(home, 'Roaming') } }).previewConnection('claude-desktop')).configPath, join(home, 'Roaming', 'Claude', 'claude_desktop_config.json'));
+  const outside = await service(home, { platform: 'win32', env: { APPDATA: join(dirname(home), 'elsewhere') } }).previewConnection('claude-desktop');
+  assert.equal(outside.configurationStatus, 'manual'); assert.equal(outside.canConnect, false);
 });

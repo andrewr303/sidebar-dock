@@ -66,8 +66,11 @@ const actualPermissions = new Set(manifest.permissions || []);
 for (const permission of expectedPermissions) if (!actualPermissions.has(permission)) fail(`Manifest is missing ${permission} permission.`);
 for (const permission of actualPermissions) if (!expectedPermissions.has(permission)) fail(`Review unexpected required permission: ${permission}`);
 if ((manifest.host_permissions || []).length) fail('Host permissions must remain optional.');
-if ((manifest.optional_permissions || []).some(permission => permission !== 'bookmarks')) fail('Unexpected optional permission.');
-const allowedHosts = new Set(['http://127.0.0.1/*', 'http://localhost/*', 'https://api.raindrop.io/*']);
+// Optional grants requested at the moment of use: bookmarks import, the active tab's address for "This page",
+// and per-origin host access for reading saved pages and calling AI providers the user connects.
+const allowedOptionalPermissions = new Set(['bookmarks', 'tabs']);
+if ((manifest.optional_permissions || []).some(permission => !allowedOptionalPermissions.has(permission))) fail('Unexpected optional permission.');
+const allowedHosts = new Set(['http://127.0.0.1/*', 'http://localhost/*', 'https://api.raindrop.io/*', 'https://*/*', 'http://*/*']);
 for (const host of manifest.optional_host_permissions || []) if (!allowedHosts.has(host)) fail(`Review unexpected optional host: ${host}`);
 const csp = manifest.content_security_policy?.extension_pages || '';
 if (!/script-src\s+'self'\s*;/.test(csp) || /unsafe-eval|unsafe-inline|https?:|\*/.test(csp)) fail('Extension CSP must restrict scripts to self with no unsafe/remote execution.');
