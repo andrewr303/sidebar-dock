@@ -15,20 +15,51 @@ export function kbd(keys) {
   return html`<kbd class="kbd">${parts.map(p => html`<span>${p}</span>`)}</kbd>`;
 }
 
+/** aria-keyshortcuts value: keyshortcuts('mod+shift+s') -> 'Control+Shift+S' ('Meta+…' on macOS). */
+export function keyshortcuts(keys, mac = modKey === '⌘') {
+  const names = { mod: mac ? 'Meta' : 'Control', ctrl: 'Control', cmd: 'Meta', shift: 'Shift', alt: 'Alt', enter: 'Enter', escape: 'Escape', esc: 'Escape', space: 'Space' };
+  return String(keys).split(/\s+/).map(chord => chord.split('+').map(k => names[k.toLowerCase()] || (k.length === 1 ? k.toUpperCase() : k[0].toUpperCase() + k.slice(1))).join('+')).join(' ');
+}
+
+/** Readable shortcut text for tooltips: shortcutLabel('mod+enter') -> 'Ctrl+Enter' / '⌘↵'. */
+export function shortcutLabel(keys, mac = modKey === '⌘') {
+  const names = mac ? { mod: '⌘', shift: '⇧', alt: '⌥', enter: '↵' } : { mod: 'Ctrl', shift: 'Shift', alt: 'Alt', enter: 'Enter' };
+  return String(keys).split('+').map(k => names[k.toLowerCase()] || (k.length === 1 ? k.toUpperCase() : k[0].toUpperCase() + k.slice(1))).join(mac ? '' : '+');
+}
+
+/**
+ * Tooltip attributes for any element (styled in base.css): shown after a hover delay and at once on keyboard focus.
+ * placement: 'top' (default) | 'bottom', optionally with ' start' / ' end' alignment, e.g. 'bottom end'.
+ * The tooltip is not an accessible name: icon-only controls also need aria-label (iconButton does both).
+ */
+export function tooltipAttrs(label, { placement } = {}) {
+  return html`data-tooltip="${label}" ${placement ? html`data-tooltip-pos="${placement}"` : ''}`;
+}
+
+/**
+ * Text button. `kbd` adds aria-keyshortcuts; secondary and ghost buttons also show the key caps, primary and danger
+ * buttons show the shortcut in a tooltip instead (no key caps inside a filled button). `loading` keeps the label's
+ * width under a centered spinner and makes the button inert (aria-busy + aria-disabled).
+ */
 export function button({ label, icon: ico, iconRight, variant = 'secondary', size = 'md', action, data, type = 'button', disabled, pressed, loading,
-  kbd: keys, title, id, className, attrs, hideLabel = false } = {}) {
+  kbd: keys, title, id, className, attrs, hideLabel = false, tooltip, expanded } = {}) {
+  const filled = variant === 'primary' || variant === 'danger';
+  const tip = tooltip ?? (hideLabel ? label : keys && filled ? `${label} (${shortcutLabel(keys)})` : '');
   return html`<button type="${type}" class="${cx('btn', `btn-${variant}`, size !== 'md' && `btn-${size}`, loading && 'is-loading', className)}"
     ${id ? html`id="${id}"` : ''} ${action ? html`data-action="${action}"` : ''} ${dataAttrs(data)}
-    ${pressed !== undefined ? html`aria-pressed="${pressed ? 'true' : 'false'}"` : ''} ${disabled ? raw('disabled') : ''}
-    ${loading ? raw('aria-busy="true"') : ''} ${title ? html`title="${title}"` : ''} ${hideLabel ? html`aria-label="${label}"` : ''} ${extra(attrs)}>
-    ${loading ? spinner({ size: 14 }) : ico ? icon(ico, { size: size === 'sm' ? 14 : 16 }) : ''}${hideLabel ? '' : html`<span class="btn-label">${label}</span>`}${iconRight ? icon(iconRight, { size: 14, className: 'btn-icon-right' }) : ''}${keys ? kbd(keys) : ''}
+    ${pressed !== undefined ? html`aria-pressed="${pressed ? 'true' : 'false'}"` : ''} ${expanded !== undefined ? html`aria-expanded="${expanded ? 'true' : 'false'}" aria-haspopup="true"` : ''}
+    ${disabled ? raw('disabled') : ''} ${loading ? raw('aria-busy="true" aria-disabled="true"') : ''} ${title ? html`title="${title}"` : ''}
+    ${hideLabel ? html`aria-label="${label}"` : ''} ${tip ? html`data-tooltip="${tip}"` : ''} ${keys ? html`aria-keyshortcuts="${keyshortcuts(keys)}"` : ''} ${extra(attrs)}>
+    ${ico ? icon(ico, { size: size === 'sm' ? 14 : 16 }) : ''}${hideLabel ? '' : html`<span class="btn-label">${label}</span>`}${iconRight ? icon(iconRight, { size: 14, className: 'btn-icon-right' }) : ''}${keys && !filled ? kbd(keys) : ''}${loading ? spinner({ size: size === 'lg' ? 16 : 14 }) : ''}
   </button>`;
 }
 
 /** Icon-only button. `label` is required: it becomes aria-label and the tooltip. */
-export function iconButton({ icon: ico, label, action, data, size = 'md', variant = 'ghost', pressed, expanded, badge: dot, disabled, id, className, attrs, controls } = {}) {
+export function iconButton({ icon: ico, label, action, data, size = 'md', variant = 'ghost', pressed, expanded, badge: dot, disabled, id, className, attrs, controls,
+  tooltipPlacement, kbd: keys } = {}) {
   return html`<button type="button" class="${cx('icon-btn', size !== 'md' && `icon-btn-${size}`, variant !== 'ghost' && `icon-btn-${variant}`, className)}"
-    aria-label="${label}" data-tooltip="${label}" ${id ? html`id="${id}"` : ''} ${action ? html`data-action="${action}"` : ''} ${dataAttrs(data)}
+    aria-label="${label}" data-tooltip="${keys ? `${label} (${shortcutLabel(keys)})` : label}" ${tooltipPlacement ? html`data-tooltip-pos="${tooltipPlacement}"` : ''}
+    ${keys ? html`aria-keyshortcuts="${keyshortcuts(keys)}"` : ''} ${id ? html`id="${id}"` : ''} ${action ? html`data-action="${action}"` : ''} ${dataAttrs(data)}
     ${pressed !== undefined ? html`aria-pressed="${pressed ? 'true' : 'false'}"` : ''} ${expanded !== undefined ? html`aria-expanded="${expanded ? 'true' : 'false'}" aria-haspopup="true"` : ''}
     ${controls ? html`aria-controls="${controls}"` : ''} ${disabled ? raw('disabled') : ''} ${extra(attrs)}>
     ${icon(ico, { size: size === 'sm' ? 14 : size === 'lg' ? 20 : 16 })}${dot ? html`<span class="icon-btn-badge" aria-hidden="true"></span>` : ''}
@@ -73,10 +104,13 @@ export function chip({ label, icon: ico, color, selected, removable, action, rem
     : html`<span class="${cx('chip', selected && 'is-selected', className)}" ${title ? html`title="${title}"` : ''}>${inner}${remove}</span>`;
 }
 
-export function input({ name, value = '', placeholder = '', type = 'text', icon: ico, action, change, keydown, id, autofocus, required, disabled, className, attrs, label, size = 'md' } = {}) {
+/** Text input. `invalid` sets aria-invalid; `describedBy` links a hint or error (field() gives its error the id `${id}-error`). */
+export function input({ name, value = '', placeholder = '', type = 'text', icon: ico, action, change, keydown, id, autofocus, required, disabled, className, attrs, label, size = 'md',
+  invalid, describedBy, readonly } = {}) {
   const field = html`<input class="${cx('input', ico && 'has-icon', size !== 'md' && `input-${size}`)}" type="${type}" ${name ? html`name="${name}"` : ''} value="${value}"
     placeholder="${placeholder}" ${id ? html`id="${id}" data-focus-key="${id}"` : ''} ${action ? html`data-input="${action}"` : ''} ${change ? html`data-change="${change}"` : ''}
-    ${keydown ? html`data-keydown="${keydown}"` : ''} ${autofocus ? raw('data-autofocus') : ''} ${required ? raw('required') : ''} ${disabled ? raw('disabled') : ''}
+    ${keydown ? html`data-keydown="${keydown}"` : ''} ${autofocus ? raw('data-autofocus') : ''} ${required ? raw('required') : ''} ${disabled ? raw('disabled') : ''} ${readonly ? raw('readonly') : ''}
+    ${invalid ? raw('aria-invalid="true"') : ''} ${describedBy ? html`aria-describedby="${describedBy}"` : ''}
     ${label ? html`aria-label="${label}"` : ''} autocomplete="off" spellcheck="false" ${extra(attrs)}>`;
   return ico ? html`<span class="${cx('input-wrap', className)}">${icon(ico, { size: 16, className: 'input-icon' })}${field}</span>` : className ? html`<span class="${className}">${field}</span>` : field;
 }
@@ -90,24 +124,26 @@ export function searchField({ value = '', placeholder = 'Search', action, keydow
   </div>`;
 }
 
-export function textarea({ name, value = '', placeholder = '', rows = 3, action, change, id, autofocus, className, label, attrs } = {}) {
+export function textarea({ name, value = '', placeholder = '', rows = 3, action, change, keydown, id, autofocus, className, label, attrs, invalid, describedBy, disabled } = {}) {
   return html`<textarea class="${cx('textarea', className)}" ${name ? html`name="${name}"` : ''} rows="${rows}" placeholder="${placeholder}"
     ${id ? html`id="${id}" data-focus-key="${id}"` : ''} ${action ? html`data-input="${action}"` : ''} ${change ? html`data-change="${change}"` : ''}
-    ${autofocus ? raw('data-autofocus') : ''} ${label ? html`aria-label="${label}"` : ''} ${extra(attrs)}>${value}</textarea>`;
+    ${keydown ? html`data-keydown="${keydown}"` : ''} ${autofocus ? raw('data-autofocus') : ''} ${label ? html`aria-label="${label}"` : ''} ${disabled ? raw('disabled') : ''}
+    ${invalid ? raw('aria-invalid="true"') : ''} ${describedBy ? html`aria-describedby="${describedBy}"` : ''} ${extra(attrs)}>${value}</textarea>`;
 }
 
 /** Native select styled as a control. options: [{ value, label }] or [{ group, options }] */
-export function select({ name, value, options, action, id, label, className, size = 'md' } = {}) {
-  const option = o => html`<option value="${o.value}" ${String(o.value) === String(value) ? raw('selected') : ''}>${o.label}</option>`;
+export function select({ name, value, options, action, id, label, className, size = 'md', disabled, invalid, describedBy } = {}) {
+  const option = o => html`<option value="${o.value}" ${String(o.value) === String(value) ? raw('selected') : ''} ${o.disabled ? raw('disabled') : ''}>${o.label}</option>`;
   return html`<span class="${cx('select', size !== 'md' && `select-${size}`, className)}"><select ${name ? html`name="${name}"` : ''} ${id ? html`id="${id}"` : ''}
-    ${action ? html`data-change="${action}"` : ''} ${label ? html`aria-label="${label}"` : ''}>
+    ${action ? html`data-change="${action}"` : ''} ${label ? html`aria-label="${label}"` : ''} ${disabled ? raw('disabled') : ''}
+    ${invalid ? raw('aria-invalid="true"') : ''} ${describedBy ? html`aria-describedby="${describedBy}"` : ''}>
     ${options.map(o => o.group ? html`<optgroup label="${o.group}">${o.options.map(option)}</optgroup>` : option(o))}
   </select>${icon('chevrons-up-down', { size: 14, className: 'select-icon' })}</span>`;
 }
 
-export function checkbox({ checked, label, action, data, name, id, className, hideLabel, indeterminate } = {}) {
-  return html`<label class="${cx('checkbox', className)}"><input type="checkbox" ${name ? html`name="${name}"` : ''} ${id ? html`id="${id}"` : ''}
-    ${checked ? raw('checked') : ''} ${indeterminate ? raw('data-indeterminate') : ''} ${action ? html`data-change="${action}"` : ''} ${dataAttrs(data)}
+export function checkbox({ checked, label, action, data, name, id, className, hideLabel, indeterminate, disabled, value } = {}) {
+  return html`<label class="${cx('checkbox', className)}"><input type="checkbox" ${name ? html`name="${name}"` : ''} ${id ? html`id="${id}"` : ''} ${value != null ? html`value="${value}"` : ''}
+    ${checked ? raw('checked') : ''} ${indeterminate ? raw('data-indeterminate') : ''} ${disabled ? raw('disabled') : ''} ${action ? html`data-change="${action}"` : ''} ${dataAttrs(data)}
     ${hideLabel ? html`aria-label="${label}"` : ''}><span class="checkbox-box" aria-hidden="true">${icon('check', { size: 12, strokeWidth: 3 })}</span>${hideLabel ? '' : html`<span class="checkbox-label">${label}</span>`}</label>`;
 }
 
@@ -117,11 +153,13 @@ export function switchToggle({ checked, label, description, action, data, name, 
       ${action ? html`data-change="${action}"` : ''} ${dataAttrs(data)}><span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span></label>`;
 }
 
+/** Label + control + hint or error. With `id`, the hint is `${id}-hint` and the error `${id}-error` (pass it to the control's describedBy). */
 export function field({ label, hint, error, control, id, className, inline } = {}) {
   return html`<div class="${cx('field', inline && 'field-inline', error && 'has-error', className)}">
     ${label ? html`<label class="field-label" ${id ? html`for="${id}"` : ''}>${label}</label>` : ''}
     <div class="field-control">${control}</div>
-    ${error ? html`<p class="field-error" role="alert">${icon('circle-alert', { size: 14 })}<span>${error}</span></p>` : hint ? html`<p class="field-hint">${hint}</p>` : ''}
+    ${error ? html`<p class="field-error" role="alert" ${id ? html`id="${id}-error"` : ''}>${icon('circle-alert', { size: 14 })}<span>${error}</span></p>`
+      : hint ? html`<p class="field-hint" ${id ? html`id="${id}-hint"` : ''}>${hint}</p>` : ''}
   </div>`;
 }
 
@@ -129,16 +167,26 @@ export const badge = ({ label, tone = 'neutral', icon: ico, className } = {}) =>
 export const count = n => html`<span class="count">${typeof n === 'number' ? n.toLocaleString() : n}</span>`;
 export const spinner = ({ size = 16, label } = {}) => html`<span class="spinner" style="--size:${size}px" ${label ? html`role="status" aria-label="${label}"` : raw('aria-hidden="true"')}></span>`;
 
-export function emptyState({ icon: ico = 'inbox', title, body, actions, compact, className } = {}) {
-  return html`<div class="${cx('empty-state', compact && 'is-compact', className)}">
+/** Empty, no-results and error screens. tone: 'danger' tints the icon for load errors. */
+export function emptyState({ icon: ico = 'inbox', title, body, actions, compact, className, tone } = {}) {
+  return html`<div class="${cx('empty-state', compact && 'is-compact', className)}" ${tone ? html`data-tone="${tone}"` : ''} ${tone === 'danger' ? raw('role="alert"') : ''}>
     <span class="empty-state-icon" aria-hidden="true">${icon(ico, { size: compact ? 20 : 24 })}</span>
     <p class="empty-state-title">${title}</p>${body ? html`<p class="empty-state-body">${body}</p>` : ''}
     ${actions ? html`<div class="empty-state-actions">${actions}</div>` : ''}
   </div>`;
 }
 
+const bone = cls => html`<span class="${cx('skeleton-bone', cls)}"></span>`;
+const SKELETON_PARTS = {
+  row: () => html`${bone('skeleton-thumb')}<span class="skeleton-lines">${bone('skeleton-line is-title')}${bone('skeleton-line')}${bone('skeleton-line is-short')}</span>`,
+  card: () => html`${bone('skeleton-thumb')}<span class="skeleton-lines">${bone('skeleton-line is-title')}${bone('skeleton-line is-short')}</span>`,
+  tree: () => html`${bone('skeleton-thumb')}${bone('skeleton-line')}`,
+  text: () => bone('skeleton-line'),
+};
+/** Loading placeholders in the final geometry. variant: 'row' (list row) | 'card' | 'tree' (sidebar row) | 'text' (one line). */
 export function skeleton({ rows = 3, variant = 'row', className } = {}) {
-  return html`<div class="${cx('skeleton-group', className)}" aria-hidden="true">${Array.from({ length: rows }, () => html`<div class="skeleton skeleton-${variant}"></div>`)}</div>`;
+  const parts = SKELETON_PARTS[variant] || SKELETON_PARTS.text;
+  return html`<div class="${cx('skeleton-group', className)}" aria-hidden="true">${Array.from({ length: rows }, () => html`<div class="skeleton skeleton-${variant}">${parts()}</div>`)}</div>`;
 }
 
 /** Dialog chrome for overlay.registerDialog renderers. The title id matches overlay.js aria-labelledby. */
@@ -185,13 +233,36 @@ export function favicon(url, { size = 16, className } = {}) {
   return html`<span class="${cx('favicon', className)}" data-color="${TILE_HUES[hash % TILE_HUES.length]}" style="--size:${size}px" aria-hidden="true">${domain[0].toUpperCase()}</span>`;
 }
 
-/** Cover image with a graceful fallback block. */
-export function cover(src, { alt = '', className, ratio, fallback } = {}) {
+/**
+ * Cover image with a graceful fallback: without art it renders a tile tinted with `color` (a collection color name or
+ * hex) showing `fallback` markup, else `icon` (e.g. TYPE_ICONS[item.type]), else `letter`. Never a dark empty slab.
+ */
+export function cover(src, { alt = '', className, ratio, fallback, color, icon: ico, letter, width, height } = {}) {
   const url = safeSrc(src);
+  const name = colorName(color);
+  const style = [ratio && `aspect-ratio:${ratio}`, color && !name && `--tile:${colorVar(color)}`].filter(Boolean).join(';');
+  const size = width && height ? html`width="${width}" height="${height}"` : '';
   return url
-    ? html`<span class="${cx('cover', className)}" ${ratio ? html`style="aspect-ratio:${ratio}"` : ''}><img src="${url}" alt="${alt}" loading="lazy" decoding="async" referrerpolicy="no-referrer"></span>`
-    : html`<span class="${cx('cover', 'is-empty', className)}" ${ratio ? html`style="aspect-ratio:${ratio}"` : ''} aria-hidden="true">${fallback || ''}</span>`;
+    ? html`<span class="${cx('cover', className)}" ${style ? html`style="${style}"` : ''}><img src="${url}" alt="${alt}" ${size} loading="lazy" decoding="async" referrerpolicy="no-referrer"></span>`
+    : html`<span class="${cx('cover', 'is-empty', className)}" ${name ? html`data-color="${name}"` : ''} ${style ? html`style="${style}"` : ''} aria-hidden="true">${fallback
+      || (ico ? icon(ico, { size: 24 }) : letter ? html`<span class="cover-letter">${String(letter).slice(0, 1).toUpperCase()}</span>` : '')}</span>`;
 }
+
+/** Letter or icon tile (providers, people). color: palette name or hex; solid: filled tile with a contrasting glyph. */
+export function avatarTile({ label = '', icon: ico, color, size = 28, round, solid, className, title } = {}) {
+  const name = colorName(color);
+  const initials = String(label).trim().split(/\s+/).slice(0, 2).map(word => [...word][0] || '').join('').toUpperCase();
+  return html`<span class="${cx('avatar-tile', round && 'is-round', solid && 'is-solid', className)}" ${name ? html`data-color="${name}"` : ''}
+    style="--size:${size}px${color && !name ? `;--tile:${colorVar(color)}` : ''}" ${title ? html`title="${title}"` : ''} aria-hidden="true">${ico
+    ? icon(ico, { size: Math.round(size * 0.57) }) : initials.slice(0, size < 24 ? 1 : 2)}</span>`;
+}
+
+/** Highlight colors with tokens (--hl-<name>, --hl-<name>-mark). highlightColor() maps anything else to yellow. */
+export const HIGHLIGHT_COLORS = ['yellow', 'amber', 'orange', 'red', 'pink', 'purple', 'blue', 'green', 'teal', 'gray'];
+export const highlightColor = color => {
+  const value = String(color || '').toLowerCase();
+  return value === 'violet' ? 'purple' : HIGHLIGHT_COLORS.includes(value) ? value : 'yellow';
+};
 
 const rtf = typeof Intl !== 'undefined' ? new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' }) : null;
 export function relativeDate(iso) {

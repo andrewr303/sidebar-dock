@@ -1,1 +1,122 @@
-/* map.css: owned per SPEC.md §3.1 */
+/* map.css: the knowledge map view (.map-*). Node fills follow item type, rings follow the collection color
+   (--ring set inline from the collection), edges are hairlines that light up around the focused node. Tokens only. */
+
+.map-view {
+  --map-note: var(--c-amber);
+  --map-link: var(--c-blue);
+  --map-media: var(--c-violet);
+  --map-file: var(--c-gray);
+  --map-edge: var(--border-strong);
+  --map-canvas-min: 360px;
+  position: relative;
+  display: flex; flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-app);
+}
+
+.map-toolbar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-7) var(--space-5);
+}
+.map-view.is-side .map-toolbar { padding: var(--space-1) var(--space-5) var(--space-4); gap: var(--space-3); }
+.map-scope { max-width: 40%; }
+.map-scope .btn-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.map-scope .collection-icon { flex: none; }
+.map-search { flex: 1 1 auto; min-width: calc(var(--control-h-md) * 5); max-width: calc(var(--control-h-md) * 10); }
+.map-similar { margin-inline-start: auto; }
+.map-view.is-side .map-scope, .map-view.is-side .map-search { max-width: none; flex: 1 1 100%; }
+.map-view.is-side .map-similar { margin-inline-start: 0; }
+
+.map-body {
+  flex: 1;
+  min-height: 0;
+  display: flex; flex-direction: column; gap: var(--space-3);
+  padding: var(--space-4) var(--space-7) var(--space-6);
+  overflow: auto;
+}
+.map-view.is-side .map-body { padding: var(--space-4) var(--space-5) var(--space-6); }
+.map-notice {
+  display: flex; align-items: center; gap: var(--space-3);
+  margin: 0;
+  font-size: var(--text-xs); line-height: var(--lh-xs);
+  color: var(--fg-subtle);
+}
+.map-notice > .icon { flex: none; }
+.map-spin { animation: map-spin calc(var(--dur-slow) * 4) linear infinite; }
+@keyframes map-spin { to { rotate: 1turn; } }
+
+.map-canvas {
+  position: relative;
+  flex: 1;
+  min-height: var(--map-canvas-min);
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(circle at 1px 1px, var(--border-default) 1px, transparent 0) 0 0 / var(--space-8) var(--space-8),
+    var(--bg-surface);
+  box-shadow: inset 0 0 0 1px var(--border-default);
+  overflow: hidden;
+}
+.map-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+/* Edges */
+.map-edge { stroke: var(--map-edge); stroke-width: 1.25; fill: none; transition: opacity var(--dur-fast) var(--ease-out), stroke var(--dur-fast) var(--ease-out); }
+.map-edge.is-both { stroke-width: 2; }
+.map-edge.is-similar { stroke: var(--fg-faint); stroke-dasharray: 4 4; }
+.map-arrow { fill: var(--map-edge); }
+.map-svg.has-focus .map-edge { opacity: 0.18; }
+.map-svg.has-focus .map-edge.is-hot { opacity: 1; stroke: var(--accent); }
+
+/* Nodes */
+.map-node { cursor: pointer; outline: none; transition: opacity var(--dur-fast) var(--ease-out); }
+.map-node-hit { fill: transparent; }
+.map-node-dot { fill: var(--map-link); stroke: var(--bg-surface); stroke-width: 2; transition: transform var(--dur-fast) var(--ease-out); }
+.map-node.is-note .map-node-dot { fill: var(--map-note); }
+.map-node.is-media .map-node-dot { fill: var(--map-media); }
+.map-node.is-file .map-node-dot { fill: var(--map-file); }
+.map-node-ring { fill: none; stroke: var(--border-strong); stroke-width: 2; }
+.map-node-ring.has-collection { stroke: var(--ring); }
+.map-node-label {
+  fill: var(--fg-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  paint-order: stroke;
+  stroke: var(--bg-surface);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+.map-node.is-crowded .map-node-label { opacity: 0; }
+.map-node.is-orphan .map-node-dot { opacity: 0.7; }
+.map-node.is-match .map-node-label { fill: var(--fg-default); font-weight: var(--weight-semibold); }
+.map-node.is-match .map-node-ring { stroke: var(--accent); stroke-width: 3; }
+.map-node:hover .map-node-label, .map-node:focus-visible .map-node-label, .map-node.is-hot .map-node-label { opacity: 1; fill: var(--fg-default); }
+.map-node:hover .map-node-dot, .map-node:focus-visible .map-node-dot { transform: scale(1.15); }
+.map-node:focus-visible .map-node-ring { stroke: var(--focus-ring); stroke-width: 3; }
+.map-svg.has-focus .map-node:not(.is-hot) { opacity: 0.28; }
+
+/* Legend */
+.map-legend {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-6);
+  font-size: var(--text-xs); color: var(--fg-subtle);
+}
+.map-key { display: inline-flex; align-items: center; gap: var(--space-3); }
+.map-key-dot { width: var(--space-5); height: var(--space-5); border-radius: var(--radius-full); background: var(--map-link); }
+.map-key-dot.is-note { background: var(--map-note); }
+.map-key-dot.is-media { background: var(--map-media); }
+.map-key-dot.is-file { background: var(--map-file); }
+.map-key-ring { width: var(--space-6); height: var(--space-6); border-radius: var(--radius-full); box-shadow: inset 0 0 0 2px var(--c-pink); }
+.map-key-line { width: var(--space-8); height: 0; border-block-start: 1.25px solid var(--map-edge); }
+.map-key-line.is-both { border-block-start-width: 2px; }
+.map-key-line.is-similar { border-block-start: 1.25px dashed var(--fg-faint); }
+.map-legend-sep { width: 1px; height: var(--space-6); background: var(--border-default); }
+
+@media (prefers-reduced-motion: reduce) {
+  .map-node-dot { transition: none; }
+  .map-node:hover .map-node-dot, .map-node:focus-visible .map-node-dot { transform: none; }
+}
+@media (forced-colors: active) {
+  .map-node-dot { fill: CanvasText; }
+  .map-node:focus-visible .map-node-ring { stroke: Highlight; }
+  .map-edge { stroke: CanvasText; }
+}

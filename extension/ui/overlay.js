@@ -3,6 +3,7 @@
 import { html, cx, esc } from './html.js';
 import { icon } from './icons.js';
 import { registerActions } from './runtime.js';
+import { kbd } from './components.js';
 
 const dialogs = new Map();
 const popovers = new Map();
@@ -103,7 +104,7 @@ export function toast(message, { tone = 'default', action = null, duration = ton
   el.id = id;
   el.dataset.tone = tone;
   el.setAttribute('role', tone === 'danger' ? 'alert' : 'status');
-  el.innerHTML = `${icon(tone === 'danger' ? 'alert-circle' : tone === 'success' ? 'check-circle' : 'info', { size: 16 })}<span class="toast-message">${esc(message)}</span>${action ? `<button type="button" class="btn btn-ghost btn-sm toast-action">${esc(action.label)}</button>` : ''}<button type="button" class="icon-btn icon-btn-sm toast-close" aria-label="Dismiss">${icon('x', { size: 14 })}</button>`;
+  el.innerHTML = `${icon(tone === 'danger' ? 'alert-circle' : tone === 'success' ? 'check-circle' : tone === 'warning' ? 'triangle-alert' : 'info', { size: 16 })}<span class="toast-message">${esc(message)}</span>${action ? `<button type="button" class="btn btn-ghost btn-sm toast-action">${esc(action.label)}</button>` : ''}<button type="button" class="icon-btn icon-btn-sm toast-close" aria-label="Dismiss">${icon('x', { size: 14 })}</button>`;
   const remove = () => { el.dataset.state = 'closing'; setTimeout(() => el.remove(), 160); };
   el.querySelector('.toast-close').addEventListener('click', remove);
   if (action) el.querySelector('.toast-action').addEventListener('click', async () => { remove(); try { await action.run(); } catch (error) { toast(error.message || 'That did not work.', { tone: 'danger' }); } });
@@ -122,15 +123,17 @@ function renderMenu(_ctx, { items, label }) {
         ${item.checked !== undefined ? html`aria-checked="${item.checked ? 'true' : 'false'}"` : ''} ${item.disabled ? html`aria-disabled="true"` : ''}
         data-action="overlay.menu-item" data-index="${index}" tabindex="-1">
         ${item.icon ? icon(item.icon, { size: 16 }) : item.checked !== undefined ? icon(item.checked ? 'check' : 'blank', { size: 16 }) : ''}
-        <span class="menu-label">${item.label}</span>${item.hint ? html`<span class="menu-hint">${item.hint}</span>` : ''}${item.shortcut ? html`<kbd class="kbd">${item.shortcut}</kbd>` : ''}
+        <span class="menu-label">${item.label}</span>${item.hint ? html`<span class="menu-hint">${item.hint}</span>` : ''}${item.shortcut ? kbd(item.shortcut) : ''}
       </button>`)}</div>`;
 }
 
+// Destructive confirms start on Cancel so Enter never deletes by accident.
 function renderConfirm(_ctx, { title, body, confirmLabel, cancelLabel, tone }) {
+  const danger = tone === 'danger';
   return html`<header class="dialog-header"><h2 class="dialog-title" id="dialog-title-confirm">${title}</h2></header>
     ${body ? html`<div class="dialog-body"><p class="dialog-text">${body}</p></div>` : ''}
-    <footer class="dialog-footer"><button type="button" class="btn btn-secondary" data-action="overlay.confirm-cancel">${cancelLabel}</button>
-      <button type="button" class="${cx('btn', tone === 'danger' ? 'btn-danger' : 'btn-primary')}" data-action="overlay.confirm-ok" data-autofocus>${confirmLabel}</button></footer>`;
+    <footer class="dialog-footer"><button type="button" class="btn btn-secondary" data-action="overlay.confirm-cancel" ${danger ? html`data-autofocus` : ''}>${cancelLabel}</button>
+      <button type="button" class="${cx('btn', danger ? 'btn-danger' : 'btn-primary')}" data-action="overlay.confirm-ok" ${danger ? '' : html`data-autofocus`}>${confirmLabel}</button></footer>`;
 }
 function renderPrompt(_ctx, { title, label, value, placeholder, confirmLabel, multiline }) {
   return html`<form data-submit="overlay.prompt-ok" class="dialog-form"><header class="dialog-header"><h2 class="dialog-title" id="dialog-title-prompt">${title}</h2></header>
@@ -153,7 +156,7 @@ export function renderOverlays(viewCtx) {
       <div class="${cx('dialog', spec.className)}" id="${entry.id}" data-key="${entry.id}" role="${spec.role || 'dialog'}" aria-modal="true"
         aria-labelledby="dialog-title-${entry.name}" data-size="${size}" tabindex="-1">${spec.render(viewCtx, entry.props)}</div></div>`;
   })}${popSpec ? html`<div class="${cx('popover', popSpec.className)}" id="still-popover" data-key="popover-${pop.name}" role="${popSpec.role === 'menu' ? 'none' : popSpec.role || 'dialog'}"
-      data-placement="${pop.placement}" style="position:fixed;left:-9999px;top:0">${popSpec.render(viewCtx, pop.props)}</div>` : ''}`;
+      data-placement="${pop.placement}" style="position:fixed;left:-9999px;top:0;z-index:${101 + stack.length * 2}">${popSpec.render(viewCtx, pop.props)}</div>` : ''}`;
 }
 
 function place() {
@@ -177,6 +180,17 @@ function place() {
   el.style.maxHeight = `${vh - margin * 2}px`;
 }
 
+// Markup cannot set a checkbox's indeterminate state; mirror data-indeterminate onto the property so assistive tech reads "mixed".
+const indeterminate = new Set();
+function syncIndeterminate() {
+  for (const input of indeterminate) {
+    if (input.isConnected && input.hasAttribute('data-indeterminate')) continue;
+    input.indeterminate = false;
+    indeterminate.delete(input);
+  }
+  for (const input of document.querySelectorAll('input[type="checkbox"][data-indeterminate]')) { input.indeterminate = true; indeterminate.add(input); }
+}
+
 function moveMenuFocus(menu, delta, absolute) {
   const items = [...menu.querySelectorAll('[role^="menuitem"]:not([aria-disabled="true"]), [role="option"]:not([aria-disabled="true"])')];
   if (!items.length) return;
@@ -194,6 +208,7 @@ export function initOverlays(appCtx, appRuntime) {
   registerDialog('confirm', renderConfirm, { size: 'sm', role: 'alertdialog' });
   registerDialog('prompt', renderPrompt, { size: 'sm' });
   runtime.onRendered(place);
+  runtime.onRendered(syncIndeterminate);
   addEventListener('resize', () => ctx.state.popover && place());
 
   registerActions({
@@ -211,6 +226,30 @@ export function initOverlays(appCtx, appRuntime) {
       if (item.run) await item.run(event);
       else if (item.action) await ctx.dispatch(item.action, { el: anchor || document.body, event, ctx, data: { ...(item.data || {}) } });
     },
+  });
+
+  // Roving arrow keys for segmented controls (radiogroup) and tab lists: move focus and activate (click) the next option.
+  document.addEventListener('keydown', event => {
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+    const option = event.target.closest?.('[role="radio"], [role="tab"]');
+    const group = option?.parentElement?.closest('[role="radiogroup"], [role="tablist"]');
+    if (!group || !group.contains(option) || option.closest('[role="menu"], [role="listbox"]')) return;
+    const horizontal = group.getAttribute('aria-orientation') !== 'vertical';
+    const keys = group.getAttribute('role') === 'radiogroup' ? ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']
+      : horizontal ? ['ArrowLeft', 'ArrowRight'] : ['ArrowUp', 'ArrowDown'];
+    if (![...keys, 'Home', 'End'].includes(event.key)) return;
+    const role = option.getAttribute('role');
+    const options = [...group.querySelectorAll(`[role="${role}"]`)].filter(el => !el.disabled && el.getAttribute('aria-disabled') !== 'true');
+    const index = options.indexOf(option);
+    if (index < 0) return;
+    const rtl = getComputedStyle(group).direction === 'rtl';
+    const step = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : -1;
+    const next = event.key === 'Home' ? options[0] : event.key === 'End' ? options.at(-1)
+      : options[(index + (event.key.startsWith('ArrowLeft') || event.key.startsWith('ArrowRight') ? (rtl ? -step : step) : step) + options.length) % options.length];
+    event.preventDefault();
+    if (!next || next === option) return;
+    next.focus();
+    next.click();
   });
 
   document.addEventListener('pointerdown', event => {

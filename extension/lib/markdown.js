@@ -171,6 +171,8 @@ const ALERT=/^> \[!(note|tip|important|warning|caution)\](?:[ \t]*\r?$| ([\s\S]*
 const columns=lead=>{let w=0;for(const ch of lead)w=ch==='\t'?w+4-(w%4):w+1;return w;};
 const hardBreak=line=>{const value=line.replace(/\r$/,'');return value.endsWith('\\')&&!escapedAt(value,value.length-1);};
 const startsBlock=line=>/^\s*$/.test(line)||LIST_ITEM.test(line)||/^(?:#{1,3} |>|`{3,}|~{3,}|:{3,}toggle|---\s*$)/.test(line);
+// A line that ends a table (anything else right after a table is read as one more row).
+const endsTable=line=>!String(line).trim()||/^\s*(?:>|#{1,6}\s|`{3,}|~{3,}|:{3,}|[-*+]\s|\d+\.\s)/.test(line)||/^\s*([-*_])\1\1+\s*$/.test(line);
 function signature(block){const value={};for(const [key,entry] of Object.entries(block))if(key!=='id'&&!key.startsWith('_'))value[key]=entry;return JSON.stringify(value);}
 function remember(block,raw,start,end){block._raw=raw;block._lineStart=start;block._lineEnd=end;block._signature=signature(block);return block;}
 export function parseNoteBlocks(markdown=''){
@@ -181,7 +183,7 @@ export function parseNoteBlocks(markdown=''){
   const start=i,line=lines[i];
   const code=/^(`{3,}|~{3,})([^\n]*)$/.exec(line);if(code){stack=[];const language=code[2],body=[];while(++i<lines.length){if(new RegExp('^'+code[1][0]+'{'+code[1].length+',}\\s*$').test(lines[i]))break;body.push(lines[i]);}i=Math.min(i,lines.length-1);add({id:uid(),type:'code',text:body.join('\n'),language},start,i);continue;}
   const toggle=/^(:{3,})toggle(?: \[(open|closed)\])?(?: (.*))?$/.exec(line);if(toggle){const body=[];let end=i+1;while(end<lines.length&&lines[end]!==toggle[1])body.push(lines[end++]);if(end<lines.length){stack=[];i=end;add({id:uid(),type:'toggle',title:toggle[3]||'Toggle',text:body.join('\n'),open:toggle[2]==='open'},start,i);continue;}}
-  if(i+1<lines.length&&line.includes('|')&&isTableDivider(lines[i+1])){const headers=splitTableRow(line),separator=splitTableRow(lines[i+1]);if(headers.length===separator.length){stack=[];const rows=[];i++;while(i+1<lines.length&&lines[i+1].trim()&&!/^\s*(?:>|#{1,6}\s|`{3,}|~{3,}|:{3,}|[-*+]\s|\d+\.\s)/.test(lines[i+1])&&!/^\s*([-*_])\1\1+\s*$/.test(lines[i+1]))rows.push(splitTableRow(lines[++i]));const table=createTableBlock({headers,rows,alignments:separator.map(alignment)});add(table,start,i);continue;}}
+  if(i+1<lines.length&&line.includes('|')&&isTableDivider(lines[i+1])){const headers=splitTableRow(line),separator=splitTableRow(lines[i+1]);if(headers.length===separator.length){stack=[];const rows=[];i++;while(i+1<lines.length&&!endsTable(lines[i+1]))rows.push(splitTableRow(lines[++i]));const table=createTableBlock({headers,rows,alignments:separator.map(alignment)});add(table,start,i);continue;}}
   const base={id:uid(),checked:false,language:''};
   const item=LIST_ITEM.exec(line);
   if(item){
@@ -243,20 +245,26 @@ function hardLines(text,first,indent=''){
 const quoteLines=(text,first='')=>String(text??'').replace(/\n+$/,'').split('\n').map((line,k)=>{const value=/^\[!/.test(line)?'\\'+line:line;return value||(k===0&&!first)?'> '+value:'>';});
 export function serializeBlockParts(blocks){
  const layout=listLayout(blocks);
- return blocks.map((b,index)=>{
-  const previous=blocks[index-1];
-  const gap=previous&&((['quote','callout'].includes(previous.type)&&b.type==='quote')||(previous.type==='table'&&(b.type==='table'||(b.type==='paragraph'&&String(b.text||'').trim()))))?'\n':'';
-  if(typeof b._raw==='string'&&b._signature===signature(b))return gap+b._raw;
-  if(b.type==='table')return gap+serializeTable(b);if(b.type==='toggle')return gap+serializeToggle(b);if(b.type==='divider')return gap+'---';
-  if(b.type==='code'){let count=3;for(const line of String(b.text||'').split('\n')){const m=/^(`+)/.exec(line);if(m)count=Math.max(count,m[1].length+1);}const fence='`'.repeat(count);return gap+fence+(b.language||'')+'\n'+(b.text||'')+'\n'+fence;}
-  if(['h1','h2','h3'].includes(b.type))return gap+'#'.repeat(Number(b.type[1]))+' '+String(b.text||'').replace(/\n+$/,'').replace(/\n/g,' ');
-  if(b.type==='quote')return gap+quoteLines(b.text).join('\n');
-  if(b.type==='callout'){const kind=CALLOUT_KINDS[b.kind]?b.kind:'note',body=String(b.text||'').replace(/\n+$/,'');return gap+`> [!${kind.toUpperCase()}]`+(body?'\n'+quoteLines(body,'x').join('\n'):'');}
+ const body=(b,index)=>{
+  if(typeof b._raw==='string'&&b._signature===signature(b))return b._raw;
+  if(b.type==='table')return serializeTable(b);if(b.type==='toggle')return serializeToggle(b);if(b.type==='divider')return '---';
+  if(b.type==='code'){let count=3;for(const line of String(b.text||'').split('\n')){const m=/^(`+)/.exec(line);if(m)count=Math.max(count,m[1].length+1);}const fence='`'.repeat(count);return fence+(b.language||'')+'\n'+(b.text||'')+'\n'+fence;}
+  if(['h1','h2','h3'].includes(b.type))return '#'.repeat(Number(b.type[1]))+' '+String(b.text||'').replace(/\n+$/,'').replace(/\n/g,' ');
+  if(b.type==='quote')return quoteLines(b.text).join('\n');
+  if(b.type==='callout'){const kind=CALLOUT_KINDS[b.kind]?b.kind:'note',text=String(b.text||'').replace(/\n+$/,'');return `> [!${kind.toUpperCase()}]`+(text?'\n'+quoteLines(text,'x').join('\n'):'');}
   if(LIST_TYPES.has(b.type)){
    const {lead,number,content}=layout[index],marker=b.type==='number'?`${number}. `:b.type==='todo'?(b.checked?'- [x] ':'- [ ] '):'- ';
-   return gap+lead+marker+hardLines(b.text,line=>b.type==='bullet'&&/^\[[ xX]\](?: |$)/.test(line)?'\\'+line:line,' '.repeat(content));
+   return lead+marker+hardLines(b.text,line=>b.type==='bullet'&&/^\[[ xX]\](?: |$)/.test(line)?'\\'+line:line,' '.repeat(content));
   }
-  return gap+hardLines(b.text,escapeLineStart);
+  return hardLines(b.text,escapeLineStart);
+ };
+ // A blank line separates a quote from the quote or callout before it, and a table from a following line that
+ // would otherwise read as one more row. A line that already ends the table needs none, so untouched notes keep
+ // their exact bytes.
+ return blocks.map((b,index)=>{
+  const previous=blocks[index-1],out=body(b,index);
+  const gap=previous&&((['quote','callout'].includes(previous.type)&&b.type==='quote')||(previous.type==='table'&&!endsTable(out.split('\n')[0])))?'\n':'';
+  return gap+out;
  });
 }
 export function serializeNoteBlocks(blocks){return serializeBlockParts(blocks).join('\n');}
@@ -271,7 +279,7 @@ export function renderCallout(kind,body){const entry=CALLOUT_KINDS[kind]||CALLOU
 export function renderMarkdown(markdown,{interactiveTasks=false,compact=false,citations,resolveLink,linkClass}={}){
  const options={citations,resolveLink,linkClass},o=inlineOptions(options),render=value=>inline(String(value??''),0,o);
  const source=String(markdown??''),taskIndices=taskLineIndices(source);
- const task=(b,offset)=>{const index=taskIndices[offset+b._lineStart],label=escapeHtml(inlineText(b.text)||'To-do');return `<div class="task-line ${b.checked?'done':''}">${interactiveTasks&&index!==null&&index!==undefined?`<input type="checkbox" data-task-index="${index}"${b.checked?' checked':''} aria-label="${label}">`:`<span class="task-check ${b.checked?'checked':''}" aria-hidden="true">${b.checked?checkIcon:''}</span>`}<span>${render(b.text)}</span></div>`;};
+ const task=(b,offset)=>{const index=taskIndices[offset+b._lineStart],label=escapeHtml(inlineText(b.text)||'To-do');return `<div class="task-line${b.checked?' done':''}">${interactiveTasks&&index!==null&&index!==undefined?`<input type="checkbox" data-task-index="${index}"${b.checked?' checked':''} aria-label="${label}">`:`<span class="task-check${b.checked?' checked':''}" aria-hidden="true">${b.checked?checkIcon:''}</span>`}<span>${render(b.text)}</span></div>`;};
  const list=(items,offset)=>{
   const roots=[],path=[];
   for(const b of items){const depth=Math.min(Number(b.indent)||0,path.length);path.length=depth;const node={b,children:[]};(depth?path[depth-1].children:roots).push(node);path.push(node);}

@@ -32,10 +32,14 @@
 // Keyboard: Enter splits a block, Shift+Enter adds a line break, Backspace at the start turns a block into text and
 // then merges it upward, Delete at the end merges the next block, arrow keys cross block edges, Tab and Shift+Tab
 // nest list items, Alt+Shift+Up/Down move blocks, Escape selects the current block, Shift+Click or Shift+Up/Down at an
-// edge select a range of blocks (Copy gives Markdown, Cut, Delete), Mod+Z, Mod+Shift+Z and Mod+Y use the editor's own
+// edge select a range of blocks (Copy gives Markdown, Cut, Delete), Mod+/ (or the Menu key, Shift+F10) opens the block
+// menu (turn into, duplicate, move, delete), Mod+D duplicates, Mod+Z, Mod+Shift+Z and Mod+Y use the editor's own
 // history, Mod+B/I/E/K and Mod+Shift+X format. "# ", "## ", "### ", "- ", "* ", "1. ", "[] ", "[ ] ", "> ", ">! ", "```"
 // and "---" at the start of a block change its type; **bold**, *italic*, `code`, ~~strike~~ and [label](url) convert
-// when closed; "/" opens the block menu and "[[" the link picker.
+// when closed; "/" opens the insert menu and "[[" the link picker. Paste and drop accept plain text, Markdown and HTML.
+//
+// Also exported (pure, Node-importable): BLOCK_COMMANDS, findBlockCommands, parseMarkdown, serializeBlocks,
+// serializeInlineFragment, matchBlockShortcut, matchInlineShortcut, htmlToMarkdown.
 // Styles: styles/editor.css. Render Markdown elsewhere inside an element with class "markdown-body".
 import {
  escapeHtml as esc, safeMarkdownUrl, renderInline, renderTableCell, renderMarkdown, inlineText, trimAutolink, CALLOUT_KINDS,
@@ -71,6 +75,7 @@ const ICONS={
  strike:'<path d="M16 4H9a3 3 0 0 0-2.83 4"/><path d="M14 12a4 4 0 0 1 0 8H6"/><line x1="4" x2="20" y1="12" y2="12"/>',
  inlineCode:'<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
  trash:'<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>',
+ clipboard:'<rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
  copy:'<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
  up:'<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
  down:'<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
@@ -194,7 +199,8 @@ function fromNode(node){
  if(nodeMark(node))return serializeNodes([node]);
  if(tag==='A'){
   const auto=attr(node,'data-autolink');if(auto)return auto==='angle'?`<${rawText(node)}>`:rawText(node);
-  const href=safeMarkdownUrl(attr(node,'href')),image=classes.includes('markdown-media-link'),kids=[...(node.childNodes||[])];
+  const href=safeMarkdownUrl(attr(node,'href')),image=classes.includes('markdown-media-link'),kids=[...(node.childNodes||[])],shown=rawText(node).trim();
+  if(href&&!image&&/^https?:\/\/./i.test(shown)&&safeMarkdownUrl(shown)===href&&trimAutolink(shown)===shown&&!/[\s<>"'`]/.test(shown))return shown;
   const label=image?serializeNodes(kids.slice(1)):serializeNodes(kids);
   return href?linkMarkdown(label||escapeText(href),href,image):label;
  }
@@ -251,13 +257,15 @@ function parseHtml(html){
   text(html.slice(last,m.index));last=re.lastIndex;
   if(m[1]){const tag=m[1].toUpperCase();if(skip){if(tag===skip)skip=null;continue;}for(let i=stack.length-1;i>0;i--)if(stack[i].tagName===tag){stack.length=i;break;}continue;}
   if(!m[2]||skip)continue;
-  const tag=m[2].toUpperCase();if(DROP.has(tag)){if(!m[4]&&!VOID.has(tag))skip=tag;continue;}
+  const tag=m[2].toUpperCase(),attrs={};for(const a of (m[3]||'').matchAll(/([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g))attrs[a[1].toLowerCase()]=decodeEntities(a[2]??a[3]??a[4]??'');
+  // AI source chips (copied from a rendered answer) are buttons; they become [[id]] instead of being dropped.
+  const citation=tag==='BUTTON'&&/(?:^|\s)ai-citation(?:\s|$)/.test(attrs.class||'')&&/^[\w:.-]{1,200}$/.test(attrs['data-id']||'');
+  if(DROP.has(tag)&&!citation){if(!m[4]&&!VOID.has(tag))skip=tag;continue;}
   if(tag==='LI')popTo(['LI'],['UL','OL']);
   if(tag==='DT'||tag==='DD')popTo(['DT','DD'],['DL']);
   if(tag==='TD'||tag==='TH')popTo(['TD','TH'],['TR','TABLE']);
   if(tag==='TR')popTo(['TR'],['TABLE','TBODY','THEAD','TFOOT']);
   if(BLOCK_TAGS.has(tag)&&current().tagName==='P')stack.pop();
-  const attrs={};for(const a of (m[3]||'').matchAll(/([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g))attrs[a[1].toLowerCase()]=decodeEntities(a[2]??a[3]??a[4]??'');
   const el=htmlElement(tag,attrs);current().childNodes.push(el);if(!VOID.has(tag)&&!m[4])stack.push(el);
  }
  text(html.slice(last));
@@ -337,22 +345,23 @@ export function mountBlockEditor(textarea,options={}){
  const domId='be'+uid().replace(/-/g,'').slice(0,8);
  let mode=MODES.some(m=>m[0]===options.mode)?options.mode:'blocks';
  let blocks=parseNoteBlocks(textarea.value),lastSnapshot=textarea.value,setting=false,composing=false;
- let activeId=blocks[0].id,lastRange=null,caretBefore=null,lastEdit={at:0,id:null,coalesce:false,source:''};
+ let activeId=blocks[0].id,lastRange=null,caretBefore=null,lastEdit={at:0,since:0,id:null,coalesce:false,source:''};
  let undoStack=[],redoStack=[],selected=new Set(),anchorId=null,focusId=null;
- let popupState=null,linkTarget=null,drag=null,dragSelect=null,searchSeq=0,searchTimer=0,selFrame=0;
- const editingToggles=new Set(),baselines=new WeakMap(),listeners=[];
+ let popupState=null,linkTarget=null,drag=null,textDrag=false,dragSelect=null,searchSeq=0,searchTimer=0,selFrame=0;
+ const editingToggles=new Set(),baselines=new WeakMap(),drawn=new Map(),listeners=[];
  const on=(target,type,fn,opts)=>{target.addEventListener(type,fn,opts);listeners.push([target,type,fn,opts]);};
 
  const root=doc.createElement('div');root.className='block-editor';root.dataset.mode=mode;if(options.compact)root.dataset.compact='';
  const shortcut=key=>isMac?modKey+key:modKey+key;
- const toolbarButton=(mark,label,keys,name)=>`<button type="button" class="block-editor-tool" data-format="${mark}" aria-label="${label}" aria-pressed="false" title="${label} (${keys})">${icon(name)}</button>`;
+ const ariaKeys=key=>(isMac?'Meta+':'Control+')+key;
+ const toolbarButton=(mark,label,keys,name,aria)=>`<button type="button" class="block-editor-tool" data-format="${mark}" aria-label="${label}" aria-pressed="false" aria-keyshortcuts="${aria}" data-tooltip="${label} ${keys}">${icon(name)}</button>`;
  root.innerHTML=`${options.showModeSwitch===false?'':`<div class="block-editor-bar"><div class="block-editor-modes" role="group" aria-label="Editor view">${MODES.map(([id,label])=>`<button type="button" class="block-editor-mode" data-editor-mode="${id}" aria-pressed="${id===mode}">${label}</button>`).join('')}</div></div>`}
 <div class="block-editor-status" role="status" aria-live="polite"></div>
 <div class="block-list" role="group" aria-label="Note content" tabindex="-1"></div>
-<div class="block-editor-preview markdown-body" hidden></div>
+<div class="block-editor-preview markdown-body" tabindex="-1" hidden></div>
 <div class="block-editor-source" hidden></div>
 <div class="block-editor-float block-editor-popup" id="${domId}-popup" role="listbox" hidden></div>
-<div class="block-editor-float block-editor-toolbar" role="toolbar" aria-label="Text formatting" hidden>${toolbarButton('bold','Bold',shortcut('B'),'bold')}${toolbarButton('italic','Italic',shortcut('I'),'italic')}${toolbarButton('strike','Strikethrough',isMac?'⌘⇧X':'Ctrl+Shift+X','strike')}${toolbarButton('code','Code',shortcut('E'),'inlineCode')}${toolbarButton('link','Link',shortcut('K'),'link')}${onAskAi?`<span class="block-editor-tool-separator" aria-hidden="true"></span><button type="button" class="block-editor-tool block-editor-tool-ai" data-editor-action="ask-ai">${icon('ai')}<span>Ask AI</span></button>`:''}</div>
+<div class="block-editor-float block-editor-toolbar" role="toolbar" aria-label="Text formatting" hidden>${toolbarButton('bold','Bold',shortcut('B'),'bold',ariaKeys('B'))}${toolbarButton('italic','Italic',shortcut('I'),'italic',ariaKeys('I'))}${toolbarButton('strike','Strikethrough',isMac?'⌘⇧X':'Ctrl+Shift+X','strike',ariaKeys('Shift+X'))}${toolbarButton('code','Code',shortcut('E'),'inlineCode',ariaKeys('E'))}${toolbarButton('link','Link',shortcut('K'),'link',ariaKeys('K'))}${onAskAi?`<span class="block-editor-tool-separator" aria-hidden="true"></span><button type="button" class="block-editor-tool block-editor-tool-ai" data-editor-action="ask-ai">${icon('ai')}<span>Ask AI</span></button>`:''}</div>
 <div class="block-editor-float block-editor-linkform" role="dialog" aria-label="Link" hidden><label class="block-editor-field" data-link-label-field><span>Text</span><input data-link-label type="text" maxlength="500" autocomplete="off"></label><label class="block-editor-field"><span>Link</span><input data-link-url type="url" placeholder="https://" autocomplete="off" spellcheck="false"></label><p class="block-editor-linkform-error" role="alert" hidden></p><div class="block-editor-linkform-actions"><button type="button" class="block-editor-btn" data-editor-action="link-remove" hidden>Remove link</button><span></span><button type="button" class="block-editor-btn" data-editor-action="link-cancel">Cancel</button><button type="button" class="block-editor-btn is-primary" data-editor-action="link-save">Save</button></div></div>`;
  textarea.before(root);
  const $=selector=>root.querySelector(selector);
@@ -369,7 +378,7 @@ export function mountBlockEditor(textarea,options={}){
  // Model helpers
  const block=id=>blocks.find(b=>b.id===id);
  const indexOf=id=>blocks.findIndex(b=>b.id===id);
- const blockEl=id=>[...list.children].find(el=>el.dataset.blockId===id)||null;
+ const blockEl=id=>{const el=drawn.get(id)?.el;return el&&el.parentNode===list?el:null;};
  const editableOf=id=>blockEl(id)?.querySelector('[data-block-edit]')||null;
  const docEmpty=()=>blocks.length===1&&blocks[0].type==='paragraph'&&!blocks[0].text;
  const inlineHtml=text=>renderInline(text,{resolveLink}).replace(/<(a|span) class="note-link/g,'<$1 contenteditable="false" class="note-link');
@@ -379,21 +388,30 @@ export function mountBlockEditor(textarea,options={}){
  function textLength(text){const box=doc.createElement('div');box.innerHTML=inlineHtml(text);return visibleLength(box);}
  // Joins inline Markdown pieces through the DOM so adjacent formatting merges instead of colliding (**a****b**).
  function joinMarkdown(...parts){const box=doc.createElement('div');box.innerHTML=parts.map(inlineHtml).join('');return editableMarkdown(box);}
+ // Re-parsed blocks whose source is unchanged keep their old ids, so the keyed render keeps their elements.
+ function reparse(markdown){
+  const pool=new Map(),next=parseNoteBlocks(markdown);
+  serializeBlockParts(blocks).forEach((part,i)=>{const key=part.replace(/^\n/,''),ids=pool.get(key);if(ids)ids.push(blocks[i].id);else pool.set(key,[blocks[i].id]);});
+  for(const b of next){const ids=pool.get(b._raw);if(ids?.length)b.id=ids.shift();}
+  return next;
+ }
  function normalizeIndents(){let previous=null;for(const b of blocks){if(LIST.has(b.type)){const max=previous&&LIST.has(previous.type)?(Number(previous.indent)||0)+1:0;if((Number(b.indent)||0)>max)b.indent=max;else if(b.indent===undefined)b.indent=0;}previous=b;}}
 
- // Undo history: snapshots of the Markdown plus the caret; typing in one block within 1.2s is one step.
+ // Undo history: snapshots of the Markdown plus the caret. Typing in one block is one step until a 1.2s pause, at most 5s.
+ const COALESCE_PAUSE=1200,COALESCE_SPAN=5000;
  function beginChange(){if(!caretBefore)caretBefore=caretState();}
  function emit(value){setting=true;try{textarea.value=value;textarea.dispatchEvent(new win.Event('input',{bubbles:true}));}finally{setting=false;}onChange(value);}
  function commit({coalesce=false}={}){
   normalizeIndents();const value=serializeNoteBlocks(blocks);
   if(value===lastSnapshot){caretBefore=null;return false;}
-  const now=Date.now(),merge=coalesce&&lastEdit.coalesce&&lastEdit.id===activeId&&now-lastEdit.at<1200&&undoStack.length;
+  if(status.textContent)report('');
+  const now=Date.now(),merge=coalesce&&lastEdit.coalesce&&lastEdit.source==='blocks'&&lastEdit.id===activeId&&now-lastEdit.at<COALESCE_PAUSE&&now-lastEdit.since<COALESCE_SPAN&&undoStack.length;
   if(!merge){undoStack.push({md:lastSnapshot,caret:caretBefore});if(undoStack.length>200)undoStack.shift();}
-  redoStack=[];lastSnapshot=value;lastEdit={at:now,id:activeId,coalesce,source:'blocks'};caretBefore=null;
+  redoStack=[];lastSnapshot=value;lastEdit={at:now,since:merge?lastEdit.since:now,id:activeId,coalesce,source:'blocks'};caretBefore=null;
   emit(value);return true;
  }
  function applySnapshot(entry){
-  blocks=parseNoteBlocks(entry.md);lastSnapshot=entry.md;lastEdit={at:0,id:null,coalesce:false,source:''};caretBefore=null;
+  blocks=reparse(entry.md);lastSnapshot=entry.md;lastEdit={at:0,since:0,id:null,coalesce:false,source:''};caretBefore=null;
   closePopup();hideToolbar();closeLinkForm();clearSelection(false);emit(entry.md);
   if(mode==='blocks'){render();restoreCaret(entry.caret);}else if(mode==='preview')renderPreview();else autosize();
  }
@@ -448,9 +466,11 @@ export function mountBlockEditor(textarea,options={}){
   const width=tableWidth(b),cell=(value,row,column)=>`<${row<0?'th scope="col"':'td'}><div contenteditable="true" role="textbox" aria-multiline="true" aria-label="${row<0?'Header':`Row ${row+1},`} column ${column+1}" data-table-cell="${b.id}" data-cell-row="${row}" data-cell-column="${column}" spellcheck="true">${renderTableCell(value||'',{resolveLink})}</div></${row<0?'th':'td'}>`;
   return `<div class="rich-table" role="group" aria-label="Table"><div class="rich-table-scroll"><table><thead><tr>${Array.from({length:width},(_,i)=>cell(b.headers[i],-1,i)).join('')}</tr></thead><tbody>${b.rows.map((row,r)=>'<tr>'+Array.from({length:width},(_,c)=>cell(row[c],r,c)).join('')+'</tr>').join('')}</tbody></table></div><div class="rich-table-tools" role="toolbar" aria-label="Table"><button type="button" class="block-editor-btn" data-table-action="add-row" data-table-id="${b.id}">Add row</button><button type="button" class="block-editor-btn" data-table-action="add-column" data-table-id="${b.id}">Add column</button><button type="button" class="block-editor-btn" data-table-action="remove-row" data-table-id="${b.id}"${b.rows.length?'':' disabled'}>Remove row</button><button type="button" class="block-editor-btn" data-table-action="remove-column" data-table-id="${b.id}"${width===1?' disabled':''}>Remove column</button><span class="rich-block-hint">Tab moves between cells. Shift+Enter adds a line.</span></div></div>`;
  }
+ // A toggle is a disclosure button, a title field and a body (raw Markdown while editing, rendered otherwise).
+ // It is not a <details>: the title input cannot live inside an interactive <summary>.
  function toggleMarkup(b){
-  const editing=editingToggles.has(b.id);
-  return `<details class="rich-toggle" data-toggle-id="${b.id}"${b.open?' open':''}><summary><span class="rich-toggle-chevron" aria-hidden="true">${icon('toggle')}</span><input type="text" data-toggle-title="${b.id}" value="${esc(b.title)}" aria-label="Toggle title" placeholder="Toggle"></summary><div class="rich-toggle-content">${editing?`<textarea data-toggle-body="${b.id}" aria-label="Toggle content in Markdown" spellcheck="true" rows="4">${esc(b.text)}</textarea>`:`<div class="rich-toggle-preview markdown-body">${b.text.trim()?renderMarkdown(b.text,{resolveLink}):'<p class="rich-block-hint">Empty toggle.</p>'}</div>`}<div class="rich-toggle-tools"><button type="button" class="block-editor-btn" data-toggle-edit="${b.id}">${editing?'Done':'Edit content'}</button></div></div></details>`;
+  const editing=editingToggles.has(b.id),body=`${domId}-toggle-${b.id}`;
+  return `<div class="rich-toggle" data-toggle-id="${b.id}"><div class="rich-toggle-head"><button type="button" class="rich-toggle-chevron" data-toggle-open="${b.id}" aria-expanded="${b.open}" aria-controls="${body}" aria-label="${b.open?'Hide':'Show'} toggle content">${icon('toggle')}</button><input type="text" data-toggle-title="${b.id}" value="${esc(b.title)}" aria-label="Toggle title" placeholder="Toggle"></div><div class="rich-toggle-content" id="${body}"${b.open?'':' hidden'}>${editing?`<textarea data-toggle-body="${b.id}" aria-label="Toggle content in Markdown" spellcheck="true" rows="4">${esc(b.text)}</textarea>`:`<div class="rich-toggle-preview markdown-body">${b.text.trim()?renderMarkdown(b.text,{resolveLink}):'<p class="rich-block-hint">Empty toggle.</p>'}</div>`}<div class="rich-toggle-tools"><button type="button" class="block-editor-btn" data-toggle-edit="${b.id}">${editing?'Done':'Edit content'}</button></div></div></div>`;
  }
  function blockHtml(b,number){
   const indent=LIST.has(b.type)?Math.max(0,Number(b.indent)||0):0,kind=CALLOUT_KINDS[b.kind]?b.kind:'note';
@@ -458,33 +478,43 @@ export function mountBlockEditor(textarea,options={}){
   if(b.type==='todo')marker=`<span class="block-marker" contenteditable="false"><input type="checkbox" class="block-check" data-block-check="${b.id}"${b.checked?' checked':''} aria-label="${esc(inlineText(b.text)||'To-do')}"></span>`;
   else if(b.type==='bullet')marker='<span class="block-marker" contenteditable="false" aria-hidden="true"><span class="block-dot"></span></span>';
   else if(b.type==='number')marker=`<span class="block-marker" contenteditable="false" aria-hidden="true">${number}.</span>`;
-  else if(b.type==='callout')marker=`<span class="block-marker" contenteditable="false"><button type="button" class="block-callout-kind" data-callout-kind="${b.id}" aria-label="Callout type: ${CALLOUT_KINDS[kind].label}" title="Change callout type">${calloutIcon(kind)}</button></span>`;
+  else if(b.type==='callout')marker=`<span class="block-marker" contenteditable="false"><button type="button" class="block-callout-kind" data-callout-kind="${b.id}" aria-label="Callout type: ${CALLOUT_KINDS[kind].label}" aria-haspopup="menu" data-tooltip="Change callout type">${calloutIcon(kind)}</button></span>`;
   if(b.type==='table')content=tableMarkup(b);
   else if(b.type==='toggle')content=toggleMarkup(b);
   else if(b.type==='divider')content='<div class="block-divider" contenteditable="false" role="separator"><hr></div>';
   else content=editableMarkup(b);
-  const gutter=`<div class="block-gutter" contenteditable="false"><button type="button" class="block-handle" data-block-add="${b.id}" tabindex="-1" aria-label="Add a block below" title="Add a block below">${icon('plus')}</button><button type="button" class="block-handle block-handle-drag" data-block-drag="${b.id}" draggable="true" tabindex="-1" aria-label="Block options" title="Drag to move. Click for options.">${icon('grip')}</button></div>`;
+  const gutter=`<div class="block-gutter" contenteditable="false"><button type="button" class="block-handle" data-block-add="${b.id}" tabindex="-1" aria-label="Add a block below" data-tooltip="Add a block below">${icon('plus')}</button><button type="button" class="block-handle block-handle-drag" data-block-drag="${b.id}" draggable="true" tabindex="-1" aria-label="Block options" data-tooltip="Drag to move, click for options">${icon('grip')}</button></div>`;
   return `<div class="note-block block-${b.type}${selected.has(b.id)?' is-selected':''}${b.type==='todo'&&b.checked?' is-checked':''}" data-block-id="${b.id}" data-type="${b.type}"${b.type==='callout'?` data-kind="${kind}"`:''}${indent?` style="--indent:${indent}"`:''}>${gutter}${marker}${content}</div>`;
  }
  function remember(el){const b=block(el.dataset.blockEdit);if(b)baselines.set(el,{html:el.innerHTML,text:b.text});}
+ // Keyed render: a block keeps its element while its markup is unchanged, so structural edits in long notes only
+ // rebuild the blocks they touch. Selection classes are painted afterwards because paintSelection changes them in place.
+ function drawBlock(b,number){
+  const html=blockHtml(b,number),known=drawn.get(b.id);if(known&&known.html===html&&known.el.isConnected)return known.el;
+  const template=doc.createElement('template');template.innerHTML=html;const el=template.content.firstElementChild;
+  if(known?.el.isConnected)known.el.replaceWith(el);drawn.set(b.id,{el,html});const ed=el.querySelector('[data-block-edit]');if(ed)remember(ed);return el;
+ }
  function render(){
-  normalizeIndents();const numbers=listNumbers(blocks);
-  list.innerHTML=blocks.map((b,i)=>blockHtml(b,numbers[i])).join('');
+  normalizeIndents();const numbers=listNumbers(blocks),ids=new Set(blocks.map(b=>b.id));
+  for(const [id,entry] of drawn)if(!ids.has(id)){entry.el.remove();drawn.delete(id);}
+  for(const el of [...list.children])if(el!==indicator&&!drawn.has(el.dataset.blockId))el.remove();
+  let previous=null;
+  blocks.forEach((b,i)=>{const el=drawBlock(b,numbers[i]),want=previous?previous.nextSibling:list.firstChild;if(el!==want)list.insertBefore(el,want);previous=el;});
   if(drag||!indicator.hidden)list.append(indicator);
-  for(const el of list.querySelectorAll('[data-block-edit]'))remember(el);
-  root.classList.toggle('is-empty',docEmpty());
+  paintSelection();root.classList.toggle('is-empty',docEmpty());
  }
  function renderBlock(id){
-  const index=indexOf(id),el=blockEl(id);if(index<0||!el)return render();
-  const template=doc.createElement('template');template.innerHTML=blockHtml(blocks[index],listNumbers(blocks)[index]);
-  const next=template.content.firstElementChild;el.replaceWith(next);const ed=next.querySelector('[data-block-edit]');if(ed)remember(ed);
-  root.classList.toggle('is-empty',docEmpty());
+  const index=indexOf(id);if(index<0||!drawn.get(id)?.el.isConnected)return render();
+  const old=blockEl(id);drawn.delete(id);const el=drawBlock(blocks[index],listNumbers(blocks)[index]);old.replaceWith(el);
+  paintSelection();root.classList.toggle('is-empty',docEmpty());
  }
  function updateEmpty(ed){const empty=!ed.textContent.replace(ZWSP,'')&&!ed.querySelector('[contenteditable="false"]');ed.classList.toggle('is-empty',empty);root.classList.toggle('is-empty',docEmpty());}
  function readBlock(el){
   const b=block(el.dataset.blockEdit);if(!b)return null;const base=baselines.get(el);if(base&&base.html===el.innerHTML)return b;
   b.text=withoutSentinel(el,b.type==='code'?rawText(el):editableMarkdown(el));
-  baselines.set(el,{html:el.innerHTML,text:b.text});return b;
+  baselines.set(el,{html:el.innerHTML,text:b.text});
+  if(b.type==='todo')blockEl(b.id)?.querySelector('[data-block-check]')?.setAttribute('aria-label',inlineText(b.text)||'To-do');
+  return b;
  }
  function readCell(el){const b=block(el.dataset.tableCell);if(!b||el.dataset.sourceEditing!=='true')return;const base=baselines.get(el);if(base?.html===el.innerHTML)return;const row=Number(el.dataset.cellRow),column=Number(el.dataset.cellColumn),values=row<0?b.headers:b.rows[row];if(!values)return;while(values.length<=column)values.push('');values[column]=el.innerText.replace(/\r\n?/g,'\n').replace(/\n$/,'');baselines.set(el,{html:el.innerHTML});}
  function readAll(){
@@ -501,13 +531,16 @@ export function mountBlockEditor(textarea,options={}){
   const b=block(id),el=blockEl(id);if(!b||!el)return;activeId=id;
   if(b.type==='divider'){selectBlocks([id]);return;}
   if(selected.size)clearSelection();
-  if(b.type==='table'){const cells=[...el.querySelectorAll('[data-table-cell]')];const cell=at==='start'||fromAbove?cells[0]:cells.filter(c=>c.dataset.cellRow===String(b.rows.length-1))[0]||cells.at(-1);cell?.focus();return;}
+  if(b.type==='table'){const cells=[...el.querySelectorAll('[data-table-cell]')];const cell=at==='start'||fromAbove?cells[0]:cells.filter(c=>c.dataset.cellRow===String(b.rows.length-1))[0]||cells.at(-1);focusCell(cell,at==='start'||fromAbove?'start':'end');return;}
   if(b.type==='toggle'){const title=el.querySelector('[data-toggle-title]');title?.focus();title?.setSelectionRange(at==='start'?0:title.value.length,at==='start'?0:title.value.length);return;}
   const ed=el.querySelector('[data-block-edit]');if(!ed)return;ed.focus({preventScroll:true});
   if(x!==undefined&&doc.caretRangeFromPoint){const box=ed.getBoundingClientRect(),style=win.getComputedStyle(ed),lh=parseFloat(style.lineHeight)||20,y=fromAbove?box.top+parseFloat(style.paddingTop)+lh/2:box.bottom-parseFloat(style.paddingBottom)-lh/2;const range=doc.caretRangeFromPoint(Math.max(box.left+1,Math.min(x,box.right-1)),y);if(range&&ed.contains(range.startContainer)){const sel=win.getSelection();sel.removeAllRanges();sel.addRange(range);ed.scrollIntoView?.({block:'nearest'});return;}}
   const length=contentLength(ed),s=Math.min(start??(at==='start'?0:length),visibleLength(ed));placeCaret(ed,s,Math.min(end??s,visibleLength(ed)));
   ed.scrollIntoView?.({block:'nearest'});
  }
+ // Cells switch to their Markdown source on focus; the caret then goes to one end of that source.
+ function focusCell(cell,at='end'){if(!cell)return;cell.focus({preventScroll:true});const range=doc.createRange(),sel=win.getSelection();range.selectNodeContents(cell);range.collapse(at==='start');sel.removeAllRanges();sel.addRange(range);cell.scrollIntoView?.({block:'nearest',inline:'nearest'});}
+ const cellAt=(id,row,column)=>blockEl(id)?.querySelector(`[data-cell-row="${row}"][data-cell-column="${column}"]`)||null;
  const orderedSelection=()=>blocks.filter(b=>selected.has(b.id)).map(b=>b.id);
  function paintSelection(){for(const el of list.children)if(el.dataset.blockId)el.classList.toggle('is-selected',selected.has(el.dataset.blockId));list.classList.toggle('has-selection',selected.size>0);}
  function selectBlocks(ids,{anchor=ids[0],focus=ids.at(-1)}={}){
@@ -579,7 +612,7 @@ export function mountBlockEditor(textarea,options={}){
  }
  function indentBlocks(ids,delta){
   readAll();const ed=!selected.size&&editableOf(ids[0]),caret=ed?selectionOffsets(ed):null;beginChange();let changed=false;
-  for(const id of ids){const i=indexOf(id),b=blocks[i];if(!b||!LIST.has(b.type))continue;const previous=blocks[i-1],max=previous&&LIST.has(previous.type)?(Number(previous.indent)||0)+1:0,next=Math.max(0,Math.min(max,(Number(b.indent)||0)+delta));if(next!==(Number(b.indent)||0)){b.indent=next;changed=true;}}
+  for(const id of ids){const i=indexOf(id),b=blocks[i];if(!b||!LIST.has(b.type))continue;const previous=blocks[i-1],max=previous&&LIST.has(previous.type)?(Number(previous.indent)||0)+1:0,next=Math.max(0,Math.min(max,(Number(b.indent)||0)+delta));if(next!==(Number(b.indent)||0)){b.indent=next;if(b.type==='number')b.ordinal=1;changed=true;}}
   if(!changed){caretBefore=null;return;}
   commit();render();if(selected.size)paintSelection();else if(caret?.inside)focusBlock(ids[0],{start:caret.start,end:caret.end});
  }
@@ -605,7 +638,7 @@ export function mountBlockEditor(textarea,options={}){
   if(b.type==='code'){insertBreak(ed,true);return;}
   if(shift&&!/^h[1-3]$/.test(b.type)){insertBreak(ed);return;}
   beginChange();const {start,end}=selectionOffsets(ed),total=visibleLength(ed);
-  if(!b.text&&LIST.has(b.type)){if(b.indent>0)b.indent--;else{b.type='paragraph';delete b.indent;b.checked=false;}commit();render();focusBlock(b.id,{at:'start'});return;}
+  if(!b.text&&LIST.has(b.type)){if(b.indent>0){b.indent--;if(b.type==='number')b.ordinal=1;}else{b.type='paragraph';delete b.indent;b.checked=false;}commit();render();focusBlock(b.id,{at:'start'});return;}
   if(!b.text&&(b.type==='quote'||b.type==='callout')){b.type='paragraph';delete b.kind;commit();renderBlock(b.id);focusBlock(b.id,{at:'start'});return;}
   if(start===0&&end===0&&b.text){const above=freshBlock(LIST.has(b.type)?b.type:'paragraph');if(LIST.has(b.type))above.indent=b.indent||0;blocks.splice(indexOf(b.id),0,above);commit();render();focusBlock(b.id,{at:'start'});return;}
   const before=rangeMarkdown(ed,0,start),after=withoutSentinel(ed,rangeMarkdown(ed,end,total));
@@ -618,7 +651,7 @@ export function mountBlockEditor(textarea,options={}){
  }
  function onBackspaceAtStart(ed){
   const b=readBlock(ed);if(!b)return;closePopup();beginChange();const index=indexOf(b.id);
-  if(LIST.has(b.type)&&b.indent>0){b.indent--;commit();render();focusBlock(b.id,{at:'start'});return;}
+  if(LIST.has(b.type)&&b.indent>0){b.indent--;if(b.type==='number')b.ordinal=1;commit();render();focusBlock(b.id,{at:'start'});return;}
   if(b.type!=='paragraph'&&b.type!=='code'){b.type='paragraph';delete b.indent;delete b.kind;delete b.ordinal;b.checked=false;commit();render();focusBlock(b.id,{at:'start'});return;}
   if(b.type==='code'&&b.text){caretBefore=null;return;}
   const previous=blocks[index-1];if(!previous){if(b.type==='code'){Object.assign(b,{type:'paragraph',language:''});commit();render();focusBlock(b.id,{at:'start'});}else caretBefore=null;return;}
@@ -632,14 +665,16 @@ export function mountBlockEditor(textarea,options={}){
   if(!TEXT.has(next.type)){caretBefore=null;selectBlocks([next.id]);return;}
   const caret=mergeInto(b,next);blocks.splice(indexOf(next.id),1);commit();render();focusBlock(b.id,{start:caret});
  }
- function pasteInto(ed,source){
+ // A single list item, heading or quote pasted inside a sentence: from plain text its markers are literal text; from
+ // HTML, editor Markdown or insertMarkdown (rich) only its inline content is inserted.
+ function pasteInto(ed,source,{rich=false}={}){
   const b=readBlock(ed);if(!b)return;closePopup();beginChange();
   const {start,end}=selectionOffsets(ed),total=visibleLength(ed),before=rangeMarkdown(ed,0,start),after=withoutSentinel(ed,rangeMarkdown(ed,end,total));
   const parsed=pasteBlocks(source);if(!parsed.length){caretBefore=null;return;}
   const lone=!before.trim()&&!after.trim();
   if(parsed.length===1&&TEXT.has(parsed[0].type)&&parsed[0].type!=='code'){
    const p=parsed[0];if(lone&&b.type==='paragraph'&&p.type!=='paragraph')Object.assign(b,p,{id:b.id});
-   const inserted=p.type==='paragraph'||lone?p.text:escapeText(String(source).trim());
+   const inserted=p.type==='paragraph'||lone||rich?p.text:escapeText(String(source).trim());
    b.text=joinMarkdown(before,inserted,after);commit();render();focusBlock(b.id,{start:textLength(joinMarkdown(before,inserted))});return;
   }
   let rest=parsed;const first=parsed[0];
@@ -770,19 +805,24 @@ export function mountBlockEditor(textarea,options={}){
   let top=above?rect.top-h-gap:rect.bottom+gap;if(!above&&top+h>vh-8&&rect.top-h-gap>=8)top=rect.top-h-gap;if(above&&top<8)top=rect.bottom+gap;
   el.style.left=Math.round(Math.max(8,Math.min(rect.left,vw-w-8)))+'px';el.style.top=Math.round(Math.max(8,Math.min(top,vh-h-8)))+'px';
  }
- function setActiveDescendant(){const s=popupState,ed=s&&s.focus==='editor'&&editableOf(s.blockId);for(const el of list.querySelectorAll('[aria-activedescendant]'))if(el!==ed){el.removeAttribute('aria-activedescendant');el.removeAttribute('aria-controls');el.removeAttribute('aria-expanded');}if(ed){ed.setAttribute('aria-controls',popup.id);ed.setAttribute('aria-expanded','true');if(s.items.length)ed.setAttribute('aria-activedescendant',`${domId}-opt-${s.index}`);else ed.removeAttribute('aria-activedescendant');}}
+ function setActiveDescendant(){const s=popupState,ed=s&&s.focus==='editor'&&editableOf(s.blockId);for(const el of list.querySelectorAll(`[aria-activedescendant],[aria-controls="${popup.id}"]`))if(el!==ed){el.removeAttribute('aria-activedescendant');el.removeAttribute('aria-controls');}if(ed){ed.setAttribute('aria-controls',popup.id);if(s.items.length)ed.setAttribute('aria-activedescendant',`${domId}-opt-${s.index}`);else ed.removeAttribute('aria-activedescendant');}}
  function renderPopup(){
   const s=popupState;if(!s)return;const menu=s.role==='menu';let html=s.title?`<div class="block-editor-popup-title">${esc(s.title)}</div>`:'',group=null;
   if(!s.items.length)html+=`<div class="block-editor-popup-empty">${esc(s.loading?'Searching…':s.empty||'No results')}</div>`;
   s.items.forEach((item,i)=>{
-   if(item.group&&item.group!==group){group=item.group;html+=`<div class="block-editor-popup-group" role="presentation">${esc(group)}</div>`;}
-   html+=`<div class="block-editor-item${i===s.index?' is-active':''}${item.danger?' is-danger':''}${item.current?' is-current':''}" id="${domId}-opt-${i}" role="${menu?'menuitem':'option'}"${menu?'':` aria-selected="${i===s.index}"`} data-popup-index="${i}" tabindex="-1">${item.iconHtml||(item.icon?icon(item.icon):'')}<span class="block-editor-item-text"><span class="block-editor-item-label">${esc(item.label)}</span>${item.description?`<span class="block-editor-item-desc">${esc(item.description)}</span>`:''}</span>${item.hint?`<kbd class="block-editor-item-hint">${esc(item.hint)}</kbd>`:''}</div>`;
+   if(item.separator){group=null;html+='<div class="block-editor-popup-separator" role="separator"></div>';}
+   else if(item.group&&item.group!==group){group=item.group;html+=`<div class="block-editor-popup-group" role="presentation">${esc(group)}</div>`;}
+   html+=`<div class="block-editor-item${i===s.index?' is-active':''}${item.danger?' is-danger':''}${item.current?' is-current':''}" id="${domId}-opt-${i}" role="${menu?'menuitem':'option'}"${menu?'':` aria-selected="${i===s.index}"`} data-popup-index="${i}" tabindex="${i===s.index?0:-1}">${item.iconHtml||(item.icon?icon(item.icon):'')}<span class="block-editor-item-text"><span class="block-editor-item-label">${esc(item.label)}</span>${item.description?`<span class="block-editor-item-desc">${esc(item.description)}</span>`:''}</span>${item.hint?`<kbd class="block-editor-item-hint">${esc(item.hint)}</kbd>`:''}</div>`;
   });
   popup.innerHTML=html;popup.setAttribute('role',menu?'menu':'listbox');popup.setAttribute('aria-label',s.label);popup.classList.toggle('is-wide',!!s.wide);
   setActiveDescendant();const active=popup.querySelector('.is-active');active?.scrollIntoView?.({block:'nearest'});if(s.focus==='popup')(active||popup).focus({preventScroll:true});
  }
- function openPopup(state){closeLinkForm();hideToolbar();popupState={index:0,items:[],focus:'editor',role:'listbox',...state};if(state.focus==='popup')popup.tabIndex=-1;renderPopup();showFloat(popup);place(popup,popupAnchor());}
- function closePopup({refocus=false}={}){if(!popupState)return;const s=popupState;popupState=null;clearTimeout(searchTimer);hideFloat(popup);popup.innerHTML='';setActiveDescendant();if(refocus&&s.focus==='popup'&&s.blockId){if(TEXT.has(block(s.blockId)?.type))focusBlock(s.blockId);else selectBlocks([s.blockId]);}}
+ function openPopup(state){
+  closeLinkForm();hideToolbar();popupState={index:0,items:[],focus:'editor',role:'listbox',...state};if(state.focus==='popup')popup.tabIndex=-1;
+  renderPopup();showFloat(popup);place(popup,popupAnchor());
+  if(popupState.focus==='popup')(popup.querySelector('.is-active')||popup).focus({preventScroll:true});
+ }
+ function closePopup({refocus=false}={}){if(!popupState)return;const s=popupState;popupState=null;clearTimeout(searchTimer);hideFloat(popup);popup.innerHTML='';setActiveDescendant();if(refocus&&s.focus==='popup'&&s.blockId){if(s.restore){clearSelection();restoreCaret(s.restore);}else if(selected.size)list.focus({preventScroll:true});else if(TEXT.has(block(s.blockId)?.type))focusBlock(s.blockId);else selectBlocks([s.blockId]);}}
  function movePopup(delta){const s=popupState;if(!s?.items.length)return;s.index=(s.index+delta+s.items.length)%s.items.length;renderPopup();}
  function choose(index){const s=popupState;const item=s?.items[index];if(!item)return;s.index=index;item.run();}
  function slashItems(query){
@@ -830,18 +870,25 @@ export function mountBlockEditor(textarea,options={}){
    return;
   }
   if(empty){const next=convert(b,id);blocks[indexOf(b.id)]=next;commit();render();focusAfterConvert(next.id);return;}
+  // The space typed before "/" goes with the command, at the end of the text or before an existing space.
+  if(!after.trim()||/^[ \t]/.test(after))b.text=joinMarkdown(before.replace(/[ \t]+$/,''),after);
   const fresh=convert(freshBlock(),id);blocks.splice(indexOf(b.id)+1,0,fresh);commit();render();focusAfterConvert(fresh.id);
  }
+ // Opened from text (Mod+/), closing the menu returns the caret; opened on a selection or handle, the selection stays.
  function openActions(id,anchorEl){
+  const restore=!selected.has(id)&&selectionEditable()?caretState():null;
   readAll();const b=block(id);if(!b)return;const ids=selected.has(id)?orderedSelection():[id];if(!selected.has(id))selectBlocks([id]);
+  // Actions first (they stay visible in short panels), then Turn into, then Delete last after a separator.
   const items=[];
+  items.push({id:'copy',label:'Copy as Markdown',icon:'clipboard',group:'Actions',hint:isMac?'⌘C':'Ctrl+C',run:()=>{closePopup({refocus:true});readAll();copyText(serializeNoteBlocks(ids.map(block).filter(Boolean)));}});
+  items.push({id:'duplicate',label:'Duplicate',icon:'copy',group:'Actions',hint:isMac?'⌘D':'Ctrl+D',run:()=>{closePopup({refocus:true});duplicateBlocks(ids);}});
+  items.push({id:'up',label:'Move up',icon:'up',group:'Actions',hint:isMac?'⌥⇧↑':'Alt+Shift+↑',run:()=>{closePopup({refocus:true});moveBlocks(ids,-1);}});
+  items.push({id:'down',label:'Move down',icon:'down',group:'Actions',hint:isMac?'⌥⇧↓':'Alt+Shift+↓',run:()=>{closePopup({refocus:true});moveBlocks(ids,1);}});
   if(TEXT.has(b.type)||b.type==='toggle'){for(const type of ['paragraph','h1','h2','h3','bullet','number','todo','quote','callout','code','toggle']){const c=BLOCK_COMMANDS.find(x=>x[0]===type);items.push({id:'turn-'+type,label:c[1],icon:c[3],group:'Turn into',current:b.type===type,run:()=>{closePopup();turnInto(type);if(ids.length===1&&block(id)){clearSelection();focusBlock(id);}}});}}
-  items.push({id:'duplicate',label:'Duplicate',icon:'copy',group:'Actions',hint:isMac?'⌘D':'Ctrl+D',run:()=>{closePopup();duplicateBlocks(ids);}});
-  items.push({id:'up',label:'Move up',icon:'up',group:'Actions',hint:isMac?'⌥⇧↑':'Alt+Shift+↑',run:()=>{closePopup();moveBlocks(ids,-1);}});
-  items.push({id:'down',label:'Move down',icon:'down',group:'Actions',hint:isMac?'⌥⇧↓':'Alt+Shift+↓',run:()=>{closePopup();moveBlocks(ids,1);}});
-  items.push({id:'delete',label:ids.length>1?'Delete blocks':'Delete',icon:'trash',group:'Actions',danger:true,hint:'Del',run:()=>{closePopup();removeBlocks(ids);}});
-  openPopup({kind:'actions',label:'Block options',role:'menu',focus:'popup',blockId:id,anchorEl,items});
+  items.push({id:'delete',label:ids.length>1?'Delete blocks':'Delete',icon:'trash',separator:true,danger:true,hint:'Del',run:()=>{closePopup();removeBlocks(ids);}});
+  openPopup({kind:'actions',label:'Block options',role:'menu',focus:'popup',blockId:id,anchorEl,items,restore});
  }
+ function copyText(value){const done=()=>report(''),fail=()=>report('Copy did not work here. Select the blocks and press '+(isMac?'⌘C':'Ctrl+C')+'.');try{win.navigator.clipboard.writeText(value).then(done,fail);}catch{fail();}}
  function openKinds(id,anchorEl){
   const b=block(id);if(!b)return;
   openPopup({kind:'kinds',label:'Callout type',role:'menu',focus:'popup',blockId:id,anchorEl,index:Math.max(0,Object.keys(CALLOUT_KINDS).indexOf(b.kind)),items:Object.entries(CALLOUT_KINDS).map(([kind,entry])=>({id:kind,label:entry.label,iconHtml:calloutIcon(kind),current:b.kind===kind,run:()=>{closePopup();readAll();beginChange();b.kind=kind;commit();renderBlock(id);focusBlock(id);}}))});
@@ -905,24 +952,30 @@ export function mountBlockEditor(textarea,options={}){
  function autosize(){textarea.style.height='auto';textarea.style.height=Math.max(textarea.scrollHeight,160)+'px';}
  function renderPreview(){const value=textarea.value;preview.innerHTML=value.trim()?renderMarkdown(value,{interactiveTasks:true,resolveLink}):'<p class="block-editor-empty">Nothing to preview yet.</p>';}
  function setMode(next){
-  if(!MODES.some(m=>m[0]===next))return;if(mode==='blocks')readAll();
+  if(!MODES.some(m=>m[0]===next))return;if(mode==='blocks'){readAll();if(serializeNoteBlocks(blocks)!==lastSnapshot)commit({coalesce:true});}
   closePopup();hideToolbar();closeLinkForm();clearSelection(false);
   mode=next;root.dataset.mode=mode;list.hidden=mode!=='blocks';sourceWrap.hidden=mode!=='markdown';preview.hidden=mode!=='preview';
   if(mode==='blocks')render();if(mode==='preview')renderPreview();if(mode==='markdown')autosize();
   for(const button of root.querySelectorAll('[data-editor-mode]'))button.setAttribute('aria-pressed',String(button.dataset.editorMode===mode));
  }
- function external(){
+ // After a pointer switches modes, focus follows into the new view (without scrolling) so shortcuts keep working.
+ function focusContent(){if(mode==='markdown')textarea.focus({preventScroll:true});else if(mode==='preview')preview.focus({preventScroll:true});else if(!restoreEditorSelection())list.focus({preventScroll:true});}
+ // The textarea changed outside the block view: typing in Markdown mode coalesces into one undo step per pause;
+ // a preview checkbox, insertMarkdown or a host write is a step of its own. `notify` is for writes made here
+ // (not by typing), which still owe the host the bubbling "input" event every edit promises.
+ function external({coalesce=false,notify=false}={}){
   if(setting)return;const value=textarea.value;if(value===lastSnapshot)return;
-  const now=Date.now(),merge=lastEdit.source==='markdown'&&now-lastEdit.at<1200&&undoStack.length;
+  const now=Date.now(),merge=coalesce&&lastEdit.source==='markdown'&&lastEdit.coalesce&&now-lastEdit.at<COALESCE_PAUSE&&now-lastEdit.since<COALESCE_SPAN&&undoStack.length;
   if(!merge){undoStack.push({md:lastSnapshot,caret:null});if(undoStack.length>200)undoStack.shift();}
-  redoStack=[];lastSnapshot=value;lastEdit={at:now,id:null,coalesce:true,source:'markdown'};blocks=parseNoteBlocks(value);
+  redoStack=[];lastSnapshot=value;lastEdit={at:now,since:merge?lastEdit.since:now,id:null,coalesce,source:'markdown'};blocks=reparse(value);
   if(mode==='blocks'){closePopup();clearSelection(false);render();}else if(mode==='preview')renderPreview();else autosize();
+  if(notify){setting=true;try{textarea.dispatchEvent(new win.Event('input',{bubbles:true}));}finally{setting=false;}}
   onChange(value);
  }
  function setMarkdown(value,{emit:shouldEmit=false}={}){
   const md=String(value??'');closePopup();hideToolbar();closeLinkForm();clearSelection(false);editingToggles.clear();report('');
-  if(shouldEmit){readAll();caretBefore=null;undoStack.push({md:lastSnapshot,caret:caretState()});redoStack=[];blocks=parseNoteBlocks(md);lastSnapshot=md;lastEdit={at:0,id:null,coalesce:false,source:''};emit(md);}
-  else{blocks=parseNoteBlocks(md);lastSnapshot=md;undoStack=[];redoStack=[];lastEdit={at:0,id:null,coalesce:false,source:''};textarea.value=md;}
+  if(shouldEmit){readAll();caretBefore=null;undoStack.push({md:lastSnapshot,caret:caretState()});redoStack=[];blocks=reparse(md);lastSnapshot=md;lastEdit={at:0,since:0,id:null,coalesce:false,source:''};emit(md);}
+  else{blocks=reparse(md);lastSnapshot=md;undoStack=[];redoStack=[];lastEdit={at:0,since:0,id:null,coalesce:false,source:''};textarea.value=md;}
   activeId=blocks[0].id;lastRange=null;
   if(mode==='blocks')render();else if(mode==='preview')renderPreview();else autosize();
  }
@@ -930,7 +983,7 @@ export function mountBlockEditor(textarea,options={}){
   const source=String(value??'').replace(/\r\n?/g,'\n');if(!source.trim())return;
   if(mode!=='blocks'){
    const current=textarea.value,end=at==='end'||mode==='preview';let start=end?current.length:textarea.selectionStart,stop=end?current.length:at==='replace-selection'?textarea.selectionEnd:textarea.selectionStart;
-   const insert=end&&current&&!current.endsWith('\n')?'\n'+source:source;textarea.value=current.slice(0,start)+insert+current.slice(stop);external();if(mode==='markdown')textarea.setSelectionRange(start+insert.length,start+insert.length);return;
+   const insert=end&&current&&!current.endsWith('\n')?'\n'+source:source;textarea.value=current.slice(0,start)+insert+current.slice(stop);external({notify:true});if(mode==='markdown')textarea.setSelectionRange(start+insert.length,start+insert.length);return;
   }
   readAll();
   if(at==='replace-selection'&&selected.size){replaceSelectedBlocks(source);return;}
@@ -938,7 +991,7 @@ export function mountBlockEditor(textarea,options={}){
   clearSelection();const ed=restoreEditorSelection();if(!ed){insertMarkdown(source,{at:'end'});return;}
   if(at==='cursor'){const sel=win.getSelection();if(sel.rangeCount&&!sel.isCollapsed)sel.collapseToEnd();}
   if(block(ed.dataset.blockEdit)?.type==='code'){insertPlain(ed,source);return;}
-  pasteInto(ed,source);
+  pasteInto(ed,source,{rich:true});
  }
  function getSelectionInfo(){
   if(mode==='markdown'){const start=textarea.selectionStart,end=textarea.selectionEnd;return {text:textarea.value.slice(start,end),start,end};}
@@ -985,8 +1038,7 @@ export function mountBlockEditor(textarea,options={}){
  });
  on(list,'focusout',e=>{const el=e.target;if(el.dataset?.tableCell&&el.dataset.sourceEditing==='true'){readCell(el);commit({coalesce:true});const b=block(el.dataset.tableCell),row=Number(el.dataset.cellRow),column=Number(el.dataset.cellColumn);if(b){el.innerHTML=renderTableCell((row<0?b.headers:b.rows[row])?.[column]||'',{resolveLink});delete el.dataset.sourceEditing;}}});
  on(list,'change',e=>{const id=e.target.dataset?.blockCheck;if(!id)return;const b=block(id);if(!b)return;readAll();beginChange();b.checked=e.target.checked;activeId=id;commit();blockEl(id)?.classList.toggle('is-checked',b.checked);});
- on(list,'toggle',e=>{const el=e.target;if(el.dataset?.toggleId){const b=block(el.dataset.toggleId);if(b&&b.open!==el.open){readAll();beginChange();b.open=el.open;commit();}}},true);
- on(preview,'change',e=>{const input=e.target.closest?.('[data-task-index]');if(!input)return;const value=toggleTask(textarea.value,Number(input.dataset.taskIndex),input.checked);if(value===textarea.value)return;textarea.value=value;external();});
+ on(preview,'change',e=>{const input=e.target.closest?.('[data-task-index]');if(!input)return;const value=toggleTask(textarea.value,Number(input.dataset.taskIndex),input.checked);if(value===textarea.value)return;textarea.value=value;external({notify:true});});
  on(root,'pointerdown',e=>{if(e.target.closest('button,[data-popup-index]')&&!e.target.closest('.block-editor-linkform,[data-block-drag]'))e.preventDefault();});
  on(list,'pointerdown',e=>{
   if(e.button!==0||mode!=='blocks')return;const t=e.target,blockElm=t.closest('[data-block-id]');if(t.closest('.block-gutter,input,textarea,button'))return;
@@ -1003,7 +1055,7 @@ export function mountBlockEditor(textarea,options={}){
  on(doc,'pointerdown',e=>{if(popupState&&!popup.contains(e.target)&&!e.target.closest?.('[data-block-drag],[data-callout-kind]'))closePopup();if(!linkForm.hidden&&!linkForm.contains(e.target))closeLinkForm();},true);
  on(root,'click',e=>{
   const t=e.target;
-  const modeButton=t.closest('[data-editor-mode]');if(modeButton){setMode(modeButton.dataset.editorMode);return;}
+  const modeButton=t.closest('[data-editor-mode]');if(modeButton){const next=modeButton.dataset.editorMode,changed=next!==mode;setMode(next);if(changed&&e.detail>0)focusContent();return;}
   const formatButton=t.closest('[data-format]');if(formatButton){format(formatButton.dataset.format);return;}
   const item=t.closest('[data-popup-index]');if(item&&popup.contains(item)){choose(Number(item.dataset.popupIndex));return;}
   const action=t.closest('[data-editor-action]')?.dataset.editorAction;
@@ -1012,13 +1064,14 @@ export function mountBlockEditor(textarea,options={}){
   const handle=t.closest('[data-block-drag]');if(handle){if(popupState?.kind==='actions'&&popupState.blockId===handle.dataset.blockDrag){closePopup();return;}openActions(handle.dataset.blockDrag,handle);return;}
   const kind=t.closest('[data-callout-kind]');if(kind){openKinds(kind.dataset.calloutKind,kind);return;}
   const tableButton=t.closest('[data-table-action]');if(tableButton){tableAction(tableButton);return;}
+  const opener=t.closest('[data-toggle-open]');if(opener){const id=opener.dataset.toggleOpen,b=block(id);if(b){readAll();beginChange();b.open=!b.open;if(!b.open)editingToggles.delete(id);activeId=id;commit();renderBlock(id);blockEl(id)?.querySelector('[data-toggle-open]')?.focus({preventScroll:true});}return;}
   const toggleButton=t.closest('[data-toggle-edit]');if(toggleButton){readAll();const id=toggleButton.dataset.toggleEdit;if(editingToggles.has(id))editingToggles.delete(id);else editingToggles.add(id);renderBlock(id);blockEl(id)?.querySelector(editingToggles.has(id)?'[data-toggle-body]':'[data-toggle-edit]')?.focus();return;}
   const chip=t.closest('a.note-link[data-id]');if(chip){e.preventDefault();onOpenLink(chip.dataset.id);return;}
   if(t.closest('.note-link')){e.preventDefault();return;}
   const link=t.closest('a[href]');if(link&&list.contains(link)){e.preventDefault();if(e.metaKey||e.ctrlKey)win.open(link.href,'_blank','noopener,noreferrer');return;}
   if(t===list&&mode==='blocks'&&!selected.size){const last=blocks.at(-1),box=blockEl(last.id)?.getBoundingClientRect();if(box&&e.clientY>box.bottom){if(last.type==='paragraph'&&!last.text)focusBlock(last.id);else{readAll();beginChange();const fresh=freshBlock();blocks.push(fresh);commit();render();focusBlock(fresh.id);}}}
  });
- on(popup,'mousemove',e=>{const item=e.target.closest('[data-popup-index]');if(item&&popupState&&Number(item.dataset.popupIndex)!==popupState.index){popupState.index=Number(item.dataset.popupIndex);for(const el of popup.querySelectorAll('[data-popup-index]'))el.classList.toggle('is-active',el===item);setActiveDescendant();}});
+ on(popup,'mousemove',e=>{const item=e.target.closest('[data-popup-index]');if(item&&popupState&&Number(item.dataset.popupIndex)!==popupState.index){popupState.index=Number(item.dataset.popupIndex);for(const el of popup.querySelectorAll('[data-popup-index]')){el.classList.toggle('is-active',el===item);el.tabIndex=el===item?0:-1;if(el.hasAttribute('aria-selected'))el.setAttribute('aria-selected',String(el===item));}setActiveDescendant();}});
  function addBelow(id){readAll();beginChange();const fresh=freshBlock();blocks.splice(indexOf(id)+1,0,fresh);commit();render();focusBlock(fresh.id,{at:'start'});const ed=editableOf(fresh.id);if(!ed)return;insertPlain(ed,'/');const r=win.getSelection().getRangeAt(0);if(r.startContainer.nodeType===3)openSlash(ed,r.startContainer,r.startOffset-1);}
  function tableAction(button){
   readAll();const b=block(button.dataset.tableId);if(!b)return;const active=doc.activeElement?.dataset?.tableCell===b.id?doc.activeElement:null;
@@ -1029,12 +1082,15 @@ export function mountBlockEditor(textarea,options={}){
    if(kind==='remove-row'){if(!b.rows.length)return;const index=Math.max(0,Math.min(b.rows.length-1,cell.row));next=removeTableRow(b,index);position.row=Math.min(index,next.rows.length-1);}
    if(kind==='add-column'){const index=cell.column+1;next=insertTableColumn(b,index);position.column=index;}
    if(kind==='remove-column'){next=removeTableColumn(b,cell.column);position.column=Math.min(cell.column,tableWidth(next)-1);}
-   if(next){beginChange();blocks[indexOf(b.id)]=next;activeId=b.id;report('');commit();render();blockEl(b.id)?.querySelector(`[data-cell-row="${position.row}"][data-cell-column="${position.column}"]`)?.focus();}
+   if(next){beginChange();blocks[indexOf(b.id)]=next;activeId=b.id;report('');commit();render();focusCell(cellAt(b.id,position.row,position.column));}
   }catch(cause){report(cause.message);}
  }
 
  // Keyboard
  const modDown=e=>isMac?e.metaKey:e.ctrlKey;
+ const ed0=t=>t.closest?.('[data-block-edit]');
+ // The block menu from the keyboard: the Menu key, Shift+F10 or Mod+/.
+ const actionsKey=e=>e.key==='ContextMenu'||(e.shiftKey&&e.key==='F10')||(modDown(e)&&!e.altKey&&e.key==='/');
  on(root,'keydown',e=>{
   if(e.isComposing||e.keyCode===229)return;const t=e.target;
   if(linkForm.contains(t)){linkFormKey(e);return;}
@@ -1042,11 +1098,13 @@ export function mountBlockEditor(textarea,options={}){
   const mod=modDown(e),key=e.key.toLowerCase();
   if(mod&&!e.altKey&&(key==='z'||(key==='y'&&!isMac))){if(mode==='markdown'&&t===textarea)return;e.preventDefault();e.stopPropagation();if(key==='y'||e.shiftKey)redo();else undo();return;}
   if(mode!=='blocks')return;
+  if(e.key==='Escape'&&popupState&&!popup.contains(t)&&!(ed0(t)&&popupState.focus==='editor')){e.preventDefault();e.stopPropagation();closePopup();return;}
   if(t===list){selectionKey(e);return;}
   const ed=t.closest?.('[data-block-edit]');
   if(ed&&popupState?.focus==='editor'&&comboKey(e))return;
   if(mod&&!e.altKey&&(['b','i','e','k'].includes(key)||(key==='x'&&e.shiftKey))&&(ed||t.matches('[data-table-cell],[data-toggle-body],[data-toggle-title]'))){e.preventDefault();e.stopPropagation();format({b:'bold',i:'italic',e:'code',k:'link',x:'strike'}[key]);return;}
   if(mod&&!e.altKey&&key==='a'&&ed){const {start,end}=selectionOffsets(ed);if((start===0&&end>=contentLength(ed))||!contentLength(ed)){e.preventDefault();selectBlocks(blocks.map(b=>b.id));}return;}
+  if(actionsKey(e)){const id=t.closest?.('[data-block-id]')?.dataset.blockId;if(id){e.preventDefault();e.stopPropagation();openActions(id,blockEl(id)?.querySelector('[data-block-drag]'));}return;}
   if(mod&&!e.altKey&&key==='d'&&!e.shiftKey){const id=t.closest?.('[data-block-id]')?.dataset.blockId;if(id){e.preventDefault();e.stopPropagation();duplicateBlocks([id]);}return;}
   if(e.altKey&&e.shiftKey&&(e.key==='ArrowUp'||e.key==='ArrowDown')){const id=t.closest?.('[data-block-id]')?.dataset.blockId;if(id){e.preventDefault();e.stopPropagation();moveBlocks([id],e.key==='ArrowUp'?-1:1);}return;}
   if(e.key==='Escape'){const id=t.closest?.('[data-block-id]')?.dataset.blockId;if(id){e.preventDefault();e.stopPropagation();readAll();selectBlocks([id]);}return;}
@@ -1086,34 +1144,38 @@ export function mountBlockEditor(textarea,options={}){
   if(key==='Tab'){e.preventDefault();indentBlocks(ids,e.shiftKey?-1:1);return;}
   if(mod&&key.toLowerCase()==='a'){e.preventDefault();selectBlocks(blocks.map(b=>b.id));return;}
   if(mod&&key.toLowerCase()==='d'){e.preventDefault();e.stopPropagation();duplicateBlocks(ids);return;}
+  if(actionsKey(e)){e.preventDefault();e.stopPropagation();const id=focusId||ids[0];openActions(id,blockEl(id)?.querySelector('[data-block-drag]'));return;}
   if(key.length===1&&!mod)e.preventDefault();
  }
+ // Caret moves skip dividers (they are removed with Backspace/Delete beside them, or selected with Escape and Shift+arrows).
+ const neighbor=(index,step)=>{for(let i=index+step;i>=0&&i<blocks.length;i+=step)if(blocks[i].type!=='divider')return blocks[i];return blocks[index+step]||null;};
  function textKey(e,ed){
   const b=block(ed.dataset.blockEdit);if(!b)return;const mod=modDown(e),key=e.key,sel=win.getSelection(),collapsed=sel.isCollapsed;
   if(key==='Enter'&&!e.altKey&&!mod){e.preventDefault();onEnter(ed,e.shiftKey);return;}
-  if(key==='Tab'&&!mod&&!e.altKey){if(b.type==='code'&&!e.shiftKey){e.preventDefault();insertPlain(ed,'  ');return;}if(LIST.has(b.type)){e.preventDefault();readBlock(ed);indentBlocks([b.id],e.shiftKey?-1:1);}return;}
+  // Shift+Tab on a top-level item falls through to the browser, which moves focus to that row's checkbox.
+  if(key==='Tab'&&!mod&&!e.altKey){if(b.type==='code'&&!e.shiftKey){e.preventDefault();insertPlain(ed,'  ');return;}if(LIST.has(b.type)&&!(e.shiftKey&&!(Number(b.indent)>0))){e.preventDefault();readBlock(ed);indentBlocks([b.id],e.shiftKey?-1:1);}return;}
   if(key==='Backspace'&&!e.altKey&&!mod){if(collapsed&&selectionOffsets(ed).start===0){e.preventDefault();onBackspaceAtStart(ed);}return;}
   if(key==='Delete'&&!e.altKey&&!mod){if(collapsed&&selectionOffsets(ed).start>=contentLength(ed)){e.preventDefault();onDeleteAtEnd(ed);}return;}
   if(key==='ArrowUp'||key==='ArrowDown'){
    const up=key==='ArrowUp';if(e.altKey||mod)return;const index=indexOf(b.id);
    if(e.shiftKey){const {start,end}=selectionOffsets(ed);if(up?start===0&&lineEdge(ed,true):end>=contentLength(ed)&&lineEdge(ed,false)){const next=blocks[index+(up?-1:1)];e.preventDefault();readBlock(ed);if(next)selectRange(b.id,next.id);else selectBlocks([b.id]);}return;}
    if(!lineEdge(ed,up))return;
-   const target=blocks[index+(up?-1:1)];
+   const target=neighbor(index,up?-1:1);
    if(!target){if(!up&&b.type==='code'){e.preventDefault();readBlock(ed);beginChange();const fresh=freshBlock();blocks.push(fresh);commit();render();focusBlock(fresh.id);}return;}
    e.preventDefault();closePopup();const rect=caretRect();focusBlock(target.id,{at:up?'end':'start',x:rect?.left,fromAbove:!up});return;
   }
   if((key==='ArrowLeft'||key==='ArrowRight')&&!e.shiftKey&&!e.altKey&&!mod&&collapsed){
    const {start}=selectionOffsets(ed),index=indexOf(b.id);
-   if(key==='ArrowLeft'&&start===0&&blocks[index-1]){e.preventDefault();focusBlock(blocks[index-1].id,{at:'end'});}
-   if(key==='ArrowRight'&&start>=contentLength(ed)&&blocks[index+1]){e.preventDefault();focusBlock(blocks[index+1].id,{at:'start'});}
+   const target=key==='ArrowLeft'?start===0&&neighbor(index,-1):start>=contentLength(ed)&&neighbor(index,1);
+   if(target){e.preventDefault();focusBlock(target.id,{at:key==='ArrowLeft'?'end':'start'});}
   }
  }
  function tableKey(e,el){
   const b=block(el.dataset.tableCell);if(!b)return;const row=Number(el.dataset.cellRow),column=Number(el.dataset.cellColumn);
   if(e.key==='Enter'&&e.shiftKey){e.preventDefault();replaceSource(el,'\n',sourceSelection(el)||{});return;}
-  if(e.key==='Tab'||e.key==='Enter'){readCell(el);const position=tableCellPosition(b,{row,column},e.key,{shift:e.shiftKey});if(position.leave)return;e.preventDefault();e.stopPropagation();if(position.appendRow){beginChange();blocks[indexOf(b.id)]=insertTableRow(b);commit();render();}blockEl(b.id)?.querySelector(`[data-cell-row="${position.row}"][data-cell-column="${position.column}"]`)?.focus();return;}
-  if(e.key==='ArrowUp'&&!e.shiftKey&&lineEdge(el,true)){e.preventDefault();if(row>-1)blockEl(b.id)?.querySelector(`[data-cell-row="${row-1}"][data-cell-column="${column}"]`)?.focus();else{const previous=blocks[indexOf(b.id)-1];if(previous)focusBlock(previous.id,{at:'end'});}return;}
-  if(e.key==='ArrowDown'&&!e.shiftKey&&lineEdge(el,false)){e.preventDefault();if(row<b.rows.length-1)blockEl(b.id)?.querySelector(`[data-cell-row="${row+1}"][data-cell-column="${column}"]`)?.focus();else{const next=blocks[indexOf(b.id)+1];if(next)focusBlock(next.id,{at:'start'});else{readAll();beginChange();const fresh=freshBlock();blocks.push(fresh);commit();render();focusBlock(fresh.id);}}}
+  if(e.key==='Tab'||e.key==='Enter'){readCell(el);const position=tableCellPosition(b,{row,column},e.key,{shift:e.shiftKey});if(position.leave)return;e.preventDefault();e.stopPropagation();if(position.appendRow){beginChange();blocks[indexOf(b.id)]=insertTableRow(b);commit();render();}focusCell(cellAt(b.id,position.row,position.column));return;}
+  if(e.key==='ArrowUp'&&!e.shiftKey&&lineEdge(el,true)){e.preventDefault();if(row>-1)focusCell(cellAt(b.id,row-1,column));else{const previous=blocks[indexOf(b.id)-1];if(previous)focusBlock(previous.id,{at:'end'});}return;}
+  if(e.key==='ArrowDown'&&!e.shiftKey&&lineEdge(el,false)){e.preventDefault();if(row<b.rows.length-1)focusCell(cellAt(b.id,row+1,column));else{const next=blocks[indexOf(b.id)+1];if(next)focusBlock(next.id,{at:'start'});else{readAll();beginChange();const fresh=freshBlock();blocks.push(fresh);commit();render();focusBlock(fresh.id);}}}
  }
  function toggleTitleKey(e,el){
   const b=block(el.dataset.toggleTitle);if(!b)return;const index=indexOf(b.id);
@@ -1142,14 +1204,14 @@ export function mountBlockEditor(textarea,options={}){
   if(mode!=='blocks')return;const t=e.target,data=e.clipboardData;if(!data||t.closest?.('.block-editor-linkform,[data-toggle-title],[data-toggle-body],[data-code-lang]'))return;
   const plain=data.getData('text/plain').replace(/\r\n?/g,'\n');
   if(t.matches?.('[data-table-cell]')){e.preventDefault();replaceSource(t,plain,sourceSelection(t)||{});return;}
-  const markdown=data.getData(MD_MIME),html=data.getData('text/html'),source=markdown||(html&&RICH_HTML.test(html)?htmlToMarkdown(html):'')||plain;
+  const markdown=data.getData(MD_MIME),html=data.getData('text/html'),rich=markdown||(html&&RICH_HTML.test(html)?htmlToMarkdown(html):''),source=rich||plain;
   if(!source)return;e.preventDefault();
   if(selected.size){replaceSelectedBlocks(source);return;}
   const ed=t.closest?.('[data-block-edit]');if(!ed)return;
   if(block(ed.dataset.blockEdit)?.type==='code'){insertPlain(ed,plain);return;}
   const url=!markdown&&/^\s*https?:\/\/\S+\s*$/.test(plain)&&safeMarkdownUrl(plain.trim());
   if(url&&!win.getSelection().isCollapsed){const {start,end}=selectionOffsets(ed);beginChange();readBlock(ed);applyMark(ed,start,end,'link',newLink(url));readBlock(ed);commit();const id=ed.dataset.blockEdit;renderBlock(id);const el=editableOf(id);if(el){el.focus({preventScroll:true});placeCaret(el,end);}return;}
-  pasteInto(ed,source);
+  pasteInto(ed,source,{rich:!!rich});
  });
  function dropBefore(y){for(const el of list.children){if(!el.dataset.blockId||drag?.ids.includes(el.dataset.blockId))continue;const r=el.getBoundingClientRect();if(y<r.top+r.height/2)return el;}return null;}
  on(root,'dragstart',e=>{
@@ -1159,12 +1221,23 @@ export function mountBlockEditor(textarea,options={}){
  });
  on(list,'dragover',e=>{if(!drag)return;e.preventDefault();e.dataTransfer.dropEffect='move';const before=dropBefore(e.clientY),last=[...list.children].filter(el=>el.dataset.blockId).at(-1);list.append(indicator);indicator.hidden=false;indicator.style.top=(before?before.offsetTop:last?last.offsetTop+last.offsetHeight:0)-1+'px';});
  on(list,'dragleave',e=>{if(drag&&!list.contains(e.relatedTarget))indicator.hidden=true;});
+ // Text, links or HTML dragged in from elsewhere go through the paste path; drags of a selection inside one block,
+ // and of files, keep the browser's behaviour.
+ on(root,'dragstart',e=>{if(!e.target.closest?.('[data-block-drag]'))textDrag=true;});
+ on(root,'dragend',()=>{textDrag=false;});
+ on(list,'drop',e=>{
+  if(drag||textDrag||mode!=='blocks'||!e.dataTransfer)return;const ed=e.target.closest?.('[data-block-edit]'),data=e.dataTransfer;if(!ed||block(ed.dataset.blockEdit)?.type==='code')return;
+  const markdown=data.getData(MD_MIME),html=data.getData('text/html'),plain=data.getData('text/plain').replace(/\r\n?/g,'\n'),rich=markdown||(html&&RICH_HTML.test(html)?htmlToMarkdown(html):''),source=rich||plain;if(!source)return;
+  e.preventDefault();const range=doc.caretRangeFromPoint?.(e.clientX,e.clientY);ed.focus({preventScroll:true});
+  if(range&&ed.contains(range.startContainer)){const sel=win.getSelection();sel.removeAllRanges();sel.addRange(range);}else placeCaret(ed,contentLength(ed));
+  pasteInto(ed,source,{rich:!!rich});
+ });
  on(list,'drop',e=>{if(!drag)return;e.preventDefault();const before=dropBefore(e.clientY),ids=drag.ids;drag=null;indicator.hidden=true;moveBlocksBefore(ids,before?.dataset.blockId||null);});
  on(root,'dragend',()=>{drag=null;indicator.hidden=true;for(const el of list.querySelectorAll('.is-dragging'))el.classList.remove('is-dragging');});
  on(doc,'selectionchange',()=>{if(!selFrame)selFrame=win.requestAnimationFrame(()=>{selFrame=0;selectionChanged();});});
  const reposition=()=>{if(popupState)place(popup,popupAnchor());if(!toolbar.hidden){const sel=win.getSelection();if(sel.rangeCount)place(toolbar,sel.getRangeAt(0).getBoundingClientRect(),{above:true,gap:8});}};
  on(win,'scroll',reposition,{capture:true,passive:true});on(win,'resize',reposition);
- on(textarea,'input',external);
+ on(textarea,'input',()=>external({coalesce:mode==='markdown'}));
  on(textarea,'input',()=>{if(mode==='markdown')autosize();});
 
  setMode(mode);
