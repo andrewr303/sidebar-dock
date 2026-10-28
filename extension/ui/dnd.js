@@ -169,6 +169,9 @@ export function initDnd(ctx, { openAdd } = {}) {
     const target = event.target instanceof Element ? event.target : null;
     const current = drag;
     const transfer = event.dataTransfer;
+    // dragend never reaches the document when the dragged row re-renders away; do not let this drag leak into the next.
+    drag = null;
+    document.documentElement.classList.remove('is-dragging', 'is-dragging-items', 'is-dragging-collection');
     clearMarks();
     stopExpandTimer();
     if (!target) return;
@@ -209,9 +212,19 @@ export function initDnd(ctx, { openAdd } = {}) {
     if (!row) { openAdd?.(ctx, { ...links[0], collectionId, source: 'drop' }); return; }
     ctx.run(async () => {
       const saved = [];
-      for (const link of links) saved.push(await ctx.store.saveItem({ type: 'bookmark', url: link.url, title: link.title, collectionId }));
+      let status = 'saved';
+      for (const link of links) {
+        // A link that is already saved only moves: saveItem would merge the drop's bare data over it and replace its
+        // title (with the anchor text or the host name) and its type (article, image, video) with a plain bookmark.
+        const existing = ctx.select.savedForUrl(link.url);
+        if (!existing) saved.push(await ctx.store.saveItem({ type: 'bookmark', url: link.url, ...(link.title ? { title: link.title } : {}), collectionId }));
+        else if ((existing.collectionId || '') === collectionId) { saved.push(existing); status = 'already'; }
+        else { saved.push(await ctx.store.updateItem(existing.id, { collectionId })); status = 'moved'; }
+      }
       ctx.prefs.touchCollection(collectionId);
-      const message = saved.length === 1 ? `Saved to ${collectionName(collectionId)}` : `Saved ${saved.length} links to ${collectionName(collectionId)}`;
+      const where = collectionName(collectionId);
+      const message = saved.length > 1 ? `Saved ${saved.length} links to ${where}`
+        : { saved: `Saved to ${where}`, moved: `Moved the saved link to ${where}`, already: `Already saved in ${where}` }[status];
       ctx.toast(message, { tone: 'success', action: saved.length === 1 ? { label: 'Edit', run: () => ctx.openItem(saved[0].id) } : null });
     });
   });

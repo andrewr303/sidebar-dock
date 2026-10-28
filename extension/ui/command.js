@@ -6,6 +6,9 @@ import { collectionIcon, favicon, kbd, domainOf, TYPE_ICONS, TYPE_LABELS } from 
 import { registerDialog } from './overlay.js';
 import { registerActions, hasAction } from './runtime.js';
 
+// Views open through the sidebar's navigation action, which also handles the side panel's Library stack and Notes tab.
+const goToView = (ctx, view, { keep = false } = {}) => ctx.dispatch('sidebar.navigate', { data: { view, keep } });
+
 const DIALOG = 'command.palette';
 const WEB_URL = /^https?:\/\/\S+\.\S+$/i;
 const ext = ctx => ctx.env.isExtension;
@@ -17,7 +20,8 @@ export const COMMANDS = [
   { id: 'note', label: 'New note', icon: 'square-pen', keywords: 'write create document', shortcut: 'n', action: 'shell.new-note', pinned: true },
   { id: 'today', label: 'Today’s note', icon: 'calendar', keywords: 'daily journal date', action: 'shell.today-note', pinned: true },
   { id: 'ask', label: 'Ask AI', icon: 'sparkles', keywords: 'assistant chat claude chatgpt grok question', shortcut: 'mod+shift+a', action: 'shell.ask', pinned: true },
-  { id: 'save-page', label: 'Save this page', icon: 'bookmark-plus', keywords: 'current tab capture clip', action: 'shell.save-page', when: ext, pinned: true },
+  // In the full tab the active tab is Still itself, so saving "this page" only makes sense from the side panel.
+  { id: 'save-page', label: 'Save this page', icon: 'bookmark-plus', keywords: 'current tab capture clip', action: 'shell.save-page', when: ctx => ext(ctx) && ctx.env.isSidepanel, pinned: true },
   { id: 'save-tabs', label: 'Save all tabs', icon: 'layers', keywords: 'window session collection', action: 'add.save-tabs', when: ctx => ext(ctx) && hasAction('add.save-tabs') },
   { id: 'upload', label: 'Upload files', icon: 'upload', keywords: 'pdf image attach', action: 'add.upload', when: () => hasAction('add.upload') },
   { id: 'new-collection', label: 'New collection', icon: 'folder-plus', keywords: 'folder create group', action: 'collections.new', pinned: true },
@@ -25,7 +29,7 @@ export const COMMANDS = [
   { id: 'go-inbox', label: 'Go to Inbox', icon: 'inbox', keywords: 'unsorted', view: 'inbox' },
   { id: 'go-favorites', label: 'Go to Favorites', icon: 'star', keywords: 'starred', view: 'favorites' },
   { id: 'go-notes', label: 'Go to Notes', icon: 'sticky-note', keywords: 'writing', view: 'notes' },
-  { id: 'go-tasks', label: 'Go to Tasks', icon: 'list-checks', keywords: 'todo checklist', view: 'tasks' },
+  { id: 'go-tasks', label: 'Go to Tasks', icon: 'list-checks', keywords: 'todo checklist', view: 'tasks', when: full },
   { id: 'go-highlights', label: 'Go to Highlights', icon: 'highlighter', keywords: 'quotes marks', view: 'highlights' },
   { id: 'go-map', label: 'Go to Knowledge map', icon: 'waypoints', keywords: 'graph links connections', view: 'map' },
   { id: 'go-archive', label: 'Go to Archive', icon: 'archive', view: 'archive' },
@@ -188,7 +192,7 @@ function commandOption(ctx, command) {
     leading: html`<span class="command-glyph">${icon(command.icon, { size: 16 })}</span>`,
     meta: command.shortcut ? kbd(command.shortcut) : '',
     run: ctx => {
-      if (command.view) return ctx.navigate(command.view);
+      if (command.view) return goToView(ctx, command.view);
       return ctx.dispatch(command.action, { data: { ...(command.data || {}) } });
     },
   };
@@ -220,17 +224,21 @@ function buildSections(ctx) {
       run: ctx => ctx.dispatch('shell.add', { data: { url: query } }),
     }] });
   }
-  const semantic = palette.semantic?.query === query ? palette.semantic.results : null;
-  const items = semantic
-    ? semantic.map(hit => ({ hit, item: ctx.select.byId(hit.id) })).filter(({ item }) => item && !item.deletedAt)
-      .slice(0, 8).map(({ hit, item }) => itemOption(ctx, item, { semantic: hit.source === 'semantic', snippet: '' }))
-    : ctx.select.itemsForView({ view: 'all', query, sort: 'updated' }).slice(0, 8).map(item => itemOption(ctx, item));
-  const total = ctx.select.itemsForView({ view: 'all', query, sort: 'updated' }).length;
-  if (total > items.length) {
+  const matches = ctx.select.itemsForView({ view: 'all', query, sort: 'updated' });
+  // Search engine hits (meaning first) lead; text matches fill the rest, so a narrower engine result never hides them.
+  const semantic = palette.semantic?.query === query ? palette.semantic.results : [];
+  const seen = new Set();
+  const picked = [
+    ...semantic.map(hit => ({ hit, item: ctx.select.byId(hit.id) })).filter(({ item }) => item && !item.deletedAt),
+    ...matches.map(item => ({ hit: null, item })),
+  ].filter(({ item }) => !seen.has(item.id) && seen.add(item.id)).slice(0, 8);
+  const items = picked.map(({ hit, item }) => itemOption(ctx, item, { semantic: hit?.source === 'semantic' }));
+  const shown = new Set(picked.map(({ item }) => item.id));
+  if (matches.some(item => !shown.has(item.id))) {
     items.push({
-      kind: 'command', key: 'all-results', label: `Show all ${total.toLocaleString()} results`, hint: `for “${query}”`,
+      kind: 'command', key: 'all-results', label: `Show all ${matches.length.toLocaleString()} results`, hint: `for “${query}”`,
       leading: html`<span class="command-glyph">${icon('search', { size: 16 })}</span>`,
-      run: ctx => { ctx.state.query = query; ctx.navigate('all', { keep: true }); },
+      run: ctx => { ctx.state.query = query; goToView(ctx, 'all', { keep: true }); },
     });
   }
   sections.push({ id: 'items', label: 'Items', options: items });

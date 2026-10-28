@@ -168,7 +168,7 @@ export async function saveCurrentTab(ctx, { collectionId, note, tags, title } = 
     : moved
       ? { label: 'Undo', run: async () => { await ctx.store.updateItem(item.id, { collectionId: before.collectionId }); ctx.toast(`Moved back to ${collectionLabel(ctx, before.collectionId)}`); } }
       : { label: 'Open', run: () => ctx.openItem(item.id) };
-  const message = item.collectionFallback ? 'That collection is gone, so it was saved to Inbox instead'
+  const message = item.collectionFallback ? 'Saved to Inbox instead. That collection no longer exists.'
     : item.created ? `Saved to ${where}` : moved ? `Moved to ${where}` : `Already saved in ${where}`;
   ctx.toast(message, { tone: item.collectionFallback ? 'warning' : 'success', action });
   ctx.render();
@@ -443,7 +443,7 @@ function renderDuplicate(ctx, d) {
   if (d.updateId) {
     const item = ctx.select.byId(d.updateId);
     if (!item) return '';
-    return html`<div class="add-notice is-update" role="status">${icon('pencil', { size: 16 })}<span class="add-notice-text">Editing the copy saved ${item.collectionId ? 'in' : 'to'}
+    return html`<div class="add-notice is-update" role="status">${icon('pencil', { size: 16 })}<span class="add-notice-text">Editing the saved link in
       ${collectionIcon(ctx.select.collection(item.collectionId), { size: 16 })}<strong>${collectionLabel(ctx, item.collectionId)}</strong></span></div>`;
   }
   const existing = ctx.select.savedForUrl(url);
@@ -542,7 +542,7 @@ function renderAddDialog(ctx) {
   const validFiles = d.files.filter(f => !f.error).length;
   const saveLabel = d.type === 'file' ? (validFiles > 1 ? `Upload ${validFiles} files` : 'Upload') : d.updateId ? 'Update' : 'Save';
   const headerActions = html`<div class="add-head-actions">
-    <div class="add-type" data-keydown="add.type-key">${segmented({ name: 'add-type', value: d.type, options: TYPE_OPTIONS, action: 'add.type', size: 'sm', ariaLabel: 'What to add' })}</div>
+    <div class="add-type">${segmented({ name: 'add-type', value: d.type, options: TYPE_OPTIONS, action: 'add.type', size: 'sm', ariaLabel: 'What to add' })}</div>
     ${iconButton({ icon: 'star', label: d.favorite ? 'Remove from favorites' : 'Add to favorites', action: 'add.favorite', pressed: d.favorite, size: 'sm', className: 'add-fav' })}
     ${iconButton({ icon: d.reminderAt ? 'bell-ring' : 'bell', label: d.reminderAt ? `Reminder: ${formatReminder(d.reminderAt)}` : 'Remind me', action: 'add.reminder', pressed: !!d.reminderAt, size: 'sm', className: 'add-remind' })}
     <span class="add-vr" aria-hidden="true"></span>
@@ -846,9 +846,14 @@ export function renderCaptureProgress(ctx) {
   </div>`;
 }
 
+// Chrome grants screenshots of a page only after the user invokes the extension on it (activeTab).
+const friendlyCaptureError = error => /all_urls|activeTab|cannot access|not allowed/i.test(error?.message || '')
+  ? new Error('Chrome needs you to click the Still button in the toolbar on this page first. Then try again.')
+  : error;
+
 async function captureVisible(ctx) {
   const windowId = await ensureWindowId(ctx);
-  const item = await ctx.chrome('captureScreenshot', { windowId });
+  const item = await ctx.chrome('captureScreenshot', { windowId }).catch(error => { throw friendlyCaptureError(error); });
   ctx.toast('Screenshot saved', { tone: 'success', action: item?.id ? { label: 'Open', run: () => ctx.openItem(item.id) } : null });
 }
 
@@ -864,7 +869,7 @@ async function captureFull(ctx) {
     ctx.toast('Full-page screenshot saved', { tone: 'success', action: ctx.state.capture.itemId ? { label: 'Open', run: () => ctx.openItem(ctx.state.capture.itemId) } : null });
   } catch (error) {
     const cancelled = ctx.state.capture?.cancelRequested || /cancel/i.test(error?.message || '');
-    ctx.state.capture = { ...ctx.state.capture, jobId, status: cancelled ? 'cancelled' : 'error', message: cancelled ? '' : error?.message || 'Try again.' };
+    ctx.state.capture = { ...ctx.state.capture, jobId, status: cancelled ? 'cancelled' : 'error', message: cancelled ? '' : friendlyCaptureError(error)?.message || 'Try again.' };
   }
   ctx.render();
 }
@@ -902,26 +907,17 @@ registerActions({
   'add.capture-dismiss': ({ ctx }) => { ctx.state.capture = null; ctx.render(); },
   'add.highlight-tip': ({ ctx }) => ctx.toast('Select text on the page, then right-click and choose Highlight selection in Still.', { duration: 7000 }),
 
-  'add.type': ({ ctx, data }) => {
+  'add.type': ({ ctx, data, event }) => {
     const d = draft;
     if (!d || !TYPE_OPTIONS.some(o => o.value === data.value) || d.type === data.value) return;
     d.type = data.value;
     d.error = '';
     if (d.type === 'link') d.urlFirst = !validUrl(d.url);
     ctx.render();
+    // Arrow keys move through the options (overlay.js clicks them with detail 0); keep focus there.
+    if (!event?.detail) return;
     const focusId = d.type === 'link' ? (d.urlFirst ? 'add-url' : 'add-title') : d.type === 'note' ? (d.title ? 'add-note' : 'add-note-title') : 'add-choose-files';
     ctx.nextFrame(() => document.getElementById(focusId)?.focus());
-  },
-  'add.type-key': ({ ctx, event }) => {
-    const d = draft;
-    if (!d || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-    event.preventDefault();
-    const index = TYPE_OPTIONS.findIndex(o => o.value === d.type);
-    const next = event.key === 'Home' ? 0 : event.key === 'End' ? TYPE_OPTIONS.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + TYPE_OPTIONS.length) % TYPE_OPTIONS.length;
-    d.type = TYPE_OPTIONS[next].value;
-    if (d.type === 'link') d.urlFirst = !validUrl(d.url);
-    ctx.render();
-    ctx.nextFrame(() => document.querySelector(`.add-type [data-value="${d.type}"]`)?.focus());
   },
   'add.favorite': ({ ctx }) => { if (!draft) return; draft.favorite = !draft.favorite; ctx.render(); },
   'add.reminder': ({ ctx, el }) => {

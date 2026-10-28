@@ -43,7 +43,15 @@ const shell = ctx => (ctx.state.shell ||= { navOpen: false, wide: globalThis.mat
 const clampPanel = width => Math.round(Math.min(PANEL.max, Math.max(PANEL.min, Number(width) || PANEL.fallback)));
 const panelWidth = ctx => clampPanel(ctx.prefs.get('panelWidth', PANEL.fallback));
 const keys = (ctx, combo) => combo.replace('mod', ctx.env.isMac ? 'Meta' : 'Control').replace('shift', 'Shift');
-const currentCollection = ctx => (ctx.state.view === 'inbox' ? '' : ctx.state.view.startsWith('collection:') ? ctx.state.view.slice(11) : undefined);
+// The collection the user is looking at ('' = Inbox), if any. In the side panel only the Library tab's drill-down counts,
+// so + on This page or Notes does not preselect a collection left open in the Library tab earlier.
+const currentCollection = ctx => {
+  const { view, sideTab, sideStack, panel } = ctx.state;
+  if (ctx.env.isSidepanel && (sideTab !== 'library' || !sideStack.length || panel)) return undefined;
+  return view === 'inbox' ? '' : view.startsWith('collection:') ? view.slice(11) : undefined;
+};
+// Shortcuts run actions with the focused element's dataset; only clicks and dispatch() pass real payloads.
+const payload = (event, data) => (event?.type === 'keydown' ? {} : data || {});
 const menuOpenFor = (ctx, action) => ctx.state.popover?.anchorEl?.dataset?.action === action;
 const nextTheme = () => (document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 const dispatchOr = (ctx, name, fallback) => (hasAction(name) ? ctx.dispatch(name, {}) : fallback());
@@ -285,13 +293,14 @@ registerActions({
     { heading: 'Search syntax' },
     ...SEARCH_TOKENS.map(t => ({ label: t.label, hint: t.hint, keepFocus: true, run: () => insertSearchToken(ctx, t.token) })),
   ], { placement: 'bottom-end', label: 'Filter and sort' }),
-  'shell.ask': ({ ctx, data }) => {
-    const prompt = data?.prompt || '';
+  'shell.ask': ({ ctx, data, event }) => {
+    const prompt = payload(event, data).prompt || '';
     if (!prompt && ctx.state.panel?.kind === 'ai' && !ctx.env.isSidepanel) return ctx.closePanel();
     askAi(ctx, prompt ? { prompt, send: true } : {});
   },
-  'shell.add': ({ ctx, data }) => {
-    if (data?.url) return openAdd(ctx, { url: data.url });
+  'shell.add': ({ ctx, data, event }) => {
+    const { url } = payload(event, data);
+    if (url) return openAdd(ctx, { url });
     const collectionId = currentCollection(ctx);
     openAdd(ctx, collectionId === undefined ? {} : { collectionId });
   },
@@ -299,7 +308,7 @@ registerActions({
   'shell.new-note': ({ ctx }) => newNote(ctx),
   'shell.today-note': ({ ctx }) => todayNote(ctx),
   'shell.save-page': ({ ctx }) => saveCurrentTab(ctx, {}),
-  'shell.settings': ({ ctx, data }) => openSettings(ctx, data?.section || 'general'),
+  'shell.settings': ({ ctx, data, event }) => openSettings(ctx, payload(event, data).section || 'general'),
   'shell.shortcuts': ({ ctx }) => openSettings(ctx, 'shortcuts'),
   'shell.toggle-theme': ({ ctx }) => ctx.store.updateSettings({ theme: nextTheme() }),
   'shell.command': ({ ctx, el }) => {
@@ -362,8 +371,8 @@ const noDialog = ctx => !ctx.state.dialogs.length;
 registerShortcuts([
   { keys: 'mod+k', action: 'shell.command', label: 'Search and commands', allowInInputs: true },
   { keys: '/', action: 'shell.focus-search', label: 'Search this view', when: noDialog },
+  // mod+shift+s (Quick add) is registered by quick-add.js.
   { keys: 'a', action: 'shell.add', label: 'Add a link', when: noDialog },
-  { keys: 'mod+shift+s', action: 'shell.add', label: 'Add a link', when: noDialog },
   { keys: 'n', action: 'shell.new-note', label: 'New note', when: noDialog },
   { keys: 'mod+shift+a', action: 'shell.ask', label: 'Ask AI', allowInInputs: true, when: noDialog },
   { keys: 'mod+\\', action: 'shell.toggle-sidebar', label: 'Show or hide the sidebar', when: ctx => noDialog(ctx) && !ctx.env.isSidepanel },

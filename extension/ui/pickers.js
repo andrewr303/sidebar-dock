@@ -250,7 +250,9 @@ function renderCollectionPopover(ctx, props) {
   const group = (name, label) => {
     const rows = options.map((o, i) => [o, i]).filter(([o]) => o.group === name);
     if (!rows.length) return '';
-    return html`<div class="pick-group" role="group" aria-label="${label}">${label ? html`<div class="pick-group-label" aria-hidden="true">${label}</div>` : ''}${rows.map(([o, i]) => option(o, i))}</div>`;
+    return label
+      ? html`<div class="pick-group" role="group" aria-label="${label}"><div class="pick-group-label" aria-hidden="true">${label}</div>${rows.map(([o, i]) => option(o, i))}</div>`
+      : html`<div class="pick-group">${rows.map(([o, i]) => option(o, i))}</div>`;
   };
   const hasCollections = options.some(o => o.kind === 'collection');
   const empty = query.trim() && !options.length;

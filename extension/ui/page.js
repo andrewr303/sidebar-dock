@@ -1,8 +1,8 @@
 // Side panel "This page": tracks the active browser tab, saves it into a collection in one click, and shows what the
 // library knows about it (notes, highlights, related items) with a shortcut into Ask.
-import { html, cx, safeSrc } from './html.js';
+import { html, cx } from './html.js';
 import { icon } from './icons.js';
-import { button, iconButton, collectionIcon, favicon, domainOf, relativeDate, shortDate, emptyState, skeleton, cover, highlightColor, TYPE_LABELS, TYPE_ICONS } from './components.js';
+import { button, iconButton, collectionIcon, domainOf, relativeDate, shortDate, emptyState, skeleton, spinner, cover, highlightColor, TYPE_LABELS, TYPE_ICONS } from './components.js';
 import { registerActions } from './runtime.js';
 import { renderTagInput, openCollectionPicker } from './pickers.js';
 import { openAdd, ensureWindowId, requestPermission, defaultCollectionId, collectionLabel, saveCurrentTab, renderCaptureProgress } from './quick-add.js';
@@ -47,7 +47,7 @@ export function relatedLexical(items = [], page = {}, { limit = 5, exclude = [] 
 
 /* ------------------------------------------------------------------ active tab tracking */
 
-const pageState = { loading: false, error: '' };
+const pageState = { loading: false, error: '', saving: false };
 const relatedCache = new Map();
 let refreshTimer = 0;
 let askDraft = '';
@@ -117,15 +117,22 @@ export async function init(ctx) {
 
 async function savePage(ctx, collectionId) {
   const page = ctx.state.page;
-  if (!page?.url) return null;
-  if (ctx.env.isExtension && !page.demo) return saveCurrentTab(ctx, { collectionId });
-  const before = ctx.select.savedForUrl(page.url);
-  const item = await ctx.store.saveItem({ url: page.url, title: page.title, collectionId });
-  ctx.prefs.touchCollection(collectionId);
-  const where = collectionLabel(ctx, item.collectionId);
-  ctx.toast(before ? `Already saved in ${where}` : `Saved to ${where}`, { tone: 'success',
-    action: before ? { label: 'Open', run: () => ctx.openItem(item.id) } : { label: 'Undo', run: () => ctx.store.deleteItem(item.id) } });
-  return item;
+  if (!page?.url || pageState.saving) return null;
+  pageState.saving = true;
+  ctx.render();
+  try {
+    if (ctx.env.isExtension && !page.demo) return await saveCurrentTab(ctx, { collectionId });
+    const before = ctx.select.savedForUrl(page.url);
+    const item = await ctx.store.saveItem({ url: page.url, title: page.title, collectionId });
+    ctx.prefs.touchCollection(collectionId);
+    const where = collectionLabel(ctx, item.collectionId);
+    ctx.toast(before ? `Already saved in ${where}` : `Saved to ${where}`, { tone: 'success',
+      action: before ? { label: 'Open', run: () => ctx.openItem(item.id) } : { label: 'Undo', run: () => ctx.store.deleteItem(item.id) } });
+    return item;
+  } finally {
+    pageState.saving = false;
+    ctx.render();
+  }
 }
 
 const savedItem = ctx => (ctx.state.page?.url ? ctx.select.savedForUrl(ctx.state.page.url) : null);
@@ -152,8 +159,9 @@ function renderSaveBar(ctx, page) {
   const open = ctx.state.popover?.name === 'pick.collection' && ctx.state.popover.props?.pickerKey === 'page-save';
   return html`<div class="page-save-bar">
     <div class="split-btn split-btn-primary page-split" role="group" aria-label="Save this page">
-      <button type="button" class="btn btn-primary split-btn-main page-save-main" data-action="page.save" aria-keyshortcuts="Alt+Shift+S" title="Save to ${label} (Alt+Shift+S)">
-        ${icon('bookmark', { size: 16 })}<span class="btn-label">Save to ${label}</span></button>
+      <button type="button" class="${cx('btn', 'btn-primary', 'split-btn-main', 'page-save-main', pageState.saving && 'is-loading')}" data-action="page.save"
+        aria-keyshortcuts="Alt+Shift+S" data-tooltip="Save to ${label} (Alt+Shift+S)" ${pageState.saving ? html`aria-busy="true" aria-disabled="true"` : ''}>
+        ${icon('bookmark', { size: 16 })}<span class="btn-label">Save to ${label}</span>${pageState.saving ? spinner({ size: 14 }) : ''}</button>
       <button type="button" class="btn btn-primary split-btn-menu" aria-label="Save to another collection" aria-haspopup="listbox" aria-expanded="${open ? 'true' : 'false'}"
         data-tooltip="Choose collection" data-action="page.save-menu">${icon('chevron-down', { size: 14 })}</button>
     </div>
@@ -240,9 +248,9 @@ function queueRelated(ctx, page, item) {
 
 function relatedThumb(ctx, item) {
   const collection = ctx.select.collection(item.collectionId);
-  const icon16 = item.type === 'note' ? 'sticky-note' : item.url ? '' : TYPE_ICONS[item.type] || 'file';
-  return cover(item.cover, { className: 'page-related-thumb', color: item.type === 'note' ? 'yellow' : collection?.color || 'gray', icon: icon16 || undefined,
-    letter: icon16 ? '' : domainOf(item.url) });
+  const glyph = item.type === 'note' ? 'sticky-note' : item.url ? '' : TYPE_ICONS[item.type] || 'file';
+  return cover(item.cover, { className: 'page-related-thumb', color: item.type === 'note' ? 'yellow' : collection?.color || 'gray',
+    icon: glyph || undefined, letter: glyph ? '' : domainOf(item.url) });
 }
 
 function renderRelated(ctx, page, item) {
@@ -306,6 +314,7 @@ export function renderPageTab(ctx) {
   }
   if (page.granted === false) {
     return html`<div class="page-tab" data-key="page-tab:permission">
+      ${renderCaptureProgress(ctx)}
       <div class="page-permission">
         <span class="page-permission-icon" aria-hidden="true">${icon('app-window', { size: 20 })}</span>
         <div class="page-permission-text"><p class="page-permission-title">See the page you are on</p>
@@ -316,6 +325,7 @@ export function renderPageTab(ctx) {
   }
   if (!isWebUrl(page.url)) {
     return html`<div class="page-tab is-state" data-key="page-tab:other">
+      ${renderCaptureProgress(ctx)}
       ${emptyState({ icon: 'globe', title: 'Nothing to save on this page', compact: true, body: 'Open a website to save it, write notes about it or ask about it. Browser pages like this one cannot be saved.' })}
       ${renderQuickLinks(ctx)}${renderRecent(ctx)}</div>`;
   }

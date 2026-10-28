@@ -20,7 +20,8 @@ const TOP = [
 // Optional filters only appear when they have something to show.
 const FILTERS = [
   { view: 'notes', label: 'Notes', icon: 'sticky-note', count: c => c.notes, always: true },
-  { view: 'tasks', label: 'Tasks', icon: 'list-checks', count: c => c.tasksOpen },
+  // Tasks is a full-tab screen (notes.js renderTasks); the side panel's Library drill-down only lists items.
+  { view: 'tasks', label: 'Tasks', icon: 'list-checks', count: c => c.tasksOpen, fullOnly: true },
   { view: 'highlights', label: 'Highlights', icon: 'highlighter', count: c => c.highlights },
   { view: 'reminders', label: 'Reminders', icon: 'bell', count: c => c.reminders },
   { view: 'type:article', label: 'Articles', icon: 'newspaper', count: c => c.byType.article },
@@ -50,6 +51,22 @@ const viewHref = view => `?libraryView=${encodeURIComponent(view)}`;
 const modified = event => !!event && (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button > 0);
 const closeNav = ctx => { if (ctx.state.shell?.navOpen) ctx.state.shell.navOpen = false; };
 const parentKey = row => (row.depth > 0 ? row.parentId || '' : '');
+
+/**
+ * Navigates to a main view from the sidebar, the side panel Library root or the palette. In the side panel, Notes is
+ * its own tab (not a Library drill-down) and All items needs a stack entry, since an empty stack shows the Library root.
+ */
+export function goToView(ctx, view, { keep = false } = {}) {
+  closeNav(ctx);
+  if (ctx.env.isSidepanel && view === 'notes') {
+    ctx.state.panel = null;
+    ctx.state.sideTab = 'notes';
+    ctx.render();
+    return;
+  }
+  ctx.navigate(view, { keep });
+  if (ctx.env.isSidepanel && view === 'all') { ctx.state.sideStack = ['all']; ctx.render(); }
+}
 
 /** The Still mark (same shape as the boot mark): a bookmark ribbon cut from a rounded square. Colors follow the theme. */
 export function brandMark({ size = 22, className } = {}) {
@@ -129,7 +146,7 @@ function renderCollections(ctx, counts, surface) {
 }
 
 function renderFilters(ctx, counts, surface) {
-  const rows = FILTERS.filter(f => f.always || (f.count(counts) || 0) > 0);
+  const rows = FILTERS.filter(f => !(f.fullOnly && surface === 'side') && (f.always || (f.count(counts) || 0) > 0));
   return html`${heading(ctx, 'filters', 'Filters')}
     <div class="nav-section" id="nav-filters" ${isOpen(ctx, 'filters') ? '' : raw('hidden')}>${rows.map(row => navRow(ctx, row, counts, surface))}</div>`;
 }
@@ -210,7 +227,8 @@ export function saveCurrentTab(ctx, { collectionId } = {}) {
     try { result = await ctx.chrome('saveCurrentTab', { collectionId, windowId: windowIdOf(ctx) }); }
     catch (error) { console.info('[still] the active tab was not saved directly', error?.message); }
     if (!result || result.needsPermission || !result.id) { openAdd(ctx, { collectionId }); return null; }
-    const savedTo = result.collectionFallback ? '' : collectionId ?? result.collectionId ?? '';
+    // Name where the item really is: the worker falls back to Inbox for a deleted collection.
+    const savedTo = result.collectionFallback ? '' : result.collectionId ?? collectionId ?? '';
     ctx.prefs.touchCollection(savedTo);
     const name = savedTo ? ctx.select.collection(savedTo)?.name || 'collection' : 'Inbox';
     const edit = { label: 'Edit', run: () => ctx.openItem(result.id) };
@@ -330,7 +348,11 @@ async function commitRename(ctx, value, { cancel = false } = {}) {
   ui(ctx).renamingId = '';
   treeFocusId = id;
   ctx.render();
-  ctx.nextFrame(() => document.getElementById(`tree-${id}`)?.focus({ preventScroll: true }));
+  // Return focus to the row unless the user already moved it (a click on another row commits through focusout).
+  ctx.nextFrame(() => {
+    const focused = document.activeElement;
+    if (!focused || focused === document.body || !focused.isConnected) document.getElementById(`tree-${id}`)?.focus({ preventScroll: true });
+  });
   const collection = ctx.select.collection(id);
   const name = String(value || '').trim();
   if (cancel || !collection || !name || name === collection.name) return;
@@ -363,6 +385,8 @@ function treeKey({ ctx, el, event }) {
   const id = row.dataset.id;
   const expanded = row.getAttribute('aria-expanded');
   const level = Number(row.getAttribute('aria-level'));
+  // The focused row keeps the tree's tab stop when a key re-renders the tree (expand, collapse, rename, reorder).
+  treeFocusId = id;
   const setExpanded = on => { ctx.prefs.toggleInList('expandedCollections', id, on); ctx.render(); };
   let handled = true;
   if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) reorder(ctx, id, event.key === 'ArrowUp' ? -1 : 1);
@@ -383,7 +407,16 @@ function treeKey({ ctx, el, event }) {
       treeFocusId = id; closeNav(ctx); ctx.navigate(`collection:${id}`);
       break;
     case 'F2': startRename(ctx, id); break;
-    case 'Delete': case 'Backspace': ctx.run(() => deleteCollectionFlow(ctx, id)); break;
+    case 'Delete': case 'Backspace': {
+      // After a delete, focus moves to the next row (or the previous one) instead of falling back to the page.
+      const neighbor = (rows[index + 1] || rows[index - 1])?.dataset.id;
+      ctx.run(async () => {
+        if (!(await deleteCollectionFlow(ctx, id)) || !neighbor) return;
+        treeFocusId = neighbor;
+        ctx.nextFrame(() => document.getElementById(`tree-${neighbor}`)?.focus({ preventScroll: true }));
+      });
+      break;
+    }
     case '*': {
       const tree = ctx.select.tree();
       const self = tree.find(r => r.id === id);
@@ -409,8 +442,7 @@ registerActions({
   'sidebar.navigate': ({ ctx, data, event }) => {
     if (modified(event)) return;
     event?.preventDefault();
-    closeNav(ctx);
-    ctx.navigate(data.view);
+    goToView(ctx, data.view, { keep: data.keep === true || data.keep === 'true' });
   },
   'sidebar.open': ({ ctx, data, event }) => {
     if (event?.target?.closest?.('.tree-rename')) return;

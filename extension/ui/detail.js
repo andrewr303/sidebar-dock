@@ -274,6 +274,7 @@ function renderFile(ctx, item) {
     <div class="detail-file">
       <span class="detail-file-icon" aria-hidden="true">${icon(TYPE_ICONS[item.type] || 'file', { size: 18 })}</span>
       <span class="detail-file-text"><span class="detail-file-name">${item.fileName || 'Attached file'}</span><span class="detail-file-meta">${[mime || 'File', item.size ? fileSize(item.size) : ''].filter(Boolean).join(' · ')}</span></span>
+      ${mime === 'application/pdf' ? button({ label: 'Open', icon: 'external-link', variant: 'ghost', size: 'sm', action: 'detail.open-file', data: { id: item.id } }) : ''}
       ${button({ label: 'Download', icon: 'download', variant: 'secondary', size: 'sm', action: 'detail.download', data: { id: item.id } })}
     </div>
     ${showPreview ? previewMount(item) : ''}
@@ -469,22 +470,33 @@ registerMount('detail.reader', (el, ctx) => {
   return { destroy() { el.removeEventListener('mouseup', onUp); el.removeEventListener('keyup', onKey); } };
 });
 
+const isPdf = async blob => (await blob.slice(0, 5).text()) === '%PDF-';
+
 registerMount('detail.preview', (el, ctx) => {
   let url = '';
   let gone = false;
   const mime = el.dataset.mime || '';
-  ctx.store.getAttachment(el.dataset.attachment).then(record => {
+  const say = text => { el.textContent = text; el.classList.add('is-missing'); };
+  (async () => {
+    const record = await ctx.store.getAttachment(el.dataset.attachment);
     if (gone) return;
-    if (!record?.blob) { el.textContent = 'The original file is not on this device.'; el.classList.add('is-missing'); return; }
-    const type = mime === 'application/pdf' ? 'application/pdf' : record.blob.type || mime;
-    url = URL.createObjectURL(new Blob([record.blob], { type }));
+    if (!record?.blob) return say('The original file is not on this device.');
     let media;
-    if (PREVIEW_IMAGE.test(mime)) { media = document.createElement('img'); media.alt = el.dataset.title || ''; media.decoding = 'async'; }
-    else if (/^video\//i.test(mime)) { media = document.createElement('video'); media.controls = true; media.preload = 'metadata'; }
-    else { media = document.createElement('iframe'); media.title = `Preview of ${el.dataset.title || 'the file'}`; media.setAttribute('sandbox', ''); }
+    if (PREVIEW_IMAGE.test(mime)) {
+      media = Object.assign(document.createElement('img'), { alt: el.dataset.title || '', decoding: 'async' });
+    } else if (/^video\//i.test(mime)) {
+      media = Object.assign(document.createElement('video'), { controls: true, preload: 'metadata' });
+    } else {
+      // Chrome will not show PDFs inside sandboxed frames, so the frame is only used for a verified PDF
+      // served as application/pdf: its only content is the browser's own PDF viewer.
+      if (!(await isPdf(record.blob))) return say('No preview for this file. Download it to open it.');
+      media = Object.assign(document.createElement('iframe'), { title: `Preview of ${el.dataset.title || 'the file'}` });
+    }
+    if (gone) return;
+    url = URL.createObjectURL(media.tagName === 'IFRAME' ? new Blob([record.blob], { type: 'application/pdf' }) : record.blob);
     media.src = url;
     el.replaceChildren(media);
-  }, () => { if (!gone) el.textContent = 'The preview could not be loaded.'; });
+  })().catch(() => { if (!gone) say('The preview could not be loaded.'); });
   return { destroy() { gone = true; if (url) URL.revokeObjectURL(url); } };
 });
 
@@ -680,6 +692,15 @@ registerActions({
     const item = itemOf(ctx, data.id);
     if (!item || (item.relatedIds || []).includes(data.other)) return;
     await patch(ctx, item.id, { relatedIds: [...(item.relatedIds || []), data.other] }, 'Linked');
+  },
+  'detail.open-file': async ({ ctx, data }) => {
+    const item = itemOf(ctx, data.id);
+    const record = item?.attachmentId ? await ctx.store.getAttachment(item.attachmentId) : null;
+    if (!record?.blob) throw new Error('The original file is not on this device. Restore a full backup to get it back.');
+    if (!(await isPdf(record.blob))) throw new Error('This file cannot be opened here. Download it instead.');
+    const url = URL.createObjectURL(new Blob([record.blob], { type: 'application/pdf' }));
+    if (ctx.env.isExtension) await chrome.tabs.create({ url }); else window.open(url, '_blank', 'noopener');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
   },
   'detail.download': async ({ ctx, data }) => {
     const item = itemOf(ctx, data.id);

@@ -104,7 +104,7 @@ function renderEditor(ctx, props) {
       ${collectionIcon({ icon: draft.icon, color: draft.color }, { size: 32, className: 'collection-editor-preview' })}
       ${field({ label: 'Name', id: 'collection-name', error: nameError, className: 'collection-editor-name', control: html`<input class="input" id="collection-name"
         name="name" value="${draft.name}" maxlength="500" placeholder="Design references" autocomplete="off" spellcheck="false" data-autofocus
-        ${nameError ? html`aria-invalid="true"` : ''}>` })}
+        ${nameError ? html`aria-invalid="true" aria-describedby="collection-name-error"` : ''}>` })}
     </div>
     ${field({ label: 'Parent collection', id: 'collection-parent', control: select({ name: 'parentId', id: 'collection-parent', value: draft.parentId, options: parentOptions }) })}
     <div class="collection-editor-look" role="group" aria-labelledby="collection-look-label">
@@ -127,7 +127,7 @@ function renderEditor(ctx, props) {
       maxlength="12000" placeholder="What belongs here">${draft.description}</textarea>` })}
     ${field({ label: 'Cover image', id: 'collection-cover', error: coverError, hint: 'Optional. An https address of an image.', control: html`<input class="input"
       id="collection-cover" name="cover" type="url" value="${draft.cover}" placeholder="https://" autocomplete="off" spellcheck="false"
-      ${coverError ? html`aria-invalid="true"` : ''}>` })}
+      ${coverError ? html`aria-invalid="true" aria-describedby="collection-cover-error"` : html`aria-describedby="collection-cover-hint"`}>` })}
     ${switchToggle({ name: 'pinned', checked: draft.pinned, label: 'Pin to the top', description: 'Pinned collections are listed first among their siblings.' })}`;
 
   const footer = html`

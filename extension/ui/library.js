@@ -209,6 +209,11 @@ function facetsFor(ctx) {
   if (!facetCache.has(rows)) facetCache.set(rows, viewFacets(rows));
   return facetCache.get(rows);
 }
+const groupCache = new WeakMap();
+function dateGroups(rows) {
+  if (!groupCache.has(rows)) groupCache.set(rows, groupByDate(rows));
+  return groupCache.get(rows);
+}
 const collectionOf = view => view.startsWith('collection:') ? view.slice(11) : null;
 
 function currentLayout(ctx, surface) {
@@ -287,7 +292,7 @@ function renderFilters(ctx, facets) {
     ${showTypes ? TYPE_CHIPS.filter(t => facets.types[t.value]).map(t => chip({ label: t.label, count: facets.types[t.value], selected: state.typeFilter === t.value, action: 'library.type-filter', data: { value: t.value } })) : ''}
     ${showTypes && (tags.length || showUntagged) ? html`<span class="lib-filters-sep" aria-hidden="true"></span>` : ''}
     ${tags.map(t => chip({ label: html`${hash}${t.name}`, count: t.count ?? undefined, selected: state.tagFilter.toLowerCase() === t.name.toLowerCase(), action: 'library.tag-filter', data: { tag: t.name }, title: `Show items tagged ${t.name}` }))}
-    ${showUntagged ? chip({ label: 'Without tags', count: facets.untagged, selected: u.noTags, action: 'library.no-tags' }) : ''}
+    ${showUntagged ? html`${tags.length ? html`<span class="lib-filters-sep" aria-hidden="true"></span>` : ''}${chip({ label: 'Without tags', count: facets.untagged, selected: u.noTags, action: 'library.no-tags' })}` : ''}
   </div>`;
 }
 
@@ -411,7 +416,7 @@ export function renderItemsView(ctx, { surface = 'full' } = {}) {
   const one = (item, index) => renderItem(ctx, item, { ...cardOpts(item), index });
   const grouped = !side && ['list', 'headlines'].includes(layout) || (side && layout === 'list');
   const groups = grouped && ['newest', 'oldest'].includes(state.sort) && ctx.library?.settings?.density !== 'compact' && !['trash', 'duplicates'].includes(state.view)
-    ? groupByDate(rows) : null;
+    ? dateGroups(rows) : null;
   let content;
   if (!rows.length) content = html`<div class="lib-empty">${renderEmpty(ctx, meta, { side })}</div>`;
   else if (state.view === 'duplicates') content = renderDuplicates(ctx, visible, cardOpts);
@@ -571,11 +576,14 @@ export async function addNoteFor(ctx, item) {
 function exportItems(ctx, ids, kind) {
   const items = ids.map(byId(ctx)).filter(Boolean);
   if (!items.length) return;
-  const library = { ...ctx.library, items };
+  // Only the collections these items live in (and their parents), so the file has no empty folders.
+  const used = new Set(items.flatMap(item => item.collectionId ? ctx.select.path(item.collectionId).map(c => c.id) : []));
+  const library = { ...ctx.library, items, collections: (ctx.library?.collections || []).filter(c => used.has(c.id)) };
+  const base = `still-${viewMeta(ctx).title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'export'}`;
   if (kind === 'html') {
     if (!items.some(item => item.url)) { ctx.toast('None of these items has a link to export.'); return; }
-    download(exportBookmarkHtml(library), 'still-bookmarks.html', 'text/html');
-  } else download(exportNotesMarkdown(library), 'still-notes.md', 'text/markdown');
+    download(exportBookmarkHtml(library), `${base}.html`, 'text/html');
+  } else download(exportNotesMarkdown(library), `${base}.md`, 'text/markdown');
   ctx.toast(`Exported ${label(items.length)}`);
 }
 

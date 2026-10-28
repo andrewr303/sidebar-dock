@@ -151,22 +151,25 @@ export function indicators(ctx, item, { compact = false } = {}) {
 }
 
 const dataAttrs = data => raw(Object.entries(data).map(([k, v]) => `data-${k}="${esc(v)}"`).join(' '));
-const act = (glyph, label, action, data = {}, extra = '') => html`<button type="button" class="${cx('item-act', extra)}" aria-label="${label}" data-tooltip="${label}" data-action="${action}" ${dataAttrs(data)} tabindex="-1">${icon(glyph, { size: 16 })}</button>`;
+/** Row action button. Cards clip their corners, so overlay actions open their tooltip downwards, inside the card. */
+const act = (glyph, label, action, data = {}, { extra = '', below = false } = {}) => html`<button type="button" class="${cx('item-act', extra)}" aria-label="${label}"
+  data-tooltip="${label}" ${below ? raw('data-tooltip-pos="bottom end"') : ''} data-action="${action}" ${dataAttrs(data)} tabindex="-1">${icon(glyph, { size: 16 })}</button>`;
 
 /** Hover toolbar. Trash and Archive swap in their own primary actions. */
 export function rowActions(ctx, item, { overlay = false } = {}) {
   const id = item.id;
+  const below = overlay;
   let buttons;
   if (item.deletedAt) {
-    buttons = [act('rotate-ccw', 'Restore', 'library.restore', { id }), act('trash-2', 'Delete forever', 'library.delete-forever', { id }, 'is-danger')];
+    buttons = [act('rotate-ccw', 'Restore', 'library.restore', { id }, { below }), act('trash-2', 'Delete forever', 'library.delete-forever', { id }, { extra: 'is-danger', below })];
   } else if (item.archived) {
-    buttons = [act('archive-restore', 'Unarchive', 'library.unarchive', { id }), act('ellipsis', 'More actions', 'library.item-menu', { id })];
+    buttons = [act('archive-restore', 'Unarchive', 'library.unarchive', { id }, { below }), act('ellipsis', 'More actions', 'library.item-menu', { id }, { below })];
   } else {
     buttons = [
-      item.url ? act('external-link', 'Open page', 'app.open-url', { url: item.url }) : '',
-      act('star', item.favorite ? 'Remove from favorites' : 'Add to favorites', 'library.favorite', { id }, item.favorite && 'is-on'),
-      act('pencil', 'Edit details', 'app.open-item', { id, tab: 'details' }),
-      act('ellipsis', 'More actions', 'library.item-menu', { id }),
+      item.url ? act('external-link', 'Open page', 'app.open-url', { url: item.url }, { below }) : '',
+      act('star', item.favorite ? 'Remove from favorites' : 'Add to favorites', 'library.favorite', { id }, { extra: item.favorite && 'is-on', below }),
+      act('pencil', 'Edit details', 'app.open-item', { id, tab: 'details' }, { below }),
+      act('ellipsis', 'More actions', 'library.item-menu', { id }, { below }),
     ];
   }
   return html`<span class="${cx('item-actions', overlay && 'is-overlay')}" role="group" aria-label="Actions for ${item.title}">${buttons}</span>`;
@@ -179,6 +182,7 @@ function check(item, selected) {
 
 function shell(ctx, item, { selected, tabStop, className, label }, inner) {
   const active = ctx.state.panel?.kind === 'item' && ctx.state.panel.id === item.id;
+  if (selected) label += ', selected';
   return html`<article class="${cx('item', className, selected && 'is-selected', active && 'is-active', item.type === 'note' && 'is-note')}"
     data-key="item:${item.id}" data-item-card data-id="${item.id}" data-action="app.open-item" draggable="true" data-drag-item="${item.id}"
     role="listitem" tabindex="${tabStop ? '0' : '-1'}" aria-label="${label}" ${active ? raw('aria-current="true"') : ''}>${inner}</article>`;
@@ -194,8 +198,17 @@ function listRow(ctx, item, opts) {
       <span class="item-title">${item.title}</span>
       ${desc ? html`<span class="item-desc">${desc}</span>` : ''}
       <span class="item-meta">${sourceBit(item)}${dot}<span class="item-date">${itemDate(item, opts.view)}</span>${opts.showCollection && item.collectionId ? html`${dot}${collectionBit(ctx, item)}` : ''}${tagBits(item)}</span>
+      ${opts.view === 'highlights' ? quotes(item) : ''}
     </span>
     <span class="item-side">${indicators(ctx, item)}${rowActions(ctx, item, opts)}</span>`);
+}
+
+/** Highlights view: the first few quotes under the row, in their marker colors. */
+function quotes(item) {
+  const list = (item.highlights || []).slice(0, 3);
+  if (!list.length) return '';
+  const more = (item.highlights || []).length - list.length;
+  return html`<span class="item-quotes markdown-body">${list.map(h => html`<span class="item-quote"><span class="item-quote-text"><mark data-color="${h.color || 'yellow'}">${h.text}</mark></span>${h.note ? html`<span class="item-quote-note">${h.note}</span>` : ''}</span>`)}${more > 0 ? html`<span class="item-quote-more">${more} more</span>` : ''}</span>`;
 }
 
 function headlineRow(ctx, item, opts) {

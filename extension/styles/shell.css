@@ -310,7 +310,7 @@
   transition: background-color var(--dur-fast) var(--ease-out);
 }
 .panel-resizer:hover::after,
-html.is-resizing .panel-resizer::after { background: var(--accent); transition-delay: 120ms; }
+html.is-resizing .panel-resizer::after { background: var(--accent); transition-delay: var(--dur-fast); }
 .panel-resizer:focus-visible { outline: none; }
 .panel-resizer:focus-visible::after { background: var(--focus-ring); }
 html.is-resizing, html.is-resizing * { cursor: col-resize !important; user-select: none !important; }

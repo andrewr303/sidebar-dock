@@ -289,6 +289,19 @@
 :is(.item-row, .item-headline, .item-compact):is(.is-active, .is-selected) { background: var(--bg-selected); }
 :is(.item-row, .item-headline, .item-compact):is(.is-active, .is-selected) :is(.item-desc, .item-meta, .item-hash, .item-indicators) { color: var(--fg-muted); }
 [data-density="compact"] .item-row .item-desc { display: none; }
+.item-row:has(.item-quotes) { align-items: start; }
+.item-quotes.markdown-body {
+  --be-text: var(--text-sm);
+  display: flex; flex-direction: column; gap: var(--space-3);
+  margin-block-start: var(--space-3);
+  font-size: var(--text-sm); line-height: var(--lh-prose);
+  color: var(--fg-default);
+  -webkit-user-select: text; user-select: text;
+}
+.item-quote { display: flex; flex-direction: column; gap: var(--space-1); max-width: 72ch; }
+.item-quote-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+.item-quote-note { font-size: var(--text-xs); line-height: var(--lh-xs); color: var(--fg-muted); }
+.item-quote-more { font-size: var(--text-xs); color: var(--fg-subtle); }
 [data-density="compact"] .item-row .item-title { -webkit-line-clamp: 1; line-clamp: 1; }
 
 /* ---------- Headlines ---------- */
