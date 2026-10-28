@@ -178,7 +178,8 @@ function renderSide(ctx) {
   const tab = ctx.state.panel?.kind === 'ai' ? 'ask' : ctx.state.sideTab;
   // A Library drill-down brings its own header (back, title, layout, search, menu with Open in full tab), as in the
   // mock's side-library screen; stacking the app header above it would show two header rows.
-  const drill = !ctx.state.panel && tab === 'library' && ctx.state.sideStack.length > 0;
+  // Item detail draws its own back header too.
+  const drill = ctx.state.panel?.kind === 'item' || (!ctx.state.panel && tab === 'library' && ctx.state.sideStack.length > 0);
   return html`<div class="app-frame is-side" data-key="frame-side">
     ${drill ? '' : renderSideHeader(ctx, tab)}
     <main id="main" class="side-main" tabindex="-1" data-tab="${tab}" data-drop-zone="side">${renderSideContent(ctx)}</main>

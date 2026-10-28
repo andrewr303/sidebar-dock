@@ -155,8 +155,9 @@ function applyBootParams() {
   if (params.get('tag')) state.tagFilter = params.get('tag');
   if (params.get('type') && (store.ITEM_TYPES.includes(params.get('type')) || ['link', 'media'].includes(params.get('type')))) state.typeFilter = params.get('type');
   if (isSidepanel) {
-    state.sideTab = params.get('tab') || (isExtension ? 'page' : 'library');
-    if (state.view !== 'all' && state.view !== 'notes') state.sideStack = [state.view];
+    const deepLink = state.view !== 'all' && state.view !== 'notes';
+    state.sideTab = params.get('tab') || (deepLink ? 'library' : state.view === 'notes' ? 'notes' : isExtension ? 'page' : 'library');
+    if (deepLink) state.sideStack = [state.view];
   }
   const item = params.get('item');
   if (item && library.items.some(i => i.id === item)) state.panel = { kind: 'item', id: item, tab: 'details' };
