@@ -159,7 +159,7 @@ function renderSideHeader(ctx, tab) {
       : html`<div class="side-brand">${brandMark({ size: 20 })}<h1 class="side-header-title">${SIDE_TABS.find(t => t.id === tab)?.label || 'Still'}</h1></div>`}
     <div class="side-header-actions">
       ${iconButton({ icon: 'search', label: 'Search and commands', action: 'shell.command', attrs: { 'aria-keyshortcuts': keys(ctx, 'mod+K') } })}
-      ${iconButton({ icon: 'plus', label: 'Add', action: 'shell.add' })}
+      ${iconButton({ icon: 'plus', label: 'Add', action: 'add.capture-menu', expanded: menuOpenFor(ctx, 'add.capture-menu') })}
       ${iconButton({ icon: 'ellipsis', label: 'More', action: 'shell.side-menu', expanded: menuOpenFor(ctx, 'shell.side-menu') })}
     </div>
   </header>`;

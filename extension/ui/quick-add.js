@@ -145,12 +145,16 @@ export const collectionLabel = (ctx, id) => (id && ctx.select.collection(id)?.na
 /**
  * Saves the active tab through the service worker (keeps its metadata, article text and badge). Handles the
  * permission and fallback answers, updates ctx.state.page and shows "Saved to X" with Undo or Open.
- * Returns the saved item, or null when a permission is still needed.
+ * Returns the saved item, or null when a permission is still needed or the tab is a browser page.
  */
 export async function saveCurrentTab(ctx, { collectionId, note, tags, title } = {}) {
+  const page = ctx.state.page;
+  if (page?.url && !validUrl(page.url)) {
+    ctx.toast('Browser pages like this one cannot be saved. Open a website to save it.', { tone: 'warning' });
+    return null;
+  }
   const windowId = await ensureWindowId(ctx);
   const target = typeof collectionId === 'string' ? collectionId : defaultCollectionId(ctx);
-  const page = ctx.state.page;
   const before = page?.url ? ctx.select.savedForUrl(page.url) : null;
   const result = await ctx.chrome('saveCurrentTab', { windowId, collectionId: target, ...(note ? { note } : {}), ...(tags ? { tags } : {}), ...(title ? { title } : {}) });
   if (result?.needsPermission) {
@@ -258,7 +262,8 @@ export function openAdd(ctx, prefill = {}) {
 /** Opens Add prefilled with the active tab (side panel). */
 export function openAddForPage(ctx, extra = {}) {
   const page = ctx.state.page;
-  if (!page?.url) return openAdd(ctx, extra);
+  // Browser pages (chrome://, the new tab page) cannot be saved: open a blank Add instead of an invalid prefill.
+  if (!page?.url || !validUrl(page.url)) return openAdd(ctx, extra);
   return openAdd(ctx, { url: page.url, title: page.title, source: 'tab', ...extra });
 }
 
@@ -819,6 +824,7 @@ export function openCaptureMenu(ctx, anchor, options = {}) {
   const hint = page ? '' : 'Side panel';
   ctx.openMenu(anchor, [
     { label: 'Add link…', icon: 'link', run: () => openAdd(ctx, {}) },
+    { label: 'New note', icon: 'square-pen', action: 'shell.new-note' },
     { label: 'Upload files…', icon: 'upload', action: 'add.upload' },
     { separator: true },
     { label: 'Save page', icon: 'bookmark-plus', action: 'add.save-page', disabled: !page, hint },

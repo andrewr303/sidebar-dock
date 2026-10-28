@@ -9,6 +9,7 @@ import { SORT_OPTIONS } from './selectors.js';
 import { renderItem, watchBrokenCovers } from './cards.js';
 import { renderMap, setMapScope } from './map.js';
 import { openAdd } from './quick-add.js';
+import { saveCurrentTab } from './sidebar.js';
 import { createNote } from './notes.js';
 import { askAi } from './ai-panel.js';
 import { openCollectionEditor } from './collections.js';
@@ -734,25 +735,6 @@ function openViewMenu(ctx, anchor) {
   ctx.openMenu(anchor, entries.filter((entry, i) => !(entry.separator && entries[i - 1]?.separator)), { label: 'View options', placement: 'bottom-end' });
 }
 
-async function addHere(ctx, collectionId) {
-  if (!ctx.env.isExtension) return openAdd(ctx, { collectionId });
-  let result;
-  try {
-    result = await ctx.chrome('saveCurrentTab', { collectionId });
-  } catch {
-    return openAdd(ctx, { collectionId });
-  }
-  const item = result?.item || result;
-  if (!item?.id) return openAdd(ctx, { collectionId });
-  const savedTo = result?.collectionFallback ? '' : collectionId;
-  if (savedTo) ctx.prefs.touchCollection?.(savedTo);
-  const created = result?.created ?? false;
-  ctx.toast(`Saved to ${collectionName(ctx, savedTo)}`, {
-    tone: 'success',
-    action: created ? { label: 'Undo', run: () => ctx.store.deleteItem(item.id) } : { label: 'Open', run: () => ctx.openItem(item.id) },
-  });
-}
-
 function moveFocus(card, target) {
   if (!target) return;
   card.setAttribute('tabindex', '-1');
@@ -857,7 +839,7 @@ registerActions({
   'library.show-more': ({ ctx }) => { ui(ctx).limit += PAGE; ctx.render(); },
   'library.add': ({ ctx, data }) => openAdd(ctx, { collectionId: data.collection || '' }),
   'library.new-note': ({ ctx, data }) => createNote(ctx, { title: '', content: '', collectionId: data.collection || '' }),
-  'library.add-here': ({ ctx, data }) => addHere(ctx, data.collection || ''),
+  'library.add-here': ({ ctx, data }) => saveCurrentTab(ctx, { collectionId: data.collection || '' }),
   'library.side-back': ({ ctx }) => {
     const stack = ctx.state.sideStack.slice(0, -1);
     ctx.state.sideStack = stack;

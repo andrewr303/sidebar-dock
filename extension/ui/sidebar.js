@@ -5,7 +5,7 @@ import { html, cx, raw, plural } from './html.js';
 import { icon, COLLECTION_COLORS } from './icons.js';
 import { iconButton, collectionIcon } from './components.js';
 import { registerActions } from './runtime.js';
-import { openAdd } from './quick-add.js';
+import { openAdd, saveCurrentTab as saveTab, requestPermission } from './quick-add.js';
 import { askAi } from './ai-panel.js';
 import { openSettings } from './settings.js';
 import { openCollectionEditor, visibleTree, deleteCollectionFlow, collectionSubset } from './collections.js';
@@ -213,34 +213,20 @@ export function renderLibraryRoot(ctx) {
   </div>`;
 }
 
-const windowIdOf = ctx => ctx.state.windowId ?? ctx.state.page?.windowId ?? undefined;
-
 /**
- * Saves the active browser tab into a collection ('' = Inbox) with an Undo/Edit toast; falls back to the Add dialog
- * in preview mode, on pages Chrome will not expose, or without tab access. Call it synchronously from a click or
- * key handler: the optional 'tabs' permission prompt needs that user activation.
+ * Saves the active browser tab into a collection ('' = Inbox) through quick-add's saveCurrentTab (Undo, browser-page
+ * guard, This page state); opens the Add dialog in preview mode. Call it synchronously from a click or key handler:
+ * the optional 'tabs' permission prompt needs that user activation.
  */
 export function saveCurrentTab(ctx, { collectionId } = {}) {
   if (!ctx.env.isExtension) { openAdd(ctx, { collectionId }); return Promise.resolve(null); }
-  const asking = !tabsGranted && !tabsDeclined ? globalThis.chrome?.permissions?.request?.({ permissions: ['tabs'] }) : null;
+  const asking = !tabsGranted && !tabsDeclined ? requestPermission({ permissions: ['tabs'] }) : null;
   return ctx.run(async () => {
     if (asking) {
-      try { tabsGranted = !!(await asking); } catch { tabsGranted = false; }
+      tabsGranted = await asking;
       if (!tabsGranted) tabsDeclined = true;
     }
-    let result = null;
-    try { result = await ctx.chrome('saveCurrentTab', { collectionId, windowId: windowIdOf(ctx) }); }
-    catch (error) { console.info('[still] the active tab was not saved directly', error?.message); }
-    if (!result || result.needsPermission || !result.id) { openAdd(ctx, { collectionId }); return null; }
-    // Name where the item really is: the worker falls back to Inbox for a deleted collection.
-    const savedTo = result.collectionFallback ? '' : result.collectionId ?? collectionId ?? '';
-    ctx.prefs.touchCollection(savedTo);
-    const name = savedTo ? ctx.select.collection(savedTo)?.name || 'collection' : 'Inbox';
-    const edit = { label: 'Edit', run: () => ctx.openItem(result.id) };
-    const undo = { label: 'Undo', run: async () => { await ctx.store.deleteItem(result.id); ctx.toast('Removed. It is in Trash if you need it.'); } };
-    ctx.toast(result.collectionFallback ? 'Saved to Inbox instead' : `Saved to ${name}`,
-      { tone: 'success', action: result.created ? undo : edit, actions: result.created ? [undo, edit] : [edit] });
-    return result;
+    return saveTab(ctx, { collectionId });
   });
 }
 

@@ -34,7 +34,7 @@ const state = {
   selection: new Set(), selectMode: false,
   panel: null, sideTab: 'page', sideStack: [],
   dialogs: [], popover: null,
-  page: null, notes: { scope: 'all', collectionId: '', noteId: null, query: '', mode: 'list', sort: 'updated' },
+  page: null, windowId: null, notes: { scope: 'all', collectionId: '', noteId: null, query: '', mode: 'list', sort: 'updated' },
   ai: {}, capture: null, boot: { ready: false, error: null },
 };
 
@@ -202,7 +202,11 @@ async function boot() {
   }
   startBridgeSync();
   if (isExtension) chrome.runtime.onMessage?.addListener(message => {
-    if (message?.type === 'still:full-page-progress') { state.capture = { ...(state.capture || {}), ...message }; runtime.render(); }
+    // Only the job this view started: another window's capture must not show here.
+    if (message?.type === 'still:full-page-progress' && message.jobId && message.jobId === state.capture?.jobId) {
+      state.capture = { ...state.capture, ...message };
+      runtime.render();
+    }
   });
   runtime.render();
 }
