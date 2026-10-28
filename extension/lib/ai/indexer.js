@@ -153,12 +153,15 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
   };
   const embeddingSettings = async () => (await getSettings())?.embeddings || {};
 
+  // Settings that cannot be read count as off; a configured but unusable connection stays on with an error.
   async function resolveConfig() {
-    const settings = await embeddingSettings();
+    let settings;
+    try { settings = await embeddingSettings(); } catch (error) { return { enabled: false, error: String(error?.message || error) }; }
     const enabled = settings.enabled === true;
     if (!enabled) return { enabled };
     if (!settings.connectionId) return { enabled, error: 'Choose an embedding provider in Settings.' };
-    const description = await embedder.describe(settings.connectionId);
+    let description;
+    try { description = await embedder.describe(settings.connectionId); } catch (error) { return { enabled, error: String(error?.message || error) }; }
     const model = settings.model || description.defaultModel;
     if (!model && description.via !== 'bridge') return { enabled, error: 'Choose an embedding model in Settings.' };
     const requestedDims = Number.isSafeInteger(settings.dims) && settings.dims > 0 ? settings.dims : null;
@@ -286,11 +289,11 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
 
   /** Re-reads settings (after they change) and updates the status; starts work when enabled unless start is false. */
   async function refresh({ start = true } = {}) {
-    const resolved = await resolveConfig().catch(error => ({ enabled: true, error: error.message }));
+    const resolved = await resolveConfig();
     if (!resolved.enabled) {
       if (active) active.controller.abort();
       const stats = await vectorStore.stats().catch(() => null);
-      set({ enabled: false, running: false, waiting: false, error: '', pending: 0, indexed: stats?.items || 0, model: stats?.model || '', dims: stats?.dims || null });
+      set({ enabled: false, running: false, waiting: false, error: resolved.error || '', pending: 0, indexed: stats?.items || 0, model: stats?.model || '', dims: stats?.dims || null });
       return snapshot();
     }
     if (!resolved.error) config = resolved;
@@ -319,7 +322,7 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
       held = false;
       set({ paused: false });
       const resolved = await resolveConfig();
-      if (!resolved.enabled) throw new Error('Turn on semantic search in Settings first.');
+      if (!resolved.enabled) throw new Error(resolved.error || 'Turn on semantic search in Settings first.');
       if (resolved.error) { set({ enabled: true, error: resolved.error }); throw new Error(resolved.error); }
       return run({ force: true });
     },
