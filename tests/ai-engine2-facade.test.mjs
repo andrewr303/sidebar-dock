@@ -7,9 +7,9 @@ const SPEC_EXPORTS = ['CATALOG', 'listConnections', 'saveConnection', 'deleteCon
   'runAssistant', 'transformText', 'suggestForSave', 'searchLibrary', 'relatedItems', 'getIndexStatus', 'subscribeIndex', 'startIndexing', 'rebuildIndex', 'clearIndex',
   'handoffUrl', 'buildHandoffPrompt', 'listConversations', 'getConversation', 'saveConversation', 'deleteConversation', 'init'];
 
-test('the facade exposes the SPEC 7.2 API (plus pauseIndexing and the semanticSearch adapter) with explicit re-exports', async () => {
+test('the facade exposes the SPEC 7.2 API (plus pauseIndexing and the semanticSearch adapters) with explicit re-exports', async () => {
   for (const name of SPEC_EXPORTS) assert.ok(name in ai, name);
-  assert.deepEqual(Object.keys(ai).filter(name => !SPEC_EXPORTS.includes(name)).sort(), ['pauseIndexing', 'semanticSearch']);
+  assert.deepEqual(Object.keys(ai).filter(name => !SPEC_EXPORTS.includes(name)).sort(), ['pauseIndexing', 'semanticSearch', 'semanticSearchAvailable']);
   assert.ok(Array.isArray(ai.CATALOG) && ai.CATALOG.length > 5);
   for (const name of SPEC_EXPORTS.filter(name => name !== 'CATALOG')) assert.equal(typeof ai[name], 'function', name);
   const source = await readFile(new URL('../extension/lib/ai/index.js', import.meta.url), 'utf8');
@@ -43,6 +43,7 @@ test('init wires the app store and library hook; search, the semanticSearch adap
   const adapter = await ai.semanticSearch('kyoto', { limit: 3, collectionId: '' });
   assert.deepEqual(adapter.results, [{ id: 'kyoto', title: 'Kyoto temples', type: 'bookmark', url: 'https://example.com/kyoto', score: adapter.results[0].score, snippet: '', source: 'lexical' }]);
   assert.equal(adapter.index.enabled, false);
+  assert.equal(await ai.semanticSearchAvailable(), false, 'the bridge does not advertise semantic_search while the index is off');
   assert.deepEqual((await ai.semanticSearch('calm', { type: 'note' })).results, []);
 
   const saved = await ai.saveConversation({ messages: [{ role: 'user', text: 'Hello there' }] });

@@ -325,6 +325,7 @@ export function createSearch({ getLibrary, vectorStore, isSemanticReady = async 
   const queryVectors = new Map();
   const centroidCache = new WeakMap();
   let pruneStamp = '';
+  let vectorStamp = '';
 
   async function vectorFor(query, signal) {
     if (queryVectors.has(query)) return queryVectors.get(query);
@@ -335,6 +336,10 @@ export function createSearch({ getLibrary, vectorStore, isSemanticReady = async 
   }
   async function semanticCandidates(parsed, allow, signal) {
     if (!parsed.semanticText || !vectorStore || !embedQuery || !(await isSemanticReady())) return null;
+    // Cached query vectors belong to the model that made them: drop them when the index is rebuilt for another one.
+    const stored = typeof vectorStore.getConfig === 'function' ? await vectorStore.getConfig() : null;
+    const stamp = stored ? [stored.providerId, stored.model, stored.requestedDims || '', stored.createdAt].join('\u0000') : '';
+    if (stamp !== vectorStamp) { queryVectors.clear(); vectorStamp = stamp; }
     const chunks = await vectorStore.allChunks();
     if (!chunks.length) return null;
     const vector = await vectorFor(parsed.semanticText, signal);
@@ -408,5 +413,16 @@ export function createSearch({ getLibrary, vectorStore, isSemanticReady = async 
     });
   }
 
-  return { searchLibrary, relatedItems };
+  /** Tokenizes the library in idle slices so the first search after startup does not block on a large library. */
+  async function warm({ slice = 40 } = {}) {
+    const library = await getLibrary();
+    const items = Array.isArray(library?.items) ? library.items : [];
+    const idle = () => new Promise(resolve => globalThis.requestIdleCallback ? globalThis.requestIdleCallback(() => resolve(), { timeout: 1000 }) : setTimeout(resolve, 0));
+    for (let index = 0; index < items.length; index++) {
+      if (items[index] && typeof items[index].id === 'string' && !items[index].deletedAt) cache.get(items[index]);
+      if (index % slice === slice - 1) await idle();
+    }
+  }
+
+  return { searchLibrary, relatedItems, warm };
 }

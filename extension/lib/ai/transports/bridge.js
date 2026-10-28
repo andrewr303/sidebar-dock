@@ -2,6 +2,7 @@
 // The bridge rebuilds its own system prompt and runs agents without tools, so this path returns text only and passes
 // Still's instructions and context along as reference sources.
 
+import { EFFORT_LEVELS, clampEffort } from '../catalog.js';
 import { aiError } from '../http.js';
 import { compactUsage, dataUrlOf, partsOf, refusalError, STOP_NOTICES, textOf, toolResultText } from './shared.js';
 
@@ -17,7 +18,16 @@ export function bridgeProviderId({ provider, connection }) {
 
 const plain = content => textOf(content) || partsOf(content).filter(part => part?.type === 'tool_result').map(part => toolResultText(part.content)).join('\n\n');
 
-export function buildBody({ provider, connection, model, system, messages, effort, maxTokens }) {
+// CLI agents take any standard effort (narrowed to the model's list when known). A bridge provider rejects an effort
+// that is not enabled in its capabilities, so nothing is sent when none are enabled or they are unknown.
+function bridgeEffort({ provider, connection, modelInfo, effort }) {
+  if (!effort) return undefined;
+  if (provider?.agentId) return clampEffort(effort, modelInfo?.efforts?.length ? modelInfo.efforts : EFFORT_LEVELS) || undefined;
+  const enabled = connection?.capabilities?.reasoningEfforts || [];
+  return enabled.length ? (enabled.includes(effort) ? effort : clampEffort(effort, enabled) || undefined) : undefined;
+}
+
+export function buildBody({ provider, connection, model, modelInfo, system, messages, effort, maxTokens }) {
   let lastUser = -1;
   for (let index = messages.length - 1; index >= 0; index--) if (messages[index].role === 'user') { lastUser = index; break; }
   if (lastUser < 0) throw aiError('Write a message first.', { code: 'bad_request' });
@@ -33,10 +43,13 @@ export function buildBody({ provider, connection, model, system, messages, effor
   const history = messages.slice(0, lastUser).map(message => ({ role: message.role, content: plain(message.content) })).filter(message => message.content).slice(-16);
   const context = { sources, scope: 'selected', inputBudgetChars: 400000 };
   const images = partsOf(messages[lastUser].content).filter(part => part?.type === 'image');
-  if (images.length && !provider?.agentId) context.imageAttachments = images.slice(0, 3).map(dataUrlOf);
+  // CLI agents and providers without image input reject attachments outright; say so in the request instead.
+  if (images.length && !provider?.agentId && connection?.capabilities?.images !== false) context.imageAttachments = images.slice(0, 3).map(dataUrlOf);
+  else if (images.length && query.length < QUERY_CHARS - 80) query += '\n\n[An image was attached, but this connection cannot read images.]';
   const body = { providerId: bridgeProviderId({ provider, connection }), query, intent: 'chat', context, history };
   if (model && model !== 'default') body.model = model;
-  if (effort) body.reasoningEffort = effort;
+  const reasoningEffort = bridgeEffort({ provider, connection, modelInfo, effort });
+  if (reasoningEffort) body.reasoningEffort = reasoningEffort;
   if (Number.isInteger(maxTokens) && maxTokens > 0) body.maxOutputTokens = maxTokens;
   return body;
 }
@@ -56,10 +69,13 @@ export async function stream(ctx) {
   const { provider, model, signal, emit, request } = ctx;
   if (typeof request !== 'function') throw aiError('Pair the local bridge first to use this connection.', { code: 'bridge_unavailable' });
   const body = buildBody(ctx);
-  let text = '';
+  let text = '', thinking = '';
   const done = await request('/ai/chat', {
     method: 'POST', body, signal,
-    onEvent: event => { if (event.type === 'delta' && event.text) { text += event.text; emit({ type: 'text', delta: event.text }); } },
+    onEvent: event => {
+      if (event.type === 'delta' && event.text) { text += event.text; emit({ type: 'text', delta: event.text }); }
+      else if (event.type === 'thinking' && event.text) { thinking += event.text; emit({ type: 'thinking', delta: event.text }); }
+    },
   });
   const finalText = typeof done?.text === 'string' && done.text ? done.text : text;
   if (done?.stopReason === 'refusal') {
@@ -69,7 +85,7 @@ export async function stream(ctx) {
   }
   const stopReason = STOPS[done?.stopReason] || 'end_turn';
   return {
-    text: finalText, thinking: '', toolCalls: [], usage: bridgeUsage(done?.usage), model: done?.model || model,
+    text: finalText, thinking, toolCalls: [], usage: bridgeUsage(done?.usage), model: done?.model || model,
     stopReason, rawStopReason: done?.stopReason || null, notice: STOP_NOTICES[stopReason] || null,
     assistantMessage: { role: 'assistant', content: finalText ? [{ type: 'text', text: finalText }] : [] },
   };

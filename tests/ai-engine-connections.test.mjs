@@ -74,8 +74,11 @@ test('legacy bridge preferences migrate into v2 settings and keep the bridge sel
   assert.equal(resolved.connection.bridgeProviderId, 'provider_abc');
   const result = await streamChat({ messages: [{ role: 'user', content: 'Hello' }] });
   assert.equal(result.text, 'ok');
-  assert.equal(requests[0].body.providerId, 'provider_abc');
-  assert.equal(requests[0].body.model, 'gpt-6.1-sol', 'the migrated model override still applies');
+  // Resolution reads the bridge provider list first (for its enabled efforts); the chat request follows.
+  const chatRequest = requests.find(request => request.path === '/ai/chat');
+  assert.equal(chatRequest.body.providerId, 'provider_abc');
+  assert.equal(chatRequest.body.model, 'gpt-6.1-sol', 'the migrated model override still applies');
+  assert.equal(chatRequest.body.reasoningEffort, undefined, 'an effort the bridge provider does not enable is not sent');
 });
 
 test('AI settings have spec defaults, merge per section and refuse secrets or invalid values', async t => {

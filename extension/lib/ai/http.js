@@ -112,8 +112,9 @@ export async function providerFetch(url, { method = 'GET', headers = {}, body, s
   let payload = body;
   if (payload !== undefined && payload !== null && typeof payload !== 'string' && !(payload instanceof ArrayBuffer) && !ArrayBuffer.isView(payload) && !(globalThis.Blob && payload instanceof Blob) && !(globalThis.FormData && payload instanceof FormData)) {
     payload = JSON.stringify(payload);
-    if (!Object.keys(finalHeaders).some(key => key.toLowerCase() === 'content-type')) finalHeaders['content-type'] = 'application/json';
   }
+  const json = typeof payload === 'string' && /^\s*[[{]/.test(payload);
+  if (json && !Object.keys(finalHeaders).some(key => key.toLowerCase() === 'content-type')) finalHeaders['content-type'] = 'application/json';
   let response;
   try {
     response = await run(url, { method, headers: finalHeaders, body: payload ?? undefined, signal: linked, cache: 'no-store', credentials: 'omit', redirect: 'error' });

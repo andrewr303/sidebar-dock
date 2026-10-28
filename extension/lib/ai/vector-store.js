@@ -4,6 +4,8 @@
 export const EMBEDDINGS_DB = 'still.embeddings.v1';
 const CONFIG_KEY = 'config';
 const REVISION_KEY = 'revision';
+// Shared across views: a pause or clear in one view must stop automatic indexing in every view (and after a reload).
+const CONTROL_KEY = 'control';
 const ITEM_PREFIX = 'item:';
 
 const token = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -48,6 +50,8 @@ function idbBackend(idb, name) {
     request.onsuccess = () => {
       const db = request.result;
       db.onversionchange = () => { db.close(); database = null; };
+      // The browser can close the connection (site data cleared, storage pressure); reopen on the next call.
+      db.onclose = () => { database = null; };
       resolve(db);
     };
     request.onerror = () => { database = null; reject(request.error || new Error('The semantic index could not be opened.')); };
@@ -122,7 +126,7 @@ export function createVectorStore({ indexedDB: idb = globalThis.indexedDB, name 
       return { reset: false, config: { ...current, connectionId } };
     }
     const config = { providerId, connectionId, model, requestedDims: requestedDims || null, dims: null, createdAt: new Date().toISOString() };
-    await backend.clear([{ key: CONFIG_KEY, ...config }, revisionRecord()]);
+    await backend.clear([{ key: CONFIG_KEY, ...config }, revisionRecord(), ...await controlRecords()]);
     cache = null;
     return { reset: !!current, config };
   }
@@ -163,9 +167,13 @@ export function createVectorStore({ indexedDB: idb = globalThis.indexedDB, name 
     return chunks;
   }
   async function clear() {
-    await backend.clear([revisionRecord()]);
+    await backend.clear([revisionRecord(), ...await controlRecords()]);
     cache = null;
   }
+  const controlRecords = async () => { const record = await backend.getMeta(CONTROL_KEY); return record ? [record] : []; };
+  /** True while automatic indexing is held (paused or cleared) by any view. */
+  const isHeld = async () => (await backend.getMeta(CONTROL_KEY))?.held === true;
+  const setHeld = held => backend.putMeta([{ key: CONTROL_KEY, held: held === true, updatedAt: new Date().toISOString() }]);
   async function stats() {
     const [config, states] = await Promise.all([getConfig(), itemStates()]);
     let chunks = 0;
@@ -173,5 +181,5 @@ export function createVectorStore({ indexedDB: idb = globalThis.indexedDB, name 
     return { items: [...states.values()].filter(state => !state.error).length, failed: [...states.values()].filter(state => state.error).length, chunks, model: config?.model || '', dims: config?.dims || null };
   }
   return { kind: backend.kind, getConfig, ensureConfig, itemStates, putItems, putItem: (itemId, entry) => putItems([{ itemId, ...entry }]),
-    deleteItems, allChunks, chunksFor: itemId => backend.chunksFor(itemId), revision: currentRevision, clear, stats };
+    deleteItems, allChunks, chunksFor: itemId => backend.chunksFor(itemId), revision: currentRevision, clear, stats, isHeld, setHeld };
 }

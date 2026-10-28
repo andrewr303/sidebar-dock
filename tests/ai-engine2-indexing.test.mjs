@@ -277,11 +277,12 @@ test('embedder batches by provider limits, retries rate limits with backoff and 
 
   const bridgeCalls = [];
   const bridge = createEmbedder({ resolveConnection: async id => ({ connection: { id, via: 'bridge' }, provider: { id: 'bridge', embeddings: null }, via: 'bridge' }),
-    requestBridge: async (path, options) => { bridgeCalls.push({ path, options }); return { vectors: options.body.inputs.map(() => [3, 4]), model: 'voyage-4', dimensions: 2, usage: { tokens: 3 } }; } });
+    requestBridge: async (path, options) => { bridgeCalls.push({ path, options }); return { vectors: options.body.inputs.map(() => [3, 4]), model: 'voyage-4', dimensions: 2, usage: { inputTokens: 3 } }; } });
   const viaBridge = await bridge.embed({ connectionId: 'bridge:provider_1', inputs: ['a', 'b'], inputType: 'query', dimensions: 512 });
   assert.equal(bridgeCalls[0].path, '/ai/embeddings');
   assert.deepEqual(bridgeCalls[0].options.body, { providerId: 'provider_1', inputs: ['a', 'b'], model: undefined, dimensions: 512, inputType: 'query' });
   assert.equal(viaBridge.model, 'voyage-4');
+  assert.equal(viaBridge.usage.tokens, 3);
   assert.ok(Math.abs(viaBridge.vectors[0][0] - 0.6) < 1e-6);
 
   const claude = createEmbedder({ resolveConnection: async () => ({ connection: { id: 'a1' }, provider: { id: 'anthropic', name: 'Anthropic', embeddings: null, supports: { embeddings: false } }, via: 'direct' }) });
@@ -306,4 +307,92 @@ test('the memory vector store resets on model or dimension changes and keeps per
   assert.equal((await store.ensureConfig({ providerId: 'voyage', connectionId: 'c2', model: 'voyage-4', requestedDims: 1024 })).reset, true);
   assert.equal((await store.allChunks()).length, 0);
   assert.equal((await store.itemStates()).size, 0);
+});
+
+const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+async function until(check, tries = 200) { for (let i = 0; i < tries && !check(); i++) await tick(); assert.ok(check(), 'condition reached'); }
+
+test('a settings change mid-run stops the stale run and re-indexes with the new model only', async () => {
+  const library = { items: Array.from({ length: 4 }, (_, i) => ({ id: `i${i}`, title: `Item ${i}`, updatedAt: '1' })) };
+  let settings = { embeddings: { enabled: true, connectionId: 'c1', model: 'm1' } };
+  const vectorStore = createVectorStore({ indexedDB: null });
+  const calls = [];
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const embedder = {
+    async describe() { return { providerId: 'fake', provider: 'Fake', via: 'direct', defaultModel: 'm1' }; },
+    async embed({ inputs, model, signal }) {
+      calls.push(model);
+      if (model === 'm1') await new Promise((resolve, reject) => { gate.then(resolve); signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }); });
+      return { vectors: inputs.map(input => normalizeVector(fakeVector(input))), model, dims: 16, usage: { tokens: 1 } };
+    },
+  };
+  const indexer = createIndexer({ vectorStore, embedder, getLibrary: async () => library, getSettings: async () => settings, locks: fakeLocks(), batchSize: 1, concurrency: 1 });
+  const first = indexer.startIndexing();
+  await until(() => calls.length === 1);
+  settings = { embeddings: { enabled: true, connectionId: 'c1', model: 'm2' } };
+  await indexer.refresh();
+  release();
+  await first;
+  await until(() => !indexer.getIndexStatus().running && indexer.getIndexStatus().indexed === 4);
+  assert.deepEqual(calls.filter(model => model === 'm1').length, 1, 'no further requests go out with the old model');
+  assert.ok(calls.slice(1).every(model => model === 'm2'));
+  assert.equal((await vectorStore.getConfig()).model, 'm2');
+  assert.equal((await vectorStore.itemStates()).size, 4);
+});
+
+test('a failed request stops the other workers, and a run where every input is rejected reports the error without marking items failed', async () => {
+  const library = { items: Array.from({ length: 6 }, (_, i) => ({ id: `i${i}`, title: `Item ${i}`, updatedAt: '1' })) };
+  const settings = { embeddings: { enabled: true, connectionId: 'c1', model: 'm' } };
+  const calls = [];
+  const failing = {
+    async describe() { return { providerId: 'fake', provider: 'Fake', via: 'direct', defaultModel: 'm' }; },
+    async embed({ inputs, model }) {
+      calls.push(inputs);
+      if (calls.length === 1) { const error = new Error('Check the API key.'); error.status = 401; throw error; }
+      await new Promise(resolve => setTimeout(resolve, 5));
+      return { vectors: inputs.map(input => normalizeVector(fakeVector(input))), model, dims: 16, usage: { tokens: 1 } };
+    },
+  };
+  const indexer = createIndexer({ vectorStore: createVectorStore({ indexedDB: null }), embedder: failing, getLibrary: async () => library, getSettings: async () => settings, locks: null, batchSize: 1, concurrency: 2 });
+  const status = await indexer.startIndexing();
+  assert.match(status.error, /API key/);
+  assert.ok(calls.length <= 2, `stopped after the failure (${calls.length} requests)`);
+
+  const rejected = [];
+  const misconfigured = {
+    async describe() { return { providerId: 'fake', provider: 'Fake', via: 'direct', defaultModel: 'm' }; },
+    async embed({ inputs }) { rejected.push(inputs.length); const error = new Error('Fake: output_dimension 4096 is not supported.'); error.status = 400; throw error; },
+  };
+  const vectorStore = createVectorStore({ indexedDB: null });
+  const stopped = await createIndexer({ vectorStore, embedder: misconfigured, getLibrary: async () => library, getSettings: async () => settings, locks: null, batchSize: 48 }).startIndexing();
+  assert.match(stopped.error, /not supported/);
+  assert.equal(stopped.failed, 0);
+  assert.equal((await vectorStore.itemStates()).size, 0, 'items stay pending so they are retried once the settings are fixed');
+  assert.ok(rejected.length <= 6);
+});
+
+test('pause and clear are shared through the index, so other views and reloads hold automatic indexing too', async () => {
+  const library = { items: [{ id: 'a', title: 'Alpha', updatedAt: '1' }, { id: 'b', title: 'Beta', updatedAt: '1' }] };
+  const settings = { embeddings: { enabled: true, connectionId: 'c1' } };
+  const vectorStore = createVectorStore({ indexedDB: null });
+  const fullTab = fakeEmbedder();
+  const sidePanel = fakeEmbedder();
+  const make = embedder => createIndexer({ vectorStore, embedder, getLibrary: async () => library, getSettings: async () => settings, locks: fakeLocks() });
+  const a = make(fullTab);
+  const b = make(sidePanel);
+  await a.pauseIndexing();
+  const held = await b.refresh();
+  assert.equal(held.paused, true);
+  assert.equal(sidePanel.calls.length, 0, 'the other view does not index while paused');
+  await a.startIndexing();
+  assert.equal(a.getIndexStatus().indexed, 2);
+  await a.clearIndex();
+  const reloaded = make(fakeEmbedder());
+  const afterReload = await reloaded.refresh();
+  assert.equal(afterReload.paused, true);
+  assert.equal(afterReload.indexed, 0);
+  assert.deepEqual(await vectorStore.allChunks(), []);
+  assert.equal((await b.rebuildIndex()).indexed, 2);
+  assert.equal(await vectorStore.isHeld(), false);
 });

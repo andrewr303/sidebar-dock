@@ -486,3 +486,82 @@ test('streamChat through a CLI agent uses the bridge, maps events and returns te
   assert.deepEqual(result.usage, { inputTokens: 4, outputTokens: 2 });
   assert.deepEqual(events.map(event => event.type), ['start', 'text', 'text', 'usage', 'done']);
 });
+
+test('Anthropic server-side fallback: declined thinking and tool calls before the switch are not returned or replayed', async t => {
+  mockFetch(t, () => new Response(body(sse([
+    { type: 'message_start', message: { model: 'claude-opus-5-5', usage: { input_tokens: 10 } } },
+    { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Plan.' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-declined' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Partial. ' } },
+    { type: 'content_block_stop', index: 1 },
+    { type: 'content_block_start', index: 2, content_block: { type: 'tool_use', id: 'toolu_declined', name: 'search_library', input: {} } },
+    { type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: '{"query":"x"}' } },
+    { type: 'content_block_stop', index: 2 },
+    { type: 'content_block_start', index: 3, content_block: { type: 'fallback', from: { model: 'claude-opus-5-5' }, to: { model: 'claude-opus-5' } } },
+    { type: 'content_block_stop', index: 3 },
+    { type: 'content_block_start', index: 4, content_block: { type: 'thinking', thinking: '', signature: '' } },
+    { type: 'content_block_delta', index: 4, delta: { type: 'signature_delta', signature: 'sig-kept' } },
+    { type: 'content_block_stop', index: 4 },
+    { type: 'content_block_start', index: 5, content_block: { type: 'tool_use', id: 'toolu_kept', name: 'list_items', input: {} } },
+    { type: 'content_block_stop', index: 5 },
+    { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 9 } },
+    { type: 'message_stop' },
+  ]))));
+  const { value } = ctx('anthropic', { tools: TOOLS });
+  const result = await anthropic.stream(value);
+  assert.equal(result.text, 'Partial. ');
+  assert.deepEqual(result.toolCalls, [{ id: 'toolu_kept', name: 'list_items', input: {} }]);
+  assert.equal(result.model, 'claude-opus-5');
+  assert.deepEqual(result.fallback, { from: 'claude-opus-5-5', to: 'claude-opus-5' });
+  assert.deepEqual(result.assistantMessage.native.content, [
+    { type: 'text', text: 'Partial. ' },
+    { type: 'thinking', thinking: '', signature: 'sig-kept' },
+    { type: 'tool_use', id: 'toolu_kept', name: 'list_items', input: {} },
+  ]);
+  assert.deepEqual(result.assistantMessage.content.filter(part => part.type === 'tool_use').map(part => part.id), ['toolu_kept']);
+});
+
+test('Chat Completions tool calls without index are matched by id, and repeated names are not doubled', async t => {
+  mockFetch(t, () => new Response(body(sse([
+    { choices: [{ delta: { tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'search_library', arguments: '{"query"' } }] } }] },
+    { choices: [{ delta: { tool_calls: [{ id: 'call_1', function: { name: 'search_library', arguments: ':"tea"}' } }] } }] },
+    { choices: [{ delta: { tool_calls: [{ id: 'call_2', function: { name: 'list_items', arguments: '{}' } }] } }] },
+    { choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
+    '[DONE]',
+  ], { named: false }))));
+  const result = await chat.stream(ctx('mistral', { tools: TOOLS }).value);
+  assert.deepEqual(result.toolCalls, [{ id: 'call_1', name: 'search_library', input: { query: 'tea' } }, { id: 'call_2', name: 'list_items', input: {} }]);
+});
+
+test('bridge providers only get a reasoning effort they enable, and bridge thinking events are relayed', async t => {
+  localStorage.clear();
+  let efforts = [];
+  const requests = [];
+  configureConnections({ integrations: {
+    getIntegrationSettings: async () => ({ bridgeConfigured: true }),
+    requestBridge: async (path, options = {}) => {
+      if (path === '/ai/providers') return { providers: [{ id: 'provider_1', type: 'anthropic', name: 'Bridge Claude', model: 'claude-opus-5-5', hasCredentials: true, capabilities: { images: false, reasoningEfforts: efforts } }], agents: [] };
+      requests.push(options.body);
+      options.onEvent?.({ type: 'start' });
+      options.onEvent?.({ type: 'thinking', text: 'Considering.' });
+      options.onEvent?.({ type: 'delta', text: 'Done' });
+      return { type: 'done', text: 'Done', stopReason: 'end_turn' };
+    },
+  } });
+  const events = [];
+  const first = await streamChat({ connectionId: 'bridge:provider_1', messages: [{ role: 'user', content: [{ type: 'text', text: 'Look' }, { type: 'image', mediaType: 'image/png', data: 'iVBORw0KGgo=' }] }], effort: 'medium', onEvent: event => events.push(event) });
+  assert.equal(requests[0].reasoningEffort, undefined, 'no effort is enabled on the bridge provider, so none is sent');
+  assert.equal(requests[0].context.imageAttachments, undefined, 'images stay out when the bridge provider does not enable them');
+  assert.match(requests[0].query, /cannot read images/);
+  assert.equal(first.thinking, 'Considering.');
+  assert.deepEqual(events.filter(event => event.type === 'thinking').map(event => event.delta), ['Considering.']);
+  efforts = ['low', 'high'];
+  configureConnections({});
+  await streamChat({ connectionId: 'bridge:provider_1', messages: [{ role: 'user', content: 'Again' }], effort: 'medium' });
+  assert.equal(requests[1].reasoningEffort, 'low');
+  await streamChat({ connectionId: 'bridge:provider_1', messages: [{ role: 'user', content: 'Again' }], effort: 'high' });
+  assert.equal(requests[2].reasoningEffort, 'high');
+});

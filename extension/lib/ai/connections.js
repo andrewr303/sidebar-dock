@@ -445,7 +445,7 @@ function pickDefaultConnection(state, keyIds, snapshot) {
     const provider = getProvider(record.providerId);
     if (record.enabled !== false && provider.chat && (!provider.needsKey || keyIds.has(record.id))) return record.id;
   }
-  return bridgedConnections(state, snapshot).find(entry => entry.enabled && entry.status === 'ok')?.id || '';
+  return bridgedConnections(state, snapshot).find(entry => entry.enabled && entry.status !== 'error')?.id || '';
 }
 
 export async function resolveConnection(id, { allowDisabled = false } = {}) {
@@ -458,7 +458,11 @@ export async function resolveConnection(id, { allowDisabled = false } = {}) {
   }
   if (!connectionId) throw aiError('Connect an AI provider in Settings.', { code: 'no_connection' });
   connectionId = LEGACY_IDS[connectionId] || connectionId;
-  if (isBridgedId(connectionId)) return resolveBridged(connectionId, state, { allowDisabled });
+  if (isBridgedId(connectionId)) {
+    // Bridge provider capabilities (enabled efforts, images) come from the bridge listing (cached for 30 s).
+    if (connectionId.startsWith('bridge:')) await bridgeSnapshot().catch(() => null);
+    return resolveBridged(connectionId, state, { allowDisabled });
+  }
   const record = state.connections.find(entry => entry.id === connectionId);
   if (!record) throw aiError('That AI connection no longer exists. Connect an AI provider in Settings.', { code: 'no_connection' });
   const provider = getProvider(record.providerId);
@@ -478,7 +482,9 @@ function resolveBridged(connectionId, state, { allowDisabled }) {
     if (!/^[\w-]{1,100}$/.test(bridgeProviderId)) throw aiError('That bridge connection is not valid.', { code: 'no_connection' });
     const known = (bridgeMemory?.providers || state.bridge?.providers || []).find(entry => entry.id === bridgeProviderId);
     const provider = getProvider('bridge');
-    return { connection: { id: connectionId, providerId: 'bridge', label: extra.label || known?.name || 'Bridge provider', via: 'bridge', bridgeProviderId, bridgeType: known?.type || '', defaultModel: extra.defaultModel || known?.model || '', enabled: extra.enabled !== false },
+    // The bridge rejects an effort or image its provider does not enable, so the transport needs these capabilities.
+    const capabilities = known?.capabilities ? { images: known.capabilities.images === true, reasoningEfforts: [...(known.capabilities.reasoningEfforts || [])] } : null;
+    return { connection: { id: connectionId, providerId: 'bridge', label: extra.label || known?.name || 'Bridge provider', via: 'bridge', bridgeProviderId, bridgeType: known?.type || '', defaultModel: extra.defaultModel || known?.model || '', enabled: extra.enabled !== false, capabilities },
       provider, apiKey: '', baseUrl: '', via: 'bridge', request };
   }
   const provider = getProvider(connectionId);
@@ -719,6 +725,18 @@ async function chatProbe(resolved, { signal }) {
   return { model, message: `Connected. ${result.model || model} answered.` };
 }
 
+// For providers whose model list needs no key: a cheap authenticated call that fails on a wrong key. A server without
+// the route (404) is not treated as a failure.
+async function keyCheck({ provider, baseUrl, apiKey }, { signal }) {
+  if (!provider.keyCheckPath) return;
+  try {
+    const response = await providerFetch(`${baseUrl}${provider.keyCheckPath}`, { headers: { ...authHeaders({ provider, apiKey }), ...(provider.chatOptions?.headers || {}) }, signal, provider, secrets: [apiKey], timeoutMs: 20000 });
+    await response.body?.cancel?.().catch(() => {});
+  } catch (error) {
+    if (error.code !== 'not_found') throw error;
+  }
+}
+
 async function recordStatus(id, patch) {
   await update(state => {
     if (isBridgedId(id)) state.overlays[id] = { ...(state.overlays[id] || {}), ...patch };
@@ -759,6 +777,7 @@ export async function testConnection(id, { signal } = {}) {
         if (provider.kind !== 'custom' || error.code !== 'not_found') throw error;
       }
       if (models) {
+        await keyCheck(resolved, { signal });
         const chatModels = await listModels(connectionId, { kind: 'chat', signal });
         const model = connection.defaultModel || chatModels[0]?.id || '';
         const missing = model && chatModels.length && !models.some(entry => entry.id === model || entry.id === `${model}:latest`);

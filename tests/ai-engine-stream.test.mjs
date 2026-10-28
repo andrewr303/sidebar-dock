@@ -119,3 +119,18 @@ test('redaction removes explicit secrets and anything shaped like a provider key
   assert.throws(() => validateApiKey('sk-with space'), /without spaces/);
   assert.equal(validateApiKey('  sk-abc  '), 'sk-abc');
 });
+
+test('readSse and readNdjson stop handing out events buffered in the same chunk once the caller aborts', async () => {
+  const controller = new AbortController();
+  const events = [];
+  await assert.rejects((async () => {
+    for await (const event of readSse(chunked('data: 1\n\ndata: 2\n\ndata: 3\n\n', 4096), { signal: controller.signal })) { events.push(event.data); controller.abort(); }
+  })(), error => error.code === 'aborted');
+  assert.deepEqual(events, ['1']);
+  const lines = new AbortController();
+  const objects = [];
+  await assert.rejects((async () => {
+    for await (const value of readNdjson(chunked('{"n":1}\n{"n":2}\n{"n":3}\n', 4096), { signal: lines.signal })) { objects.push(value.n); lines.abort(); }
+  })(), error => error.code === 'aborted');
+  assert.deepEqual(objects, [1]);
+});

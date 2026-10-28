@@ -406,13 +406,19 @@ async function updateTabBadge(tab) {
   return saved;
 }
 
+// A page load fires several updates (about:blank, URL, title, complete); send the last one per tab.
+const pendingBroadcasts = new Map();
 async function refreshTab(tab, broadcast) {
   if (!tabTracking || !tab) return;
   const saved = await updateTabBadge(tab);
-  if (broadcast && tab.active !== false) {
-    attempt(() => api.runtime.sendMessage({ type: 'still:active-tab', tab: { tabId: tab.id, windowId: tab.windowId, url: tab.url || '',
-      title: tab.title || '', favIconUrl: tab.favIconUrl || '', saved: Boolean(saved), itemId: saved?.id || '' } }));
-  }
+  if (!broadcast || tab.active === false) return;
+  const message = { type: 'still:active-tab', tab: { tabId: tab.id, windowId: tab.windowId, url: tab.url || '',
+    title: tab.title || '', favIconUrl: tab.favIconUrl || '', saved: Boolean(saved), itemId: saved?.id || '' } };
+  clearTimeout(pendingBroadcasts.get(tab.id));
+  pendingBroadcasts.set(tab.id, later(() => {
+    pendingBroadcasts.delete(tab.id);
+    attempt(() => api.runtime.sendMessage(message));
+  }, 120));
 }
 
 async function refreshActiveTabs() {
@@ -445,6 +451,8 @@ function stopTabTracking() {
   api.tabs?.onActivated?.removeListener(onTabActivated);
   api.tabs?.onUpdated?.removeListener(onTabUpdated);
   api.windows?.onFocusChanged?.removeListener(onWindowFocusChanged);
+  for (const timer of pendingBroadcasts.values()) clearTimeout(timer);
+  pendingBroadcasts.clear();
   checkedTabs.clear();
   attempt(async () => { for (const tab of await api.tabs.query({})) await attempt(() => api.action.setBadgeText({ tabId: tab.id, text: null })); });
 }

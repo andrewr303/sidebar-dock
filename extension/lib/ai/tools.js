@@ -134,10 +134,11 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       const results = await searchLibrary(query, { limit: clampInt(input.limit, 1, 50, 12), mode: 'hybrid', filter, signal });
       const library = await getLibrary();
       const index = new Map((library?.items || []).map(item => [item.id, item]));
-      const items = results.map(result => index.get(result.id)).filter(Boolean).map((item, i) => {
+      // Pair each hit with its item before dropping ids that vanished, so snippets stay with the right item.
+      const items = results.map(result => ({ result, item: index.get(result.id) })).filter(entry => entry.item).map(({ result, item }) => {
         remember(item, library);
         return { id: item.id, title: text(item.title), type: item.type, url: text(item.url), collection: collectionPath(library, text(item.collectionId)),
-          tags: item.tags || [], updatedAt: text(item.updatedAt), snippet: results[i]?.id === item.id ? results[i].snippet : '' };
+          tags: item.tags || [], updatedAt: text(item.updatedAt), snippet: text(result.snippet) };
       });
       return { summary: `Searched library · ${plural(items.length, 'match', 'matches')}`, data: { query, count: items.length, items }, result: { count: items.length, ids: items.map(item => item.id) } };
     },
@@ -516,7 +517,14 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
           proposals.push(record);
           onEvent({ type: 'proposal', proposal });
           onEvent({ type: 'status', label: 'Waiting for your review' });
-          const decision = await waitForDecision(proposal);
+          let decision;
+          try { decision = await waitForDecision(proposal); }
+          catch (error) {
+            // Stopped while the card was open: close it as discarded so the UI does not leave an Apply button behind.
+            record.status = 'discarded';
+            onEvent({ type: 'proposal_result', proposalId: proposal.id, status: 'discarded' });
+            throw error;
+          }
           if (decision === 'apply') {
             try {
               const undo = await applyDraft(draft);

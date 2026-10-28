@@ -164,3 +164,10 @@ test('related items rank by centroid similarity and exclude the item itself and 
   assert.ok(related.every(entry => typeof entry.score === 'number' && entry.title));
   assert.deepEqual(await search.relatedItems('missing'), []);
 });
+
+test('warming tokenizes the library ahead of the first search without changing results', async () => {
+  const search = createSearch({ getLibrary: async () => library });
+  const cold = await createSearch({ getLibrary: async () => library }).searchLibrary('calm design');
+  await search.warm({ slice: 2 });
+  assert.deepEqual(await search.searchLibrary('calm design'), cold);
+});

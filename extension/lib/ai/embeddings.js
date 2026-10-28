@@ -106,7 +106,7 @@ export function parseEmbeddingResponse(kind, data, count) {
   if (kind === 'gemini') vectors = (data?.embeddings || []).map(entry => entry?.values);
   else if (kind === 'ollama') { vectors = data?.embeddings || []; tokens = data?.prompt_eval_count || 0; }
   else if (kind === 'cohere') { vectors = data?.embeddings?.float || []; tokens = data?.meta?.billed_units?.input_tokens || 0; }
-  else if (kind === 'bridge') { vectors = data?.vectors || []; tokens = data?.usage?.tokens || data?.usage?.total_tokens || 0; }
+  else if (kind === 'bridge') { vectors = data?.vectors || []; tokens = data?.usage?.inputTokens || data?.usage?.tokens || data?.usage?.total_tokens || 0; }
   else {
     vectors = [...(data?.data || [])].sort((a, b) => (a?.index ?? 0) - (b?.index ?? 0)).map(entry => entry?.embedding);
     tokens = data?.usage?.total_tokens || data?.usage?.prompt_tokens || 0;
@@ -197,7 +197,8 @@ export function createEmbedder({ resolveConnection, providerFetch, requestBridge
     if (!useModel && target.kind !== 'bridge') throw new Error('Choose an embedding model in Settings.');
     const limits = EMBEDDING_LIMITS[target.kind] || EMBEDDING_LIMITS.openai;
     const inputCap = target.kind === 'gemini' && /embedding-001/.test(useModel) ? 7000 : limits.inputChars;
-    const texts = inputs.map(input => String(input ?? '').slice(0, inputCap) || ' ');
+    // NUL characters (from some captured pages) are rejected by the bridge and several providers.
+    const texts = inputs.map(input => String(input ?? '').replace(/\u0000/g, ' ').slice(0, inputCap) || ' ');
     const vectors = new Array(texts.length);
     let tokens = 0;
     let reportedModel = '';

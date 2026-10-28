@@ -69,3 +69,13 @@ test('a plain string prompt is cut at a character boundary with an ellipsis', ()
   const claude = handoffPlan('claude', 'a'.repeat(20000), { maxLength: 100000 });
   assert.ok(claude.prompt.length <= 14000, 'Claude truncates q near 14,000 characters');
 });
+
+test('excerpts cut next to an emoji, and lone surrogates in input, never break URL encoding', () => {
+  const emoji = { title: 'Emoji 😀 note', url: 'https://example.com/e', excerpt: `${'a'.repeat(598)}😀${'b'.repeat(400)}` };
+  const prompt = buildHandoffPrompt({ question: 'Q?', sources: [emoji] });
+  assert.ok(!/[\ud800-\udbff](?![\udc00-\udfff])/.test(prompt), 'no lone high surrogate after clipping');
+  for (const target of ['claude', 'chatgpt', 'grok', 'perplexity']) {
+    assert.doesNotThrow(() => handoffUrl(target, { question: 'Q?', sources: Array.from({ length: 30 }, () => emoji) }));
+  }
+  assert.equal(handoffUrl('chatgpt', 'x\ud800y'), 'https://chatgpt.com/?q=x%EF%BF%BDy');
+});

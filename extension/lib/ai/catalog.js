@@ -21,11 +21,14 @@ const freeze = value => {
 const model = (id, label, extra = {}) => ({ id, label, description: '', contextWindow: null, maxOutput: null, images: true, tools: true, reasoning: true, efforts: [], ...extra });
 const embed = (id, label, dims, extra = {}) => ({ id, label, dims, dimsOptions: [dims], ...extra });
 
+// Every current Claude model has a 1M-token context window and up to 128K output tokens (Models API max_input_tokens /
+// max_tokens replace these once a connection lists its models).
+const CLAUDE_LIMITS = { contextWindow: 1000000, maxOutput: 128000 };
 const CLAUDE_MODELS = [
-  model('claude-opus-5-5', 'Claude Opus 5.5', { description: 'Most capable', efforts: [...ANTHROPIC_EFFORTS], defaultEffort: 'medium' }),
-  model('claude-sonnet-5-5', 'Claude Sonnet 5.5', { description: 'Fast and capable', efforts: [...ANTHROPIC_EFFORTS], defaultEffort: 'high' }),
-  model('claude-haiku-5-5', 'Claude Haiku 5.5', { description: 'Fastest, lowest cost', efforts: [...ANTHROPIC_EFFORTS], defaultEffort: 'medium' }),
-  model('claude-fable-5-1', 'Claude Fable 5.1', { efforts: [...ANTHROPIC_EFFORTS], defaultEffort: 'high' }),
+  model('claude-opus-5-5', 'Claude Opus 5.5', { description: 'Most capable', ...CLAUDE_LIMITS, efforts: [...ANTHROPIC_EFFORTS], defaultEffort: 'medium' }),
+  model('claude-sonnet-5-5', 'Claude Sonnet 5.5', { description: 'Fast and capable', ...CLAUDE_LIMITS, efforts: [...ANTHROPIC_EFFORTS], defaultEffort: 'high' }),
+  model('claude-haiku-5-5', 'Claude Haiku 5.5', { description: 'Fastest, lowest cost', ...CLAUDE_LIMITS, efforts: [...ANTHROPIC_EFFORTS], defaultEffort: 'medium' }),
+  model('claude-fable-5-1', 'Claude Fable 5.1', { ...CLAUDE_LIMITS, efforts: [...ANTHROPIC_EFFORTS], defaultEffort: 'high' }),
 ];
 
 export const CATALOG = freeze([
@@ -105,6 +108,8 @@ export const CATALOG = freeze([
     baseUrl: 'https://openrouter.ai/api/v1', editableBaseUrl: false,
     keyUrl: 'https://openrouter.ai/settings/keys', docsUrl: 'https://openrouter.ai/docs/api-reference/overview',
     keyPlaceholder: 'sk-or-…', needsKey: true, local: false, modelList: true,
+    // GET /models is public here, so a connection test also checks the key itself.
+    keyCheckPath: '/key',
     chatOptions: { streamUsage: true, effortParam: 'reasoning', reasoningField: 'reasoning',
       headers: { 'HTTP-Referer': 'https://github.com/AVRCORP/sidebar-dock', 'X-Title': 'Still' } },
     chat: {

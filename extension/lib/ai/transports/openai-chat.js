@@ -95,10 +95,16 @@ export async function stream(ctx) {
       if (typeof delta[key] === 'string' && delta[key]) { thinking += delta[key]; emit({ type: 'thinking', delta: delta[key] }); break; }
     }
     for (const call of delta.tool_calls || []) {
-      const index = Number.isInteger(call.index) ? call.index : calls.length;
+      // OpenAI sends index on every fragment. Servers that omit it are matched by id; a fragment with neither
+      // continues the call in progress.
+      let index = Number.isInteger(call.index) ? call.index : call.id ? calls.findIndex(entry => entry?.id === call.id) : calls.length - 1;
+      if (index < 0) index = calls.length;
       const entry = calls[index] ||= { id: '', name: '', arguments: '' };
-      if (call.id) entry.id = call.id;
-      if (call.function?.name) entry.name += call.function.name;
+      if (call.id && !entry.id) entry.id = call.id;
+      // Names normally arrive whole in the first fragment; tolerate servers that split them, repeat them on every
+      // fragment or resend the name so far.
+      const name = call.function?.name;
+      if (name) entry.name = !entry.name || name.startsWith(entry.name) ? name : entry.name.endsWith(name) ? entry.name : entry.name + name;
       if (typeof call.function?.arguments === 'string') entry.arguments += call.function.arguments;
       else if (call.function?.arguments && typeof call.function.arguments === 'object') entry.arguments = JSON.stringify(call.function.arguments);
     }

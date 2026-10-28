@@ -89,6 +89,12 @@ export async function semanticSearch(query, opts = {}) {
   return { results: results.map(({ id, title, type, url, score, snippet, source }) => ({ id, title, type, url, score, snippet, source })), index: getIndexStatus() };
 }
 
+/** Companion for createIntegrationClient({ searchAvailable }): true when the semantic index can answer MCP semantic_search. */
+export async function semanticSearchAvailable() {
+  if (!services) return false;
+  return getIndexStatus().enabled && (await services.indexer.isReady());
+}
+
 /**
  * Called once from app.js: init({ store, getLibrary, integrations, onLibraryChange }).
  * onLibraryChange(listener) -> unsubscribe defaults to store.subscribe. Indexing starts shortly after boot when enabled.
@@ -99,6 +105,9 @@ export function init({ store: appStore, getLibrary, integrations, onLibraryChang
   if (typeof getLibrary === 'function') runtime.getLibrary = getLibrary;
   if (typeof integrations?.requestBridge === 'function') runtime.requestBridge = integrations.requestBridge;
   if (integrations) connections.configureConnections({ integrations });
+  // The bridge's MCP semantic_search is answered from this view's index (integrations.setBridgeSearch from app.js's namespace).
+  const bridgeSearch = typeof integrations?.setBridgeSearch === 'function' ? integrations.setBridgeSearch : null;
+  bridgeSearch?.(semanticSearch, { available: semanticSearchAvailable });
   const { indexer } = engine();
   const subscribe = typeof onLibraryChange === 'function' ? onLibraryChange : typeof runtime.store?.subscribe === 'function' ? runtime.store.subscribe : null;
   const unsubscribe = subscribe?.(library => {
@@ -107,8 +116,9 @@ export function init({ store: appStore, getLibrary, integrations, onLibraryChang
   });
   const offConnections = typeof connections.onConnectionsChanged === 'function' ? connections.onConnectionsChanged(() => indexer.refresh().catch(error => console.error(error))) : null;
   let timer = null;
+  const warmTimer = setTimeout(() => services?.search.warm().catch(error => console.error(error)), 3000);
   const ready = indexer.refresh({ start: false }).catch(error => { console.error(error); return indexer.getIndexStatus(); })
     .then(status => { if (status.enabled) timer = setTimeout(() => indexer.refresh().catch(error => console.error(error)), 1500); return status; });
-  runtime.dispose = () => { clearTimeout(timer); if (typeof unsubscribe === 'function') unsubscribe(); if (typeof offConnections === 'function') offConnections(); indexer.dispose(); services = null; };
+  runtime.dispose = () => { clearTimeout(timer); clearTimeout(warmTimer); bridgeSearch?.(null); if (typeof unsubscribe === 'function') unsubscribe(); if (typeof offConnections === 'function') offConnections(); indexer.dispose(); services = null; };
   return { ready, dispose: () => { runtime.dispose?.(); runtime.dispose = null; } };
 }

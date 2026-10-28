@@ -1,1 +1,390 @@
-/* tokens.css: owned per SPEC.md §3.1 */
+/* PROVISIONAL: Raindrop Refined tokens copied from the winning mock; the foundation engineer finalizes this file. */
+/* =====================================================================
+   Still / Raindrop Refined: design tokens
+   Theme:   <html data-theme="light|dark">        (default light)
+   Accent:  <html data-accent="blue|violet|green|orange|pink|gold"> (default blue)
+   Density: <html data-density="comfortable|compact"> (default comfortable)
+   Components reference semantic tokens only. Contrast notes are measured
+   WCAG 2.x ratios against the surface named.
+   ===================================================================== */
+
+@font-face {
+  font-family: "Inter Variable";
+  src: url("../assets/fonts/InterVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Inter Variable";
+  src: url("../assets/fonts/InterVariable-Italic.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("../assets/fonts/JetBrainsMono.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ---------------------------------------------------------------------
+   Theme-independent scales
+   --------------------------------------------------------------------- */
+:root {
+  /* Type */
+  --font-sans: "Inter Variable", "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+
+  --text-xs: 12px;   /* meta, counts, badges, kbd */
+  --text-sm: 13px;   /* default UI text: tree rows, buttons, inputs, descriptions */
+  --text-md: 14px;   /* item titles, dialog body, reader-adjacent copy */
+  --text-lg: 16px;   /* panel titles, note body at reading size */
+  --text-xl: 20px;   /* view titles ("Inspiration") */
+  --text-2xl: 24px;  /* detail panel title, empty-state headings */
+
+  --lh-xs: 1.34;     /* 16px */
+  --lh-sm: 1.54;     /* 20px */
+  --lh-md: 1.43;     /* 20px */
+  --lh-lg: 1.5;      /* 24px */
+  --lh-xl: 1.3;      /* 26px */
+  --lh-2xl: 1.25;    /* 30px */
+
+  --tracking-tight: -0.011em;
+  --tracking-title: -0.017em;
+  --tracking-caps: 0.04em;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* Spacing (2/4/6/8/10/12/16/20/24/32) */
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 10px;
+  --space-6: 12px;
+  --space-7: 16px;
+  --space-8: 20px;
+  --space-9: 24px;
+  --space-10: 32px;
+
+  /* Radius: modest, concentric. Card 10 = inner 6 + 4 inset. */
+  --radius-xs: 4px;   /* chips inside inputs, kbd, checkboxes */
+  --radius-sm: 6px;   /* buttons, tree rows, icon tiles, segmented items */
+  --radius-md: 8px;   /* inputs, menus, segmented track, thumbnails */
+  --radius-lg: 10px;  /* cards, popover panels */
+  --radius-xl: 12px;  /* dialogs, side-panel composer */
+  --radius-full: 999px;
+
+  /* Sizing */
+  --control-h-sm: 26px;
+  --control-h-md: 32px;
+  --control-h-lg: 36px;
+  --row-h: 30px;          /* tree + nav row; fits the full sidebar at 900px */
+  --list-row-h: 76px;     /* library list row: 8 + title 20 + 2 + desc 18 + 2 + 2 + meta 16 + 8 */
+  --thumb-w: 64px;
+  --thumb-h: 48px;
+  --icon-tile: 20px;      /* collection icon tile in tree */
+  --icon-sm: 14px;
+  --icon-md: 16px;
+  --icon-lg: 18px;
+  --sidebar-w: 248px;
+  --detail-w: 384px;
+  --topbar-h: 52px;
+
+  /* Motion */
+  --dur-fast: 120ms;
+  --dur-base: 160ms;
+  --dur-slow: 240ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --press-scale: 0.96;
+
+  /* Layering */
+  --z-sticky: 10;
+  --z-popover: 40;
+  --z-dialog: 50;
+  --z-toast: 60;
+}
+
+/* ---------------------------------------------------------------------
+   LIGHT (default)
+   Warm-gray sidebar beside a white canvas. Off-black text.
+   --------------------------------------------------------------------- */
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+
+  --bg-app: #ffffff;
+  --bg-sidebar: #f6f5f3;
+  --bg-surface: #ffffff;
+  --bg-raised: #ffffff;
+  --bg-sunken: #f1f0ed;
+  --bg-hover: rgb(45 40 30 / 0.055);
+  --bg-active: rgb(45 40 30 / 0.095);
+  --bg-selected: var(--accent-soft);
+  --bg-selected-strong: var(--accent-soft-strong);
+  --bg-scrim: rgb(28 26 22 / 0.40);
+  --bg-inverse: #26272b;
+
+  --fg-default: #1f1e1c;   /* 16.7 on #fff, 15.3 on sidebar */
+  --fg-muted: #5f5c57;     /* 6.7 on #fff, 6.1 on sidebar */
+  --fg-subtle: #6d6963;    /* 5.4 on #fff, 5.0 on sidebar, 4.7 on sunken */
+  --fg-faint: #a39f98;     /* decorative glyphs and disabled only, never body text */
+  --fg-on-accent: #ffffff;
+  --fg-inverse: #f1efec;
+  --fg-link: var(--accent-soft-fg);
+
+  --border-subtle: #efeeeb;
+  --border-default: #e6e4e0;
+  --border-strong: #cfccc6;
+  --border-input: #d6d3ce;
+
+  /* Accent: blue (default). White on accent 5.4, accent on #fff 5.4 */
+  --accent: #1a66d6;
+  --accent-hover: #1659c0;
+  --accent-active: #134ea8;
+  --accent-soft: #e8f0fc;
+  --accent-soft-strong: #d6e4fa;
+  --accent-soft-fg: #1856b8;   /* 5.6 on soft */
+  --focus-ring: #1a66d6;       /* 5.4 on #fff, 4.9 on sidebar */
+
+  --danger: #c9342a;           /* 5.2 on #fff */
+  --danger-hover: #b22c23;
+  --danger-soft: #fdecea;
+  --success: #17733f;          /* 5.9 on #fff, 5.2 on soft */
+  --success-soft: #e5f4ea;
+  --warning: #955700;          /* 5.4 on #fff */
+  --warning-soft: #fdf1df;
+
+  /* Text highlight backgrounds (fg-default stays readable on each) */
+  --hl-yellow: #fff0a0;
+  --hl-green: #d2f2cf;
+  --hl-blue: #d4e6ff;
+  --hl-pink: #ffd8e6;
+  --hl-purple: #e8dcff;
+  /* Highlight markers (swatch dot, quote rule in cards) */
+  --hl-yellow-mark: #e0b400;
+  --hl-green-mark: #3aa655;
+  --hl-blue-mark: #3b82f6;
+  --hl-pink-mark: #e0559a;
+  --hl-purple-mark: #8b5cf6;
+
+  /* Collection palette: glyph color on its -soft tile is >= 3:1 */
+  --c-red: #dc3d43;      --c-red-soft: #fde9e9;
+  --c-orange: #d85a12;   --c-orange-soft: #fdede3;
+  --c-amber: #b87100;    --c-amber-soft: #fcf1da;
+  --c-yellow: #9c8100;   --c-yellow-soft: #faf5d4;
+  --c-lime: #4f8a0c;     --c-lime-soft: #edf6dc;
+  --c-green: #1e8a47;    --c-green-soft: #e2f4e8;
+  --c-teal: #0d8a7f;     --c-teal-soft: #ddf3f0;
+  --c-cyan: #0a7fa3;     --c-cyan-soft: #ddf1f8;
+  --c-blue: #2a66d9;     --c-blue-soft: #e4edfc;
+  --c-indigo: #4c50d0;   --c-indigo-soft: #eaeafc;
+  --c-violet: #8045d0;   --c-violet-soft: #f1e9fc;
+  --c-pink: #c93a80;     --c-pink-soft: #fce7f1;
+
+  /* Elevation: mostly flat; hairline ring + soft lift */
+  --shadow-xs: 0 1px 2px rgb(30 25 15 / 0.06);
+  --shadow-sm: 0 0 0 1px rgb(30 25 15 / 0.06), 0 1px 2px -1px rgb(30 25 15 / 0.08), 0 2px 4px rgb(30 25 15 / 0.04);
+  --shadow-md: 0 0 0 1px rgb(30 25 15 / 0.07), 0 4px 10px -2px rgb(30 25 15 / 0.08), 0 12px 24px -6px rgb(30 25 15 / 0.10);
+  --shadow-lg: 0 0 0 1px rgb(30 25 15 / 0.07), 0 8px 20px -4px rgb(30 25 15 / 0.10), 0 28px 56px -12px rgb(30 25 15 / 0.22);
+  --image-outline: rgb(0 0 0 / 0.1);
+  --cover-scrim: linear-gradient(180deg, rgb(0 0 0 / 0) 30%, rgb(0 0 0 / 0.62) 100%);
+}
+
+/* ---------------------------------------------------------------------
+   DARK
+   Neutral charcoal (Raindrop-like), not blue-black. Elevation = lighter.
+   --------------------------------------------------------------------- */
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-app: #25262a;
+  --bg-sidebar: #202124;
+  --bg-surface: #2a2b2f;
+  --bg-raised: #303135;
+  --bg-sunken: #1c1d20;
+  --bg-hover: rgb(255 255 255 / 0.055);
+  --bg-active: rgb(255 255 255 / 0.09);
+  --bg-selected: var(--accent-soft);
+  --bg-selected-strong: var(--accent-soft-strong);
+  --bg-scrim: rgb(8 8 10 / 0.56);
+  --bg-inverse: #ecebe8;
+
+  --fg-default: #e8e6e3;   /* 12.1 on app */
+  --fg-muted: #b4b1ab;     /* 7.1 on app, 6.0 on raised */
+  --fg-subtle: #9d9993;    /* 5.3 on app, 4.6 on raised */
+  --fg-faint: #6f6c67;     /* decorative and disabled only */
+  --fg-on-accent: #ffffff;
+  --fg-inverse: #1f1e1c;
+  --fg-link: var(--accent-soft-fg);
+
+  --border-subtle: #2e2f33;
+  --border-default: #37383d;
+  --border-strong: #4a4b51;
+  --border-input: #424349;
+
+  /* Accent: blue. White on accent 5.1; soft-fg 7.4 on app */
+  --accent: #2c6bd3;
+  --accent-hover: #2763c6;
+  --accent-active: #2259b4;
+  --accent-soft: #2a3850;
+  --accent-soft-strong: #314366;
+  --accent-soft-fg: #8fb6f8;   /* 5.6 on soft */
+  --focus-ring: #6ea0f5;       /* 5.8 on app */
+
+  --danger: #f37a71;
+  --danger-hover: #f58e86;
+  --danger-soft: #42282a;
+  --success: #4cc27a;
+  --success-soft: #213a2b;
+  --warning: #e8a33c;
+  --warning-soft: #40331f;
+
+  --hl-yellow: rgb(226 186 40 / 0.30);
+  --hl-green: rgb(76 194 122 / 0.27);
+  --hl-blue: rgb(92 150 245 / 0.30);
+  --hl-pink: rgb(238 98 160 / 0.30);
+  --hl-purple: rgb(160 120 240 / 0.32);
+  --hl-yellow-mark: #e6c03a;
+  --hl-green-mark: #5cc983;
+  --hl-blue-mark: #6ea0f5;
+  --hl-pink-mark: #f07cb2;
+  --hl-purple-mark: #ad8cf7;
+
+  --c-red: #ff8589;      --c-red-soft: #43292b;
+  --c-orange: #ff9a5c;   --c-orange-soft: #45311f;
+  --c-amber: #f2b441;    --c-amber-soft: #433720;
+  --c-yellow: #e8d04a;   --c-yellow-soft: #3e3a1f;
+  --c-lime: #a6d65a;     --c-lime-soft: #333d22;
+  --c-green: #5fcf8a;    --c-green-soft: #233d2d;
+  --c-teal: #4fd1c0;     --c-teal-soft: #1f3d3a;
+  --c-cyan: #5cc8ee;     --c-cyan-soft: #1f3a45;
+  --c-blue: #7eaaf8;     --c-blue-soft: #283750;
+  --c-indigo: #9b9ef8;   --c-indigo-soft: #2e2f50;
+  --c-violet: #c19bf7;   --c-violet-soft: #372c4b;
+  --c-pink: #f584bd;     --c-pink-soft: #45293a;
+
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-sm: 0 0 0 1px rgb(255 255 255 / 0.06), 0 1px 3px rgb(0 0 0 / 0.3);
+  --shadow-md: 0 0 0 1px rgb(255 255 255 / 0.08), 0 8px 24px -4px rgb(0 0 0 / 0.5);
+  --shadow-lg: 0 0 0 1px rgb(255 255 255 / 0.09), 0 24px 64px -12px rgb(0 0 0 / 0.66);
+  --image-outline: rgb(255 255 255 / 0.1);
+  --cover-scrim: linear-gradient(180deg, rgb(0 0 0 / 0) 25%, rgb(0 0 0 / 0.7) 100%);
+}
+
+/* ---------------------------------------------------------------------
+   ACCENT PRESETS (override --accent* and --focus-ring per theme)
+   Each light fill carries white text >= 4.5:1; each soft-fg >= 4.5 on soft.
+   --------------------------------------------------------------------- */
+[data-accent="blue"] { /* default values above */ }
+
+[data-accent="violet"] {
+  --accent: #6d4ae0; --accent-hover: #5f3dd0; --accent-active: #5232b8;
+  --accent-soft: #efeafd; --accent-soft-strong: #e1d8fb; --accent-soft-fg: #5a37c9;
+  --focus-ring: #6d4ae0;
+}
+[data-theme="dark"][data-accent="violet"] {
+  --accent: #7650e6; --accent-hover: #6c46dc; --accent-active: #603dc9;
+  --accent-soft: #342d4d; --accent-soft-strong: #3f3562; --accent-soft-fg: #b9a5fb;
+  --focus-ring: #a68ffa;
+}
+
+[data-accent="green"] {
+  --accent: #18794e; --accent-hover: #146a44; --accent-active: #115c3b;
+  --accent-soft: #e4f4ea; --accent-soft-strong: #cdebd8; --accent-soft-fg: #136b44;
+  --focus-ring: #18794e;
+}
+[data-theme="dark"][data-accent="green"] {
+  --accent: #1a7f50; --accent-hover: #177448; --accent-active: #146640;
+  --accent-soft: #233a2e; --accent-soft-strong: #2b4a39; --accent-soft-fg: #6fd29a;
+  --focus-ring: #5cc98a;
+}
+
+[data-accent="orange"] {
+  --accent: #c4510f; --accent-hover: #b0470c; --accent-active: #9a3e0a;
+  --accent-soft: #fcede3; --accent-soft-strong: #f9dcc8; --accent-soft-fg: #a8450c;
+  --focus-ring: #c4510f;
+}
+[data-theme="dark"][data-accent="orange"] {
+  --accent: #b9531a; --accent-hover: #ad4b15; --accent-active: #9c4211;
+  --accent-soft: #42301f; --accent-soft-strong: #553a22; --accent-soft-fg: #f5a066;
+  --focus-ring: #f0955a;
+}
+
+[data-accent="pink"] {
+  --accent: #c42a72; --accent-hover: #ad2464; --accent-active: #981f58;
+  --accent-soft: #fce8f1; --accent-soft-strong: #f9d3e4; --accent-soft-fg: #a8215f;
+  --focus-ring: #c42a72;
+}
+[data-theme="dark"][data-accent="pink"] {
+  --accent: #c73a7b; --accent-hover: #bb3372; --accent-active: #a82c66;
+  --accent-soft: #44293a; --accent-soft-strong: #58304a; --accent-soft-fg: #f58bbb;
+  --focus-ring: #f07cb2;
+}
+
+/* Gold: Raindrop's muted dark-mode "Save". Dark fill takes dark text. */
+[data-accent="gold"] {
+  --accent: #8a6a1c; --accent-hover: #7a5d17; --accent-active: #6a5013;
+  --accent-soft: #f7f0de; --accent-soft-strong: #efe2c0; --accent-soft-fg: #6f5414;
+  --focus-ring: #8a6a1c;
+}
+[data-theme="dark"][data-accent="gold"] {
+  --accent: #d6b878; --accent-hover: #e0c48a; --accent-active: #c9a965;
+  --accent-soft: #3a3326; --accent-soft-strong: #4a402b; --accent-soft-fg: #e2c78f;
+  --fg-on-accent: #241c0a;   /* 8.8 on #d6b878 */
+  --focus-ring: #d6b878;
+}
+
+/* ---------------------------------------------------------------------
+   DENSITY
+   --------------------------------------------------------------------- */
+[data-density="compact"] {
+  --row-h: 26px;
+  --list-row-h: 60px;
+  --thumb-w: 48px;
+  --thumb-h: 36px;
+  --control-h-sm: 24px;
+  --control-h-md: 28px;
+  --control-h-lg: 32px;
+  --topbar-h: 46px;
+  --space-6: 10px;
+  --space-7: 12px;
+  --space-8: 16px;
+}
+
+/* ---------------------------------------------------------------------
+   MORE CONTRAST (OS "increase contrast"): field and divider edges reach
+   3:1 non-text contrast. Default stays quiet (inputs ~1.5:1, identified
+   by label + fill + focus ring).
+   --------------------------------------------------------------------- */
+@media (prefers-contrast: more) {
+  :root, [data-theme="light"] {
+    --border-input: #8f8b85;    /* 3.4 on #fff */
+    --border-default: #a9a59e;  /* 2.5 on #fff */
+    --border-strong: #8f8b85;
+    --fg-subtle: #5f5c57;
+  }
+  [data-theme="dark"] {
+    --border-input: #7a7b82;    /* 3.3 on #1c1d20 */
+    --border-default: #5a5b61;
+    --border-strong: #7a7b82;
+    --fg-subtle: #b4b1ab;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-base: 80ms;
+    --dur-slow: 120ms;
+    --press-scale: 1;
+  }
+}

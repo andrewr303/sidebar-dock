@@ -80,7 +80,8 @@ async function* readSse(response, { signal, maxBytes } = {}) {
   for await (const chunk of readChunks(response, { signal, maxBytes })) {
     buffer += decoder.decode(chunk, { stream: true });
     if (first && buffer) { if (buffer.charCodeAt(0) === 0xfeff) buffer = buffer.slice(1); first = false; }
-    for (const line of lines(false)) { const dispatched = take(line); if (dispatched) yield dispatched; }
+    // One chunk can hold many events; stop handing them out as soon as the caller aborts.
+    for (const line of lines(false)) { const dispatched = take(line); if (dispatched) { if (signal?.aborted) throw abortError(signal); yield dispatched; } }
   }
   buffer += decoder.decode();
   for (const line of lines(true)) { const dispatched = take(line); if (dispatched) yield dispatched; }
@@ -103,7 +104,7 @@ async function* readNdjson(response, { signal, maxBytes } = {}) {
     while ((index = buffer.indexOf('\n')) >= 0) {
       const value = parse(buffer.slice(0, index));
       buffer = buffer.slice(index + 1);
-      if (value !== undefined) yield value;
+      if (value !== undefined) { if (signal?.aborted) throw abortError(signal); yield value; }
     }
     if (buffer.length > MAX_EVENT_CHARS) throw new Error('A streamed event exceeded the local size limit.');
   }

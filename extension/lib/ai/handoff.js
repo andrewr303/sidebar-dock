@@ -19,8 +19,10 @@ export function handoffTarget(id) {
   return target;
 }
 
-const clean = value => String(value ?? '').replace(/\s+/g, ' ').trim();
-const clip = (value, max) => value.length > max ? `${value.slice(0, Math.max(0, max - 1)).trimEnd()}…` : value;
+// encodeURIComponent throws on a lone surrogate, so text is made well formed and never cut inside a surrogate pair.
+const wellFormed = value => typeof value.toWellFormed === 'function' ? value.toWellFormed() : value.replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '\ufffd');
+const clean = value => wellFormed(String(value ?? '')).replace(/\s+/g, ' ').trim();
+const clip = (value, max) => value.length > max ? `${head(value, Math.max(0, max - 1))}…` : value;
 const safeUrl = value => { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) ? url.href : ''; } catch { return ''; } };
 
 // Markdown prompt: the question first, then numbered sources with links and short excerpts.
@@ -40,7 +42,7 @@ export function buildHandoffPrompt({ question = '', sources = [], sourceChars = 
   return lines.join('\n').trim();
 }
 
-const urlFor = (target, text) => `${target.base}?${target.param}=${encodeURIComponent(text)}`;
+const urlFor = (target, text) => `${target.base}?${target.param}=${encodeURIComponent(wellFormed(text))}`;
 
 function fits(target, text, maxLength) {
   return urlFor(target, text).length <= maxLength && (!target.maxPromptChars || text.length <= target.maxPromptChars);
@@ -48,6 +50,7 @@ function fits(target, text, maxLength) {
 
 // Never ends on half of a surrogate pair, which encodeURIComponent rejects.
 function head(text, length) {
+  if (length <= 0) return '';
   const code = text.charCodeAt(length - 1);
   return text.slice(0, code >= 0xd800 && code <= 0xdbff ? length - 1 : length).trimEnd();
 }

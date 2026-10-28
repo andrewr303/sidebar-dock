@@ -81,14 +81,30 @@ export function buildRequest({ baseUrl, apiKey, connection, model, modelInfo, sy
 
 const usageOf = raw => compactUsage({ inputTokens: raw.input_tokens, outputTokens: raw.output_tokens, cacheReadTokens: raw.cache_read_input_tokens, cacheWriteTokens: raw.cache_creation_input_tokens });
 
+// Server-side fallback marks each switch with a `fallback` content block. When the turn is echoed back, blocks the
+// declined model produced before the last switch are dropped except text and paired server-tool blocks; the marker
+// itself is an audit block and is dropped too. Everything after the switch is replayed unchanged.
+export function replayableContent(blocks) {
+  const list = blocks.filter(Boolean).filter(block => !(block.type === 'text' && !block.text));
+  const boundary = list.findLastIndex(block => block.type === 'fallback');
+  if (boundary < 0) return list;
+  const before = list.slice(0, boundary);
+  const serverUses = new Set(before.filter(block => block.type === 'server_tool_use').map(block => block.id));
+  const answered = new Set(before.filter(block => /_tool_result$/.test(block.type || '') && block.tool_use_id).map(block => block.tool_use_id));
+  const kept = before.filter(block => block.type === 'text'
+    || (block.type === 'server_tool_use' && answered.has(block.id))
+    || (/_tool_result$/.test(block.type || '') && serverUses.has(block.tool_use_id)));
+  return [...kept, ...list.slice(boundary + 1)];
+}
+
 export async function stream(ctx) {
   const { provider, apiKey, model, signal, emit } = ctx;
   const request = buildRequest(ctx);
   const response = await providerFetch(request.url, { method: request.method, headers: request.headers, body: request.body, signal, provider, secrets: [apiKey], model, timeoutMs: 120000 });
   const blocks = [];
   const rawUsage = {};
-  let text = '', thinking = '', stopReason = null, stopDetails = null, completed = false, actualModel = model;
-  const toolCalls = [];
+  let text = '', thinking = '', stopReason = null, stopDetails = null, completed = false, actualModel = model, fallback = null;
+  let toolCalls = [];
   for await (const { data } of readSse(response, { signal })) {
     const event = parseEventData(data);
     switch (event.type) {
@@ -102,6 +118,12 @@ export async function stream(ctx) {
         if (block.type === 'thinking') { block.thinking = block.thinking || ''; block.signature = block.signature || ''; }
         if (block.type === 'tool_use' || block.type === 'server_tool_use') { block.partialJson = ''; block.input = block.input || {}; }
         blocks[event.index] = block;
+        if (block.type === 'fallback') {
+          // Tool calls the declined model made before the switch are not part of the answer and are not echoed back.
+          toolCalls = [];
+          fallback = { from: block.from?.model || actualModel, to: block.to?.model || null };
+          if (fallback.to) actualModel = fallback.to;
+        }
         if (block.type === 'text' && block.text) { text += block.text; emit({ type: 'text', delta: block.text }); }
         break;
       }
@@ -152,7 +174,7 @@ export async function stream(ctx) {
     error.usage = usage;
     throw error;
   }
-  const native = blocks.filter(Boolean).filter(block => !(block.type === 'text' && !block.text));
+  const native = replayableContent(blocks);
   const content = [];
   if (text) content.push({ type: 'text', text });
   for (const call of toolCalls) content.push({ type: 'tool_use', ...call });
@@ -160,7 +182,7 @@ export async function stream(ctx) {
     text, thinking, toolCalls, usage, model: actualModel,
     stopReason: stopReason === 'tool_use' ? 'tool_use' : stopReason === 'max_tokens' ? 'max_tokens' : stopReason === 'pause_turn' ? 'pause_turn' : stopReason === 'stop_sequence' ? 'stop_sequence' : 'end_turn',
     rawStopReason: stopReason,
-    notice: STOP_NOTICES[stopReason] || null,
+    notice: STOP_NOTICES[stopReason] || null, fallback,
     assistantMessage: { role: 'assistant', content, native: { transport: 'anthropic', content: native } },
   };
 }

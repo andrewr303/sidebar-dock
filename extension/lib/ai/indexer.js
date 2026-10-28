@@ -116,6 +116,10 @@ export function planIndex(items, states, { hashOf = itemHash } = {}) {
 }
 
 const permanentFailure = error => [400, 413, 422].includes(Number(error?.status));
+// Rejections before any success are held back; this many in a row means a settings problem (model, dimensions), so
+// the run stops with the error instead of marking the whole library as failed.
+const MAX_REJECTIONS_BEFORE_SUCCESS = 5;
+const configKey = value => value ? [value.connectionId, value.providerId, value.model, value.requestedDims || ''].join('\u0000') : '';
 
 /**
  * createIndexer({ vectorStore, embedder, getLibrary, getSettings, locks }) -> {
@@ -133,6 +137,7 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
   let timer = null;
   let lastEmit = 0;
   let config = null;
+  let runningKey = ''; // configKey of the run in progress
 
   const snapshot = () => ({ ...status });
   function emit(force = true) {
@@ -176,7 +181,12 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
     return plan;
   }
 
-  async function embedItems(work, signal) {
+  // Another view paused or cleared the index (shared flag in the vector store).
+  const heldElsewhere = async () => typeof vectorStore.isHeld === 'function' && (await vectorStore.isHeld().catch(() => false)) === true;
+  // Pause and clear must still stop this view's run when the shared flag cannot be written.
+  const persistHold = value => Promise.resolve().then(() => vectorStore.setHeld?.(value)).catch(error => console.error(error));
+
+  async function embedItems(work, signal, runConfig) {
     // Flatten every pending item into chunk inputs, then group them into requests of at most `batchSize` inputs.
     const entries = work.map(({ item, hash }) => ({ item, hash, chunks: itemChunks(item), vectors: [], remaining: 0 }));
     const batches = [];
@@ -200,11 +210,14 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
     };
     // Items without any text are committed immediately with no chunks so they are not retried.
     await commit(entries.filter(entry => !entry.chunks.length));
+    let succeeded = 0;
+    let deferred = [];
     const run = async batch => {
       if (signal.aborted) throw abortError();
       let result;
       try {
-        result = await embedder.embed({ connectionId: config.connectionId, model: config.model, dimensions: config.requestedDims || undefined, inputs: batch.map(part => part.chunk.input), inputType: 'document', signal });
+        // The configuration captured when this run started: a settings change aborts the run instead of mixing models.
+        result = await embedder.embed({ connectionId: runConfig.connectionId, model: runConfig.model, dimensions: runConfig.requestedDims || undefined, inputs: batch.map(part => part.chunk.input), inputType: 'document', signal });
       } catch (error) {
         if (signal.aborted || !permanentFailure(error)) throw error;
         // One bad input fails the whole request: retry item by item so only the offending items are skipped.
@@ -215,9 +228,18 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
           return;
         }
         const entry = batch[0].entry;
-        if (!entry.error) { entry.error = String(error.message || 'This item could not be embedded.').slice(0, 300); await commit([entry]); }
+        if (!entry.error) {
+          entry.error = String(error.message || 'This item could not be embedded.').slice(0, 300);
+          if (succeeded) await commit([entry]);
+          else {
+            deferred.push(entry);
+            if (deferred.length >= MAX_REJECTIONS_BEFORE_SUCCESS) throw error;
+          }
+        }
         return;
       }
+      succeeded++;
+      if (deferred.length) { const late = deferred; deferred = []; await commit(late); }
       const finished = [];
       batch.forEach((part, i) => {
         const { entry, chunk } = part;
@@ -229,8 +251,19 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
       await commit(finished);
     };
     let cursor = 0;
-    const worker = async () => { while (cursor < batches.length) await run(batches[cursor++]); };
+    let failure = null;
+    // A failure in one worker stops the others, so no further paid requests go out after the run has failed.
+    const worker = async () => {
+      while (!failure && cursor < batches.length) {
+        try {
+          if (await heldElsewhere()) throw Object.assign(abortError(), { held: true });
+          await run(batches[cursor++]);
+        } catch (error) { failure ||= error; }
+      }
+    };
     await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, batches.length)) }, worker));
+    if (failure) throw failure;
+    await commit(deferred);
   }
 
   async function work(signal) {
@@ -238,19 +271,25 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
     if (!resolved.enabled) { set({ enabled: false, running: false, waiting: false }); return; }
     if (resolved.error) { set({ enabled: true, error: resolved.error, running: false }); return; }
     config = resolved;
-    const { reset, config: stored } = await vectorStore.ensureConfig(resolved);
-    if (reset) hashes.clear();
-    set({ enabled: true, running: true, waiting: false, error: '', provider: resolved.provider, providerId: resolved.providerId, connectionId: resolved.connectionId, model: resolved.model, dims: stored?.dims || null });
-    // Re-plan after each pass: the library may change while a pass runs.
-    for (let pass = 0; pass < 3 && !signal.aborted; pass++) {
-      const plan = await refreshCounts();
-      if (plan.toDelete.length) await vectorStore.deleteItems(plan.toDelete);
-      if (!plan.toIndex.length) break;
-      await embedItems(plan.toIndex, signal);
+    if (await heldElsewhere()) { await refreshCounts().catch(() => {}); set({ enabled: true, running: false, waiting: false, paused: true }); return; }
+    runningKey = configKey(resolved);
+    try {
+      const { reset, config: stored } = await vectorStore.ensureConfig(resolved);
+      if (reset) hashes.clear();
+      set({ enabled: true, running: true, waiting: false, paused: false, error: '', provider: resolved.provider, providerId: resolved.providerId, connectionId: resolved.connectionId, model: resolved.model, dims: stored?.dims || null });
+      // Re-plan after each pass: the library may change while a pass runs.
+      for (let pass = 0; pass < 3 && !signal.aborted; pass++) {
+        const plan = await refreshCounts();
+        if (plan.toDelete.length) await vectorStore.deleteItems(plan.toDelete);
+        if (!plan.toIndex.length) break;
+        await embedItems(plan.toIndex, signal, resolved);
+      }
+      if (signal.aborted) throw abortError();
+      await refreshCounts();
+      set({ running: false, lastRunAt: new Date().toISOString() });
+    } finally {
+      runningKey = '';
     }
-    if (signal.aborted) throw abortError();
-    await refreshCounts();
-    set({ running: false, lastRunAt: new Date().toISOString() });
   }
 
   function run({ force = false } = {}) {
@@ -267,7 +306,7 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
           if (retryMs && schedule) { cancel?.(timer); timer = schedule(() => { timer = null; return run(); }, retryMs); }
         }
       } catch (error) {
-        if (error?.name === 'AbortError' || controller.signal.aborted) set({ running: false, paused: held });
+        if (error?.name === 'AbortError' || controller.signal.aborted) set({ running: false, paused: held || error?.held === true });
         else set({ running: false, error: String(error?.message || error || 'Indexing failed.') });
       }
     };
@@ -296,8 +335,13 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
       set({ enabled: false, running: false, waiting: false, error: resolved.error || '', pending: 0, indexed: stats?.items || 0, model: stats?.model || '', dims: stats?.dims || null });
       return snapshot();
     }
-    if (!resolved.error) config = resolved;
-    set({ enabled: true, error: resolved.error || '', provider: resolved.provider || status.provider, providerId: resolved.providerId || status.providerId,
+    if (!resolved.error) {
+      // A run still embedding with the previous provider or model stops now; the rerun resets the index for the new one.
+      if (active && runningKey && runningKey !== configKey(resolved)) { rerun = true; active.controller.abort(); }
+      config = resolved;
+    }
+    const paused = held || await heldElsewhere();
+    set({ enabled: true, paused, error: resolved.error || '', provider: resolved.provider || status.provider, providerId: resolved.providerId || status.providerId,
       connectionId: resolved.connectionId || status.connectionId, model: resolved.model || status.model });
     if (resolved.error) return snapshot();
     if (!start) { await refreshCounts().catch(() => {}); return snapshot(); }
@@ -320,6 +364,7 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
     },
     async startIndexing() {
       held = false;
+      await persistHold(false);
       set({ paused: false });
       const resolved = await resolveConfig();
       if (!resolved.enabled) throw new Error(resolved.error || 'Turn on semantic search in Settings first.');
@@ -328,6 +373,7 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
     },
     async rebuildIndex() {
       held = false;
+      await persistHold(false);
       await stopActive();
       await vectorStore.clear();
       hashes.clear();
@@ -338,6 +384,7 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
     },
     async clearIndex() {
       held = true;
+      await persistHold(true);
       await stopActive();
       await vectorStore.clear();
       hashes.clear();
@@ -348,6 +395,7 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
     async pauseIndexing() {
       held = true;
       set({ paused: true });
+      await persistHold(true);
       await stopActive();
       return snapshot();
     },

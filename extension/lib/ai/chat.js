@@ -69,6 +69,8 @@ export function streamChat({ connectionId, model, system, messages, tools, effor
   };
   let text = '', thinking = '', secrets = [];
   const relay = event => {
+    // Nothing reaches the caller after Stop, even if a transport still has buffered events in hand.
+    if (signal?.aborted) return;
     if (event.type === 'text') text += event.delta;
     else if (event.type === 'thinking') thinking += event.delta;
     emit(event);
@@ -100,7 +102,7 @@ export function streamChat({ connectionId, model, system, messages, tools, effor
       });
       const final = {
         text: result.text ?? text, thinking: result.thinking ?? thinking, toolCalls: result.toolCalls || [], usage: result.usage || {},
-        stopReason: result.stopReason || 'end_turn', rawStopReason: result.rawStopReason ?? null, notice: result.notice || null,
+        stopReason: result.stopReason || 'end_turn', rawStopReason: result.rawStopReason ?? null, notice: result.notice || null, fallback: result.fallback || null,
         assistantMessage: result.assistantMessage, model: result.model || chosen, connectionId: connection.id, providerId: provider.id,
       };
       if (Object.keys(final.usage).length) emit({ type: 'usage', usage: final.usage });
