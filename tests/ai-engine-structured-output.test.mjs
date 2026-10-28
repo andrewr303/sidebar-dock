@@ -338,3 +338,158 @@ test('suggestForSave: Claude answers through output_config.format after thinking
   assert.equal(calls[0].body.max_tokens, 8000);
   assert.ok(!('response_format' in calls[1].body));
 });
+
+// ---------- schema subset and wiring through every transport ----------
+
+const closed = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
+const nestedObjects = depth => depth ? closed({ child: nestedObjects(depth - 1) }) : { type: 'string' };
+const NATIVE = [['anthropic', 'claude-opus-5-5'], ['openai', 'gpt-6.1-sol'], ['xai', 'grok-4.7'], ['google', 'gemini-4-argon'], ['mistral', 'mistral-large-latest'], ['ollama', 'qwen3'], ['lmstudio', 'qwen3-8b']];
+
+test('native structured output only for a schema inside what every provider documents; anything else stays free text', async t => {
+  const decide = (providerId, model, schema) => nativeResponseFormat({ provider: getProvider(providerId), via: 'direct', model, modelInfo: null, format: { ...FORMAT, schema } });
+  // Each passes isStrictSchema, but at least one provider that would get it rejects or does not document it.
+  const outside = {
+    'root array (OpenAI: the root must be an object)': { type: 'array', items: { type: 'string' } },
+    'root anyOf (OpenAI: the root must not be anyOf)': { anyOf: [closed({ a: { type: 'string' } }), closed({ b: { type: 'string' } })] },
+    'root without a type': { properties: { a: { type: 'string' } }, required: ['a'], additionalProperties: false },
+    'allOf (OpenAI: unsupported under strict)': closed({ a: { allOf: [{ type: 'string' }] } }),
+    'oneOf (missing from Claude\'s supported list)': closed({ a: { oneOf: [{ type: 'string' }, { type: 'number' }] } }),
+    'untyped property': closed({ a: {} }),
+    'tuple items (xAI: 400)': closed({ a: { type: 'array', items: [{ type: 'string' }] } }),
+    'array without items': closed({ a: { type: 'array' } }),
+    'boolean enum (Gemini: strings and numbers only)': closed({ a: { enum: [true, false] } }),
+    'empty enum (xAI: 400)': closed({ a: { type: 'string', enum: [] } }),
+    'const (missing from Gemini\'s list)': closed({ a: { const: 'x' } }),
+    'pattern (missing from Gemini\'s list; Claude and xAI reject lookaround)': closed({ a: { type: 'string', pattern: '^(?=a).+' } }),
+    'format uri (missing from OpenAI\'s format list)': closed({ a: { type: 'string', format: 'uri' } }),
+    '$schema header': { $schema: 'https://json-schema.org/draft/2020-12/schema', ...closed({ a: { type: 'string' } }) },
+    'more than 10 levels of nesting (OpenAI)': nestedObjects(11),
+  };
+  for (const [label, schema] of Object.entries(outside)) {
+    for (const [providerId, model] of NATIVE) assert.equal(decide(providerId, model, schema), null, `${providerId}: ${label}`);
+  }
+  const inside = closed({
+    title: { type: 'string', title: 'Title', description: 'A clean title' }, kind: { type: 'string', enum: ['article', 'video'] },
+    note: { anyOf: [{ type: 'string' }, { type: 'null' }] }, score: { type: ['number', 'null'] }, tags: { type: 'array', items: { type: 'string' } },
+    author: closed({ name: { type: 'string' } }),
+  });
+  for (const schema of [inside, nestedObjects(10), SUGGESTION_SCHEMA]) {
+    for (const [providerId, model] of NATIVE) assert.equal(decide(providerId, model, schema)?.schema, schema, providerId);
+  }
+
+  // End to end: a root-array schema reaches OpenAI as a plain request, and the reply is still returned.
+  localStorage.clear();
+  configureConnections({ integrations: { getIntegrationSettings: async () => ({ bridgeConfigured: false }) } });
+  const saved = await saveConnection({ providerId: 'openai', apiKey: KEY });
+  const calls = mockFetch(t, () => new Response(body(sse([
+    { type: 'response.output_text.delta', delta: '["a"]' },
+    { type: 'response.completed', response: { status: 'completed', output: [], usage: { input_tokens: 3, output_tokens: 2 } } },
+  ]))));
+  const result = await streamChat({ connectionId: saved.id, model: 'gpt-6-luna', messages: [{ role: 'user', content: 'List' }], responseFormat: { type: 'json_schema', schema: outside['root array (OpenAI: the root must be an object)'] } });
+  assert.equal(result.text, '["a"]');
+  assert.ok(!('text' in calls[0].body), 'no text.format for a schema OpenAI would reject');
+});
+
+test('streamChat wires the format into every native transport, and sends none when the caller did not ask', async t => {
+  localStorage.clear();
+  configureConnections({ integrations: { getIntegrationSettings: async () => ({ bridgeConfigured: false }) } });
+  const ndjson = events => events.map(event => JSON.stringify(event)).join('\n') + '\n';
+  const calls = mockFetch(t, call => {
+    if (call.url.endsWith('/api/show')) return new Response(JSON.stringify({ capabilities: ['completion', 'thinking'] }));
+    if (call.url.endsWith('/api/chat')) return new Response(body(ndjson([{ message: { content: REPLY }, done: false }, { message: { content: '' }, done: true, done_reason: 'stop' }])));
+    if (call.url.endsWith('/responses')) return new Response(body(sse([{ type: 'response.output_text.delta', delta: REPLY }, { type: 'response.completed', response: { status: 'completed', output: [] } }])));
+    if (call.url.includes(':streamGenerateContent')) return new Response(body(sse([{ candidates: [{ content: { role: 'model', parts: [{ text: REPLY }] }, finishReason: 'STOP' }] }], { named: false })));
+    return new Response(body(chatReply(REPLY)));
+  });
+  const responseFormat = { type: 'json_schema', name: 'save_suggestion', schema: SUGGESTION_SCHEMA };
+  const chatFormat = { type: 'json_schema', json_schema: { name: 'save_suggestion', schema: SUGGESTION_SCHEMA, strict: true } };
+  const cases = [
+    [{ providerId: 'openai', apiKey: KEY }, 'gpt-6-luna', sent => sent.text, { format: { type: 'json_schema', name: 'save_suggestion', schema: SUGGESTION_SCHEMA, strict: true } }],
+    [{ providerId: 'google', apiKey: KEY }, 'gemini-3.8-flash', sent => sent.generationConfig?.responseJsonSchema, SUGGESTION_SCHEMA],
+    [{ providerId: 'xai', apiKey: KEY }, 'grok-4.3', sent => sent.response_format, chatFormat],
+    [{ providerId: 'mistral', apiKey: KEY }, 'mistral-small-latest', sent => sent.response_format, chatFormat],
+    [{ providerId: 'lmstudio' }, 'qwen3-8b', sent => sent.response_format, chatFormat],
+    [{ providerId: 'ollama' }, 'qwen3', sent => sent.format, SUGGESTION_SCHEMA],
+    [{ providerId: 'ollama' }, 'gpt-oss:120b-cloud', sent => sent.format, undefined],
+  ];
+  for (const [connection, model, pick, expected] of cases) {
+    const saved = await saveConnection(connection);
+    const label = `${connection.providerId} ${model}`;
+    for (const withFormat of [true, false]) {
+      const before = calls.length;
+      const result = await streamChat({ connectionId: saved.id, model, messages: [{ role: 'user', content: 'Page' }], ...(withFormat ? { responseFormat } : {}) });
+      assert.equal(result.text, REPLY, label);
+      const sent = calls.slice(before).find(call => !call.url.endsWith('/api/show')).body;
+      assert.deepEqual(pick(sent), withFormat ? expected : undefined, `${label} ${withFormat ? 'with' : 'without'} a format`);
+      if (!withFormat) assert.ok(!JSON.stringify(sent).includes('save_suggestion') && !('responseMimeType' in (sent.generationConfig || {})), `${label}: nothing about a format`);
+    }
+  }
+});
+
+test('a tool loop with the format: the step after a tool call replays the call and its result and keeps tools and format', async t => {
+  localStorage.clear();
+  configureConnections({ integrations: { getIntegrationSettings: async () => ({ bridgeConfigured: false }) } });
+  let step = 0;
+  const call = { name: 'search_library', input: { query: 'fonts' } };
+  const replies = {
+    anthropic: [sse([
+      { type: 'message_start', message: { model: 'claude-opus-5-5', usage: { input_tokens: 9 } } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_1', name: call.name, input: {} } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(call.input) } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } },
+      { type: 'message_stop' },
+    ]), anthropicReply(REPLY)],
+    openai: [sse([
+      { type: 'response.output_item.added', output_index: 0, item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: call.name, arguments: '' } },
+      { type: 'response.output_item.done', output_index: 0, item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: call.name, arguments: JSON.stringify(call.input) } },
+      { type: 'response.completed', response: { status: 'completed', output: [{ type: 'function_call', id: 'fc_1', call_id: 'call_1', name: call.name, arguments: JSON.stringify(call.input) }] } },
+    ]), sse([{ type: 'response.output_text.delta', delta: REPLY }, { type: 'response.completed', response: { status: 'completed', output: [] } }])],
+    xai: [sse([{ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: call.name, arguments: JSON.stringify(call.input) } }] } }] },
+      { choices: [{ delta: {}, finish_reason: 'tool_calls' }] }, '[DONE]'], { named: false }), chatReply(REPLY)],
+    google: [sse([{ candidates: [{ content: { role: 'model', parts: [{ functionCall: { id: 'fc_g1', name: call.name, args: call.input } }] }, finishReason: 'STOP' }] }], { named: false }),
+      sse([{ candidates: [{ content: { role: 'model', parts: [{ text: REPLY }] }, finishReason: 'STOP' }] }], { named: false })],
+  };
+  let current = null;
+  const calls = mockFetch(t, () => new Response(body(replies[current][step++])));
+  const checks = {
+    anthropic: sent => {
+      assert.deepEqual(sent.output_config.format, { type: 'json_schema', schema: SUGGESTION_SCHEMA });
+      assert.equal(sent.tools[0].name, call.name);
+      assert.deepEqual(sent.messages[1].content.map(block => block.type), ['tool_use']);
+      assert.deepEqual(sent.messages[2].content[0], { type: 'tool_result', tool_use_id: 'toolu_1', content: 'Found 3' });
+    },
+    openai: sent => {
+      assert.equal(sent.text.format.name, 'save_suggestion');
+      assert.equal(sent.tools[0].name, call.name);
+      assert.deepEqual(sent.input.slice(1).map(item => item.type), ['function_call', 'function_call_output']);
+      assert.equal(sent.input[2].call_id, 'call_1');
+    },
+    xai: sent => {
+      assert.equal(sent.response_format.json_schema.name, 'save_suggestion');
+      assert.equal(sent.tools[0].function.name, call.name);
+      assert.equal(sent.messages.at(-2).tool_calls[0].id, 'call_1');
+      assert.deepEqual(sent.messages.at(-1), { role: 'tool', tool_call_id: 'call_1', content: 'Found 3' });
+    },
+    google: sent => {
+      assert.deepEqual(sent.generationConfig.responseJsonSchema, SUGGESTION_SCHEMA);
+      assert.equal(sent.tools[0].functionDeclarations[0].name, call.name);
+      assert.equal(sent.contents[1].parts[0].functionCall.name, call.name);
+      assert.deepEqual(sent.contents[2].parts[0].functionResponse, { name: call.name, id: 'fc_g1', response: { result: 'Found 3' } });
+    },
+  };
+  for (const [providerId, model] of [['anthropic', 'claude-opus-5-5'], ['openai', 'gpt-6.1-sol'], ['xai', 'grok-4.7'], ['google', 'gemini-3.8-flash']]) {
+    current = providerId; step = 0;
+    const saved = await saveConnection({ providerId, apiKey: KEY });
+    const before = calls.length;
+    const request = { connectionId: saved.id, model, tools: TOOLS, responseFormat: FORMAT };
+    const messages = [{ role: 'user', content: 'File this page' }];
+    const first = await streamChat({ ...request, messages });
+    assert.equal(first.stopReason, 'tool_use', providerId);
+    messages.push(first.assistantMessage, { role: 'user', content: [{ type: 'tool_result', toolUseId: first.toolCalls[0].id, content: 'Found 3' }] });
+    const second = await streamChat({ ...request, messages });
+    assert.equal(second.text, REPLY, providerId);
+    assert.equal(calls.length - before, 2, providerId);
+    checks[providerId](calls.at(-1).body);
+  }
+});

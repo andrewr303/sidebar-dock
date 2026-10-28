@@ -54,9 +54,30 @@ export function normalizeResponseFormat(format) {
   return { type: 'json_schema', name, schema: format.schema };
 }
 
+// isStrictSchema is the strict-tool rule; the reply format also has to fit the subset that every provider getting it
+// documents: an object at the root (OpenAI rejects any other root), at most 10 levels deep, every sub-schema typed and
+// only these keywords. allOf, oneOf, const, pattern, format, $ref and the rest are each missing from or rejected by at
+// least one of them (OpenAI rejects allOf under strict, Claude lists no oneOf, Gemini lists no const or pattern and
+// takes only string and number enums, xAI rejects empty enums and tuple items).
+const FORMAT_KEYS = new Set(['type', 'title', 'description', 'properties', 'required', 'additionalProperties', 'items', 'enum', 'anyOf']);
+const FORMAT_TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean', 'null']);
+function portableSchema(schema, depth = 0) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema) || depth > 10) return false;
+  if (Object.keys(schema).some(key => !FORMAT_KEYS.has(key))) return false;
+  const types = [].concat(schema.type ?? []);
+  if (!types.every(type => FORMAT_TYPES.has(type))) return false;
+  if (!types.length && schema.enum === undefined && schema.anyOf === undefined) return false;
+  if (schema.enum !== undefined && !(Array.isArray(schema.enum) && schema.enum.length && schema.enum.every(value => typeof value === 'string' || Number.isFinite(value)))) return false;
+  if (schema.anyOf !== undefined && !(depth > 0 && Array.isArray(schema.anyOf) && schema.anyOf.length && schema.anyOf.every(entry => portableSchema(entry, depth + 1)))) return false;
+  if (schema.properties !== undefined && !(schema.properties && typeof schema.properties === 'object' && Object.values(schema.properties).every(entry => portableSchema(entry, depth + 1)))) return false;
+  if (types.includes('array') && schema.items === undefined) return false;
+  return schema.items === undefined || portableSchema(schema.items, depth + 1);
+}
+const nativeSchema = schema => schema?.type === 'object' && portableSchema(schema) && isStrictSchema(schema);
+
 // The format is sent as the provider's native structured-output parameter only where the catalog (or the provider's
-// model list) says the model accepts it, and only for a schema that strict decoding can guarantee, by the same rules
-// as strict tools. Otherwise nothing is sent and the caller parses the free-text reply.
+// model list) says the model accepts it, and only for a schema that strict decoding can guarantee on every provider
+// (nativeSchema). Otherwise nothing is sent and the caller parses the free-text reply.
 export function nativeResponseFormat({ provider, via, model, modelInfo: info, format, tools = [] }) {
   if (!format || via !== 'direct') return null;
   const mode = provider?.supports?.structuredOutputs;
@@ -65,7 +86,7 @@ export function nativeResponseFormat({ provider, via, model, modelInfo: info, fo
   const flag = typeof listed === 'boolean' ? listed : catalogModel(provider.id, model)?.structuredOutputs;
   if (flag === false || (mode === 'per-model' && flag !== true)) return null;
   if (tools.length && !provider.supports.structuredOutputsWithTools) return null;
-  return isStrictSchema(format.schema) ? format : null;
+  return nativeSchema(format.schema) ? format : null;
 }
 
 // Models without image input get a short note instead of the image, so the rest of the request still works.
