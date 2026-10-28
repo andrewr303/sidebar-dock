@@ -71,7 +71,7 @@ export function notesForPage(items,url){
 }
 
 export function dailyNoteTitle(date=new Date(),locale='en-US'){
- const value=date instanceof Date?date:new Date(date);
+ let value=date instanceof Date?date:new Date(date??Date.now());if(Number.isNaN(value.getTime()))value=new Date();
  try{return new Intl.DateTimeFormat(locale||undefined,{weekday:'short',month:'short',day:'numeric',year:'numeric'}).format(value);}
  catch{return new Intl.DateTimeFormat('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'}).format(value);}
 }

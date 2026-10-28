@@ -69,6 +69,7 @@ test('notesForPage matches canonical URLs and orders pinned, then newest',()=>{
 test('templates and daily note titles are plain and parse into blocks',()=>{
  const now=new Date(2026,9,28,9,30);
  assert.equal(dailyNoteTitle(now,'en-US'),'Wed, Oct 28, 2026');
+ assert.equal(dailyNoteTitle('not a date','en-US'),dailyNoteTitle(new Date(),'en-US'),'an invalid date falls back to today instead of throwing');
  const templates=noteTemplates(now,{page:{url:'https://example.com/a',title:'  An  article '}});
  assert.deepEqual(templates.map(t=>t.id),['blank','daily','meeting','reading','project']);
  const reading=templates.find(t=>t.id==='reading');assert.equal(reading.title,'Notes on An article');assert.equal(reading.url,'https://example.com/a');assert.match(reading.content,/^Source: https:\/\/example.com\/a\n/);
