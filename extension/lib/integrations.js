@@ -187,7 +187,9 @@ export function createIntegrationClient({ storage = defaultStorage, fetch: fetch
   }
   async function performSync() {
     const settings = await storage.read();
-    if (!settings.bridgeEnabled || !settings.bridgeToken) throw new Error('Configure and enable the local bridge first.');
+    // Paused (from any window): skip quietly and keep polling, so Resume elsewhere picks this window back up.
+    if (settings.bridgeToken && !settings.bridgeEnabled) return { connected: false, paused: true, pending: 0, changed: false };
+    if (!settings.bridgeToken) throw new Error('Configure and enable the local bridge first.');
     const url = bridgeUrl(settings.bridgeUrl);
     const post = async () => request(`${url}/sync`, { method: 'POST', headers: { Authorization: `Bearer ${settings.bridgeToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ library: publicSnapshot(await store.loadLibrary()), acknowledgements: pendingAcks, semanticSearch: await semanticSearchAdvertised() }) });
     const data = await post(); pendingAcks = [];
@@ -220,6 +222,11 @@ export function createIntegrationClient({ storage = defaultStorage, fetch: fetch
   return { getIntegrationSettings, setRaindropToken, testRaindropConnection, importFromRaindrop, sendToRaindrop, configureBridge, syncBridgeOnce, startBridgeSync, setSearch,
     disconnectRaindrop: () => update({ raindropToken: '', raindropConnectedAt: null }),
     disconnectBridge: () => update({ bridgeToken: '', bridgeEnabled: false, lastBridgeSyncAt: null }),
+    // Pause/resume keeps the pairing token; every window's sync loop reads bridgeEnabled before each cycle.
+    async setBridgeEnabled(enabled) {
+      if (enabled && !(await storage.read()).bridgeToken) throw new Error('Pair the local bridge first.');
+      return update({ bridgeEnabled: !!enabled });
+    },
   };
 }
 
@@ -232,6 +239,7 @@ export const importFromRaindrop = (...args) => client.importFromRaindrop(...args
 export const sendToRaindrop = (...args) => client.sendToRaindrop(...args);
 export const configureBridge = (...args) => client.configureBridge(...args);
 export const disconnectBridge = (...args) => client.disconnectBridge(...args);
+export const setBridgeEnabled = (...args) => client.setBridgeEnabled(...args);
 export const syncBridgeOnce = (...args) => client.syncBridgeOnce(...args);
 export const startBridgeSync = (...args) => client.startBridgeSync(...args);
 export const setBridgeSearch = (...args) => client.setSearch(...args);

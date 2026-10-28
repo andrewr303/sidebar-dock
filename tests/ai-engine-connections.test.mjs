@@ -111,6 +111,7 @@ test('saveConnection asks for host access inside the gesture, stores the key apa
   assert.equal(connection.providerId, 'anthropic');
   assert.equal(connection.label, 'Work');
   assert.equal(connection.hasKey, true);
+  assert.equal(connection.keyHint, KEY.slice(-4), 'a long key reports its last four characters for the masked label');
   assert.equal(connection.via, 'direct');
   assert.equal(connection.status, 'untested');
   assert.equal(connection.defaultModel, 'claude-opus-5-5');
@@ -299,4 +300,16 @@ test('turning a connection off needs no host access, even after access was revok
   assert.equal((await saveConnection({ id: cloud.id, providerId: 'anthropic', enabled: false })).enabled, false);
   assert.deepEqual(requested, []);
   await assert.rejects(saveConnection({ id: local.id, enabled: true }), error => error.code === 'permission');
+});
+
+test('keyHint is only reported for keys of 16 or more characters, and never the key itself', async t => {
+  reset(t, { chrome: { permissions: { request: async () => true, contains: async () => true } } });
+  const short = await saveConnection({ providerId: 'anthropic', apiKey: 'abc1', label: 'Short' });
+  assert.equal(short.hasKey, true);
+  assert.equal('keyHint' in short, false, 'a short key would be mostly revealed by four characters');
+  const long = await saveConnection({ providerId: 'openai', apiKey: KEY });
+  const listed = await listConnections();
+  assert.equal(listed.find(entry => entry.id === long.id).keyHint, KEY.slice(-4));
+  assert.equal('keyHint' in listed.find(entry => entry.id === short.id), false);
+  assert.ok(!JSON.stringify(listed).includes(KEY), 'listings never carry the key');
 });

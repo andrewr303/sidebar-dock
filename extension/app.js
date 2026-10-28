@@ -156,7 +156,8 @@ function applyBootParams() {
   if (params.get('type') && (store.ITEM_TYPES.includes(params.get('type')) || ['link', 'media'].includes(params.get('type')))) state.typeFilter = params.get('type');
   if (isSidepanel) {
     const deepLink = state.view !== 'all' && state.view !== 'notes';
-    state.sideTab = params.get('tab') || (deepLink ? 'library' : state.view === 'notes' ? 'notes' : isExtension ? 'page' : 'library');
+    const startOnPage = isExtension && library.settings?.startOnPage !== false;
+    state.sideTab = params.get('tab') || (deepLink ? 'library' : state.view === 'notes' ? 'notes' : startOnPage ? 'page' : 'library');
     if (deepLink) state.sideStack = [state.view];
   }
   const item = params.get('item');

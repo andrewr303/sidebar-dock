@@ -51,6 +51,16 @@ export async function connectionIdsWithKeys() {
   return Object.entries(await readAll()).filter(([, entry]) => typeof entry?.apiKey === 'string' && entry.apiKey).map(([id]) => id);
 }
 
+/** Last four characters of a long key, for a masked "••••WXYZ" label; '' for short keys, which four characters would mostly reveal. */
+export function keyHint(apiKey) {
+  return typeof apiKey === 'string' && apiKey.length >= 16 ? apiKey.slice(-4) : '';
+}
+
+/** connection id -> keyHint, for keys long enough to show one. */
+export async function keyHints() {
+  return new Map(Object.entries(await readAll()).map(([id, entry]) => [id, keyHint(entry?.apiKey)]).filter(([, hint]) => hint));
+}
+
 export function setApiKey(connectionId, apiKey) {
   const key = validateApiKey(apiKey);
   return mutate(all => ({ ...all, [connectionId]: { apiKey: key, updatedAt: new Date().toISOString() } }));

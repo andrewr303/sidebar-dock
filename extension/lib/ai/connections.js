@@ -2,7 +2,7 @@
 // bridge providers and CLI agents are discovered from the local bridge and listed alongside them.
 
 import { EFFORT_LEVELS, getProvider, hostOf, modelFromCatalog, normalizeBaseUrl, originPattern, requireProvider } from './catalog.js';
-import { SECRETS_KEY, connectionIdsWithKeys, deleteApiKey, getApiKey, setApiKey, validateApiKey } from './secrets.js';
+import { SECRETS_KEY, connectionIdsWithKeys, deleteApiKey, getApiKey, keyHint, keyHints, setApiKey, validateApiKey } from './secrets.js';
 import { aiError, authHeaders, providerFetch, readJsonBody } from './http.js';
 import * as integrationsModule from '../integrations.js';
 import * as anthropicTransport from './transports/anthropic.js';
@@ -362,12 +362,13 @@ function filterKind(models, kind) {
   return models.filter(model => !model.capabilities?.embeddings && model.chat !== false).map(publicModel);
 }
 
-function publicDirect(record, state, keyIds) {
+function publicDirect(record, state, keyIds, hints = new Map()) {
   const provider = getProvider(record.providerId);
   const cache = cachedModels(state, record.id);
   return {
     id: record.id, providerId: provider.id, providerName: provider.name, label: record.label || provider.name, via: 'direct', kind: provider.kind,
     transport: provider.transport, baseUrl: effectiveBaseUrl(record, provider), hasKey: keyIds.has(record.id), needsKey: provider.needsKey, local: provider.local,
+    ...(keyIds.has(record.id) && hints.get(record.id) ? { keyHint: hints.get(record.id) } : {}),
     enabled: record.enabled !== false, defaultModel: record.defaultModel || provider.chat?.recommended || '',
     models: provider.chat ? (cache ? filterKind(cache, 'chat') : catalogModels(provider)) : [],
     embeddingModels: provider.embeddings ? (cache ? mergeEmbeddingSuggestions(provider, filterKind(cache, 'embeddings')) : catalogModels(provider, 'embeddings')) : [],
@@ -433,9 +434,9 @@ function bridgedConnections(state, snapshot) {
 }
 
 export async function listConnections({ refresh = false } = {}) {
-  const [snapshot, keyIds] = await Promise.all([bridgeSnapshot({ refresh }), connectionIdsWithKeys().then(ids => new Set(ids))]);
+  const [snapshot, keyIds, hints] = await Promise.all([bridgeSnapshot({ refresh }), connectionIdsWithKeys().then(ids => new Set(ids)), keyHints()]);
   const state = await loadState();
-  return [...state.connections.map(record => publicDirect(record, state, keyIds)), ...bridgedConnections(state, snapshot)];
+  return [...state.connections.map(record => publicDirect(record, state, keyIds, hints)), ...bridgedConnections(state, snapshot)];
 }
 
 // ---------- resolution ----------
@@ -609,7 +610,8 @@ export async function saveConnection(input = {}) {
     }
     state.settings = settings;
     const hasKey = apiKey ? true : input.apiKey === null ? false : hadKey;
-    return publicDirect(record, state, new Set(hasKey ? [id] : []));
+    const hint = apiKey ? keyHint(apiKey) : hasKey ? (await keyHints()).get(id) : '';
+    return publicDirect(record, state, new Set(hasKey ? [id] : []), new Map(hint ? [[id, hint]] : []));
   });
 }
 

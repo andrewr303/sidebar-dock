@@ -288,3 +288,14 @@ test('bridge routes match the path even with a query string, and pinned extensio
     await assert.rejects(loadConfig(path), /extensionIds/);
   } finally { await unlink(path); await rmdir(directory); }
 });
+
+test('pausing bridge sync keeps the pairing, makes sync a quiet no-op in every window, and resume needs a token', async () => {
+  const client = createIntegrationClient({ storage: storageFixture({ bridgeToken: TOKEN, bridgeEnabled: true }), store: { loadLibrary: async () => ({ items: [], collections: [] }) }, fetch: async () => { throw new Error('no network while paused'); } });
+  await client.setBridgeEnabled(false);
+  const settings = await client.getIntegrationSettings();
+  assert.equal(settings.bridgeEnabled, false);
+  assert.equal(settings.bridgeConfigured, true, 'the pairing token is kept');
+  assert.deepEqual(await client.syncBridgeOnce(), { connected: false, paused: true, pending: 0, changed: false });
+  await client.disconnectBridge();
+  await assert.rejects(client.setBridgeEnabled(true), /Pair the local bridge first/);
+});

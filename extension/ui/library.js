@@ -546,6 +546,11 @@ export async function setArchived(ctx, ids, archived) {
 export async function trashItems(ctx, ids) {
   const at = nowIso();
   const changes = ids.map(byId(ctx)).filter(item => item && !item.deletedAt).map(item => ({ id: item.id, patch: { deletedAt: at } }));
+  // Settings → General → "Confirm before moving items to Trash" (off by default; Undo covers the common case).
+  if (changes.length && ctx.library?.settings?.confirmDelete === true) {
+    const ok = await ctx.confirm({ title: `Move ${label(changes.length)} to Trash?`, body: 'You can restore them from Trash.', confirmLabel: 'Move to Trash', tone: 'danger' });
+    if (!ok) return;
+  }
   await applyChanges(ctx, changes, `Moved ${label(changes.length)} to Trash`);
   clearSelectionOf(ctx, ids);
   if (ctx.state.panel?.kind === 'item' && ids.includes(ctx.state.panel.id)) ctx.closePanel();
