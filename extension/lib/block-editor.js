@@ -286,7 +286,7 @@ function htmlBlocks(nodes,indent=0){
   flush();
   if(/^H[1-6]$/.test(tag)){const text=inlineMarkdown(node.childNodes).replace(/\s*\n\s*/g,' ');if(text)blocks.push({type:'h'+Math.min(3,Number(tag[1])),text});continue;}
   if(tag==='HR'){blocks.push({type:'divider',text:''});continue;}
-  if(tag==='PRE'){const code=node.childNodes.find(c=>c.nodeType===1&&c.tagName==='CODE'),info=`${attr(code||{},'class')||''} ${attr(node,'class')||''}`;blocks.push({type:'code',text:rawText(node).replace(/\n$/,''),language:attr(code||{},'data-language')||attr(node,'data-language')||(/(?:language|lang)-([\w+#.-]+)/.exec(info)||[])[1]||''});continue;}
+  if(tag==='PRE'){const code=node.childNodes.find(c=>c.nodeType===1&&c.tagName==='CODE'),info=`${attr(code||{},'class')||''} ${attr(node,'class')||''}`;blocks.push({type:'code',text:rawText(node).replace(/\n$/,''),language:(attr(code||{},'data-language')||attr(node,'data-language')||(/(?:language|lang)-([\w+#.-]+)/.exec(info)||[])[1]||'').replace(/[\s`]+/g,' ').trim().slice(0,40)});continue;}
   if(tag==='UL'||tag==='OL'){listBlocks(node,indent,blocks);continue;}
   const kind=calloutKindOf(node);
   if(kind||tag==='BLOCKQUOTE'){const inner=htmlBlocks(node.childNodes.filter(c=>!(c.nodeType===1&&/markdown-(?:alert|callout)-title/.test(classesOf(c).join(' ')))),indent);const text=inner.map(blockText).join('\n');if(text.trim()||kind)blocks.push(kind?{type:'callout',kind,text}:{type:'quote',text});continue;}
@@ -809,12 +809,14 @@ export function mountBlockEditor(textarea,options={}){
  function renderPopup(){
   const s=popupState;if(!s)return;const menu=s.role==='menu';let html=s.title?`<div class="block-editor-popup-title">${esc(s.title)}</div>`:'',group=null;
   if(!s.items.length)html+=`<div class="block-editor-popup-empty">${esc(s.loading?'Searching…':s.empty||'No results')}</div>`;
+  // Sections are role="group" elements named by their heading (no separators or loose headings inside a listbox).
+  let section=false;const endSection=()=>{if(section)html+='</div>';section=false;};
   s.items.forEach((item,i)=>{
-   if(item.separator){group=null;html+='<div class="block-editor-popup-separator" role="separator"></div>';}
-   else if(item.group&&item.group!==group){group=item.group;html+=`<div class="block-editor-popup-group" role="presentation">${esc(group)}</div>`;}
+   if(item.separator){endSection();group=null;html+='<div class="block-editor-popup-separator" role="separator"></div>';}
+   else if(item.group&&item.group!==group){endSection();group=item.group;section=true;html+=`<div class="block-editor-popup-section" role="group" aria-labelledby="${domId}-grp-${i}"><div class="block-editor-popup-group" id="${domId}-grp-${i}" role="presentation">${esc(group)}</div>`;}
    html+=`<div class="block-editor-item${i===s.index?' is-active':''}${item.danger?' is-danger':''}${item.current?' is-current':''}" id="${domId}-opt-${i}" role="${menu?'menuitem':'option'}"${menu?'':` aria-selected="${i===s.index}"`} data-popup-index="${i}" tabindex="${i===s.index?0:-1}">${item.iconHtml||(item.icon?icon(item.icon):'')}<span class="block-editor-item-text"><span class="block-editor-item-label">${esc(item.label)}</span>${item.description?`<span class="block-editor-item-desc">${esc(item.description)}</span>`:''}</span>${item.hint?`<kbd class="block-editor-item-hint">${esc(item.hint)}</kbd>`:''}</div>`;
   });
-  popup.innerHTML=html;popup.setAttribute('role',menu?'menu':'listbox');popup.setAttribute('aria-label',s.label);popup.classList.toggle('is-wide',!!s.wide);
+  endSection();popup.innerHTML=html;popup.setAttribute('role',menu?'menu':'listbox');popup.setAttribute('aria-label',s.label);popup.classList.toggle('is-wide',!!s.wide);
   setActiveDescendant();const active=popup.querySelector('.is-active');active?.scrollIntoView?.({block:'nearest'});if(s.focus==='popup')(active||popup).focus({preventScroll:true});
  }
  function openPopup(state){

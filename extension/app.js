@@ -116,10 +116,10 @@ function applyAppearance() {
     requestAnimationFrame(() => requestAnimationFrame(() => html.classList.remove('theme-switching')));
   }
   html.dataset.theme = theme;
-  html.dataset.accent = s.accent || 'blue';
+  html.dataset.accent = s.accent && s.accent !== 'violet' ? s.accent : 'blue';
   html.dataset.density = s.density || 'comfortable';
   html.dataset.surface = isSidepanel ? 'side' : 'full';
-  cacheAppearance({ theme: s.theme || 'system', accent: s.accent || 'blue', density: s.density || 'comfortable' });
+  cacheAppearance({ theme: s.theme || 'system', accent: html.dataset.accent, density: s.density || 'comfortable' });
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { applyAppearance(); });
 ctx.applyAppearance = applyAppearance;

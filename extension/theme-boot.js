@@ -6,7 +6,7 @@
   const theme = saved.theme === 'dark' || saved.theme === 'light' ? saved.theme
     : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   root.dataset.theme = theme;
-  root.dataset.accent = saved.accent || 'blue';
+  root.dataset.accent = saved.accent && saved.accent !== 'violet' ? saved.accent : 'blue';
   root.dataset.density = saved.density || 'comfortable';
   if (new URLSearchParams(location.search).get('view') === 'sidepanel') root.dataset.surface = 'side';
   else root.dataset.surface = 'full';
