@@ -70,13 +70,29 @@ export async function stream(ctx) {
   if (typeof request !== 'function') throw aiError('Pair the local bridge first to use this connection.', { code: 'bridge_unavailable' });
   const body = buildBody(ctx);
   let text = '', thinking = '';
-  const done = await request('/ai/chat', {
-    method: 'POST', body, signal,
-    onEvent: event => {
-      if (event.type === 'delta' && event.text) { text += event.text; emit({ type: 'text', delta: event.text }); }
-      else if (event.type === 'thinking' && event.text) { thinking += event.text; emit({ type: 'thinking', delta: event.text }); }
-    },
-  });
+  let done;
+  try {
+    done = await request('/ai/chat', {
+      method: 'POST', body, signal,
+      onEvent: event => {
+        if (event.type === 'delta' && event.text) { text += event.text; emit({ type: 'text', delta: event.text }); }
+        else if (event.type === 'thinking') {
+          const delta = typeof event.text === 'string' ? event.text : typeof event.delta === 'string' ? event.delta : '';
+          if (delta) { thinking += delta; emit({ type: 'thinking', delta }); }
+        }
+      },
+    });
+  } catch (error) {
+    // The bridge reports a refusal as a terminal error event carrying stopReason 'refusal' (requestBridge copies it
+    // onto the error). Its message already names the category and explanation, so it is kept as is.
+    if (error?.stopReason === 'refusal') {
+      throw aiError(error.message || 'The model declined this request. Try rephrasing it.', {
+        code: 'refusal', stopReason: 'refusal', refusal: { category: null, explanation: null },
+        partialText: typeof error.partialText === 'string' ? error.partialText : text,
+      });
+    }
+    throw error;
+  }
   const finalText = typeof done?.text === 'string' && done.text ? done.text : text;
   if (done?.stopReason === 'refusal') {
     const error = refusalError({ provider, explanation: done.stopDetails?.explanation || '' });
@@ -84,9 +100,10 @@ export async function stream(ctx) {
     throw error;
   }
   const stopReason = STOPS[done?.stopReason] || 'end_turn';
+  const fallback = done?.fallback && typeof done.fallback === 'object' ? { from: done.fallback.from ?? null, to: done.fallback.to ?? null } : null;
   return {
     text: finalText, thinking, toolCalls: [], usage: bridgeUsage(done?.usage), model: done?.model || model,
-    stopReason, rawStopReason: done?.stopReason || null, notice: STOP_NOTICES[stopReason] || null,
+    stopReason, rawStopReason: done?.stopReason || null, notice: STOP_NOTICES[stopReason] || null, fallback,
     assistantMessage: { role: 'assistant', content: finalText ? [{ type: 'text', text: finalText }] : [] },
   };
 }

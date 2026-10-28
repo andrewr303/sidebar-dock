@@ -3,7 +3,7 @@
 import { clampEffort } from '../catalog.js';
 import { aiError, authHeaders, providerFetch, readJsonBody, streamError } from '../http.js';
 import { parseEventData, readSse } from '../stream.js';
-import { STOP_NOTICES, compactUsage, imageSource, incompleteError, partsOf, refusalError, toolNameFor, toolResultText, toolSchema } from './shared.js';
+import { STOP_NOTICES, compactUsage, imageSource, incompleteError, partsOf, refusalError, toolNameFor, toolResultText, toolSchema, uniqueTag } from './shared.js';
 
 const SYNTHETIC_ID = 'gemini_call_';
 const DEFAULT_LEVELS = ['low', 'medium', 'high'];
@@ -96,6 +96,9 @@ export async function stream(ctx) {
   let text = '', thinking = '', finish = null, rawUsage = null, actualModel = model;
   const toolCalls = [];
   const nativeParts = [];
+  // Gemini often sends calls without ids. Synthetic ids must stay unique across the steps of a tool loop, because
+  // toolNameFor() matches each functionResponse to its call by id when the conversation is replayed.
+  const syntheticPrefix = `${SYNTHETIC_ID}${uniqueTag()}_`;
   const keep = part => {
     const last = nativeParts.at(-1);
     const plain = value => typeof value?.text === 'string' && !value.functionCall;
@@ -119,7 +122,7 @@ export async function stream(ctx) {
     const candidate = chunk.candidates?.[0];
     for (const part of candidate?.content?.parts || []) {
       if (part.functionCall) {
-        const call = { id: part.functionCall.id || `${SYNTHETIC_ID}${toolCalls.length + 1}`, name: part.functionCall.name, input: part.functionCall.args || {} };
+        const call = { id: part.functionCall.id || `${syntheticPrefix}${toolCalls.length + 1}`, name: part.functionCall.name, input: part.functionCall.args || {} };
         toolCalls.push(call);
         emit({ type: 'tool_call', ...call });
         keep(part);

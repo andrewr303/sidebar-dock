@@ -65,12 +65,17 @@ function applyTab(ctx, tab) {
   ctx.render();
 }
 
+let refreshSeq = 0;
 async function refreshPage(ctx) {
   if (!ctx.env.isExtension) return;
+  // Quick tab switches overlap requests; only the latest answer may update the page.
+  const seq = ++refreshSeq;
   try {
     const windowId = await ensureWindowId(ctx);
-    applyTab(ctx, await ctx.chrome('getActiveTab', { windowId }));
+    const tab = await ctx.chrome('getActiveTab', { windowId });
+    if (seq === refreshSeq) applyTab(ctx, tab);
   } catch (error) {
+    if (seq !== refreshSeq) return;
     pageState.loading = false;
     pageState.error = error?.message || 'Still could not read the current tab.';
     ctx.render();
@@ -157,10 +162,13 @@ function renderSaveBar(ctx, page) {
   const extension = ctx.env.isExtension && !page.demo;
   const busy = ['preparing', 'capturing', 'stitching', 'saving'].includes(ctx.state.capture?.status);
   const open = ctx.state.popover?.name === 'pick.collection' && ctx.state.popover.props?.pickerKey === 'page-save';
+  // Alt+Shift+S (the browser command) saves to the settings default; only advertise it when it saves to the same place.
+  const setting = ctx.library?.settings?.defaultCollectionId;
+  const sameAsCommand = target === (setting && ctx.select.collection(setting) ? setting : '');
   return html`<div class="page-save-bar">
     <div class="split-btn split-btn-primary page-split" role="group" aria-label="Save this page">
       <button type="button" class="${cx('btn', 'btn-primary', 'split-btn-main', 'page-save-main', pageState.saving && 'is-loading')}" data-action="page.save"
-        aria-keyshortcuts="Alt+Shift+S" data-tooltip="Save to ${label} (Alt+Shift+S)" ${pageState.saving ? html`aria-busy="true" aria-disabled="true"` : ''}>
+        ${sameAsCommand ? html`aria-keyshortcuts="Alt+Shift+S"` : ''} data-tooltip="Save to ${label}${sameAsCommand ? ' (Alt+Shift+S)' : ''}" ${pageState.saving ? html`aria-busy="true" aria-disabled="true"` : ''}>
         ${icon('bookmark', { size: 16 })}<span class="btn-label">Save to ${label}</span>${pageState.saving ? spinner({ size: 14 }) : ''}</button>
       <button type="button" class="btn btn-primary split-btn-menu" aria-label="Save to another collection" aria-haspopup="listbox" aria-expanded="${open ? 'true' : 'false'}"
         data-tooltip="Choose collection" data-action="page.save-menu">${icon('chevron-down', { size: 14 })}</button>
@@ -281,8 +289,12 @@ function renderAsk() {
 }
 
 function renderRecent(ctx) {
-  const recent = [...ctx.select.live()].filter(item => item.type !== 'note' || item.title)
-    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 5);
+  // The memoized newest-first view, so a render never re-sorts the whole library.
+  const recent = [];
+  for (const item of ctx.select.itemsForView({ view: 'all', sort: 'newest' })) {
+    if (item.type !== 'note' || item.title) recent.push(item);
+    if (recent.length === 5) break;
+  }
   if (!recent.length) return '';
   return html`<section class="page-section" aria-labelledby="page-recent-title">
     ${sectionHead('page-recent-title', 'Recently saved', 0, button({ label: 'Library', variant: 'link', size: 'sm', action: 'page.open-library' }))}

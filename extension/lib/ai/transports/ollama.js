@@ -3,7 +3,7 @@
 import { clampEffort } from '../catalog.js';
 import { authHeaders, providerFetch, readJsonBody, streamError } from '../http.js';
 import { readNdjson } from '../stream.js';
-import { STOP_NOTICES, compactUsage, imageSource, incompleteError, parseToolInput, partsOf, textOf, toolNameFor, toolResultText, toolSchema } from './shared.js';
+import { STOP_NOTICES, compactUsage, imageSource, incompleteError, parseToolInput, partsOf, textOf, toolNameFor, toolResultText, toolSchema, uniqueTag } from './shared.js';
 
 const showCache = new Map();
 
@@ -62,6 +62,8 @@ export async function stream(ctx) {
   const response = await providerFetch(request.url, { method: request.method, headers: request.headers, body: request.body, signal, provider, secrets: [apiKey], model, timeoutMs: 300000 });
   let text = '', thinking = '', done = false, finish = null, usage = {}, actualModel = model;
   const toolCalls = [], rawCalls = [];
+  // Unique per response: tool_name lookups on replay match results to calls by id across every step of a tool loop.
+  const syntheticPrefix = `ollama_call_${uniqueTag()}_`;
   for await (const event of readNdjson(response, { signal })) {
     if (event.error) throw streamError({ message: typeof event.error === 'string' ? event.error : event.error.message, provider, model, secrets: [apiKey] });
     if (event.model) actualModel = event.model;
@@ -70,7 +72,7 @@ export async function stream(ctx) {
     if (message.content) { text += message.content; emit({ type: 'text', delta: message.content }); }
     for (const call of message.tool_calls || []) {
       const args = call.function?.arguments;
-      const entry = { id: call.id || `ollama_call_${toolCalls.length + 1}`, name: call.function?.name || '', input: typeof args === 'string' ? parseToolInput(args, call.function?.name) : args || {} };
+      const entry = { id: call.id || `${syntheticPrefix}${toolCalls.length + 1}`, name: call.function?.name || '', input: typeof args === 'string' ? parseToolInput(args, call.function?.name) : args || {} };
       rawCalls.push(call);
       toolCalls.push(entry);
       emit({ type: 'tool_call', ...entry });

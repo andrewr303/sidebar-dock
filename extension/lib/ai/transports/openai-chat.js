@@ -3,7 +3,7 @@
 import { clampEffort } from '../catalog.js';
 import { authHeaders, providerFetch, readJsonBody, streamError } from '../http.js';
 import { parseEventData, readSse } from '../stream.js';
-import { STOP_NOTICES, compactUsage, dataUrlOf, incompleteError, isStrictSchema, parseToolInput, partsOf, textOf, toolResultText, toolSchema } from './shared.js';
+import { STOP_NOTICES, compactUsage, dataUrlOf, incompleteError, isStrictSchema, parseToolInput, partsOf, textOf, toolResultText, toolSchema, uniqueTag } from './shared.js';
 
 export function toChatMessages(messages, system, options = {}) {
   const output = system ? [{ role: 'system', content: system }] : [];
@@ -111,7 +111,8 @@ export async function stream(ctx) {
     if (choice.finish_reason) finish = choice.finish_reason;
   }
   if (!ended && !finish) throw incompleteError(provider);
-  const toolCalls = calls.filter(Boolean).map((call, index) => ({ id: call.id || `call_${index + 1}`, name: call.name, input: parseToolInput(call.arguments, call.name) }));
+  const tag = calls.some(call => call && !call.id) ? uniqueTag() : '';
+  const toolCalls = calls.filter(Boolean).map((call, index) => ({ id: call.id || `call_${tag}_${index + 1}`, name: call.name, input: parseToolInput(call.arguments, call.name) }));
   for (const call of toolCalls) emit({ type: 'tool_call', ...call });
   const stopReason = toolCalls.length ? 'tool_use' : STOP[finish] || (finish ? 'other' : 'end_turn');
   const native = { role: 'assistant', content: text || (toolCalls.length ? null : '') };

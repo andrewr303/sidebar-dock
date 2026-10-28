@@ -77,6 +77,9 @@ export function refusalError({ provider, explanation = '', category = '', stopRe
   return aiError(message, { code: 'refusal', stopReason, refusal: { category: category || null, explanation: explanation || null } });
 }
 
+// Short random tag for synthetic tool-call ids, so ids made in different steps of one tool loop never collide.
+export const uniqueTag = () => (globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`).replace(/-/g, '').slice(0, 8);
+
 export const compactUsage = usage => Object.fromEntries(Object.entries(usage).filter(([, value]) => Number.isFinite(value)));
 
 export const STOP_NOTICES = { max_tokens: 'The answer reached the output limit and may be cut off.' };

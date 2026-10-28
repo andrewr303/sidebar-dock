@@ -1,6 +1,6 @@
 // Quick add: the Add dialog (links, notes, files), paste-to-add, uploads, "Save all tabs", the capture menu and
 // screenshot progress. Saving a link into a collection should take one paste and one keystroke.
-import { html, cx, plural } from './html.js';
+import { html, cx, plural, safeSrc } from './html.js';
 import { icon } from './icons.js';
 import { button, iconButton, segmented, checkbox, collectionIcon, favicon, domainOf, fileSize, spinner, badge, emptyState, keyshortcuts, shortcutLabel } from './components.js';
 import { registerActions, registerShortcuts } from './runtime.js';
@@ -323,6 +323,8 @@ async function loadMeta(ctx, { force = false } = {}) {
   const url = validUrl(d.url);
   if (!url || (!force && d.meta.forUrl === url)) return;
   const id = d.id;
+  // An image link (context menu "Save image to") has no page details to read; asking for its CDN's access would mislead.
+  if (d.itemType === 'image') { d.meta = { status: 'done', forUrl: url }; loadSuggestions(ctx); return; }
   d.meta = { status: 'loading', forUrl: url };
   ctx.render();
   let meta = null, needs = '';
@@ -411,7 +413,8 @@ function renderPermissionNotice(d) {
 }
 
 function renderCover(d) {
-  const src = d.cover;
+  // A cover that failed to load (404, blocked host) shows the fallback tile instead of a broken image.
+  const src = d.cover && d.cover !== d.coverFailed ? safeSrc(d.cover) : '';
   const fallback = html`<span class="add-cover-fallback">${d.url ? favicon(d.url, { size: 28 }) : icon('image', { size: 20 })}</span>`;
   return html`<div class="${cx('add-cover', !src && 'is-empty')}">
     ${src ? html`<img src="${src}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : fallback}
@@ -574,7 +577,8 @@ async function imageThumbnail(file) {
     canvas.width = Math.max(1, Math.round(bitmap.width * scale));
     canvas.height = Math.max(1, Math.round(bitmap.height * scale));
     canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL('image/jpeg', 0.82);
+    // WebP keeps transparency (JPEG turns transparent logos black); Chrome falls back to PNG, which the store also accepts.
+    return canvas.toDataURL('image/webp', 0.82);
   } finally { bitmap.close?.(); }
 }
 
@@ -589,7 +593,9 @@ async function saveLink(ctx, d, url) {
     return ctx.store.updateItem(existing.id, patch, { expectedUpdatedAt: existing.updatedAt });
   }
   // The store merges a save into an existing item with the same address, so only send what the user set.
-  const input = { url, excerpt: d.excerpt.trim(), cover: d.cover, content: d.note, collectionId: d.collectionId, tags: d.tags, articleContent: d.articleContent, sourceUrl: d.sourceUrl };
+  // A fetched cover that failed to load here is dropped rather than saved as a broken image.
+  const cover = d.cover && d.cover === d.coverFailed && !d.touched.has('cover') ? '' : d.cover;
+  const input = { url, excerpt: d.excerpt.trim(), cover, content: d.note, collectionId: d.collectionId, tags: d.tags, articleContent: d.articleContent, sourceUrl: d.sourceUrl };
   if (d.title.trim()) input.title = d.title.trim();
   if (!existing || (existing.type === 'bookmark' && type !== 'bookmark')) input.type = type;
   if (d.favorite) input.favorite = true;
@@ -614,7 +620,8 @@ async function saveFiles(ctx, d) {
     const file = entry.file;
     const kind = fileKind(file);
     const cover = kind === 'image' && /^image\/(png|jpeg|gif|webp|avif)$/.test(file.type) && file.size < 20 * 1024 * 1024 ? await imageThumbnail(file).catch(() => '') : '';
-    const articleContent = isTextFile(file) ? (await file.text()).slice(0, 250000) : '';
+    // Read only the start of large text files: the store keeps 250,000 characters (at most 4 bytes each).
+    const articleContent = isTextFile(file) ? (await file.slice(0, 1_000_000).text()).slice(0, 250000) : '';
     const attachment = await ctx.store.saveAttachment(file);
     try {
       const title = pending.length === 1 && d.title.trim() ? d.title.trim() : entry.name;
@@ -658,6 +665,8 @@ async function saveDraft(ctx) {
   }
   d.saving = true;
   ctx.render();
+  // A link already in the library is merged by the store (it keeps its collection when Inbox is chosen).
+  const merged = d.type === 'link' && !d.updateId && !!ctx.select.savedForUrl(url);
   let saved = [];
   try {
     if (d.type === 'file') saved = await saveFiles(ctx, d);
@@ -671,9 +680,9 @@ async function saveDraft(ctx) {
   }
   ctx.prefs.touchCollection(d.collectionId);
   if (draft === d) { draft = null; ctx.closeDialog('add.item'); }
-  const where = collectionLabel(ctx, d.collectionId);
   const first = saved[0];
-  const message = d.type === 'file' && saved.length > 1 ? `Saved ${saved.length} files to ${where}` : d.updateId ? `Updated in ${where}` : `Saved to ${where}`;
+  const where = collectionLabel(ctx, first ? first.collectionId : d.collectionId);
+  const message = d.type === 'file' && saved.length > 1 ? `Saved ${saved.length} files to ${where}` : d.updateId || merged ? `Updated in ${where}` : `Saved to ${where}`;
   ctx.toast(message, { tone: 'success', action: first ? { label: 'Open', run: () => ctx.openItem(first.id) } : null });
   if (url && first && ctx.state.page && sameUrl(ctx.state.page.url, url)) Object.assign(ctx.state.page, { saved: true, itemId: first.id });
   ctx.render();
@@ -883,6 +892,8 @@ registerActions({
     ...(typeof data.collectionId === 'string' ? { collectionId: data.collectionId } : {}),
     ...(data.url ? { url: data.url } : {}), ...(data.type ? { type: data.type } : {}), ...(data.source ? { source: data.source } : {}),
   }),
+  // Keyboard quick add: the focused element's data-* must not leak into the prefill.
+  'add.quick': ({ ctx }) => openAdd(ctx, {}),
   'add.upload': ({ ctx }) => {
     const input = document.getElementById('file-input');
     if (!input) { openAdd(ctx, { type: 'file' }); return; }
@@ -1006,7 +1017,7 @@ registerActions({
     const pending = requestPermission({ permissions: ['tabs'] });
     return pending.then(granted => {
       if (granted) return loadTabs(ctx);
-      ctx.toast('Still still cannot see your tabs. Chrome did not grant access.', { tone: 'warning' });
+      ctx.toast('Chrome did not allow access to your tabs. Allow it to save them all at once.', { tone: 'warning' });
     });
   },
   'add.tabs-reload': ({ ctx }) => loadTabs(ctx),
@@ -1061,7 +1072,7 @@ async function coverFromLink(ctx, d) {
 }
 
 registerShortcuts([
-  { keys: 'mod+shift+s', action: 'add.open', label: 'Quick add' },
+  { keys: 'mod+shift+s', action: 'add.quick', label: 'Quick add' },
   { keys: 'mod+enter', action: 'add.save', label: 'Save in the Add dialog', allowInInputs: true, when: ctx => ctx.state.dialogs.at(-1)?.name === 'add.item' },
   { keys: 'mod+enter', action: 'add.tabs-save', allowInInputs: true, when: ctx => ctx.state.dialogs.at(-1)?.name === 'add.tabs' },
 ]);
@@ -1105,6 +1116,14 @@ export async function init(ctx) {
   fileInput?.addEventListener('cancel', () => { uploadArmed = false; });
 
   // Drops onto the Add dialog's drop zone are handled here (capture phase) so app-wide drop handlers stay out of it.
+  // Image errors do not bubble; catch a failed cover in the capture phase and show the fallback tile.
+  document.addEventListener('error', event => {
+    const img = event.target;
+    if (!draft || img?.tagName !== 'IMG' || !img.closest?.('.add-cover')) return;
+    draft.coverFailed = draft.cover;
+    ctx.render();
+  }, true);
+
   const zone = event => event.target?.closest?.('[data-add-drop]');
   const hasFiles = event => [...(event.dataTransfer?.types || [])].includes('Files');
   document.addEventListener('dragover', event => {

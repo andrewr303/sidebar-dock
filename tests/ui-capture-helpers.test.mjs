@@ -46,6 +46,15 @@ test('create plans reuse existing parents and support "Parent / Child"', () => {
   assert.ok(COLLECTION_COLORS.some(c => c.hex === color && c.name !== 'gray'));
 });
 
+test('a collection whose own name contains a separator is found, not re-created as a path', () => {
+  const withSlash = [...rows, { id: 'aiml', name: 'AI/ML', parentId: '', depth: 0 }, { id: 'ux', name: 'UI › UX', parentId: 'design', depth: 1 }];
+  assert.deepEqual(filterCollectionTree(withSlash, 'AI/ML').filter(r => r.match).map(r => r.row.id), ['aiml']);
+  assert.deepEqual(planCollectionPath(withSlash, 'AI/ML'), { existingId: 'aiml', parentId: '', create: [] });
+  assert.deepEqual(planCollectionPath(withSlash, 'ui  ›  ux'), { existingId: 'ux', parentId: 'design', create: [] });
+  assert.deepEqual(planCollectionPath(withSlash, 'AI/Vision'), { existingId: '', parentId: '', create: ['AI', 'Vision'] }, 'other slashes still mean a path');
+  assert.deepEqual(filterCollectionTree(withSlash, 'design / insp').map(({ row, match }) => `${row.id}:${match}`), ['design:false', 'insp:true']);
+});
+
 test('tag helpers split, merge, remove and autocomplete', () => {
   assert.deepEqual(splitTags('ai, #Research,\n  deep   work ,,'), ['ai', 'Research', 'deep work']);
   assert.equal(splitTags('x'.repeat(80))[0].length, 64);

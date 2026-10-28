@@ -38,8 +38,11 @@ export function filterCollectionTree(rows, query) {
   const byId = new Map(rows.map(row => [row.id, row]));
   const last = segments.at(-1);
   const joined = segments.join(' / ');
+  const whole = lower(query).replace(/\s+/g, ' ').trim();
   const matched = new Set();
   for (const row of rows) {
+    // A name that itself contains a separator ("AI/ML") matches the query as typed.
+    if (segments.length > 1 && lower(row.name).replace(/\s+/g, ' ').includes(whole)) { matched.add(row.id); continue; }
     if (!lower(row.name).includes(last)) continue;
     if (segments.length > 1 && !lower(pathNames(byId, row.id).join(' / ')).includes(joined)) continue;
     matched.add(row.id);
@@ -61,6 +64,13 @@ export function filterCollectionTree(rows, query) {
 export function planCollectionPath(rows, input) {
   const names = parseCollectionPath(input);
   if (!names.length) return { existingId: '', parentId: '', create: [] };
+  if (names.length > 1) {
+    // "AI/ML" may be one collection's own name rather than a path.
+    const whole = lower(input).replace(/\s+/g, ' ').trim();
+    const named = rows.filter(row => lower(row.name).replace(/\s+/g, ' ').trim() === whole);
+    const exact = named.find(row => !row.parentId) || named[0];
+    if (exact) return { existingId: exact.id, parentId: exact.parentId || '', create: [] };
+  }
   const childNamed = (parentId, name) => rows.find(row => (row.parentId || '') === parentId && lower(row.name) === lower(name));
   let current = childNamed('', names[0]);
   if (!current) {
@@ -203,15 +213,17 @@ function activeIndex(options, props) {
   if (Number.isInteger(props.active) && props.active >= 0 && props.active < options.length) return props.active;
   if (String(props.query || '').trim()) {
     const q = lower(parseCollectionPath(props.query).at(-1));
+    const whole = lower(props.query).replace(/\s+/g, ' ').trim();
     const named = (o, test) => o.kind === 'collection' && !o.context && test(lower(o.name));
-    const exact = options.findIndex(o => named(o, n => n === q));
+    const exact = options.findIndex(o => named(o, n => n === q || n === whole));
     if (exact >= 0) return exact;
     const prefix = options.findIndex(o => named(o, n => n.startsWith(q)));
     if (prefix >= 0) return prefix;
     const any = options.findIndex(o => o.kind !== 'collection' || !o.context);
     return any >= 0 ? any : 0;
   }
-  const current = options.findIndex(o => o.kind !== 'create' && o.id === (props.value || ''));
+  // value undefined (for example a bulk move of items from several collections) means nothing is current.
+  const current = props.value == null ? -1 : options.findIndex(o => o.kind !== 'create' && o.id === String(props.value));
   return current >= 0 ? current : 0;
 }
 
@@ -239,7 +251,7 @@ function renderCollectionPopover(ctx, props) {
         data-action="pick.collection-create" data-index="${index}">${icon('folder-plus', { size: 16 })}<span class="pick-option-label">${createLabel(ctx, o.plan)}</span>${isActive ? kbd('enter') : ''}</div>`;
     }
     const collection = o.kind === 'inbox' ? null : ctx.select.collection(o.id);
-    const selected = (props.value || '') === o.id;
+    const selected = props.value != null && String(props.value) === o.id;
     const n = o.kind === 'inbox' ? counts.inbox : counts.byCollectionDeep[o.id];
     const label = o.kind === 'inbox' ? highlight('Inbox', query) : o.showPath ? pathFragment(ctx, o.id) : highlight(o.name, query);
     return html`<div role="option" id="pick-opt-${index}" class="${cx('pick-option', isActive && 'is-active', o.context && 'is-context')}" aria-selected="${selected ? 'true' : 'false'}"
@@ -422,7 +434,7 @@ function renderIconPopover(ctx, props) {
   const hue = colorName(props.color) || 'gray';
   const choices = iconChoices(props.query);
   const focusIndex = Math.max(0, choices.indexOf(current));
-  return html`<div class="pick-icon" style="--pick-hue:var(--c-${hue});--pick-hue-soft:var(--c-${hue}-soft)" data-key="pick-icon">
+  return html`<div class="pick-icon" role="dialog" aria-label="Icon and color" style="--pick-hue:var(--c-${hue});--pick-hue-soft:var(--c-${hue}-soft)" data-key="pick-icon">
     <div class="pick-search">${icon('search', { size: 16 })}<input class="pick-search-input" type="text" id="pick-icon-search" data-focus-key="pick-icon-search"
       aria-label="Search icons" placeholder="Search icons" value="${props.query || ''}" data-input="pick.icon-query" data-keydown="pick.icon-search-key" data-autofocus autocomplete="off" spellcheck="false"></div>
     ${choices.length ? html`<div class="pick-icon-grid" role="radiogroup" aria-label="Icon" data-keydown="pick.icon-grid-key">
@@ -472,7 +484,7 @@ function moveRoving(container, selector, event, columns = 1) {
 
 function renderReminderPopover(ctx, props) {
   if (props.view === 'custom') {
-    const initial = props.value && Date.parse(props.value) > Date.now() ? new Date(props.value) : reminderPresets()[1].date;
+    const initial = props.value && Date.parse(props.value) > Date.now() ? new Date(props.value) : reminderPresets().find(preset => preset.id === 'tomorrow').date;
     return html`<form class="pick-reminder-custom" data-submit="pick.reminder-custom" data-key="pick-reminder-custom" aria-label="Pick date and time">
       <label class="pick-section-label" for="pick-reminder-at">Remind me on</label>
       <input class="input" type="datetime-local" id="pick-reminder-at" name="at" value="${toDateTimeLocal(initial)}" min="${toDateTimeLocal(new Date())}" required data-autofocus
@@ -506,7 +518,8 @@ async function pickReminder(ctx, iso) {
 
 registerPopover('pick.collection', renderCollectionPopover, { role: 'none', className: 'pick-popover pick-collection-popover' });
 registerPopover('pick.tag-suggest', renderTagSuggest, { role: 'none', className: 'pick-popover pick-tag-popover' });
-registerPopover('pick.icon', renderIconPopover, { role: 'dialog', className: 'pick-popover pick-icon-popover' });
+// The named dialog role sits on the content: overlay.js gives the popover root no accessible name.
+registerPopover('pick.icon', renderIconPopover, { role: 'none', className: 'pick-popover pick-icon-popover' });
 registerPopover('pick.reminder', renderReminderPopover, { role: 'menu', className: 'popover-menu pick-reminder-popover' });
 
 const popoverIs = (ctx, name) => ctx.state.popover?.name === name ? ctx.state.popover.props : null;

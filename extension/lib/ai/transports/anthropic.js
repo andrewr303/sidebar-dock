@@ -64,14 +64,18 @@ export function buildRequest({ baseUrl, apiKey, connection, model, modelInfo, sy
   const limit = Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : DEFAULT_MAX_TOKENS;
   const ceiling = Number.isInteger(modelInfo?.maxOutput) && modelInfo.maxOutput > 0 ? modelInfo.maxOutput : Infinity;
   const supported = modelInfo?.efforts?.length ? modelInfo.efforts.filter(level => ANTHROPIC_EFFORTS.includes(level)) : ANTHROPIC_EFFORTS;
+  // Every current Claude model takes adaptive thinking and effort. Only a model the Models API lists without them
+  // (an older model such as claude-haiku-4-5) leaves them out, since it rejects both with a 400.
+  const adaptive = modelInfo?.capabilities?.reasoning !== false;
+  const effortSupported = modelInfo?.capabilities?.effort !== false;
   const body = {
     model,
     max_tokens: Math.min(limit, ceiling),
     stream: true,
     ...(system ? { system } : {}),
     messages: toAnthropicMessages(messages),
-    thinking: { type: 'adaptive', display: 'summarized' },
-    output_config: { effort: clampEffort(effort || 'medium', supported.length ? supported : ANTHROPIC_EFFORTS) },
+    ...(adaptive ? { thinking: { type: 'adaptive', display: 'summarized' } } : {}),
+    ...(effortSupported ? { output_config: { effort: clampEffort(effort || 'medium', supported.length ? supported : ANTHROPIC_EFFORTS) } } : {}),
     cache_control: { type: 'ephemeral' },
   };
   if (tools?.length) { body.tools = toAnthropicTools(tools); body.tool_choice = { type: 'auto' }; }
@@ -141,8 +145,14 @@ export async function stream(ctx) {
       case 'content_block_stop': {
         const block = blocks[event.index];
         if (block && 'partialJson' in block) {
-          if (block.partialJson) block.input = parseToolInput(block.partialJson, block.name);
+          if (block.partialJson) {
+            // Input cut off by max_tokens is not valid JSON. Whether that is an error depends on the stop reason,
+            // which only arrives later in message_delta, so the block is set aside instead of failing here.
+            try { block.input = parseToolInput(block.partialJson, block.name); }
+            catch (error) { block.invalidInput = error; }
+          }
           delete block.partialJson;
+          if (block.invalidInput) break;
           if (block.type === 'tool_use') {
             const call = { id: block.id, name: block.name, input: block.input };
             toolCalls.push(call);
@@ -174,7 +184,13 @@ export async function stream(ctx) {
     error.usage = usage;
     throw error;
   }
-  const native = replayableContent(blocks);
+  // A truncated tool call is dropped (and not replayed, since it would need a tool_result) when the answer hit the
+  // output limit; anywhere else unreadable tool input is a real error.
+  // A call a declined model left unfinished before a server-side fallback is never part of the answer either.
+  const boundary = blocks.findLastIndex(block => block?.type === 'fallback');
+  const broken = blocks.find((block, index) => block?.invalidInput && index > boundary);
+  if (broken && stopReason !== 'max_tokens') { broken.invalidInput.partialText = text; throw broken.invalidInput; }
+  const native = replayableContent(blocks.filter(block => !block?.invalidInput));
   const content = [];
   if (text) content.push({ type: 'text', text });
   for (const call of toolCalls) content.push({ type: 'tool_use', ...call });
@@ -188,14 +204,18 @@ export async function stream(ctx) {
 }
 
 function mapModel(entry) {
-  const efforts = entry.capabilities?.effort ? ANTHROPIC_EFFORTS.filter(level => entry.capabilities.effort[level]?.supported) : [];
+  const listedEffort = entry.capabilities?.effort && typeof entry.capabilities.effort === 'object' ? entry.capabilities.effort : null;
+  const efforts = listedEffort ? ANTHROPIC_EFFORTS.filter(level => listedEffort[level]?.supported) : [];
   return {
     id: entry.id, name: entry.display_name || entry.id, description: '',
     contextWindow: Number.isFinite(entry.max_input_tokens) ? entry.max_input_tokens : null,
     maxOutput: Number.isFinite(entry.max_tokens) ? entry.max_tokens : null,
     efforts, defaultEffort: null,
     deprecated: entry.lifecycle === 'deprecated' || undefined,
-    capabilities: { tools: true, images: entry.capabilities?.image_input?.supported ?? true, reasoning: entry.capabilities?.thinking?.types?.adaptive?.supported ?? true, embeddings: false },
+    // reasoning means adaptive thinking here. effort: false marks a model whose listing says it takes no effort at
+    // all, which is different from a listing that says nothing (efforts [] then means unknown).
+    capabilities: { tools: true, images: entry.capabilities?.image_input?.supported ?? true, reasoning: entry.capabilities?.thinking?.types?.adaptive?.supported ?? true, embeddings: false,
+      ...(listedEffort && !efforts.length ? { effort: false } : {}) },
   };
 }
 

@@ -1048,7 +1048,8 @@ function renderMeta(ctx, instance, record, surface) {
     ? html`<button type="button" class="${cx('ne-prop', 'ne-reminder', record.reminderNotifiedAt && 'is-past')}" data-action="editor.reminder" aria-haspopup="menu" aria-label="Reminder: ${reminderText}. Change">
         ${icon(record.reminderNotifiedAt ? 'bell-off' : 'bell-ring', { size: 14 })}<span>${reminderText}</span></button>`
     : button({ label: 'Remind', icon: 'bell', variant: 'ghost', size: 'sm', action: 'editor.reminder', className: 'ne-prop-add', attrs: { 'aria-haspopup': 'menu' } });
-  const pin = iconButton({ icon: 'pin', label: record.pinned ? 'Unpin note' : 'Pin note', pressed: !!record.pinned, action: 'editor.pin', size: 'sm', className: 'ne-pin' });
+  // The side panel keeps Pin in the note menu so the property row stays on one line.
+  const pin = surface === 'side' ? '' : iconButton({ icon: 'pin', label: record.pinned ? 'Unpin note' : 'Pin note', pressed: !!record.pinned, action: 'editor.pin', size: 'sm', className: 'ne-pin' });
   const tags = typeof pickers.renderTagInput === 'function'
     ? pickers.renderTagInput({ ctx, tags: record.tags || [], action: 'editor.set-tags', id: `${instance.key}-tags`, placeholder: record.tags?.length ? 'Add tag' : 'Add tags', label: 'Tags', className: 'ne-tags' })
     : (record.tags || []).length ? html`<span class="ne-prop">${record.tags.map(tag => `#${tag}`).join(' ')}</span>` : '';
@@ -1057,7 +1058,7 @@ function renderMeta(ctx, instance, record, surface) {
 
 function renderLinks(ctx, record, surface) {
   const back = ctx.select.backlinks(record.id).filter(entry => !entry.deletedAt);
-  if (!back.length) return surface === 'full' ? html`<p class="ne-links-hint">${icon('link', { size: 14 })}<span>Type [[ to link a note. Notes that link here are listed below the note.</span></p>` : '';
+  if (!back.length) return '';
   return html`<h2 class="ne-links-title">Linked from<span class="ne-count-pill">${back.length}</span></h2>
     <ul class="ne-links-list">${back.slice(0, 20).map(entry => html`<li data-key="bl:${entry.id}"><button type="button" class="ne-link-row" data-action="editor.open-link" data-id="${entry.id}">
       ${entry.type === 'note' ? icon('sticky-note', { size: 14, className: 'ne-link-icon' }) : entry.url ? favicon(entry.url, { size: 14 }) : icon(TYPE_ICONS[entry.type] || 'file', { size: 14, className: 'ne-link-icon' })}
