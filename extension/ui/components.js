@@ -191,12 +191,12 @@ export function skeleton({ rows = 3, variant = 'row', className } = {}) {
 
 /** Dialog chrome for overlay.registerDialog renderers. The title id matches overlay.js aria-labelledby. */
 export function dialogFrame({ name, title, subtitle, body, footer, closable = true, headerActions, className } = {}) {
-  return html`<header class="${cx('dialog-header', className)}">
+  return html`<div class="${cx('dialog-header', className)}">
       <div class="dialog-heading"><h2 class="dialog-title" id="dialog-title-${name}">${title}</h2>${subtitle ? html`<p class="dialog-subtitle">${subtitle}</p>` : ''}</div>
       ${headerActions || ''}${closable ? iconButton({ icon: 'x', label: 'Close', action: 'overlay.dismiss', size: 'sm', className: 'dialog-close' }) : ''}
-    </header>
+    </div>
     <div class="dialog-body">${body}</div>
-    ${footer ? html`<footer class="dialog-footer">${footer}</footer>` : ''}`;
+    ${footer ? html`<div class="dialog-footer">${footer}</div>` : ''}`;
 }
 
 const NAMED_COLORS = new Set(['red', 'orange', 'amber', 'yellow', 'lime', 'green', 'teal', 'cyan', 'blue', 'indigo', 'violet', 'pink', 'gray']);

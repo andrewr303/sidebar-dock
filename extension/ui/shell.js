@@ -176,8 +176,11 @@ function renderSideContent(ctx) {
 
 function renderSide(ctx) {
   const tab = ctx.state.panel?.kind === 'ai' ? 'ask' : ctx.state.sideTab;
+  // A Library drill-down brings its own header (back, title, layout, search, menu with Open in full tab), as in the
+  // mock's side-library screen; stacking the app header above it would show two header rows.
+  const drill = !ctx.state.panel && tab === 'library' && ctx.state.sideStack.length > 0;
   return html`<div class="app-frame is-side" data-key="frame-side">
-    ${renderSideHeader(ctx, tab)}
+    ${drill ? '' : renderSideHeader(ctx, tab)}
     <main id="main" class="side-main" tabindex="-1" data-tab="${tab}" data-drop-zone="side">${renderSideContent(ctx)}</main>
     <nav class="tabbar" aria-label="Sections"><div class="tabbar-inner">
       ${SIDE_TABS.map(t => html`<button type="button" class="tabbar-tab" ${t.id === tab ? raw('aria-current="page"') : ''} data-action="shell.side-tab" data-tab="${t.id}">
@@ -193,18 +196,23 @@ export function renderApp(ctx) {
   return html`${ctx.env.isSidepanel ? renderSide(ctx) : renderFull(ctx)}<div class="overlay-root" data-key="overlays">${renderOverlays(ctx)}</div>`;
 }
 
-function focusLater(ctx, selector) { ctx.nextFrame(() => document.querySelector(selector)?.focus({ preventScroll: true })); }
+/** Focuses the first element matching the first selector that matches anything, after the next render. */
+function focusLater(ctx, ...selectors) {
+  ctx.nextFrame(() => selectors.map(selector => document.querySelector(selector)).find(el => el?.getClientRects().length)?.focus({ preventScroll: true }));
+}
+// The current view's row, else the first row (a selector list would pick whichever comes first in the document).
+const NAV_FOCUS = ['#sidebar [aria-current="page"]', '#sidebar .tree-row'];
 
 function setNav(ctx, open) {
   shell(ctx).navOpen = open;
   ctx.render();
-  focusLater(ctx, open ? '#sidebar [aria-current="page"], #sidebar .tree-row' : '#nav-toggle');
+  if (open) focusLater(ctx, ...NAV_FOCUS); else focusLater(ctx, '#nav-toggle');
 }
 
 function toggleSidebar(ctx) {
   const ui = shell(ctx);
   if (ui.docked) { ctx.prefs.set('sidebarHidden', true); ctx.render(); focusLater(ctx, '#nav-toggle'); return; }
-  if (ui.wide) { ctx.prefs.set('sidebarHidden', false); ctx.render(); focusLater(ctx, '#sidebar [aria-current="page"], #sidebar .tree-row'); return; }
+  if (ui.wide) { ctx.prefs.set('sidebarHidden', false); ctx.render(); focusLater(ctx, ...NAV_FOCUS); return; }
   setNav(ctx, !ui.navOpen);
 }
 

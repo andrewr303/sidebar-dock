@@ -241,19 +241,33 @@ function buildSections(ctx) {
       run: ctx => { ctx.state.query = query; goToView(ctx, 'all', { keep: true }); },
     });
   }
-  sections.push({ id: 'items', label: 'Items', options: items });
+  const results = [];
+  // lead: how well the section's best entry matches by name, so "new note" or "settings" put Commands first.
+  results.push({ id: 'items', label: 'Items', options: items, lead: Math.max(0, ...picked.map(({ item }) => fuzzyScore(query, item.title || ''))) });
   const collections = ctx.select.tree()
     .map(row => ({ row, score: Math.max(fuzzyScore(query, row.name), fuzzyScore(query, ctx.select.path(row.id).map(c => c.name).join(' ')) * 0.8) }))
-    .filter(entry => entry.score > 0).sort((a, b) => b.score - a.score).slice(0, 6).map(entry => collectionOption(ctx, entry.row));
-  sections.push({ id: 'collections', label: 'Collections', options: collections });
-  const ranked = rankCommands(commands, query, command => labelOf(ctx, command)).slice(0, 8).map(command => commandOption(ctx, command));
+    .filter(entry => entry.score > 0).sort((a, b) => b.score - a.score).slice(0, 6);
+  results.push({ id: 'collections', label: 'Collections', options: collections.map(entry => collectionOption(ctx, entry.row)), lead: collections[0]?.score || 0 });
+  const matchedCommands = rankCommands(commands, query, command => labelOf(ctx, command)).slice(0, 8);
+  const ranked = matchedCommands.map(command => commandOption(ctx, command));
   ranked.push({
     kind: 'command', key: 'ask-query', label: `Ask AI: ${query}`,
     leading: html`<span class="command-glyph is-accent">${icon('sparkles', { size: 16 })}</span>`,
     run: ctx => ctx.dispatch('shell.ask', { data: { prompt: query } }),
   });
-  sections.push({ id: 'commands', label: 'Commands', options: ranked });
-  return sections.filter(section => section.options.length);
+  results.push({ id: 'commands', label: 'Commands', options: ranked, lead: Math.max(0, ...matchedCommands.map(command => fuzzyScore(query, labelOf(ctx, command)))) });
+  return [...sections, ...orderSections(results)].filter(section => section.options.length);
+}
+
+/**
+ * Orders result sections by their best name match (lead), keeping Items, Collections, Commands on ties. Weak leads
+ * (content-only or keyword matches) never jump ahead, so a typed command name wins over items that merely mention it.
+ */
+export function orderSections(sections) {
+  const strong = section => (section.lead >= 70 ? section.lead : 0);
+  return sections.map((section, index) => ({ section, index }))
+    .sort((a, b) => strong(b.section) - strong(a.section) || a.index - b.index)
+    .map(({ section }) => section);
 }
 
 function renderPalette(ctx) {

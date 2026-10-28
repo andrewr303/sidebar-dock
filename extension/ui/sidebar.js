@@ -49,7 +49,12 @@ const fmt = n => Number(n || 0).toLocaleString();
 const isOpen = (ctx, section) => !ctx.prefs.get('collapsedSections', []).includes(section);
 const viewHref = view => `?libraryView=${encodeURIComponent(view)}`;
 const modified = event => !!event && (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button > 0);
-const closeNav = ctx => { if (ctx.state.shell?.navOpen) ctx.state.shell.navOpen = false; };
+// Closing the overlay drawer makes it inert, which would drop focus on the page body: move it to the new view instead.
+const closeNav = ctx => {
+  if (!ctx.state.shell?.navOpen) return;
+  ctx.state.shell.navOpen = false;
+  ctx.nextFrame(() => document.getElementById('main')?.focus({ preventScroll: true }));
+};
 const parentKey = row => (row.depth > 0 ? row.parentId || '' : '');
 
 /**
@@ -491,5 +496,14 @@ export function init(ctx) {
   });
   document.addEventListener('focusout', event => {
     if (event.target?.matches?.('.tree-rename')) commitRename(ctx, event.target.value);
+  });
+  // The row's + and … buttons are mouse affordances (aria-hidden, hidden again once the pointer leaves). When they take
+  // focus (a click, or a menu or dialog returning focus to its opener) the row takes it instead, so keyboard focus
+  // never sits on an invisible control.
+  document.addEventListener('focusin', event => {
+    const row = event.target instanceof Element && event.target.matches('.tree-action') ? event.target.closest('[role="treeitem"]') : null;
+    if (!row) return;
+    treeFocusId = row.dataset.id;
+    row.focus({ preventScroll: true });
   });
 }

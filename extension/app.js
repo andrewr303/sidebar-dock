@@ -65,7 +65,7 @@ const ctx = {
     state.selection = new Set();
     if (isSidepanel) {
       state.sideTab = view === 'notes' ? 'notes' : 'library';
-      if (changed) state.sideStack = view === 'all' ? [] : [...state.sideStack.filter(v => v !== view), view].slice(-8);
+      if (changed && view !== 'notes') state.sideStack = view === 'all' ? [] : [...state.sideStack.filter(v => v !== view), view].slice(-8);
       state.panel = null;
     }
     if (item) ctx.openItem(item); else if (isSidepanel) state.panel = null;
@@ -154,7 +154,10 @@ function applyBootParams() {
   if (params.get('q')) state.query = params.get('q');
   if (params.get('tag')) state.tagFilter = params.get('tag');
   if (params.get('type') && (store.ITEM_TYPES.includes(params.get('type')) || ['link', 'media'].includes(params.get('type')))) state.typeFilter = params.get('type');
-  if (isSidepanel) state.sideTab = params.get('tab') || (isExtension ? 'page' : 'library');
+  if (isSidepanel) {
+    state.sideTab = params.get('tab') || (isExtension ? 'page' : 'library');
+    if (state.view !== 'all' && state.view !== 'notes') state.sideStack = [state.view];
+  }
   const item = params.get('item');
   if (item && library.items.some(i => i.id === item)) state.panel = { kind: 'item', id: item, tab: 'details' };
 }

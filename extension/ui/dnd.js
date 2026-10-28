@@ -88,7 +88,13 @@ export function initDnd(ctx, { openAdd } = {}) {
   if (initialized || typeof document === 'undefined') return;
   initialized = true;
   const expanded = () => new Set(ctx.prefs.get('expandedCollections', []));
-  const viewCollection = () => (ctx.state.view === 'inbox' ? '' : ctx.state.view.startsWith('collection:') ? ctx.state.view.slice(11) : undefined);
+  // The collection on screen ('' = Inbox). In the side panel only the Library tab's drill-down shows one; a view left
+  // open there must not capture drops on This page or Notes.
+  const viewCollection = () => {
+    const { view, sideTab, sideStack, panel } = ctx.state;
+    if (ctx.env.isSidepanel && (sideTab !== 'library' || !sideStack?.length || panel)) return undefined;
+    return view === 'inbox' ? '' : view.startsWith('collection:') ? view.slice(11) : undefined;
+  };
   const collectionName = id => (id ? ctx.select.collection(id)?.name || 'collection' : 'Inbox');
 
   document.addEventListener('dragstart', event => {

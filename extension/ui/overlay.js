@@ -95,7 +95,8 @@ export function prompt({ title, label = '', value = '', placeholder = '', confir
 
 let toastSeq = 0;
 /** toast('Saved'), toast('Could not save', { tone: 'danger' }), toast('Moved 3 items', { action: { label: 'Undo', run } }) */
-export function toast(message, { tone = 'default', action = null, duration = tone === 'danger' ? 7000 : 4000 } = {}) {
+export function toast(message, { tone = 'default', action = null, actions = null, duration = tone === 'danger' ? 7000 : 4000 } = {}) {
+  const buttons = (actions || (action ? [action] : [])).filter(a => a && a.label && typeof a.run === 'function').slice(0, 2);
   const root = document.getElementById('toast-root');
   if (!root) return;
   const id = `toast-${++toastSeq}`;
@@ -104,10 +105,13 @@ export function toast(message, { tone = 'default', action = null, duration = ton
   el.id = id;
   el.dataset.tone = tone;
   el.setAttribute('role', tone === 'danger' ? 'alert' : 'status');
-  el.innerHTML = `${icon(tone === 'danger' ? 'alert-circle' : tone === 'success' ? 'check-circle' : tone === 'warning' ? 'triangle-alert' : 'info', { size: 16 })}<span class="toast-message">${esc(message)}</span>${action ? `<button type="button" class="btn btn-ghost btn-sm toast-action">${esc(action.label)}</button>` : ''}<button type="button" class="icon-btn icon-btn-sm toast-close" aria-label="Dismiss">${icon('x', { size: 14 })}</button>`;
+  el.innerHTML = `${icon(tone === 'danger' ? 'alert-circle' : tone === 'success' ? 'check-circle' : tone === 'warning' ? 'triangle-alert' : 'info', { size: 16 })}<span class="toast-message">${esc(message)}</span>${buttons.map((a, i) => `<button type="button" class="btn btn-ghost btn-sm toast-action" data-index="${i}">${esc(a.label)}</button>`).join('')}<button type="button" class="icon-btn icon-btn-sm toast-close" aria-label="Dismiss">${icon('x', { size: 14 })}</button>`;
   const remove = () => { el.dataset.state = 'closing'; setTimeout(() => el.remove(), 160); };
   el.querySelector('.toast-close').addEventListener('click', remove);
-  if (action) el.querySelector('.toast-action').addEventListener('click', async () => { remove(); try { await action.run(); } catch (error) { toast(error.message || 'That did not work.', { tone: 'danger' }); } });
+  for (const button of el.querySelectorAll('.toast-action')) button.addEventListener('click', async () => {
+    remove();
+    try { await buttons[Number(button.dataset.index)].run(); } catch (error) { toast(error.message || 'That did not work.', { tone: 'danger' }); }
+  });
   root.append(el);
   while (root.children.length > 4) root.firstElementChild.remove();
   let timer = setTimeout(remove, duration);
@@ -130,17 +134,17 @@ function renderMenu(_ctx, { items, label }) {
 // Destructive confirms start on Cancel so Enter never deletes by accident.
 function renderConfirm(_ctx, { title, body, confirmLabel, cancelLabel, tone }) {
   const danger = tone === 'danger';
-  return html`<header class="dialog-header"><h2 class="dialog-title" id="dialog-title-confirm">${title}</h2></header>
+  return html`<div class="dialog-header"><h2 class="dialog-title" id="dialog-title-confirm">${title}</h2></div>
     ${body ? html`<div class="dialog-body"><p class="dialog-text">${body}</p></div>` : ''}
-    <footer class="dialog-footer"><button type="button" class="btn btn-secondary" data-action="overlay.confirm-cancel" ${danger ? html`data-autofocus` : ''}>${cancelLabel}</button>
-      <button type="button" class="${cx('btn', danger ? 'btn-danger' : 'btn-primary')}" data-action="overlay.confirm-ok" ${danger ? '' : html`data-autofocus`}>${confirmLabel}</button></footer>`;
+    <div class="dialog-footer"><button type="button" class="btn btn-secondary" data-action="overlay.confirm-cancel" ${danger ? html`data-autofocus` : ''}>${cancelLabel}</button>
+      <button type="button" class="${cx('btn', danger ? 'btn-danger' : 'btn-primary')}" data-action="overlay.confirm-ok" ${danger ? '' : html`data-autofocus`}>${confirmLabel}</button></div>`;
 }
 function renderPrompt(_ctx, { title, label, value, placeholder, confirmLabel, multiline }) {
-  return html`<form data-submit="overlay.prompt-ok" class="dialog-form"><header class="dialog-header"><h2 class="dialog-title" id="dialog-title-prompt">${title}</h2></header>
+  return html`<form data-submit="overlay.prompt-ok" class="dialog-form"><div class="dialog-header"><h2 class="dialog-title" id="dialog-title-prompt">${title}</h2></div>
     <div class="dialog-body"><label class="field"><span class="field-label">${label || title}</span>
       ${multiline ? html`<textarea class="textarea" name="value" rows="4" placeholder="${placeholder}" data-autofocus>${value}</textarea>`
         : html`<input class="input" name="value" value="${value}" placeholder="${placeholder}" data-autofocus data-select-on-focus autocomplete="off">`}</label></div>
-    <footer class="dialog-footer"><button type="button" class="btn btn-secondary" data-action="overlay.dismiss">Cancel</button><button type="submit" class="btn btn-primary">${confirmLabel}</button></footer></form>`;
+    <div class="dialog-footer"><button type="button" class="btn btn-secondary" data-action="overlay.dismiss">Cancel</button><button type="submit" class="btn btn-primary">${confirmLabel}</button></div></form>`;
 }
 
 /** View fragment for app.js: dialogs stack + one popover. */

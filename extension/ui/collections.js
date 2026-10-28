@@ -237,8 +237,8 @@ registerActions({
     onSaved?.(saved);
   },
   'collections.delete': async ({ ctx, data }) => {
-    const entry = editorEntry(ctx);
-    if (entry) ctx.closeDialog(DIALOG);
-    await deleteCollectionFlow(ctx, data.id);
+    // The confirm stacks over the editor, so Cancel returns to the editor with its unsaved changes intact.
+    const deleted = await deleteCollectionFlow(ctx, data.id);
+    if (deleted && editorEntry(ctx)) ctx.closeDialog(DIALOG);
   },
 });
