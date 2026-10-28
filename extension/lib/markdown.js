@@ -67,7 +67,8 @@ function processEmphasis(nodes){
  }
 }
 const AUTOLINK=/https?:\/\/[^\s<>"'`]+/iy,WIKI=/\[\[([^[\]\n|]{1,200})(?:\|([^[\]\n]{1,200}))?\]\]/y;
-function trimUrl(url){
+// Trailing punctuation and unbalanced closing brackets are not part of a bare URL (GFM autolink rule).
+export function trimAutolink(url){
  const count=(value,ch)=>value.split(ch).length-1;
  for(;;){
   const last=url.at(-1);
@@ -111,7 +112,7 @@ function inline(text,depth,o){
   const image=c==='!'&&text[i+1]==='[';
   if((c==='['||image)&&!o.noLinks){const start=image?i+1:i,end=bracketEnd(text,start);if(end>=0&&text[end+1]==='('){const dest=destination(text,end+1);if(dest){let raw=dest.value.trim();if(raw.startsWith('<')&&raw.endsWith('>'))raw=raw.slice(1,-1);const title=/^(\S+?)(?:\s+["']([^"']*)["'])?$/.exec(raw);const href=safeMarkdownUrl((title?.[1]||raw).replace(/\\([()\\])/g,'$1'));if(href){const label=text.slice(start+1,end),external=/^https?:/.test(href);push(`<a class="${image?'markdown-media-link':'markdown-link'}" href="${escapeHtml(href)}"${external?' target="_blank" rel="noopener noreferrer"':''}${title?.[2]?` title="${escapeHtml(title[2])}"`:''}>${image&&!o.plain?'<span>Image · </span>':''}${inline(label||href,depth+1,{...o,noLinks:true})}</a>`);i=dest.end+1;continue;}}}}
   if(c==='<'&&!o.noLinks){const end=text.indexOf('>',i+1);if(end>=0){const href=safeMarkdownUrl(text.slice(i+1,end));if(href){push(`<a class="markdown-link" data-autolink="angle" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(text.slice(i+1,end))}</a>`);i=end+1;continue;}}}
-  if((c==='h'||c==='H')&&!o.noLinks&&!/[\p{L}\p{N}]/u.test(text[i-1]||'')){AUTOLINK.lastIndex=i;const m=AUTOLINK.exec(text);if(m){const url=trimUrl(m[0]),href=/^https?:\/\/./i.test(url)&&safeMarkdownUrl(url);if(href){push(`<a class="markdown-link" data-autolink="bare" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`);i+=url.length;continue;}}}
+  if((c==='h'||c==='H')&&!o.noLinks&&!/[\p{L}\p{N}]/u.test(text[i-1]||'')){AUTOLINK.lastIndex=i;const m=AUTOLINK.exec(text);if(m){const url=trimAutolink(m[0]),href=/^https?:\/\/./i.test(url)&&safeMarkdownUrl(url);if(href){push(`<a class="markdown-link" data-autolink="bare" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`);i+=url.length;continue;}}}
   if(c==='*'||c==='_'||c==='~'){const run=delimiterRun(text,i,c);if(c!=='~'||run.count===2){flush();nodes.push(run);}else buf+=c.repeat(run.count);i+=run.count;continue;}
   buf+=c;i++;
  }

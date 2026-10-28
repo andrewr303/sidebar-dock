@@ -1,7 +1,7 @@
 // streamChat: one streaming chat call against any connection. Emits normalized events and resolves with the
 // final text, thinking, tool calls, usage and the provider-native assistant message for tool loops.
 
-import { TRANSPORTS, modelInfo, resolveConnection } from './connections.js';
+import { TRANSPORTS, getAiSettings, modelInfo, resolveConnection } from './connections.js';
 import { aiError } from './http.js';
 import { redactError } from './secrets.js';
 import { abortError } from './stream.js';
@@ -80,8 +80,12 @@ export function streamChat({ connectionId, model, system, messages, tools, effor
       secrets = resolved.apiKey ? [resolved.apiKey] : [];
       const { provider, connection, via } = resolved;
       if (!provider.chat) throw aiError(`${provider.name} only provides embeddings. Pick a chat connection in AI settings.`, { code: 'bad_request' });
-      const chosen = (typeof model === 'string' && model.trim()) || connection.defaultModel || provider.chat.recommended;
-      if (!chosen) throw aiError(`Pick a model for ${connection.label} in AI settings.`, { code: 'no_model' });
+      // With no explicit connection or model, the chat defaults from AI settings apply.
+      const settings = await getAiSettings();
+      const usesDefault = !connectionId || connectionId === settings.chat.connectionId;
+      const chosen = (typeof model === 'string' && model.trim()) || (usesDefault && settings.chat.model) || connection.defaultModel || provider.chat.recommended || '';
+      // A bridge provider without a model falls back to the model saved in the bridge.
+      if (!chosen && via !== 'bridge') throw aiError(`Pick a model for ${connection.label} in AI settings.`, { code: 'no_model' });
       const info = await modelInfo(resolved, chosen);
       let list = normalizeMessages(messages);
       if (provider.supports.images === false || info?.capabilities?.images === false) list = withoutImages(list);
@@ -91,7 +95,7 @@ export function streamChat({ connectionId, model, system, messages, tools, effor
       emit({ type: 'start', connectionId: connection.id, providerId: provider.id, providerName: provider.name, label: connection.label, model: chosen, modelLabel: info?.name || chosen, via });
       const result = await transport.stream({
         ...resolved, model: chosen, modelInfo: info, system: systemText(system), messages: list, tools: toolList,
-        effort: typeof effort === 'string' && effort ? effort : undefined, maxTokens: Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : undefined,
+        effort: typeof effort === 'string' && effort ? effort : usesDefault ? settings.chat.effort : undefined, maxTokens: Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : undefined,
         signal, emit: relay,
       });
       const final = {

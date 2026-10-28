@@ -9,6 +9,7 @@ const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hang
 const SCRIPT_RUNS = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+|[^\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu;
 const STOP_WORDS = new Set(('a an and are as at be but by can do does for from has have how i in into is it its me my of on or our so than that the their them '
   + 'then there these they this to was we what when where which who why will with you your about all any some find show give tell please').split(' '));
+export const isStopWord = token => STOP_WORDS.has(token);
 const URL_NOISE = new Set(['http', 'https', 'www', 'com', 'org', 'net', 'html', 'htm', 'php']);
 // [field, weight, length normalization b]
 const FIELDS = [['title', 4, 0.3], ['tags', 3, 0], ['url', 1.5, 0.3], ['excerpt', 1.5, 0.75], ['highlights', 2, 0.75], ['content', 1.2, 0.75], ['article', 1, 0.75]];

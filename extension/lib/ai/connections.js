@@ -728,6 +728,7 @@ export async function testConnection(id, { signal } = {}) {
   });
   const connectionId = resolved.connection?.id || LEGACY_IDS[id] || id;
   const started = Date.now();
+  let adoptModel = '';
   try {
     if (resolved.error) throw resolved.error;
     const { provider, connection, via } = resolved;
@@ -746,17 +747,26 @@ export async function testConnection(id, { signal } = {}) {
     } else if (!provider.chat) {
       outcome = await embeddingProbe({ ...resolved, signal });
     } else if (provider.modelList) {
-      const models = await listModels(connectionId, { refresh: true, kind: 'all', signal });
-      const chatModels = await listModels(connectionId, { kind: 'chat', signal });
-      const model = connection.defaultModel || chatModels[0]?.id || '';
-      const missing = model && chatModels.length && !models.some(entry => entry.id === model || entry.id === `${model}:latest`);
-      const count = `${chatModels.length} ${chatModels.length === 1 ? 'model' : 'models'} available`;
-      outcome = { model, modelCount: chatModels.length, message: missing ? `Connected. ${count}, but ${model} is not one of them. Pick another model.` : `Connected. ${count}.` };
+      let models;
+      try { models = await listModels(connectionId, { refresh: true, kind: 'all', signal }); }
+      catch (error) {
+        // Some compatible servers have no model list; a one-token chat still proves the connection.
+        if (provider.kind !== 'custom' || error.code !== 'not_found') throw error;
+      }
+      if (models) {
+        const chatModels = await listModels(connectionId, { kind: 'chat', signal });
+        const model = connection.defaultModel || chatModels[0]?.id || '';
+        const missing = model && chatModels.length && !models.some(entry => entry.id === model || entry.id === `${model}:latest`);
+        const count = `${chatModels.length} ${chatModels.length === 1 ? 'model' : 'models'} available`;
+        outcome = { model, modelCount: chatModels.length, message: missing ? `Connected. ${count}, but ${model} is not one of them. Pick another model.` : `Connected. ${count}.` };
+        // Local servers have no catalog default, so adopt the first model found until the person picks one.
+        if (!connection.defaultModel && model) adoptModel = model;
+      } else outcome = await chatProbe(resolved, { signal });
     } else {
       outcome = await chatProbe(resolved, { signal });
     }
     const latencyMs = Date.now() - started;
-    await recordStatus(connectionId, { status: 'ok', lastError: null, lastTestedAt: nowIso() });
+    await recordStatus(connectionId, { status: 'ok', lastError: null, lastTestedAt: nowIso(), ...(adoptModel ? { defaultModel: adoptModel } : {}) });
     return { ok: true, latencyMs, ...outcome };
   } catch (error) {
     if (signal?.aborted) throw error;

@@ -46,17 +46,21 @@ function fits(target, text, maxLength) {
   return urlFor(target, text).length <= maxLength && (!target.maxPromptChars || text.length <= target.maxPromptChars);
 }
 
+// Never ends on half of a surrogate pair, which encodeURIComponent rejects.
+function head(text, length) {
+  const code = text.charCodeAt(length - 1);
+  return text.slice(0, code >= 0xd800 && code <= 0xdbff ? length - 1 : length).trimEnd();
+}
+
 function truncateText(target, text, maxLength) {
   if (fits(target, text, maxLength)) return text;
   let low = 0, high = text.length;
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (fits(target, `${text.slice(0, middle)}…`, maxLength)) low = middle; else high = middle - 1;
+    if (fits(target, `${head(text, middle)}…`, maxLength)) low = middle; else high = middle - 1;
   }
-  let cut = low;
-  const code = text.charCodeAt(cut - 1);
-  if (code >= 0xd800 && code <= 0xdbff) cut -= 1;
-  return cut > 0 ? `${text.slice(0, cut).trimEnd()}…` : '';
+  const kept = head(text, low);
+  return kept ? `${kept}…` : '';
 }
 
 // Returns { url, prompt, fullPrompt, truncated, copyFirst }. For { question, sources } input, sources shrink and drop

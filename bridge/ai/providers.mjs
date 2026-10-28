@@ -27,8 +27,9 @@ export const PROVIDER_TYPES = [
 export const ANTHROPIC_VERSION = '2026-10-21';
 const COMPATIBLE_ANTHROPIC_VERSION = '2023-06-01';
 const ANTHROPIC_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
-// Server-side refusal fallback ("default" routing) exists for these first-party models only; never Haiku or proxies.
-const FALLBACK_MODEL = /^claude-(?:opus-5(?:-5)?|sonnet-5-5|fable-5-1)(?:$|@|-\d{8}$)/;
+// Server-side refusal fallback ("default" routing) is opted into for exactly these first-party models (SPEC §7.1/§9);
+// never Haiku, other Claude models or Anthropic-compatible proxies.
+const FALLBACK_MODEL = /^claude-(?:opus-5-5|sonnet-5-5|fable-5-1)(?:$|@|-\d{8}$)/;
 const THINKING_LIMIT = 4 * 1024 * 1024;
 const TYPE_MAP = new Map(PROVIDER_TYPES.map(value => [value.type, value]));
 const defaultConfigPath = fileURLToPath(new URL('../.local/ai-providers.enc.json', import.meta.url));
@@ -273,7 +274,8 @@ export function createAiProviderService({ configPath = defaultConfigPath, fetch:
         body = { model, system, messages: normalized.map(message => ({ role: message.role, content: message.content.map(block => block.type === 'text' ? { type: 'text', text: block.text } : { type: 'image', source: { type: 'base64', media_type: block.mime, data: block.data } }) })), max_tokens: outputLimit, stream: true };
         if (provider.type === 'anthropic') {
           // Summarized adaptive thinking streams readable reasoning; temperature/top_p/top_k are never sent on 2026-10-21.
-          if (effort || adaptiveThinking(model)) body.thinking = { type: 'adaptive', display: 'summarized' };
+          // Claude models before 4.6 (Haiku before 5) reject adaptive thinking, so they get the effort alone; an unrecognized ID opts in with an effort.
+          if (adaptiveThinking(model) || (effort && !claudeModel(model))) body.thinking = { type: 'adaptive', display: 'summarized' };
           if (effort) body.output_config = { effort };
           body.cache_control = { type: 'ephemeral' };
           if (FALLBACK_MODEL.test(model)) { body.fallbacks = 'default'; extraHeaders['anthropic-beta'] = 'server-side-fallback-2026-07-01'; }
@@ -282,7 +284,8 @@ export function createAiProviderService({ configPath = defaultConfigPath, fetch:
         url = endpoint(provider, `/models/${encodeURIComponent(model.replace(/^models\//, ''))}:streamGenerateContent?alt=sse`);
         body = { systemInstruction: { parts: [{ text: system }] }, contents: normalized.map(message => ({ role: message.role === 'assistant' ? 'model' : 'user', parts: message.content.map(block => block.type === 'text' ? { text: block.text } : { inlineData: { mimeType: block.mime, data: block.data } }) })), generationConfig: {} };
         if (outputLimit !== null) body.generationConfig.maxOutputTokens = outputLimit;
-        if (effort) body.generationConfig.thinkingConfig = { thinkingLevel: effort };
+        // includeThoughts streams thought-summary parts, which become thinking events rather than answer text.
+        if (effort) body.generationConfig.thinkingConfig = { thinkingLevel: effort, includeThoughts: true };
         if (chosenTemperature !== undefined) body.generationConfig.temperature = chosenTemperature;
       } else if (transport === 'ollama') {
         url = endpoint(provider, '/api/chat'); format = 'ndjson';

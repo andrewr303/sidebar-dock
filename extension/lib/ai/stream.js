@@ -15,7 +15,7 @@ export function abortError(signal) {
   return error;
 }
 
-export async function* readChunks(response, { signal, maxBytes = MAX_STREAM_BYTES } = {}) {
+async function* readChunks(response, { signal, maxBytes = MAX_STREAM_BYTES } = {}) {
   if (signal?.aborted) throw abortError(signal);
   if (!response?.body?.getReader) throw new Error('The provider returned no response stream.');
   const reader = response.body.getReader();
@@ -42,7 +42,7 @@ export async function* readChunks(response, { signal, maxBytes = MAX_STREAM_BYTE
 
 // Yields { event, data } per dispatched SSE event. Handles LF, CRLF and lone CR line endings split across chunks,
 // multi-line data fields, comments and a trailing event without its final blank line.
-export async function* readSse(response, { signal, maxBytes } = {}) {
+async function* readSse(response, { signal, maxBytes } = {}) {
   const decoder = new TextDecoder();
   let buffer = '', data = [], event = '', size = 0, first = true;
   const take = line => {
@@ -89,7 +89,7 @@ export async function* readSse(response, { signal, maxBytes } = {}) {
   if (tail) yield tail;
 }
 
-export async function* readNdjson(response, { signal, maxBytes } = {}) {
+async function* readNdjson(response, { signal, maxBytes } = {}) {
   const decoder = new TextDecoder();
   let buffer = '';
   const parse = line => {
@@ -111,6 +111,9 @@ export async function* readNdjson(response, { signal, maxBytes } = {}) {
   const value = parse(buffer);
   if (value !== undefined) yield value;
 }
+
+// Exported through a list: scripts/check.mjs does not recognise generator declarations as exports.
+export { readChunks, readSse, readNdjson };
 
 export function parseEventData(data) {
   try { return JSON.parse(data); } catch { throw new Error('The provider sent an unreadable stream event.'); }

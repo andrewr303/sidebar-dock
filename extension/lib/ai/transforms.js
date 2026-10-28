@@ -1,7 +1,7 @@
 // Quick AI writing tools for notes (transformText) and save-time suggestions (suggestForSave). Both use the fast model
 // (settings.quick, falling back to the chat model). suggestForSave falls back to a local heuristic when no AI is
 // connected or the call fails, so the Add dialog always gets a usable answer.
-import { tokenize, plainText } from './search.js';
+import { tokenize, plainText, isStopWord } from './search.js';
 import { normalizeTags } from './tools.js';
 
 const text = value => typeof value === 'string' ? value : '';
@@ -129,7 +129,7 @@ export function cleanTitle(title, url) {
 export function heuristicSuggestion({ url = '', title = '', excerpt = '', content = '', collections = [], tags = [] } = {}, library = null) {
   const domain = domainOf(url);
   const weights = new Map();
-  const add = (value, weight) => { for (const token of tokenize(value)) if (token.length > 2) weights.set(token, (weights.get(token) || 0) + weight); };
+  const add = (value, weight) => { for (const token of tokenize(value)) if (token.length > 1 && !isStopWord(token)) weights.set(token, (weights.get(token) || 0) + weight); };
   add(title, 3);
   add(excerpt, 2);
   add(plainText(content).slice(0, 3000), 1);

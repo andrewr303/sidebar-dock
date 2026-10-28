@@ -135,6 +135,16 @@ test('Claude 5.5-generation models opt into server-side fallback; Haiku, older m
   sent = requests.at(-1); assert.equal(sent.headers['anthropic-beta'], undefined); assert.equal(sent.body.fallbacks, undefined); assert.equal(sent.body.thinking.type, 'adaptive');
   await service.generate({ providerId: opus.id, ...prompt, model: 'claude-haiku-4-5' });
   assert.equal(requests.at(-1).body.thinking, undefined);
+  // Only the three models SPEC §7.1 names opt into fallback; Claude Opus 5 and dated older IDs do not.
+  for (const model of ['claude-opus-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-opus-5-5-preview']) {
+    await service.generate({ providerId: opus.id, ...prompt, model });
+    sent = requests.at(-1); assert.equal(sent.body.fallbacks, undefined, model); assert.equal(sent.headers['anthropic-beta'], undefined, model);
+  }
+  assert.equal(sent.body.thinking.type, 'adaptive');
+  // A Claude model before 4.6 rejects adaptive thinking, so a chosen effort travels alone.
+  const efforts = await provider(service, 'anthropic', { model: 'claude-opus-4-5' });
+  await service.generate({ providerId: efforts.id, ...prompt, reasoningEffort: 'high' });
+  sent = requests.at(-1); assert.equal(sent.body.thinking, undefined); assert.deepEqual(sent.body.output_config, { effort: 'high' });
   const compatible = await provider(service, 'anthropic-compatible', { model: 'claude-opus-5-5' });
   await service.generate({ providerId: compatible.id, ...prompt });
   sent = requests.at(-1);

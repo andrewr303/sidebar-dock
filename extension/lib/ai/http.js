@@ -102,11 +102,12 @@ export async function providerFetch(url, { method = 'GET', headers = {}, body, s
   if (signal?.aborted) throw abortError(signal);
   const run = fetcher || globalThis.fetch;
   if (typeof run !== 'function') throw aiError('This browser cannot make network requests here.', { code: 'network' });
-  const controller = new AbortController();
-  const forward = () => controller.abort(signal.reason);
-  signal?.addEventListener('abort', forward, { once: true });
+  const timeout = new AbortController();
+  let linked = timeout.signal;
+  if (signal && typeof AbortSignal.any === 'function') linked = AbortSignal.any([signal, timeout.signal]);
+  else if (signal) signal.addEventListener('abort', () => timeout.abort(signal.reason), { once: true });
   let timedOut = false;
-  const timer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; controller.abort(new DOMException('The request timed out.', 'TimeoutError')); }, timeoutMs) : null;
+  const timer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; timeout.abort(new DOMException('The request timed out.', 'TimeoutError')); }, timeoutMs) : null;
   const finalHeaders = { ...headers };
   let payload = body;
   if (payload !== undefined && payload !== null && typeof payload !== 'string' && !(payload instanceof ArrayBuffer) && !ArrayBuffer.isView(payload) && !(globalThis.Blob && payload instanceof Blob) && !(globalThis.FormData && payload instanceof FormData)) {
@@ -115,7 +116,7 @@ export async function providerFetch(url, { method = 'GET', headers = {}, body, s
   }
   let response;
   try {
-    response = await run(url, { method, headers: finalHeaders, body: payload ?? undefined, signal: controller.signal, cache: 'no-store', credentials: 'omit', redirect: 'error' });
+    response = await run(url, { method, headers: finalHeaders, body: payload ?? undefined, signal: linked, cache: 'no-store', credentials: 'omit', redirect: 'error' });
   } catch (error) {
     if (signal?.aborted) throw abortError(signal);
     if (timedOut) throw aiError(`${providerName(provider, url)} did not respond in time. Try again.`, { code: 'timeout', host: hostOf(url), provider: provider?.id });
