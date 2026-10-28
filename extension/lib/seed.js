@@ -8,9 +8,7 @@ const item = (id, type, title, props = {}, days = 0) => ({
   createdAt: stamp(days), updatedAt: stamp(days), highlights: [], relatedIds: [], ...props,
 });
 
-const welcome = `# Welcome to Still
-
-Still keeps links, notes and highlights in one local library, with AI that can read it when you ask.
+const welcome = `Still keeps links, notes and highlights in one local library, with AI that can read it when you ask.
 
 ## Save things
 - Press **Alt+Shift+S** on any page, or use **Save** in the side panel's *This page* tab.
@@ -29,9 +27,7 @@ Still keeps links, notes and highlights in one local library, with AI that can r
 - [ ] Write a note on a page you are reading
 - [ ] Connect an AI model`;
 
-const principles = `# Design principles for the redesign
-
-Notes from [[Aesthetic and Minimalist Design]] and [[Refactoring UI]].
+const principles = `Notes from [[Aesthetic and Minimalist Design]] and [[Refactoring UI]].
 
 - Start with too much white space, then remove it.
 - Not every element needs to compete for attention. De-emphasize to emphasize.
@@ -42,9 +38,7 @@ Notes from [[Aesthetic and Minimalist Design]] and [[Refactoring UI]].
 - [ ] Define type scale and spacing tokens
 - [ ] Review dark mode contrast`;
 
-const agents = `# Notes on agent patterns
-
-> The most successful implementations use simple, composable patterns rather than complex frameworks.
+const agents = `> The most successful implementations use simple, composable patterns rather than complex frameworks.
 
 - **Prompt chaining** for fixed multi-step tasks
 - **Routing** to send easy questions to a fast model

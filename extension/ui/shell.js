@@ -10,14 +10,13 @@ import { renderItemsView } from './library.js';
 import { renderDetail } from './detail.js';
 import { renderMap } from './map.js';
 import { renderPageTab } from './page.js';
-import { renderNotesWorkspace, renderTasks, renderSideNotes, createNote } from './notes.js';
+import { renderNotesWorkspace, renderTasks, renderSideNotes, createNote, openToday } from './notes.js';
 import { renderAiPanel, askAi } from './ai-panel.js';
 import { openCommandPalette } from './command.js';
 import { openAdd } from './quick-add.js';
 import { openSettings } from './settings.js';
 import { openCollectionEditor } from './collections.js';
 import { SORT_OPTIONS } from './selectors.js';
-import { dailyNoteTitle } from '../lib/notes.js';
 
 const SIDE_TABS = [
   { id: 'library', label: 'Library', icon: 'library' },
@@ -129,13 +128,16 @@ function renderFull(ctx) {
   ui.docked = docked;
   if (docked) ui.navOpen = false;
   const navOpen = !docked && ui.navOpen;
+  // The main view first: the notes view takes an opened note out of the panel, and the frame's has-panel class and
+  // the panel itself must see that in this frame, not the next one.
+  const main = renderMain(ctx);
   return html`<div class="${cx('app-frame', 'is-full', docked ? 'has-sidebar' : 'is-nav-collapsed', navOpen && 'is-nav-open', ctx.state.panel && 'has-panel')}"
     data-key="frame-full" style="--shell-panel-w:${panelWidth(ctx)}px">
     <nav class="sidebar" id="sidebar" aria-label="Library" data-key="sidebar" data-keydown="shell.nav-key" ${!docked && !navOpen ? raw('inert') : ''}>${renderSidebar(ctx)}</nav>
     ${docked ? '' : html`<div class="nav-scrim" data-key="nav-scrim" data-action="shell.close-nav" aria-hidden="true"></div>`}
     <div class="main-column" data-key="main-column" ${navOpen ? raw('inert') : ''}>
       ${renderTopbar(ctx, docked)}
-      <main id="main" class="main" tabindex="-1" data-view="${ctx.state.view}" data-drop-zone="main">${renderMain(ctx)}</main>
+      <main id="main" class="main" tabindex="-1" data-view="${ctx.state.view}" data-drop-zone="main">${main}</main>
     </div>
     ${renderPanel(ctx, { inert: navOpen })}
   </div>`;
@@ -174,14 +176,35 @@ function renderSideContent(ctx) {
   return state.sideStack.length ? renderItemsView(ctx, { surface: 'side' }) : renderLibraryRoot(ctx);
 }
 
+/**
+ * Whether the side panel draws the app header (page identity or tab name, search, add, More). Screens with a header
+ * row of their own skip it, so two header rows never stack: item detail and an open note (back buttons), a Library
+ * drill-down (back, title, layout, search, view menu, as in the mock's side-library screen) and the assistant.
+ */
+export function sideHeaderShown({ panel = null, sideTab = 'page', sideStack = [], notes = null } = {}) {
+  if (panel) return false;
+  if (sideTab === 'ask') return false;
+  if (sideTab === 'library') return !sideStack.length;
+  if (sideTab === 'notes') return !notes?.noteId;
+  return true;
+}
+
+/**
+ * The state patch for a tap on a side panel tab. Tapping the tab that is already showing takes it back to its root:
+ * the Library tab to its collections, the Notes tab from an open note to the notes list.
+ */
+export function sideTabPatch({ panel = null, sideTab = 'page', notes = null } = {}, tab) {
+  const again = (panel?.kind === 'ai' ? 'ask' : sideTab) === tab;
+  const patch = { panel: null, sideTab: tab };
+  if (again && tab === 'library') patch.sideStack = [];
+  if (again && tab === 'notes' && notes?.noteId) patch.notes = { ...notes, noteId: null, returnTo: '' };
+  return patch;
+}
+
 function renderSide(ctx) {
   const tab = ctx.state.panel?.kind === 'ai' ? 'ask' : ctx.state.sideTab;
-  // A Library drill-down brings its own header (back, title, layout, search, menu with Open in full tab), as in the
-  // mock's side-library screen; stacking the app header above it would show two header rows.
-  // Item detail draws its own back header too.
-  const drill = ctx.state.panel?.kind === 'item' || (!ctx.state.panel && tab === 'library' && ctx.state.sideStack.length > 0);
   return html`<div class="app-frame is-side" data-key="frame-side">
-    ${drill ? '' : renderSideHeader(ctx, tab)}
+    ${sideHeaderShown(ctx.state) ? renderSideHeader(ctx, tab) : ''}
     <main id="main" class="side-main" tabindex="-1" data-tab="${tab}" data-drop-zone="side">${renderSideContent(ctx)}</main>
     <nav class="tabbar" aria-label="Sections"><div class="tabbar-inner">
       ${SIDE_TABS.map(t => html`<button type="button" class="tabbar-tab" ${t.id === tab ? raw('aria-current="page"') : ''} data-action="shell.side-tab" data-tab="${t.id}">
@@ -217,23 +240,9 @@ function toggleSidebar(ctx) {
   setNav(ctx, !ui.navOpen);
 }
 
-/** Opens a note in the notes editor of either surface (notes.js reads state.notes.noteId). */
-function openNote(ctx, id) {
-  ctx.state.notes = { ...ctx.state.notes, noteId: id };
-  if (ctx.env.isSidepanel) { ctx.state.panel = null; ctx.state.sideTab = 'notes'; ctx.render(); return; }
-  ctx.navigate('notes');
-}
-
 function newNote(ctx) {
   const collectionId = currentCollection(ctx);
   return createNote(ctx, collectionId === undefined ? {} : { collectionId });
-}
-
-function todayNote(ctx) {
-  const title = dailyNoteTitle(new Date());
-  const existing = ctx.select.live().find(item => item.type === 'note' && item.title === title);
-  if (existing) return openNote(ctx, existing.id);
-  return createNote(ctx, { title, content: '' });
 }
 
 function setSearchState(ctx, patch) {
@@ -315,7 +324,8 @@ registerActions({
   },
   'shell.add-menu': ({ ctx, el }) => ctx.openMenu(el, addMenu(ctx), { placement: 'bottom-end', label: 'Add' }),
   'shell.new-note': ({ ctx }) => newNote(ctx),
-  'shell.today-note': ({ ctx }) => todayNote(ctx),
+  // Today's daily note: the daily template in the default collection, or the one already written today.
+  'shell.today-note': ({ ctx }) => openToday(ctx),
   'shell.save-page': ({ ctx }) => saveCurrentTab(ctx, {}),
   'shell.settings': ({ ctx, data, event }) => openSettings(ctx, payload(event, data).section || 'general'),
   'shell.shortcuts': ({ ctx }) => openSettings(ctx, 'shortcuts'),
@@ -325,9 +335,7 @@ registerActions({
     openCommandPalette(ctx, { query: el?.id === 'search' ? el.value : '' });
   },
   'shell.side-tab': ({ ctx, data }) => {
-    ctx.state.panel = null;
-    if (ctx.state.sideTab === data.tab && data.tab === 'library') ctx.state.sideStack = [];
-    ctx.state.sideTab = data.tab;
+    Object.assign(ctx.state, sideTabPatch(ctx.state, data.tab));
     ctx.render();
     focusLater(ctx, '#main');
   },

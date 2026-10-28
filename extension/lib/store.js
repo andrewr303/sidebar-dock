@@ -85,6 +85,32 @@ function normalizeCollection(input, existing = {}) {
     createdAt: text(existing.createdAt) || text(merged.createdAt) || now(), updatedAt: nextStamp(existing.updatedAt) };
 }
 
+/**
+ * Note bodies written by the old editor began with "# <title>", so the title showed twice. Returns `content` without
+ * that first line (and the blank line after it) when it is a level-1 heading whose text exactly equals the trimmed,
+ * non-empty title; any other content comes back unchanged.
+ */
+export function stripNoteTitleHeading(content, title) {
+  const body = text(content);
+  const name = text(title).trim();
+  const heading = /^#[ \t]+(.*?)[ \t]*(?:\r?\n|$)/.exec(body);
+  if (!name || !heading || heading[1] !== name) return body;
+  return body.slice(heading[0].length).replace(/^[ \t]*(?:\r?\n|$)/, '');
+}
+
+// One-time migration of libraries saved before titles left the note body, recorded in library.migrations so it runs
+// once: a title heading written later stays. Only note content changes (updatedAt stamps are kept). True when it ran.
+const TITLE_HEADING_MIGRATION = 'note-title-heading';
+function migrateLibrary(state) {
+  const done = Array.isArray(state.migrations) ? state.migrations : [];
+  if (done.includes(TITLE_HEADING_MIGRATION)) return false;
+  for (const item of state.items) {
+    if (item?.type === 'note' && typeof item.content === 'string') item.content = stripNoteTitleHeading(item.content, item.title);
+  }
+  state.migrations = [...done, TITLE_HEADING_MIGRATION];
+  return true;
+}
+
 export function emptyLibrary() {
   return { schemaVersion: 1, items: [], collections: [], settings: {}, updatedAt: now() };
 }
@@ -122,9 +148,11 @@ export function createLibraryStore({ read, write, withLock = task => task() }) {
   const dispatch = (operation, args = []) => {
     const task = async () => withLock(async () => {
       let state = await current();
-      if (!state) state = args[0] && operation === 'loadLibrary' ? validateLibrary(args[0]) : emptyLibrary();
+      // A library created now has nothing to migrate; an existing one gets the one-time migration when it loads.
+      if (!state) state = { ...(args[0] && operation === 'loadLibrary' ? validateLibrary(args[0]) : emptyLibrary()), migrations: [TITLE_HEADING_MIGRATION] };
       let result;
       let changed = operation === 'loadLibrary' && !(await current());
+      if (operation === 'loadLibrary' && migrateLibrary(state)) changed = true;
       const [input, patch, options = {}] = args;
       const assertRevision = (record, opts) => { if (typeof opts?.expectedUpdatedAt === 'string' && opts.expectedUpdatedAt !== record.updatedAt) throw new Error('Conflict: this item changed in another view. Reopen it before applying your edits.'); };
       const findItem = id => { const item = state.items.find(i => i.id === id); if (!item) throw new Error('Item no longer exists.'); return item; };

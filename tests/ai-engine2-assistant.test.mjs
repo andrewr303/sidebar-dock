@@ -310,3 +310,51 @@ test('citations resolve only to material the model received in this conversation
   const second = await assistant.runAssistant({ conversationId: first.conversation.id, input: 'and tokyo?', context: { scope: 'item', ids: ['tokyo'] } });
   assert.deepEqual(second.message.citations.map(c => [c.n, c.id, c.title]), [[1, 'kyoto', 'Kyoto temples'], [2, 'tokyo', 'Tokyo food map']]);
 });
+
+test('a chat deleted while its answer runs stays deleted, and a rename made meanwhile keeps its new title', async () => {
+  let during = async () => {};
+  const { assistant, conversations } = await harness({
+    script: async ({ onEvent }) => { await during(); text(onEvent, 'Temples [[kyoto]].'); return { text: 'Temples [[kyoto]].', toolCalls: [], stopReason: 'end_turn' }; },
+  });
+  const first = await assistant.runAssistant({ input: 'What is Kyoto about?', context: { scope: 'library' } });
+  const id = first.conversation.id;
+  during = async () => { const current = await conversations.getConversation(id); await conversations.saveConversation({ ...current, title: 'Kyoto trip' }); };
+  const renamed = await assistant.runAssistant({ conversationId: id, input: 'And Osaka?', context: { scope: 'library' } });
+  assert.equal(renamed.conversation.title, 'Kyoto trip');
+  assert.equal(renamed.deleted, undefined);
+  const stored = await conversations.getConversation(id);
+  assert.equal(stored.title, 'Kyoto trip', 'the final save keeps the title chosen while the answer ran');
+  assert.deepEqual(stored.messages.map(m => m.text), ['What is Kyoto about?', 'Temples [[kyoto]].', 'And Osaka?', 'Temples [[kyoto]].']);
+  assert.equal((await conversations.listConversations())[0].title, 'Kyoto trip');
+
+  during = () => conversations.deleteConversation(id);
+  const events = [];
+  const gone = await assistant.runAssistant({ conversationId: id, input: 'And Nara?', context: { scope: 'library' }, onEvent: event => events.push(event) });
+  assert.equal(gone.deleted, true);
+  assert.equal(gone.message.text, 'Temples [[kyoto]].', 'the answer still reaches the caller');
+  assert.ok(events.some(event => event.type === 'done'));
+  assert.equal(await conversations.getConversation(id), null, 'the deleted chat is not saved again');
+  assert.ok(!(await conversations.listConversations()).some(item => item.id === id));
+});
+
+test('read step results and answer notes are saved with the message for a reopened chat', async () => {
+  const { assistant, conversations } = await harness({
+    script: async ({ onEvent }, n) => {
+      if (n === 1) return { text: '', toolCalls: [{ id: 's1', name: 'search_library', input: { query: 'japan' } }], stopReason: 'tool_use' };
+      text(onEvent, 'Two items [[kyoto]].');
+      return { text: 'Two items [[kyoto]].', toolCalls: [], stopReason: n === 2 ? 'max_tokens' : 'end_turn' };
+    },
+  });
+  const events = [];
+  const { conversation, message } = await assistant.runAssistant({ input: 'Find Japan', context: { scope: 'library' }, onEvent: event => events.push(event) });
+  const tool = events.find(event => event.type === 'tool');
+  assert.equal(tool.result.query, 'japan');
+  assert.deepEqual(message.tools[0].result, { query: 'japan', count: 2, ids: tool.result.ids });
+  assert.deepEqual([...tool.result.ids].sort(), ['kyoto', 'tokyo']);
+  assert.deepEqual(message.notes, ['The answer reached the length limit and may be cut off.']);
+  const stored = (await conversations.getConversation(conversation.id)).messages[1];
+  assert.deepEqual(stored.tools[0].result, { query: 'japan', count: 2, ids: tool.result.ids });
+  assert.deepEqual(stored.notes, ['The answer reached the length limit and may be cut off.']);
+  const plain = await assistant.runAssistant({ conversationId: conversation.id, input: 'Thanks', context: { scope: 'library' } });
+  assert.equal(plain.message.notes, undefined, 'answers without notes carry none');
+});

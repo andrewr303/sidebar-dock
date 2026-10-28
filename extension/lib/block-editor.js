@@ -36,10 +36,11 @@
 // menu (turn into, duplicate, move, delete), Mod+D duplicates, Mod+Z, Mod+Shift+Z and Mod+Y use the editor's own
 // history, Mod+B/I/E/K and Mod+Shift+X format. "# ", "## ", "### ", "- ", "* ", "1. ", "[] ", "[ ] ", "> ", ">! ", "```"
 // and "---" at the start of a block change its type; **bold**, *italic*, `code`, ~~strike~~ and [label](url) convert
-// when closed; "/" opens the insert menu and "[[" the link picker. Paste and drop accept plain text, Markdown and HTML.
+// when closed; "/" opens the insert menu and "[[" the link picker. A [[Title]] or [[id|Label]] typed or pasted in full
+// is a link too (a chip once "]]" is typed). Paste and drop accept plain text, Markdown and HTML.
 //
 // Also exported (pure, Node-importable): BLOCK_COMMANDS, findBlockCommands, parseMarkdown, serializeBlocks,
-// serializeInlineFragment, matchBlockShortcut, matchInlineShortcut, htmlToMarkdown.
+// serializeInlineFragment, matchBlockShortcut, matchInlineShortcut, matchWikiShortcut, htmlToMarkdown.
 // Styles: styles/editor.css. Render Markdown elsewhere inside an element with class "markdown-body".
 import {
  escapeHtml as esc, safeMarkdownUrl, renderInline, renderTableCell, renderMarkdown, inlineText, trimAutolink, CALLOUT_KINDS,
@@ -154,15 +155,26 @@ function escapeSpan(text,out=''){
  }
  return out;
 }
+// A complete [[target]] or [[target|Label]] (the renderer's grammar, with a non-blank target) is a wiki link, so typed
+// and pasted links stay links. Link labels never parse wiki links (renderInline reads them without links), so inside
+// a label (inLabel, or { wiki: false } for direct calls) brackets stay escaped.
+const WIKI_LINK=/\[\[([^[\]\n|]{1,200})(?:\|[^[\]\n]{1,200})?\]\]/g;
+let inLabel=0;
+function labelMarkdown(nodes){inLabel++;try{return serializeNodes(nodes);}finally{inLabel--;}}
+function escapeWiki(text){
+ let out='',last=0;
+ for(const m of text.matchAll(WIKI_LINK)){if(!m[1].trim())continue;out+=escapeSpan(text.slice(last,m.index))+m[0];last=m.index+m[0].length;}
+ return out+escapeSpan(text.slice(last));
+}
 // Bare URLs are kept verbatim so they keep reading back as links.
-function escapeText(value){
- const text=String(value??'').replace(ZWSP,'').replace(/\u00a0/g,' ');let out='',last=0;
+function escapeText(value,{wiki=!inLabel}={}){
+ const text=String(value??'').replace(ZWSP,'').replace(/\u00a0/g,' '),span=wiki?escapeWiki:escapeSpan;let out='',last=0;
  for(const m of text.matchAll(/https?:\/\/[^\s<>"'`]+/gi)){
   if(m.index>0&&WORD.test(text[m.index-1]))continue;
   const url=trimAutolink(m[0]);if(!/^https?:\/\/./i.test(url))continue;
-  out+=escapeSpan(text.slice(last,m.index))+url;last=m.index+url.length;
+  out+=span(text.slice(last,m.index))+url;last=m.index+url.length;
  }
- return out+escapeSpan(text.slice(last));
+ return out+span(text.slice(last));
 }
 function emphasize(text,marker){const leading=text.match(/^\s*/)[0],trailing=text.slice(leading.length).match(/\s*$/)[0],content=text.slice(leading.length,text.length-trailing.length);return content?leading+marker+content+marker+trailing:text;}
 function codeSpan(text){if(!text)return '';const runs=text.match(/`+/g)||[],fence='`'.repeat(Math.max(0,...runs.map(s=>s.length))+1),padding=text.startsWith('`')||text.endsWith('`')||(/^ .* $/.test(text)&&text.trim())?' ':'';return fence+padding+text+padding+fence;}
@@ -192,6 +204,8 @@ function fromNode(node){
  if(node.nodeType===11)return serializeNodes([...(node.childNodes||[])]);
  if(node.nodeType!==1)return '';
  const tag=tagOf(node),classes=classesOf(node);
+ // A chip inside a link label cannot stay a chip there; it keeps its shown text.
+ if(inLabel&&(classes.includes('note-link')||classes.includes('ai-citation')))return escapeText(rawText(node));
  if(classes.includes('note-link')&&attr(node,'data-target')){const label=attr(node,'data-label');return `[[${attr(node,'data-target')}${label?'|'+label:''}]]`;}
  if(classes.includes('ai-citation')&&attr(node,'data-id'))return `[[${attr(node,'data-id')}]]`;
  if(tag==='BR')return '\n';
@@ -201,10 +215,11 @@ function fromNode(node){
   const auto=attr(node,'data-autolink');if(auto)return auto==='angle'?`<${rawText(node)}>`:rawText(node);
   const href=safeMarkdownUrl(attr(node,'href')),image=classes.includes('markdown-media-link'),kids=[...(node.childNodes||[])],shown=rawText(node).trim();
   if(href&&!image&&/^https?:\/\/./i.test(shown)&&safeMarkdownUrl(shown)===href&&trimAutolink(shown)===shown&&!/[\s<>"'`]/.test(shown))return shown;
-  const label=image?serializeNodes(kids.slice(1)):serializeNodes(kids);
-  return href?linkMarkdown(label||escapeText(href),href,image):label;
+  if(!href)return serializeNodes(image?kids.slice(1):kids);
+  const label=labelMarkdown(image?kids.slice(1):kids);
+  return linkMarkdown(label||escapeText(href,{wiki:false}),href,image);
  }
- if(tag==='IMG'){const src=safeMarkdownUrl(attr(node,'src')),alt=escapeText(attr(node,'alt')||'');return src&&/^https?:/.test(src)?linkMarkdown(alt||'Image',src,true):alt;}
+ if(tag==='IMG'){const src=safeMarkdownUrl(attr(node,'src')),link=src&&/^https?:/.test(src),alt=escapeText(attr(node,'alt')||'',{wiki:!link&&!inLabel});return link?linkMarkdown(alt||'Image',src,true):alt;}
  if(tag==='SPAN'){let md=serializeNodes([...(node.childNodes||[])]);for(const mark of styleMarks(node))md=emphasize(md,MARKERS[mark]);return md;}
  if(['SCRIPT','STYLE','TEMPLATE','SVG','INPUT','BUTTON','SELECT','TEXTAREA'].includes(tag))return '';
  if(tag==='DIV'||tag==='P')return '\n'+serializeNodes([...(node.childNodes||[])]);
@@ -237,6 +252,13 @@ export function matchInlineShortcut(text){
  const link=/(^|[^\\!])\[([^\]\n]+)\]\(([^()\s]+)\)$/.exec(value);
  if(link){const href=safeMarkdownUrl(link[3]);if(href)return {mark:'link',start:link.index+link[1].length,end:value.length,text:link[2],href};}
  return null;
+}
+// A wiki link closed by the "]]" just typed (text ends at the caret): { start, end, target, label } or null.
+export function matchWikiShortcut(text){
+ const value=String(text??'');if(!value.endsWith(']]'))return null;
+ const from=Math.max(0,value.length-410),m=/\[\[([^[\]\n|]{1,200})(?:\|([^[\]\n]{1,200}))?\]\]$/.exec(value.slice(from));
+ if(!m||!m[1].trim())return null;
+ return {start:from+m.index,end:value.length,target:m[1].trim(),label:(m[2]||'').trim()};
 }
 
 // HTML (clipboard) to Markdown, dependency-free so it behaves the same in Node and in the page. Unknown or unsafe
@@ -557,7 +579,7 @@ export function mountBlockEditor(textarea,options={}){
    const target=same&&type!=='paragraph'?'paragraph':type;
    let text=b.type==='table'?[b.headers,...b.rows].map(r=>r.join(' ')).join('\n'):b.type==='toggle'?[b.title,b.text].filter(Boolean).join('\n'):b.text||'';
    if(target==='code'&&b.type!=='code')text=inlineText(text);
-   if(b.type==='code'&&target!=='code')text=text.split('\n').map(escapeText).join('\n');
+   if(b.type==='code'&&target!=='code')text=text.split('\n').map(line=>escapeText(line)).join('\n');
    const next={id:b.id,type:target,text,checked:target==='todo'?!!(args.checked??(b.type==='todo'&&b.checked)):false,language:target==='code'?String(args.language??(b.type==='code'?b.language:'')??''):''};
    if(LIST.has(target))next.indent=LIST.has(b.type)?Number(b.indent)||0:0;
    if(target==='callout')next.kind=CALLOUT_KINDS[args.kind]?args.kind:b.type==='callout'&&CALLOUT_KINDS[b.kind]?b.kind:'note';
@@ -791,6 +813,19 @@ export function mountBlockEditor(textarea,options={}){
   else placeCaret(el,from+hit.text.length);
   return true;
  }
+ // Typing the "]]" that closes [[Title]] or [[id|Label]]: the block text already holds the link (escapeText keeps it),
+ // so the block is redrawn to show the chip and the caret goes right after it. Code and link labels keep the text.
+ function wikiShortcut(ed){
+  const b=block(ed.dataset.blockEdit);if(!b||b.type==='code')return false;
+  const sel=win.getSelection();if(!sel.rangeCount||!sel.isCollapsed)return false;const r=sel.getRangeAt(0),node=r.startContainer;if(node.nodeType!==3||!ed.contains(node))return false;
+  if(node.parentElement.closest('code,a')||!matchWikiShortcut(node.data.slice(0,r.startOffset).replace(ZWSP,'')))return false;
+  const caret=textLength(rangeMarkdown(ed,0,offsetIn(ed,node,r.startOffset)));
+  closePopup();renderBlock(b.id);const el=editableOf(b.id);if(!el)return true;el.focus({preventScroll:true});
+  const point=pointAt(el,caret),chip=point.node.nodeType===1?point.node.childNodes[point.offset-1]:null,next=chip?.nextSibling;
+  if(chip?.nodeType===1&&chip.getAttribute('contenteditable')==='false'&&(!next||next.nodeName==='BR')){const spacer=doc.createTextNode('\u200b');chip.after(spacer);const range=doc.createRange();range.setStart(spacer,1);range.collapse(true);sel.removeAllRanges();sel.addRange(range);}
+  else placeCaret(el,caret);
+  return true;
+ }
  function trackTriggers(ed,data){
   const b=block(ed.dataset.blockEdit);if(!b||b.type==='code')return;
   const sel=win.getSelection();if(!sel.rangeCount)return;const r=sel.getRangeAt(0),node=r.startContainer,pos=r.startOffset;if(node.nodeType!==3)return;
@@ -929,7 +964,7 @@ export function mountBlockEditor(textarea,options={}){
   if(!href){showLinkError('Use an https://, http:// or mailto: address, or a #heading anchor.');linkForm.querySelector('[data-link-url]').focus();return;}
   const typed=linkForm.querySelector('[data-link-label]').value.trim(),kind=target.kind;
   hideFloat(linkForm);linkTarget=null;
-  const markdown=label=>linkMarkdown(escapeText(kind==='file'?'File: '+label:label),href,kind==='image');
+  const markdown=label=>linkMarkdown(escapeText(kind==='file'?'File: '+label:label,{wiki:false}),href,kind==='image');
   if(target.cell){target.cell.focus();replaceSource(target.cell,markdown(typed||href),target.position||{});return;}
   if(target.body){const el=target.body;el.focus();el.setRangeText(markdown(typed||href),target.position.start,target.position.end,'end');el.dispatchEvent(new win.Event('input',{bubbles:true}));return;}
   const ed=editableOf(target.blockId);if(!ed){report('The block for this link is gone.');return;}
@@ -1026,7 +1061,7 @@ export function mountBlockEditor(textarea,options={}){
   if(ed){
    activeId=ed.dataset.blockEdit;if(composing||e.isComposing){readBlock(ed);commit({coalesce:true});return;}
    cleanZwsp(ed);readBlock(ed);updateEmpty(ed);commit({coalesce:true});
-   if(e.inputType==='insertText'&&e.data){if(blockShortcut(ed)||inlineShortcut(ed))return;trackTriggers(ed,e.data.slice(-1));}
+   if(e.inputType==='insertText'&&e.data){if(blockShortcut(ed)||inlineShortcut(ed)||(e.data.endsWith(']')&&wikiShortcut(ed)))return;trackTriggers(ed,e.data.slice(-1));}
    refreshQuery();return;
   }
   if(t.matches?.('[data-table-cell]')){readCell(t);commit({coalesce:true});return;}
@@ -1253,7 +1288,7 @@ export function mountBlockEditor(textarea,options={}){
    if(['bold','italic','strike','code-inline'].includes(type)){format(type==='code-inline'?'code':type);return;}
    if(['link','image','file'].includes(name)){
     if(mode!=='blocks')setMode('blocks');
-    if(args.url){const href=safeMarkdownUrl(args.url);if(!href){report('Use an https://, http:// or mailto: address.');return;}const label=String(args.label||'').trim()||href;const ed=restoreEditorSelection();const markdown=linkMarkdown(escapeText(name==='file'?'File: '+label:label),href,name==='image');if(ed){const {start,end}=selectionOffsets(ed);beginChange();replaceRange(ed,start,end,markdown);}else insertMarkdown(markdown,{at:'end'});return;}
+    if(args.url){const href=safeMarkdownUrl(args.url);if(!href){report('Use an https://, http:// or mailto: address.');return;}const label=String(args.label||'').trim()||href;const ed=restoreEditorSelection();const markdown=linkMarkdown(escapeText(name==='file'?'File: '+label:label,{wiki:false}),href,name==='image');if(ed){const {start,end}=selectionOffsets(ed);beginChange();replaceRange(ed,start,end,markdown);}else insertMarkdown(markdown,{at:'end'});return;}
     openLinkForm(name);return;
    }
    if(TEXT.has(name)||['toggle','table','divider'].includes(name))turnInto(name,args);

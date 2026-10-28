@@ -361,9 +361,8 @@ const drafts = { bridgeUrl: null, bridgeToken: '', raindropToken: '' };
 let connectDraft = { apiKey: '', baseUrl: '', label: '', workspaceId: '', defaultModel: '' };
 // Last four characters of keys saved in this window, for the mask when the engine does not report a keyHint. Memory only.
 const keyTails = new Map();
-// pausedHere: sync was paused in this window without a stored setting (integrations.setBridgeEnabled is missing).
 // aiLoad: the loadAi call in flight, so openSettings can wait for it instead of starting another.
-const live = { offAi: null, offIndex: null, tick: 0, loginTimer: 0, forceClose: false, pausedHere: false, aiLoad: null };
+const live = { offAi: null, offIndex: null, tick: 0, loginTimer: 0, forceClose: false, aiLoad: null };
 
 const uiState = ctx => (ctx.state.settings ||= { section: 'general', list: false, open: new Set() });
 const isOpen = ctx => ctx.state.dialogs.some(entry => entry.name === DIALOG);
@@ -378,7 +377,6 @@ const patchConnect = (ctx, patch, session) => { if (connectProps(ctx, session)) 
 const aiSettings = ctx => data.aiSettings || ctx.ai?.DEFAULT_AI_SETTINGS || {};
 const focusSoon = (ctx, selector) => ctx.nextFrame(() => document.querySelector(selector)?.focus({ preventScroll: false }));
 const since = iso => relativeDate(iso).replace(/^Just now$/, 'just now');
-const bridgeSettings = () => (data.integration && live.pausedHere ? { ...data.integration, bridgeEnabled: false, pausedHere: true } : data.integration);
 
 async function withBusy(ctx, key, fn) {
   if (busy.has(key)) return undefined;
@@ -895,7 +893,7 @@ function renderAiDefaults(ctx) {
 /* ------------------------------------------------------------------ Local bridge (AI models and Agents & MCP) */
 
 function bridgeBlock(ctx, { agents = false } = {}) {
-  const info = bridgeSettings();
+  const info = data.integration;
   if (!info) return loadingBlock('Checking the local bridge');
   if (!info.bridgeConfigured) return pairForm(info);
   const summary = bridgeSummary({ integration: info, live: ctx.state.bridge, bridge: data.bridge });
@@ -1124,7 +1122,7 @@ function clientRow(ctx, entry, client, setup, paired) {
 /* ------------------------------------------------------------------ Integrations */
 
 function renderIntegrations(ctx) {
-  const info = bridgeSettings() || {};
+  const info = data.integration || {};
   const raindrop = info.raindropConnectedAt ? { label: 'Connected', tone: 'success' } : info.raindropConfigured ? { label: 'Token saved', tone: 'neutral' } : { label: 'Not connected', tone: 'neutral' };
   const bridge = data.integration ? bridgeSummary({ integration: info, live: ctx.state.bridge, bridge: data.bridge }) : null;
   const setUp = (section, anchor) => button({ label: 'Set up', iconRight: 'arrow-right', size: 'sm', action: 'settings.section', data: { section, anchor } });
@@ -1633,19 +1631,14 @@ registerActions({
     ctx.stopBridgeSync?.();
     ctx.stopBridgeSync = null;
     ctx.state.bridge = null;
-    // Pausing keeps the pairing token (the old Stop sync deleted it); Unpair is the separate, explicit way to forget it.
-    if (typeof integrations.setBridgeEnabled === 'function') {
-      await integrations.setBridgeEnabled(false);
-      await loadIntegration(ctx);
-      ctx.toast('Bridge sync paused. Pairing is kept.');
-    } else {
-      live.pausedHere = true;
-      ctx.toast('Bridge sync paused in this window. Pairing is kept.');
-    }
+    // Pausing is stored and keeps the pairing token (the old Stop sync deleted it); every window's sync loop reads it.
+    // Unpair is the separate, explicit way to forget the token.
+    await integrations.setBridgeEnabled(false);
+    await loadIntegration(ctx);
+    ctx.toast('Bridge sync paused. Pairing is kept.');
   }),
   'settings.bridge-resume': ({ ctx }) => withBusy(ctx, 'bridge-sync', async () => {
-    live.pausedHere = false;
-    if (typeof integrations.setBridgeEnabled === 'function') await integrations.setBridgeEnabled(true);
+    await integrations.setBridgeEnabled(true);
     await loadIntegration(ctx);
     ctx.stopBridgeSync?.();
     await ctx.startBridgeSync?.();
@@ -1658,7 +1651,6 @@ registerActions({
     ctx.stopBridgeSync?.();
     ctx.stopBridgeSync = null;
     ctx.state.bridge = null;
-    live.pausedHere = false;
     await integrations.disconnectBridge();
     data.clients = null;
     data.login = null;

@@ -225,6 +225,14 @@
 }
 [data-theme="dark"] .detail-note.is-preview { background: var(--bg-surface); }
 .detail-note.is-preview .markdown-body { --be-text: var(--text-sm); --be-gutter: 0px; font-size: var(--text-sm); }
+/* The note field's text starts on the section edge under "Your note", not 28px in behind the editor's handle gutter
+   (the .block-editor selector outranks editor.css's compact gutter; the list moves out by the 2px inset of each line).
+   A short field drops the hover handles: block options stay on mod+/ and the context menu key, and / still turns a
+   line into any block. */
+.detail-note .ne-inline,
+.detail-note .ne-inline .block-editor { --be-gutter: 0px; }
+.detail-note .ne-inline .block-list { margin-inline-start: calc(var(--space-1) * -1); }
+.detail-note .ne-inline .block-gutter { display: none; }
 .detail-note.is-preview > .btn { position: absolute; inset-block-start: var(--space-2); inset-inline-end: var(--space-2); opacity: 0; transition: opacity var(--dur-fast) var(--ease-out); }
 .detail-note.is-preview:is(:hover, :focus-within) > .btn { opacity: 1; }
 .detail-note-empty {

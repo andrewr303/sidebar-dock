@@ -214,7 +214,9 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
         return { id: item.id, title: text(item.title), type: item.type, url: text(item.url), collection: collectionPath(library, text(item.collectionId)),
           tags: item.tags || [], updatedAt: text(item.updatedAt), snippet: text(result.snippet) };
       });
-      return { summary: `Searched library · ${plural(items.length, 'match', 'matches')}`, data: { query, count: items.length, items }, result: { count: items.length, ids: items.map(item => item.id) } };
+      // The event result names the query so the panel can say "Searched library for “japan” · 14 results".
+      return { summary: `Searched library · ${plural(items.length, 'match', 'matches')}`, data: { query, count: items.length, items },
+        result: { query: query.slice(0, 200), count: items.length, ids: items.map(item => item.id) } };
     },
     async get_items(input) {
       const wanted = [...new Set((Array.isArray(input.ids) ? input.ids : []).filter(id => typeof id === 'string'))];

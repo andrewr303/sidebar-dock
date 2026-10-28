@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {parseMarkdown,serializeBlocks,findBlockCommands,serializeInlineFragment,htmlToMarkdown,matchBlockShortcut,matchInlineShortcut,BLOCK_COMMANDS} from '../extension/lib/block-editor.js';
+import {parseMarkdown,serializeBlocks,findBlockCommands,serializeInlineFragment,htmlToMarkdown,matchBlockShortcut,matchInlineShortcut,matchWikiShortcut,BLOCK_COMMANDS} from '../extension/lib/block-editor.js';
 import {renderMarkdown,renderInline} from '../extension/lib/markdown.js';
 test('existing notes round trip through blocks without losing markdown, blanks, tasks or code',()=>{
  const value='# An idea\n\n**Keep this** and *that*.\n- [x] Done\n- [ ] Next\n> A source\n\n```js\nconst x = 12;\nconsole.log(x);\n```\n---';
@@ -96,4 +96,47 @@ test('htmlToMarkdown converts pasted rich text into note Markdown and drops unsa
 test('Markdown copied out of the editor as HTML pastes back as the same note',()=>{
  const source='# T\nPara with **b**, *i*, `c` and [l](<https://a.com/>).\n- a\n  - b\n- [x] done\n1. one\n> q\n> [!TIP]\n> tip\n```js\nx\n```\n| A | B |\n| --- | --- |\n| 1 | 2 |\n---\n:::toggle [closed] More\nhidden\n:::';
  assert.equal(htmlToMarkdown(renderMarkdown(source,{interactiveTasks:true})),source);
+});
+
+test('a fully typed or pasted wiki link stays a link; other brackets stay escaped',()=>{
+ const resolve=title=>({alpha:{id:'item_1',title:'Alpha',type:'note'},item_2:{id:'item_2',title:'Second',type:'note'}})[String(title).toLowerCase()]||null;
+ const cases=[['See [[Alpha]] and [[item_2|the second]].','See [[Alpha]] and [[item_2|the second]].'],['[[ ]] [[a] [x]','\\[\\[ ]] \\[\\[a] \\[x]'],['\\[[Alpha]]','\\\\[[Alpha]]'],['[[[Alpha]]]','\\[[[Alpha]]]'],['a_[[Alpha]]_b','a\\_[[Alpha]]\\_b']];
+ for(const [typed,markdown] of cases){
+  assert.equal(serializeInlineFragment(fragment(text(typed))),markdown,typed);
+  assert.equal(renderInline(markdown),typed.replace(/&/g,'&amp;'),`${typed} renders back as typed without a resolver`);
+ }
+ assert.equal(serializeInlineFragment(fragment(text('https://a.com/[[x]] [[y]]'))),'https://a.com/[[x]] [[y]]','a bare URL keeps its brackets and the link after it stays a link');
+ assert.match(renderInline('\\\\[[Alpha]]',{resolveLink:resolve}),/^\\<a class="note-link" href="#" data-id="item_1"/,'a typed backslash before a link stays text');
+ assert.match(renderInline('See [[Alpha]] and [[item_2|the second]].',{resolveLink:resolve}),/data-id="item_1"[^>]*>Alpha<\/a> and <a class="note-link" href="#" data-id="item_2"[^>]*data-label="the second"[^>]*>the second<\/a>/);
+ // The chips the editor draws for those links serialize back to the same source.
+ assert.equal(serializeInlineFragment(fragment(text('See '),el('A',{class:'note-link','data-target':'Alpha'},text('Alpha')),text(' and '),el('A',{class:'note-link','data-target':'item_2','data-label':'the second'},text('the second')),text('.'))),'See [[Alpha]] and [[item_2|the second]].');
+ // Link labels never parse wiki links, so brackets (and chips) inside a label stay literal text.
+ assert.equal(serializeInlineFragment(fragment(el('A',{href:'https://a.com/'},text('[[Alpha]]')))),'[\\[\\[Alpha\\]\\]](<https://a.com/>)');
+ assert.equal(renderInline('[\\[\\[Alpha\\]\\]](<https://a.com/>)',{resolveLink:resolve}),'<a class="markdown-link" href="https://a.com/" target="_blank" rel="noopener noreferrer">[[Alpha]]</a>');
+ assert.equal(serializeInlineFragment(fragment(el('A',{href:'https://a.com/'},text('See '),el('A',{class:'note-link','data-target':'Alpha'},text('Alpha'))))),'[See Alpha](<https://a.com/>)');
+ assert.equal(serializeInlineFragment(fragment(el('IMG',{src:'https://a.com/p.png',alt:'[[Alpha]]'}))),'![\\[\\[Alpha\\]\\]](<https://a.com/p.png>)');
+ assert.equal(htmlToMarkdown('<p>Pasted [[Alpha]] and [[id_9|Nine]] <a href="https://a.com/">[[not a link]]</a></p>'),'Pasted [[Alpha]] and [[id_9|Nine]] [\\[\\[not a link\\]\\]](<https://a.com/>)');
+});
+
+test('typed wiki links render no markup from titles, labels or targets',()=>{
+ const hostile='<img src=x onerror=alert(1)> & "q"';
+ const markdown=serializeInlineFragment(fragment(text(`[[${hostile}]] [[javascript:alert(1)]] [[x|${hostile}]]`)));
+ assert.equal(markdown,`[[${hostile}]] [[javascript:alert(1)]] [[x|${hostile}]]`);
+ for(const resolveLink of [()=>null,()=>({id:'"><script>alert(1)</script>',title:hostile,type:'note" onclick="x'})]){
+  const html=renderInline(markdown,{resolveLink});
+  for(const [,tag,attrs] of html.matchAll(/<\/?(\w+)([^>]*)>/g)){
+   assert.ok(['a','span'].includes(tag),tag);
+   assert.equal(attrs.replace(/ (?:class|href|data-id|data-type|data-target|data-label|title)="[^"<>]*"/g,''),'','only known attributes, all quoted and escaped');
+  }
+  assert.doesNotMatch(html,/href="(?!#")/,'chips never carry a real href');
+  assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt; &amp; &quot;q&quot;'));
+ }
+});
+
+test('matchWikiShortcut fires on the "]]" that closes a wiki link',()=>{
+ assert.deepEqual(matchWikiShortcut('See [[Alpha]]'),{start:4,end:13,target:'Alpha',label:''});
+ assert.deepEqual(matchWikiShortcut('[[ item_2 | the second ]]'),{start:0,end:25,target:'item_2',label:'the second'});
+ assert.deepEqual(matchWikiShortcut('[[[a]]'),{start:1,end:6,target:'a',label:''});
+ assert.deepEqual(matchWikiShortcut('x'.repeat(5000)+'[[a]]'),{start:5000,end:5005,target:'a',label:''});
+ for(const typed of ['[[Alpha]','[[Alpha]] ','[[ ]]','[[a\nb]]','[[a[b]]','[Alpha]]','[[|x]]',`[[${'a'.repeat(201)}]]`,''])assert.equal(matchWikiShortcut(typed),null,JSON.stringify(typed));
 });

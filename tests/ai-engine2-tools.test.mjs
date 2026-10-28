@@ -415,3 +415,13 @@ test('a failed Apply removes notes it already wrote outright instead of leaving 
   assert.deepEqual((await getLibrary()).items.find(item => item.id === 'kyoto').tags, ['Japan'], 'the tag change is rolled back');
   assert.equal(session2.proposals[0].status, 'failed');
 });
+
+test('search_library names its query in the tool event result for the "Searched library for …" row', async () => {
+  const { tools, events } = await session();
+  await tools.execute([call('search_library', { query: '  kyoto temples ', limit: 5 }), call('get_items', { ids: ['plan'] })]);
+  const [search, read] = events.filter(event => event.type === 'tool');
+  assert.deepEqual(search.result, { query: 'kyoto temples', count: 1, ids: ['kyoto'] });
+  assert.deepEqual(read.result, { count: 1 });
+  await tools.execute([call('search_library', { query: 'q'.repeat(300) }, 'long')]);
+  assert.equal(events.at(-1).result.query.length, 200);
+});

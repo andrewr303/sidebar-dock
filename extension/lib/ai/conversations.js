@@ -57,6 +57,19 @@ function normalizeScope(scope) {
     collectionId: text(scope.collectionId, 200), ...(page ? { page } : {}) };
 }
 
+// What a read step found ({ query, count, ids }), so a reopened chat can still show "Searched library for “x” · 14
+// results" and list those items. Ids longer than any item id are dropped rather than cut.
+const TOOL_RESULT_IDS = 50;
+function toolResult(result) {
+  if (!result || typeof result !== 'object') return null;
+  const out = {};
+  const query = text(result.query).trim().slice(0, 200);
+  if (query) out.query = query;
+  if (Number.isSafeInteger(result.count) && result.count >= 0) out.count = result.count;
+  if (Array.isArray(result.ids)) out.ids = result.ids.filter(id => typeof id === 'string' && id && id.length <= 200).slice(0, TOOL_RESULT_IDS);
+  return Object.keys(out).length ? out : null;
+}
+
 export function normalizeMessage(input = {}, now = new Date().toISOString()) {
   const message = {
     id: text(input.id, 200) || uid('msg'),
@@ -65,8 +78,10 @@ export function normalizeMessage(input = {}, now = new Date().toISOString()) {
     thinking: text(input.thinking, 50000),
     citations: (Array.isArray(input.citations) ? input.citations : []).filter(c => c && typeof c.id === 'string')
       .slice(0, 100).map((c, index) => ({ n: Number.isSafeInteger(c.n) ? c.n : index + 1, id: c.id, title: text(c.title, 500), url: text(c.url, 8192) })),
-    tools: (Array.isArray(input.tools) ? input.tools : []).filter(t => t && typeof t.name === 'string').slice(0, 50)
-      .map(t => ({ name: t.name, summary: text(t.summary, 300), ...(t.isError ? { isError: true } : {}) })),
+    tools: (Array.isArray(input.tools) ? input.tools : []).filter(t => t && typeof t.name === 'string').slice(0, 50).map(t => {
+      const result = toolResult(t.result);
+      return { name: t.name, summary: text(t.summary, 300), ...(t.isError ? { isError: true } : {}), ...(result ? { result } : {}) };
+    }),
     proposals: (plain(Array.isArray(input.proposals) ? input.proposals : []) || []).slice(0, 10),
     error: text(input.error, 2000),
     createdAt: stamp(input.createdAt) || now,
@@ -76,6 +91,9 @@ export function normalizeMessage(input = {}, now = new Date().toISOString()) {
   if (input.usage && typeof input.usage === 'object') message.usage = plain(input.usage);
   if (input.context && typeof input.context === 'object') message.context = normalizeScope(input.context) || undefined;
   if (!message.context) delete message.context;
+  // Notes shown under an answer ("The answer reached the length limit and may be cut off."); kept only when present.
+  const notes = [...new Set((Array.isArray(input.notes) ? input.notes : []).filter(note => typeof note === 'string' && note.trim()).map(note => note.trim().slice(0, 300)))].slice(0, 10);
+  if (notes.length) message.notes = notes;
   return message;
 }
 
@@ -173,11 +191,19 @@ export function createConversationStore({ storage, now = () => new Date().toISOS
     const body = await backend().get(BODY_PREFIX + id);
     return body ? normalizeConversation(body, { now: now() }) : null;
   }
-  async function saveConversation(input) {
+  // existing: the conversation must still be stored. One deleted meanwhile is not saved again (the result is null) and
+  // its stored title wins, so a rename made while an answer was running is kept. Read and write share one lock.
+  async function saveConversation(input, { existing = false } = {}) {
     if (!input || typeof input !== 'object') throw new Error('Conversation must be an object.');
     await ready();
     return exclusive(async () => {
-      const conversation = normalizeConversation({ ...input, updatedAt: input.updatedAt || now() }, { now: now() });
+      let body = input;
+      if (existing) {
+        const current = await backend().get(BODY_PREFIX + text(input.id, 200));
+        if (!current) return null;
+        body = { ...input, title: text(current.title) || input.title };
+      }
+      const conversation = normalizeConversation({ ...body, updatedAt: body.updatedAt || now() }, { now: now() });
       const index = await readIndex();
       const saved = summarize(conversation);
       const others = index.items.filter(item => item.id !== conversation.id).sort((a, b) => text(b.updatedAt).localeCompare(text(a.updatedAt)));

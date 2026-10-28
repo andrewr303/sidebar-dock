@@ -1,10 +1,9 @@
 // Pure note utilities (SPEC §6.3). Node-importable: no DOM or chrome access.
 // Task indices follow the shared TASK_LINE rule from markdown.js, so an index from extractTasks is the same
 // number the rendered checkbox carries in data-task-index, and toggleTask rewrites exactly that line.
-import {parseNoteBlocks,plainText,inlineText,taskLineIndices,TASK_LINE} from './markdown.js';
+import {parseNoteBlocks,plainText,inlineText,renderInline,renderTableCell,taskLineIndices,TASK_LINE} from './markdown.js';
 import {canonicalUrl} from './store.js';
 
-const WIKI=/\[\[([^[\]\n|]{1,200})(?:\|([^[\]\n]{1,200}))?\]\]/g;
 function walkBlocks(markdown,visit){
  const walk=(text,offset,depth)=>{if(depth>16)return;for(const b of parseNoteBlocks(text)){visit(b,offset+(b._lineStart||0));if(b.type==='toggle')walk(b.text,offset+(b._lineStart||0)+1,depth+1);}};
  walk(String(markdown??''),0,0);
@@ -30,11 +29,15 @@ export function toggleTask(markdown,index,done){
 }
 export function taskProgress(markdown){const tasks=extractTasks(markdown);return {done:tasks.filter(t=>t.done).length,total:tasks.length};}
 
-/** Distinct [[wiki link]] targets (the part before "|"), outside code. */
+/** Distinct [[wiki link]] targets (the part before "|"): the links renderMarkdown draws as link chips, found by its own
+ *  inline parser, so code, escaped brackets and link labels never count and an escaped backslash before [[ hides nothing. */
 export function extractWikiLinks(markdown){
- const seen=new Set();
- const scan=text=>{for(const m of String(text??'').replace(/(`+)[\s\S]*?\1/g,' ').replace(/\\\[/g,'  ').matchAll(WIKI)){const target=m[1].trim();if(target)seen.add(target);}};
- walkBlocks(markdown,b=>{if(b.type==='code'||b.type==='divider')return;if(b.type==='table'){for(const row of [b.headers,...b.rows])row.forEach(scan);return;}scan(b.type==='toggle'?b.title:b.text);});
+ const seen=new Set(),resolveLink=target=>{if(target)seen.add(target);return null;};
+ walkBlocks(markdown,b=>{
+  if(b.type==='code'||b.type==='divider')return;
+  if(b.type==='table'){for(const row of [b.headers,...b.rows])for(const cell of row)renderTableCell(cell,{resolveLink});return;}
+  renderInline(b.type==='toggle'?b.title:b.text,{resolveLink});
+ });
  return [...seen];
 }
 const usable=item=>item&&!item.deletedAt;

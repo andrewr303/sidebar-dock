@@ -167,6 +167,8 @@ function itemOption(ctx, item, extra = {}) {
     run: (ctx, { alt }) => {
       ctx.prefs.set('recentItems', [item.id, ...ctx.prefs.get('recentItems', []).filter(id => id !== item.id)].slice(0, 20));
       if (alt && item.url) return ctx.dispatch('app.open-url', { data: { url: item.url } });
+      // Notes open straight in the notes editor (notes.js openNote) rather than in the detail panel.
+      if (item.type === 'note' && hasAction('notes.open')) return ctx.dispatch('notes.open', { data: { id: item.id } });
       ctx.openItem(item.id);
     },
   };

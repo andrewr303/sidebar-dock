@@ -10,7 +10,7 @@ import { renderItem, renderItemLink, generatedArt, coverOf, readingMinutes, item
 import { pickCollection, parseTags, trashItems, setArchived, moveItems, addNoteFor, menuOpenFor } from './library.js';
 import { renderInlineEditor } from './note-editor.js';
 import { renderTagInput } from './pickers.js';
-import { createNote } from './notes.js';
+import { createNote, openNote } from './notes.js';
 import { askAi } from './ai-panel.js';
 import { renderMarkdown } from '../lib/markdown.js';
 import { canonicalUrl } from '../lib/store.js';
@@ -544,12 +544,6 @@ function closeTagEditor(ctx) {
   ctx.nextFrame(() => document.querySelector(`.detail-add[data-id="${CSS.escape(id)}"][data-action="detail.add-tag-open"]`)?.focus());
 }
 
-function openNoteTab(ctx, id) {
-  ctx.state.notes = { ...(ctx.state.notes || {}), noteId: id };
-  ctx.closePanel();
-  ctx.navigate('notes');
-}
-
 registerActions({
   'detail.tab': ({ ctx, data }) => {
     if (!ctx.state.panel) return;
@@ -654,7 +648,8 @@ registerActions({
     const value = await ctx.prompt({ title: item.type === 'note' ? 'Edit note' : 'Your note', label: 'Markdown', value: item.content || '', multiline: true, confirmLabel: 'Save note' });
     if (value != null && value !== (item.content || '')) await patch(ctx, data.id, { content: value });
   },
-  'detail.open-note': ({ ctx, data }) => openNoteTab(ctx, data.id),
+  // The notes editor of this surface takes over from the detail panel (notes.js clears the panel and shows Notes).
+  'detail.open-note': ({ ctx, data }) => openNote(ctx, data.id),
   'detail.hl-color': ({ ctx, el, data }) => {
     const item = itemOf(ctx, data.id);
     const current = item?.highlights?.find(h => h.id === data.hid);

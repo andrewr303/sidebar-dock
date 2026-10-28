@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   UNTITLED, titleValue, normalizeTitle, mergeRelatedIds, readingMinutes, reconcile, applyAiResult, searchLinkCandidates,
-  draftDecision, mergeTagList, AI_ACTIONS,
+  draftDecision, mergeTagList, AI_ACTIONS, trashConfirmation,
 } from '../extension/ui/note-editor.js';
 import {
   NO_COLLECTION, inCollection, filterNotes, collectionCounts, previewSource, groupTasks, taskTotals, shortAgo, editedLabel, pageNoteDraft,
@@ -167,4 +167,13 @@ test('the page composer names the note after the page and starts the body with t
   assert.deepEqual(pageNoteDraft({ url: 'https://example.com/a', title: '  Building   agents ' }, ' First thought '),
     { title: 'Notes on Building agents', content: 'First thought\n', url: 'https://example.com/a' });
   assert.deepEqual(pageNoteDraft({ url: 'https://www.example.com/a', title: '' }, ''), { title: 'Notes on example.com', content: '', url: 'https://www.example.com/a' });
+});
+
+test('moving a note to Trash asks first only when the confirm setting is on, in the library\'s words', () => {
+  assert.equal(trashConfirmation(undefined), null);
+  assert.equal(trashConfirmation({}), null);
+  assert.equal(trashConfirmation({ confirmDelete: false }), null);
+  assert.equal(trashConfirmation({ confirmDelete: 'true' }), null, 'only a real true turns it on');
+  assert.deepEqual(trashConfirmation({ confirmDelete: true }),
+    { title: 'Move this note to Trash?', body: 'You can restore it from Trash.', confirmLabel: 'Move to Trash', tone: 'danger' });
 });

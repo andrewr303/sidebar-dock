@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createConversationStore, createMemoryStorage, migrateLegacyChats, normalizeConversation, titleFromQuestion, CONVERSATIONS_KEY, LEGACY_CHATS_KEY, CONVERSATION_LIMITS } from '../extension/lib/ai/conversations.js';
+import { createConversationStore, createMemoryStorage, migrateLegacyChats, normalizeConversation, normalizeMessage, titleFromQuestion, CONVERSATIONS_KEY, LEGACY_CHATS_KEY, CONVERSATION_LIMITS } from '../extension/lib/ai/conversations.js';
 
 const legacy = [
   { id: 'chat-2', title: 'Japan trip', spaceKey: 'space:travel', createdAt: '2026-09-02T00:00:00.000Z', updatedAt: '2026-09-02T01:00:00.000Z', messages: [
@@ -112,4 +112,45 @@ test('the total size cap drops the oldest conversations; the one being saved alw
   const saved = await store.saveConversation({ id: 'codes', messages: [{ role: 'user', text: 'q' }, { role: 'assistant', text: '', error: 'Claude declined this request.', errorCode: 'refusal', stopReason: 'refusal' }] });
   assert.deepEqual([saved.messages[1].errorCode, saved.messages[1].stopReason], ['refusal', 'refusal']);
   assert.equal((await store.getConversation('codes')).messages[1].errorCode, 'refusal');
+});
+
+test('read step results and answer notes survive a save within their caps', async () => {
+  const ids = Array.from({ length: 60 }, (_, i) => `item_${i}`);
+  const message = normalizeMessage({ role: 'assistant', text: 'a', tools: [
+    { name: 'search_library', summary: 'Searched library · 60 matches', result: { query: `  ${'q'.repeat(250)} `, count: 60, ids: [...ids, 7, '', 'x'.repeat(201)], extra: 'dropped' } },
+    { name: 'get_items', summary: 'Read 2 items', result: { count: 2 } },
+    { name: 'get_page', summary: 'Read this page', result: { chars: 10 } },
+    { name: 'list_tags', summary: 'Listed', result: 'nope' },
+    { name: 'list_collections', summary: 'Listed', result: { count: -1, ids: 'x' } },
+  ], notes: ['The answer reached the length limit and may be cut off.', 'The answer reached the length limit and may be cut off.', '', 4, ` ${'n'.repeat(400)}`, ...Array.from({ length: 20 }, (_, i) => `Note ${i}.`)] });
+  assert.deepEqual(message.tools[0].result, { query: 'q'.repeat(200), count: 60, ids: ids.slice(0, 50) });
+  assert.deepEqual(message.tools[1].result, { count: 2 });
+  assert.ok(!('result' in message.tools[2]) && !('result' in message.tools[3]), 'results without a query, count or ids are not kept');
+  assert.deepEqual(message.tools[4].result, undefined);
+  assert.equal(message.notes.length, 10);
+  assert.equal(message.notes[0], 'The answer reached the length limit and may be cut off.');
+  assert.equal(message.notes[1], 'n'.repeat(300));
+  assert.equal(normalizeMessage({ role: 'assistant', text: 'b', notes: [] }).notes, undefined, 'no notes, no field');
+
+  const store = createConversationStore({ storage: createMemoryStorage() });
+  const saved = await store.saveConversation({ id: 'c', messages: [{ role: 'user', text: 'Find japan' }, message] });
+  const loaded = await store.getConversation(saved.id);
+  assert.deepEqual(loaded.messages[1].tools.map(tool => tool.result), message.tools.map(tool => tool.result));
+  assert.deepEqual(loaded.messages[1].notes, message.notes);
+  assert.ok(JSON.stringify(loaded).length <= CONVERSATION_LIMITS.bytes);
+});
+
+test('an "existing" save goes into the stored conversation: a deleted one stays deleted and a newer title wins', async () => {
+  const storage = createMemoryStorage();
+  const store = createConversationStore({ storage, now: () => '2026-10-28T00:00:00.000Z' });
+  const first = await store.saveConversation({ id: 'c1', messages: [{ role: 'user', text: 'Kyoto?' }] });
+  await store.saveConversation({ ...first, title: 'Kyoto trip' });
+  const appended = await store.saveConversation({ ...first, messages: [...first.messages, { role: 'assistant', text: 'Temples.' }] }, { existing: true });
+  assert.equal(appended.title, 'Kyoto trip');
+  assert.deepEqual((await store.getConversation('c1')).messages.map(m => m.text), ['Kyoto?', 'Temples.']);
+  await store.deleteConversation('c1');
+  assert.equal(await store.saveConversation({ ...appended, messages: [...appended.messages, { role: 'user', text: 'More?' }] }, { existing: true }), null);
+  assert.equal(await store.getConversation('c1'), null);
+  assert.deepEqual(await store.listConversations(), []);
+  assert.equal((await store.saveConversation({ id: 'c2', messages: [{ role: 'user', text: 'New' }] })).id, 'c2', 'a plain save still creates');
 });

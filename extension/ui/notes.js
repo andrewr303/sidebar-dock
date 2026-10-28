@@ -8,7 +8,7 @@ import { registerPopover } from './overlay.js';
 import { button, iconButton, segmented, searchField, emptyState, favicon, domainOf, relativeDate, shortDate, colorVar } from './components.js';
 import { searchRows } from './selectors.js';
 import * as pickers from './pickers.js';
-import { renderNoteEditor, openNote, closeNote, createNoteItem, editorFor, latestItem, rememberItem, displayTitle, titleValue, noteResolver, openInFullTab } from './note-editor.js';
+import { renderNoteEditor, openNote, closeNote, createNoteItem, editorFor, latestItem, rememberItem, displayTitle, titleValue, noteResolver, openInFullTab, confirmNoteTrash } from './note-editor.js';
 import { renderMarkdown, renderInline } from '../lib/markdown.js';
 import { extractTasks, toggleTask, taskProgress, noteExcerpt, noteTitleFromContent, outline, wordCount, dailyNoteTitle, noteTemplates } from '../lib/notes.js';
 
@@ -586,12 +586,15 @@ function renderSideEditor(ctx, id) {
   const note = latestItem(ctx, id);
   const collection = note?.collectionId ? ctx.select.collection(note.collectionId) : null;
   const back = s.returnTo === 'page' ? 'Back to This page' : 'Back to notes';
+  // This header replaces the app's side header (shell.js sideHeaderShown), so it keeps the app's More menu and h1.
   return html`<div class="side-note" data-key="side-note:${id}">
     <header class="side-note-head">
+      <h1 class="sr-only">Notes</h1>
       ${iconButton({ icon: 'arrow-left', label: back, action: 'notes.back', tooltipPlacement: 'bottom start' })}
       <span class="side-note-crumb">${collection ? html`${dot(collection.color)}<span class="side-note-crumb-text">${collection.name}</span>` : html`<span class="side-note-crumb-text">${s.returnTo === 'page' ? 'This page' : 'Notes'}</span>`}</span>
       <span class="notes-spacer"></span>
       ${iconButton({ icon: 'maximize-2', label: 'Open in full tab', action: 'notes.open-full', data: { id }, tooltipPlacement: 'bottom end' })}
+      ${iconButton({ icon: 'ellipsis', label: 'More', action: 'shell.side-menu', expanded: menuOpenFor(ctx, 'shell.side-menu'), tooltipPlacement: 'bottom end' })}
     </header>
     ${renderNoteEditor(ctx, id, { surface: 'side' })}
   </div>`;
@@ -688,6 +691,7 @@ function openCardMenu(ctx, anchor, id, from) {
     ...(ctx.env.isSidepanel ? [{ label: 'Open in full tab', icon: 'external-link', run: () => openInFullTab(ctx, id) }] : []),
     { separator: true },
     { label: 'Move to Trash', icon: 'trash-2', danger: true, run: async () => {
+      if (!(await confirmNoteTrash(ctx))) return;
       rememberItem(await ctx.store.deleteItem(id));
       ctx.toast('Moved to Trash', { action: { label: 'Undo', run: async () => rememberItem(await ctx.store.restoreItem(id)) } });
     } },

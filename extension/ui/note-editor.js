@@ -93,6 +93,16 @@ export function draftDecision(draft, item, { field = 'content', title = true } =
   return draft.base === item.updatedAt ? 'restore' : 'conflict';
 }
 
+/**
+ * The question to ask before a note goes to Trash, or null to trash it right away (Settings > General > "Confirm
+ * before moving items to Trash" is off by default; Undo covers the common case). Same wording as library.js.
+ */
+export function trashConfirmation(settings) {
+  return settings?.confirmDelete === true
+    ? { title: 'Move this note to Trash?', body: 'You can restore it from Trash.', confirmLabel: 'Move to Trash', tone: 'danger' }
+    : null;
+}
+
 /** Lowercase, deduplicated tags from an AI "a, b, c" answer merged after the current ones. */
 export function mergeTagList(current = [], answer = '') {
   const out = [...(current || [])];
@@ -172,8 +182,14 @@ export function openNote(ctx, id, { focus, from } = {}) {
     ctx.render();
     return;
   }
-  if (ctx.state.panel?.kind === 'item') ctx.state.panel = null;
+  if (ctx.state.panel?.kind === 'item') { ctx.state.panel = null; ctx.syncUrl?.(); }
   if (ctx.state.view !== 'notes') ctx.navigate('notes', { keep: true }); else ctx.render();
+}
+
+/** Resolves true when the note may go to Trash: right away, or after the user confirms when the setting asks for it. */
+export async function confirmNoteTrash(ctx) {
+  const question = trashConfirmation(ctx.library?.settings);
+  return question ? ctx.confirm(question) : true;
 }
 
 /** Leaves the editor for `id` (after delete or archive, or the side panel back button). */
@@ -812,6 +828,7 @@ function createEditor(host, ctx) {
   }
 
   async function trash(record) {
+    if (!(await confirmNoteTrash(ctx))) return undefined;
     await save();
     await enqueue(async () => rememberItem(await ctx.store.deleteItem(id)));
     closeNote(ctx, id);

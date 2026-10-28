@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {extractTasks,toggleTask,taskProgress,extractWikiLinks,resolveWikiLinks,linkResolver,noteExcerpt,noteTitleFromContent,outline,wordCount,notesForPage,noteTemplates,dailyNoteTitle} from '../extension/lib/notes.js';
 import {renderMarkdown,TASK_LINE,taskLineIndices} from '../extension/lib/markdown.js';
+import {serializeInlineFragment} from '../extension/lib/block-editor.js';
 
 const LEXICAL='```md\n- [ ] literal code\n```\n- [x] Outside\n::::toggle [open] More\n- [ ] Inside\n```\n- [ ] literal nested code\n```\n:::toggle [closed] Nested\n- [ ] Deep\n:::\n::::\n- [ ] After\n  - [X] Nested **child**\n- [ ]\n- [ ]no space is a bullet';
 
@@ -77,4 +78,14 @@ test('templates and daily note titles are plain and parse into blocks',()=>{
  assert.equal(noteTemplates(now).find(t=>t.id==='reading').title,'Reading notes');
  for(const t of templates)assert.doesNotMatch(t.label+t.title+t.content,/—|!/);
  assert.equal(taskProgress(templates.find(t=>t.id==='project').content).total,1);
+});
+
+test('wiki links typed in the editor feed resolveWikiLinks exactly as the renderer draws them',()=>{
+ const items=[{id:'item_1',type:'note',title:'Alpha',updatedAt:'2026-01-01'},{id:'item_2',type:'note',title:'Beta',updatedAt:'2026-01-02'}];
+ const typed=serializeInlineFragment({nodeType:11,childNodes:[{nodeType:3,textContent:'See [[Alpha]], [[item_2|the second]] and [x]'}]});
+ assert.equal(typed,'See [[Alpha]], [[item_2|the second]] and \\[x]');
+ assert.deepEqual(resolveWikiLinks(`- [ ] ${typed}`,items),[{title:'Alpha',id:'item_1'},{title:'item_2',id:'item_2'}]);
+ // An escaped backslash or backtick before a link does not hide it; code, escaped brackets and link labels never link.
+ assert.deepEqual(extractWikiLinks('\\\\[[Alpha]] \\`[[Beta]]\\` \\[\\[Gamma]] `[[Code]]` [x [[Label]]](https://a.com)\n| [[a\\|b]] |\n| --- |'),['Alpha','Beta','a']);
+ assert.deepEqual(extractWikiLinks('[[ ]] [[x|]] [[|y]] [[ z ]]'),['z'],'blank targets and empty labels are not links (the renderer agrees)');
 });
