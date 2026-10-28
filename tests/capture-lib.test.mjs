@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 import {
   buildCapture, collectionMenuEntries, findSavedItem, indexSavedUrls, isPlaceholderTitle, menuCollectionTitle, normalizeRecentCollections,
-  normalizeTags, parseSaveToMenuId, rankMenuCollections, resolveCaptureCollection, saveToMenuId,
+  normalizeTags, parseSaveToMenuId, rankMenuCollections, readPageContext, readPageMetadata, resolveCaptureCollection, saveToMenuId,
 } from '../extension/lib/capture.js';
 
 const at = minutes => new Date(Date.UTC(2026, 9, 1, 12, minutes)).toISOString();
@@ -81,6 +82,50 @@ test('capture collection resolution falls back to Inbox for a missing collection
   assert.deepEqual(resolveCaptureCollection(library, null, { existing: { id: 'x' } }), { collectionId: '' });
   assert.deepEqual(resolveCaptureCollection(library, undefined, { preferred: 'design' }), { collectionId: 'design' });
   assert.deepEqual(resolveCaptureCollection({ collections: [], settings: { defaultCollectionId: 'gone' } }, undefined), { collectionId: '' });
+});
+
+test('a quick save follows the last-used collection (the side panel order), then the default, then Inbox', () => {
+  const library = { collections: [collection('design', 'Design'), collection('reading', 'Reading')], settings: { defaultCollectionId: 'reading' } };
+  assert.deepEqual(resolveCaptureCollection(library, undefined, { recent: ['gone', 'design', 'reading'] }), { collectionId: 'design' });
+  assert.deepEqual(resolveCaptureCollection(library, undefined, { recent: { recentCollections: ['design'] } }), { collectionId: 'design' }, 'the UI storage shape');
+  assert.deepEqual(resolveCaptureCollection(library, undefined, { recent: ['gone'] }), { collectionId: 'reading' });
+  assert.deepEqual(resolveCaptureCollection(library, undefined, { recent: ['design'], existing: { id: 'saved' } }), { collectionId: '' }, 'a saved item stays put');
+  assert.deepEqual(resolveCaptureCollection(library, undefined, { recent: ['design'], preferred: 'reading' }), { collectionId: 'reading' }, 'a note prefers its source page');
+  assert.deepEqual(resolveCaptureCollection(library, undefined, { recent: ['design'], preferred: '' }), { collectionId: '' }, 'a source page in Inbox keeps its note in Inbox');
+  assert.deepEqual(resolveCaptureCollection(library, undefined, { recent: ['design'], preferred: undefined }), { collectionId: 'design' }, 'no saved source page');
+  assert.deepEqual(resolveCaptureCollection(library, 'reading', { recent: ['design'] }), { collectionId: 'reading' }, 'an explicit choice wins');
+  assert.deepEqual(resolveCaptureCollection({ collections: [], settings: {} }, undefined, { recent: ['design'] }), { collectionId: '' });
+});
+
+test('a link or image found on a file or extension page is saved without a source address', () => {
+  for (const pageUrl of ['chrome-extension://abc/index.html', 'file:///home/me/notes.html', 'about:blank']) {
+    const link = buildCapture({ menuItemId: 'still-save-link', linkUrl: 'https://example.com/a', pageUrl });
+    assert.deepEqual([link.url, link.sourceUrl], ['https://example.com/a', ''], pageUrl);
+    const image = buildCapture({ menuItemId: 'still-save-image', srcUrl: 'https://cdn.example.com/a.png', pageUrl, mediaType: 'image' });
+    assert.deepEqual([image.type, image.sourceUrl], ['image', ''], pageUrl);
+  }
+  assert.throws(() => buildCapture({ menuItemId: 'still-save-page', pageUrl: 'file:///home/me/notes.html' }), /http or https/);
+});
+
+// Runs the injected readers the way executeScript does: the function source alone, in a fake page.
+function runInPage(func, args, { metaContent = '', title = '', selection = '', lang = '' } = {}) {
+  const body = { nodeType: 1, childNodes: [{ nodeType: 3, nodeValue: 'Body text' }], localName: 'body', matches: () => false, querySelector: () => null, innerText: 'Body text' };
+  const page = {
+    document: { title, body, documentElement: { lang }, querySelector: selector => (selector.startsWith('meta') ? { getAttribute: () => metaContent } : null), querySelectorAll: () => [] },
+    location: { href: 'https://example.com/page' }, getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
+  };
+  page.window = { getSelection: () => ({ toString: () => selection }) };
+  return vm.runInNewContext(`(${func.toString()})(...args)`, { ...page, args });
+}
+
+test('the injected page readers are self-contained and bound every field a page controls', () => {
+  const huge = 'x'.repeat(1_000_000);
+  const context = runInPage(readPageContext, [120000], { metaContent: huge, title: huge, selection: huge, lang: huge });
+  assert.equal(context.text, 'Body text');
+  assert.ok(context.title.length <= 2000 && context.excerpt.length <= 5000 && context.cover.length <= 5000 && context.selection.length <= 20000 && context.lang.length <= 35);
+  const metadata = runInPage(readPageMetadata, [], { metaContent: huge, title: huge, selection: huge });
+  assert.ok(metadata.title.length <= 2000 && metadata.excerpt.length <= 5000 && metadata.cover.length <= 5000 && metadata.selection.length <= 20000 && metadata.contentType.length <= 100);
+  assert.equal(metadata.url, 'https://example.com/page');
 });
 
 test('saved-item lookup follows store dedupe: canonical URL, never notes or trashed items', () => {

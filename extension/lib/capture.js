@@ -12,20 +12,23 @@ const SAVE_TO_KINDS = ['page', 'link', 'image'];
 const str = value => typeof value === 'string' ? value : '';
 const clean = (value, max = 300) => typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, max) : '';
 const sameUrl = (a, b) => { try { return canonicalUrl(a) === canonicalUrl(b); } catch { return false; } };
+// The page a link or image was found on may be a file, browser or extension page: keep the capture, drop the source.
+const webUrl = value => { try { return safeUrl(value); } catch { return ''; } };
 
-// Runs only after an explicit capture gesture on the active tab.
+// Runs only after an explicit capture gesture on the active tab. Self contained (executeScript serializes
+// the body); every field is bounded so a hostile page cannot push megabytes into the library.
 export function readPageMetadata() {
-  const meta = selector => document.querySelector(selector)?.getAttribute('content') || '';
-  const selection = window.getSelection()?.toString().trim() || '';
+  const meta = selector => (document.querySelector(selector)?.getAttribute('content') || '').slice(0, 5000);
+  const selection = (window.getSelection()?.toString().trim() || '').slice(0, 20000);
   const article = document.querySelector('article, main, [role="main"]');
   return {
-    title: document.title,
+    title: String(document.title || '').slice(0, 2000),
     url: location.href,
     excerpt: meta('meta[name="description"]') || meta('meta[property="og:description"]'),
     cover: meta('meta[property="og:image"]'),
     selection,
     articleText: article?.innerText?.trim().slice(0, 250000) || '',
-    contentType: meta('meta[property="og:type"]'),
+    contentType: meta('meta[property="og:type"]').slice(0, 100),
   };
 }
 
@@ -34,7 +37,7 @@ export function readPageMetadata() {
 // contains no navigation chrome (it keeps code indentation); only the path down to nav/footer/aside
 // nodes is walked by hand, collapsing source whitespace the way the page renders it.
 export function readPageContext(limit = 120000) {
-  const meta = selector => document.querySelector(selector)?.getAttribute('content') || '';
+  const meta = selector => (document.querySelector(selector)?.getAttribute('content') || '').slice(0, 5000);
   const skip = 'nav, footer, aside, script, style, noscript, template, [role="navigation"], [role="contentinfo"], [role="complementary"]';
   const extract = root => {
     const parts = [];
@@ -75,13 +78,13 @@ export function readPageContext(limit = 120000) {
   if (root !== document.body && !content.truncated && content.text.length < 200) content = extract(document.body);
   return {
     url: location.href,
-    title: document.title,
+    title: String(document.title || '').slice(0, 2000),
     excerpt: meta('meta[name="description"]') || meta('meta[property="og:description"]'),
     cover: meta('meta[property="og:image"]') || meta('meta[name="twitter:image"]'),
     selection: (window.getSelection()?.toString().trim() || '').slice(0, 20000),
     text: content.text.slice(0, limit),
     truncated: content.truncated,
-    lang: document.documentElement?.lang || meta('meta[property="og:locale"]') || '',
+    lang: (document.documentElement?.lang || meta('meta[property="og:locale"]') || '').slice(0, 35),
   };
 }
 
@@ -129,14 +132,19 @@ export function findSavedItem(library, url) {
   }) || null;
 }
 
-// requested: a string (explicit choice, '' = Inbox) or undefined/null (quick save: settings.defaultCollectionId
-// for new items; an already saved item stays where it is because the store keeps its collection when given '').
-export function resolveCaptureCollection(library, requested, { existing = null, preferred = '' } = {}) {
-  const exists = id => typeof id === 'string' && id !== '' && (library?.collections || []).some(collection => collection?.id === id);
+// requested: a string (explicit choice, '' = Inbox) or undefined/null (quick save). A quick save of a new item
+// goes to `preferred` when it is a string (a note's saved source page collection, '' = Inbox, like the UI's
+// `saved?.collectionId ?? default`), else the last-used collection (`recent`, the UI's still.ui.recent.v1 list,
+// first entry that still exists), else settings.defaultCollectionId, else Inbox: the same order as the side
+// panel's Save button. An already saved item stays where it is because the store keeps its collection when given ''.
+export function resolveCaptureCollection(library, requested, { existing = null, preferred = null, recent = [] } = {}) {
+  const exists = id => typeof id === 'string' && id !== '' && (library?.collections || []).some(collection => collection?.id === id && !collection.deletedAt);
   if (requested === INBOX_MENU_ID) requested = '';
   if (typeof requested === 'string') return requested === '' || exists(requested) ? { collectionId: requested } : { collectionId: '', collectionFallback: true };
   if (existing) return { collectionId: '' };
-  if (exists(preferred)) return { collectionId: preferred };
+  if (typeof preferred === 'string') return { collectionId: exists(preferred) ? preferred : '' };
+  const lastUsed = normalizeRecentCollections(recent).find(exists);
+  if (lastUsed) return { collectionId: lastUsed };
   const fallback = library?.settings?.defaultCollectionId;
   return { collectionId: exists(fallback) ? fallback : '' };
 }
@@ -236,7 +244,7 @@ export function buildCapture(info = {}, tab = {}, metadata = {}, options = {}) {
     type, title, url: existing?.url && sameUrl(existing.url, url) ? existing.url : url,
     excerpt: isLink || existing?.excerpt ? '' : metadata.excerpt || '', content, articleContent,
     cover, tags: normalizeTags(options.tags), collectionId: typeof options.collectionId === 'string' ? options.collectionId : '',
-    sourceUrl: safeUrl(pageUrl || metadata.url || tab.url),
+    sourceUrl: webUrl(pageUrl || metadata.url || tab.url),
     highlights: isSelection && selected ? [{ text: selected, url, color: 'amber' }] : [],
   };
 }

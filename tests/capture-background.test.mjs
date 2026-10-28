@@ -120,6 +120,28 @@ test('collection menus list Inbox, ranked collections with paths, a separator an
   assert.equal(menus.length, 11 + 3 * 13);
 });
 
+test('overlapping menu rebuilds run one at a time: no duplicate ids and the last library wins', async () => {
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (...args) => { warnings.push(args.join(' ')); };
+  try {
+    const first = { collections: [{ id: 'a1', name: 'Alpha' }, { id: 'b1', name: 'Beta' }], items: [] };
+    const last = { collections: [{ id: 'c1', name: 'Gamma' }], items: [] };
+    await Promise.all([installMenus(), installCollectionMenus(first, { recent: [], force: true }), installMenus(),
+      installCollectionMenus(first, { recent: [] }), installCollectionMenus(last, { recent: [] })]);
+    const ids = menus.map(menu => menu.id);
+    assert.equal(new Set(ids).size, ids.length, 'no duplicate menu ids');
+    assert.equal(menus.filter(menu => !menu.parentId).length, 11);
+    // A debounced refresh from the real library may queue after these calls; either way the older menu is gone.
+    for (const kind of ['page', 'link', 'image']) {
+      const children = menus.filter(menu => menu.parentId === `still-save-${kind}-to`).map(menu => menu.id.replace(`still-save-to:${kind}:`, ''));
+      assert.deepEqual([children[0], ...children.slice(-2)], ['__inbox', '__separator', '__choose'], kind);
+      assert.ok(!children.includes('a1') && !children.includes('b1'), kind);
+    }
+    assert.deepEqual(warnings, []);
+  } finally { console.warn = warn; }
+});
+
 test('a Save page to child saves into that collection, shows the check badge and records the collection as recent', async () => {
   values['still.ui.recent.v1'] = { recentCollections: ['reading'], other: true };
   opened.length = 0; badges.length = 0;
@@ -183,16 +205,54 @@ test('captureCurrent accepts collection, tags, note and title, reports created a
   assert.equal(third.collectionId, 'reading', 'a quick save leaves a saved item where it is');
 });
 
-test('quick saves without a collection use settings.defaultCollectionId for new items only', async () => {
+test('quick saves without a collection use settings.defaultCollectionId for new items when no last-used collection exists', async () => {
+  values['still.ui.recent.v1'] = { recentCollections: ['deleted-collection'] };
   await store('updateSettings', { defaultCollectionId: 'design' });
   tabs = [pageTab({ id: 22, url: 'https://example.com/default-target', title: 'Default target' })];
   pageScript = () => { throw new Error('Cannot access contents of the page'); };
   const item = await handleMessage({ type: 'captureCurrent' }, self);
-  assert.equal(item.collectionId, 'design');
+  assert.equal(item.collectionId, 'design', 'a recent id that no longer exists is skipped');
   assert.equal(item.title, 'Default target');
   const inbox = await handleMessage({ type: 'captureCurrent', collectionId: '' }, self);
   assert.equal(inbox.collectionId, 'design', 'Inbox on an existing item keeps its collection (dedupe)');
   await store('updateSettings', { defaultCollectionId: '' });
+});
+
+test('Alt+Shift+S and Save page to Still put a new page in the last-used collection and leave a saved page where it is', async () => {
+  values['still.ui.recent.v1'] = { recentCollections: ['deleted-collection', 'reading', 'design'] };
+  await store('updateSettings', { defaultCollectionId: 'design' });
+  pageScript = () => [{ result: { title: 'Command page', url: 'https://example.com/command' } }];
+  const [onCommand] = listener('commands#onCommand');
+  onCommand('save-current', pageTab({ id: 25, url: 'https://example.com/command' }));
+  const saved = await waitFor(() => byUrl('https://example.com/command'));
+  assert.equal(saved.collectionId, 'reading', 'last-used beats settings.defaultCollectionId, like the side panel button');
+  await store('updateItem', saved.id, { collectionId: 'design', title: 'Renamed by me', content: 'My note' });
+  values['still.ui.recent.v1'] = { recentCollections: ['inspiration'] };
+  const before = (await library()).updatedAt;
+  onCommand('save-current', pageTab({ id: 25, url: 'https://example.com/command' }));
+  await waitFor(async () => (await library()).updatedAt !== before);
+  const again = await byUrl('https://example.com/command');
+  assert.deepEqual([again.id, again.collectionId, again.title, again.content], [saved.id, 'design', 'Renamed by me', 'My note']);
+  opened.length = 0;
+  pageScript = () => [{ result: { title: 'Menu page', url: 'https://example.com/menu-quick' } }];
+  listener('contextMenus#onClicked')[0]({ menuItemId: 'still-save-page', pageUrl: 'https://example.com/menu-quick' }, pageTab({ id: 26, url: 'https://example.com/menu-quick' }));
+  assert.deepEqual(opened, [{ windowId: pageWindow }]);
+  assert.equal((await waitFor(() => byUrl('https://example.com/menu-quick'))).collectionId, 'inspiration');
+  await store('updateSettings', { defaultCollectionId: '' });
+});
+
+test('a link saved from a non-web page (file or extension page) keeps the link and drops the source address', async () => {
+  const [onClicked] = listener('contextMenus#onClicked');
+  const extensionPage = { id: 27, windowId: pageWindow, active: true, title: 'Still', url: 'chrome-extension://test-extension/index.html' };
+  onClicked({ menuItemId: 'still-save-link', pageUrl: extensionPage.url, linkUrl: 'https://from-extension.example/read', linkText: 'Read later' }, extensionPage);
+  const link = await waitFor(() => byUrl('https://from-extension.example/read'));
+  assert.deepEqual([link.title, link.sourceUrl, link.type], ['Read later', '', 'bookmark']);
+  sent.length = 0;
+  respond = message => (message.type === 'still:open-add' ? { ok: true } : undefined);
+  onClicked({ menuItemId: 'still-save-to:link:__choose', pageUrl: 'file:///home/me/notes.html', linkUrl: 'https://from-file.example/' }, { ...extensionPage, url: 'file:///home/me/notes.html' });
+  const request = await waitFor(() => sent.find(message => message.type === 'still:open-add'));
+  assert.deepEqual(request.payload, { url: 'https://from-file.example/', title: '', kind: 'link', sourceUrl: '' });
+  respond = () => undefined;
 });
 
 test('saving a link onto an already saved page keeps the page title instead of the raw link URL', async () => {
@@ -251,8 +311,10 @@ test('saveTabs and listTabs need the tabs permission, then save every web tab on
   assert.deepEqual(await handleMessage({ type: 'listTabs' }, self), { needsPermission: 'tabs' });
   assert.equal((await library()).collections.some(collection => collection.name === 'Session'), false, 'no collection before permission');
   granted.add('tabs');
+  const kept = await byUrl('https://example.com/keep-title');
+  await store('updateItem', kept.id, { collectionId: 'design', content: 'My own note', excerpt: 'My description' });
   tabs = [
-    pageTab({ id: 50, url: 'https://example.com/keep-title', title: 'Tab title must not replace it' }),
+    pageTab({ id: 50, url: 'https://example.com/keep-title?utm_source=tabs#top', title: 'Tab title must not replace it' }),
     pageTab({ id: 51, active: false, url: 'https://tabs.example/one', title: 'One' }),
     pageTab({ id: 52, active: false, url: 'https://tabs.example/one#again', title: 'One again' }),
     pageTab({ id: 53, active: false, url: 'chrome://extensions', title: 'Extensions' }),
@@ -263,13 +325,43 @@ test('saveTabs and listTabs need the tabs permission, then save every web tab on
   assert.deepEqual(listed.map(tab => [tab.tabId, tab.saved]), [[50, true], [51, false], [52, false], [54, false]]);
   const result = await handleMessage({ type: 'saveTabs', windowId: pageWindow, newCollectionName: ' Session ', tags: ['session'] }, self);
   const session = (await library()).collections.find(collection => collection.name === 'Session');
-  assert.deepEqual({ ...result, itemIds: result.itemIds.length }, { saved: 3, created: 2, skipped: 2, collectionId: session.id, itemIds: 3 });
+  assert.deepEqual({ ...result, itemIds: result.itemIds.length }, { saved: 3, created: 2, skipped: 2, collectionId: session.id, itemIds: 3,
+    moved: [{ id: kept.id, from: 'design' }] });
   const state = await library();
   const saved = result.itemIds.map(id => state.items.find(item => item.id === id));
-  assert.ok(saved.every(item => item.collectionId === session.id && item.tags.includes('session')));
+  assert.ok(saved.every(item => item.collectionId === session.id && item.tags.includes('session')), 'a chosen collection is the destination for every tab');
   assert.deepEqual(saved.map(item => [item.title, item.type]), [['The real title', 'article'], ['One', 'bookmark'], ['Video', 'video']]);
+  assert.deepEqual([saved[0].url, saved[0].content, saved[0].excerpt], ['https://example.com/keep-title', 'My own note', 'My description'],
+    'moving never replaces the note, description or stored address');
   const picked = await handleMessage({ type: 'saveTabs', tabIds: [60], collectionId: 'reading' }, self);
-  assert.deepEqual([picked.saved, picked.created, picked.collectionId], [1, 1, 'reading']);
+  assert.deepEqual([picked.saved, picked.created, picked.collectionId, picked.moved], [1, 1, 'reading', []]);
+  const inbox = await handleMessage({ type: 'saveTabs', tabIds: [50, 51], collectionId: '' }, self);
+  assert.deepEqual([inbox.saved, inbox.created, inbox.moved], [2, 0, []], 'Inbox never moves a saved item out of its collection');
+  assert.equal((await byUrl('https://example.com/keep-title')).collectionId, session.id);
+  const count = (await library()).collections.length;
+  const nothing = await handleMessage({ type: 'saveTabs', tabIds: [53, 99], newCollectionName: 'Empty' }, self);
+  assert.deepEqual([nothing.saved, nothing.skipped, nothing.collectionId], [0, 1, '']);
+  assert.equal((await library()).collections.length, count, 'no empty collection when no tab can be saved');
+});
+
+test('saveTabs fills a title that is only the address from the tab and keeps a real one', async () => {
+  const bare = await store('saveItem', { type: 'bookmark', url: 'https://bare.example/page', title: '' });
+  assert.equal(bare.title, 'bare.example');
+  tabs = [pageTab({ id: 61, url: 'https://bare.example/page', title: 'A proper title' }), pageTab({ id: 62, active: false, url: 'https://tabs.example/one', title: 'Renamed tab' })];
+  const result = await handleMessage({ type: 'saveTabs', windowId: pageWindow }, self);
+  const state = await library();
+  assert.deepEqual(result.itemIds.map(id => state.items.find(item => item.id === id).title), ['A proper title', 'One']);
+});
+
+test('a refused full-page request leaves no unhandled rejection from its tab lookup', async () => {
+  const unhandled = [];
+  const onUnhandled = reason => { unhandled.push(reason); };
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    await assert.rejects(handleMessage({ type: 'captureFullPage', jobId: 'bad', tabId: 999 }, self), /Invalid full-page capture job ID/);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(unhandled.map(reason => reason?.message), []);
+  } finally { process.off('unhandledRejection', onUnhandled); }
 });
 
 test('openSidePanel opens the panel for the sender window', async () => {

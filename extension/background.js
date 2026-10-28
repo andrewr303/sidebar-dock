@@ -11,10 +11,19 @@
  *                            { tabId?, windowId?, collectionId?, tags?, note?, title? }
  *                            -> saved Item + { created } (+ collectionFallback: true when collectionId no longer
  *                               exists and Inbox was used); { needsPermission: 'tabs', tabId, windowId } when the
- *                               tab URL is unreadable. collectionId '' = Inbox; omitted = settings.defaultCollectionId
- *                               for new items. note fills content only when the item is new or its note is empty.
+ *                               tab URL is unreadable. collectionId: a collection id moves the item there (new or
+ *                               already saved); '' = Inbox for a new item and never moves a saved one; omitted = quick
+ *                               save (see below). note fills content only when the item is new or its note is empty;
+ *                               a re-save never replaces a note, description, cover or real title (an explicit
+ *                               title field does replace the title).
  *   saveTabs                 { windowId?, tabIds?, collectionId?, newCollectionName?, tags? }
- *                            -> { saved, created, skipped, collectionId, itemIds } | { needsPermission: 'tabs' }
+ *                            -> { saved, created, skipped, moved: [{ id, from }], collectionId, itemIds }
+ *                               | { needsPermission: 'tabs' }. Web tabs only, one item per canonical URL. A chosen
+ *                               collection (or the new one, created only when at least one tab can be saved) is the
+ *                               destination for every tab: a tab that is already saved MOVES there, and `moved` lists
+ *                               it with its previous collectionId (from, '' = Inbox) so the UI can undo. Inbox ('')
+ *                               never moves a saved item. Moving never touches its note, description, type, stored
+ *                               URL or title (only a title that is just the address is replaced by the tab title).
  *   listTabs                 { windowId? } -> [{ tabId, windowId, url, title, favIconUrl, active, saved }] (http/https)
  *                            | { needsPermission: 'tabs' }
  *   getActiveTab             { windowId? } -> { granted: true, tabId, windowId, url, title, favIconUrl, saved, itemId }
@@ -22,13 +31,24 @@
  *   getPageContext           { tabId?, windowId? } -> { tabId, url, title, excerpt, cover, selection, text (<= 120000 chars),
  *                               truncated, lang } | { needsPermission: '<scheme>://<host>/*' | 'tabs', tabId, windowId }
  *                               (request it with chrome.permissions.request inside a click, then ask again)
- *   captureScreenshot | still:capture-screenshot, captureFullPage { jobId }, cancelFullPageCapture { jobId },
- *   getFullPageCaptureJob { jobId? }, openLibrary | still:open-library { itemId? },
- *   openSidePanel | still:open-sidepanel { windowId? } -> { opened, windowId }, newNote | still:new-note,
- *   importBrowserBookmarks
+ *   captureScreenshot | still:capture-screenshot { tabId?, windowId? } -> image Item (PNG attachment, WebP cover preview)
+ *   captureFullPage          { jobId, tabId?, windowId? } -> resolves when the job ends: { id, item, jobId, width, height,
+ *                               tileCount }. jobId: 8-80 chars [A-Za-z0-9_-] (a UUID works), unique per job.
+ *   cancelFullPageCapture    { jobId } -> { jobId, cancelled, status }
+ *   getFullPageCaptureJob    { jobId? } -> latest progress (see broadcast) or null; no jobId = the running job
+ *   openLibrary | still:open-library { itemId? } -> the new tab; newNote | still:new-note -> note Item
+ *   openSidePanel | still:open-sidepanel { windowId? } -> { opened, windowId }; importBrowserBookmarks -> { imported }
+ * Screenshot errors on a tab Chrome has not granted say "Cannot access this tab" (the UI maps it to its toolbar hint).
+ *
+ * Quick save (captureCurrent without collectionId, the Alt+Shift+S command and the "Save page/link/image to Still" and
+ * "Highlight selection" menus): a new item goes to the last-used collection (chrome.storage.local
+ * still.ui.recent.v1 { recentCollections }, first id that still exists), else settings.defaultCollectionId, else
+ * Inbox, matching the side panel's Save button; an already saved item stays in its collection. A note from a
+ * selection (and the new-note command) goes to the collection of its saved source page (Inbox included) first.
  *
  * Broadcasts to extension pages (runtime.sendMessage; nobody listening is fine):
- *   still:full-page-progress { jobId, status, ... }
+ *   still:full-page-progress { jobId, status: 'preparing'|'capturing'|'stitching'|'saving'|'saved'|'cancelled'|'error',
+ *                               completed, total, width?, height?, itemId? (saved), message? (error/cancelled) }
  *   still:active-tab { tab: { tabId, windowId, url, title, favIconUrl, saved, itemId } }   (only with 'tabs')
  *   still:open-add  { payload: { url, title, kind: 'page'|'link'|'image', sourceUrl }, windowId, requestId }
  *   still:open-note { id, windowId, requestId }
@@ -44,7 +64,9 @@ import {
   resolveCaptureCollection, findSavedItem, indexSavedUrls, isPlaceholderTitle, isVideoUrl, normalizeTags,
   normalizeRecentCollections, PAGE_TEXT_LIMIT, CHOOSE_MENU_ID, SEPARATOR_MENU_ID, INBOX_MENU_ID,
 } from './lib/capture.js';
-import { assertCaptureTab, captureRateLimiter, captureFullPagePixels, checkCaptureCancelled, pngDataUrlBlob } from './lib/full-page-capture.js';
+import {
+  assertCaptureTab, captureRateLimiter, captureFullPagePixels, checkCaptureCancelled, imagePreviewDataUrl, pngDataUrlBlob,
+} from './lib/full-page-capture.js';
 
 configureStoreWorker();
 
@@ -268,7 +290,9 @@ export async function captureTab(tab, info = {}, options = {}) {
   const library = await readLibrary();
   const existing = draft.type === 'note' ? null : findSavedItem(library, draft.url);
   const source = draft.type === 'note' ? findSavedItem(library, draft.url) : null;
-  const target = resolveCaptureCollection(library, options.collectionId, { existing, preferred: source?.collectionId });
+  // Quick save (no collectionId): a new item follows the last-used collection, like the side panel's Save button.
+  const recent = typeof options.collectionId !== 'string' && !existing ? await readRecentCollections() : [];
+  const target = resolveCaptureCollection(library, options.collectionId, { existing, preferred: source?.collectionId, recent });
   const input = buildCapture(info, tab, metadata, { ...options, collectionId: target.collectionId, existing });
   if (source) input.relatedIds = [source.id];
   const item = await saveItem(input);
@@ -289,30 +313,38 @@ async function saveTabs(input) {
   const wanted = Array.isArray(input.tabIds) ? new Set(input.tabIds.filter(Number.isInteger)) : null;
   const tabs = await api.tabs.query(windowId !== null ? { windowId } : wanted ? {} : { currentWindow: true });
   const library = await readLibrary();
-  const name = typeof input.newCollectionName === 'string' ? input.newCollectionName.trim() : '';
-  const explicit = Boolean(name) || typeof input.collectionId === 'string';
-  const target = name ? { collectionId: (await createCollection({ name })).id }
-    : resolveCaptureCollection(library, typeof input.collectionId === 'string' ? input.collectionId : undefined);
-  const tags = normalizeTags(input.tags);
-  const seen = new Set(), itemIds = [];
+  const index = indexSavedUrls(library);
+  const seen = new Set(), pages = [];
   let saved = 0, created = 0, skipped = 0;
   for (const tab of wanted ? tabs.filter(tab => wanted.has(tab.id)) : tabs) {
     let url = '', key = '';
     try { if (/^https?:\/\//i.test(tab.url || '')) { url = safeUrl(tab.url); key = canonicalUrl(url); } } catch { url = ''; }
     if (!url || seen.has(key)) { skipped++; continue; }
     seen.add(key);
-    const existing = findSavedItem(library, url);
-    // An existing item keeps its type, title and (for quick saves) its collection.
-    const entry = { url, tags, collectionId: explicit || !existing ? target.collectionId : '' };
+    pages.push({ tab, url, existing: index.get(key) || null });
+  }
+  const name = typeof input.newCollectionName === 'string' ? input.newCollectionName.trim() : '';
+  const explicit = Boolean(name) || typeof input.collectionId === 'string';
+  // No empty collection when every chosen tab was closed or is not a web page.
+  const target = name ? { collectionId: pages.length ? (await createCollection({ name })).id : '' }
+    : resolveCaptureCollection(library, typeof input.collectionId === 'string' ? input.collectionId : undefined,
+      { recent: explicit ? [] : await readRecentCollections() });
+  const tags = normalizeTags(input.tags);
+  const itemIds = [], moved = [];
+  for (const { tab, url, existing } of pages) {
+    // A chosen collection is the destination for every tab, so a saved page moves there; a quick save leaves it.
+    // The store keeps the note, description and cover; the stored URL, type and a real title are kept here.
+    const entry = { url: existing?.url || url, tags, collectionId: explicit || !existing ? target.collectionId : '' };
     if (!existing) entry.type = isVideoUrl(url) ? 'video' : 'bookmark';
-    if (!existing || isPlaceholderTitle(existing.title, url)) entry.title = tab.title || '';
+    if (!existing || (tab.title?.trim() && isPlaceholderTitle(existing.title, url))) entry.title = tab.title || '';
     try {
       const item = await saveItem(entry);
       saved++; itemIds.push(item.id);
       if (!existing) created++;
+      else if (entry.collectionId && entry.collectionId !== (existing.collectionId || '')) moved.push({ id: item.id, from: existing.collectionId || '' });
     } catch (error) { skipped++; console.info('Still skipped a tab:', error?.message); }
   }
-  return { saved, created, skipped, collectionId: target.collectionId, itemIds, ...(target.collectionFallback ? { collectionFallback: true } : {}) };
+  return { saved, created, skipped, moved, collectionId: target.collectionId, itemIds, ...(target.collectionFallback ? { collectionFallback: true } : {}) };
 }
 
 async function listTabs(input) {
@@ -368,7 +400,7 @@ export async function createPageNote(tab) {
   if (!url) return saveItem({ type: 'note', title: 'Untitled note', content: '' });
   const library = await readLibrary();
   const source = findSavedItem(library, url);
-  const { collectionId } = resolveCaptureCollection(library, undefined, { preferred: source?.collectionId });
+  const { collectionId } = resolveCaptureCollection(library, undefined, { preferred: source?.collectionId, recent: await readRecentCollections() });
   return saveItem({ type: 'note', title: `Notes on ${tab.title?.trim() || new URL(url).hostname}`, url, content: '',
     relatedIds: source ? [source.id] : [], collectionId });
 }
@@ -388,7 +420,10 @@ async function chooseCollection(info, tab, kind) {
   const opening = openSidePanel(tab);
   const url = safeUrl(kind === 'image' ? info.srcUrl : kind === 'link' ? info.linkUrl : info.pageUrl || tab?.url, { optional: false });
   const title = kind === 'page' ? tab?.title || '' : kind === 'link' ? (info.linkText || info.selectionText || '').replace(/\s+/g, ' ').trim() : '';
-  const payload = { url, title, kind, sourceUrl: safeUrl(info.pageUrl || tab?.url) };
+  // The menu also shows on file and extension pages; their address is not a web source.
+  let sourceUrl = '';
+  try { sourceUrl = safeUrl(info.pageUrl || tab?.url); } catch { sourceUrl = ''; }
+  const payload = { url, title, kind, sourceUrl };
   return opening.then(() => deliverToPanel({ type: 'still:open-add', payload, windowId: tab?.windowId }));
 }
 
@@ -426,31 +461,43 @@ async function refreshActiveTabs() {
   for (const tab of await api.tabs.query({ active: true })) await refreshTab(tab, false);
 }
 
-const onTabActivated = ({ tabId }) => { attempt(async () => refreshTab(await api.tabs.get(tabId), true)); };
+// The tab listeners are added synchronously when the worker script starts (see the bottom of this file): an event
+// that wakes a stopped worker is dispatched right after that first run, before the async permission check
+// resolves, so a listener added only after the check would miss it. Handlers wait for the check, and the
+// listeners are removed again when 'tabs' is not granted so tab events do not keep waking the worker.
+let tabTrackingReady = Promise.resolve();
+let tabListening = false;
+const whenTracking = task => { tabTrackingReady.then(() => (tabTracking ? attempt(task) : undefined), () => undefined); };
+const onTabActivated = ({ tabId }) => { whenTracking(async () => refreshTab(await api.tabs.get(tabId), true)); };
 const onTabUpdated = (tabId, change, tab) => {
   if (!('url' in change || change.status === 'complete' || 'title' in change || 'favIconUrl' in change)) return;
-  attempt(() => refreshTab(tab || { id: tabId }, tab?.active === true));
+  whenTracking(() => refreshTab(tab || { id: tabId }, tab?.active === true));
 };
 const onWindowFocusChanged = windowId => {
   if (!Number.isInteger(windowId) || windowId < 0) return;
-  attempt(async () => refreshTab((await api.tabs.query({ active: true, windowId }))[0], true));
+  whenTracking(async () => refreshTab((await api.tabs.query({ active: true, windowId }))[0], true));
 };
 
+function listenToTabs(on) {
+  if (tabListening === on) return;
+  tabListening = on;
+  const method = on ? 'addListener' : 'removeListener';
+  api.tabs?.onActivated?.[method]?.(onTabActivated);
+  api.tabs?.onUpdated?.[method]?.(onTabUpdated);
+  api.windows?.onFocusChanged?.[method]?.(onWindowFocusChanged);
+}
+
 function startTabTracking() {
+  listenToTabs(true);
   if (tabTracking) return;
   tabTracking = true;
-  api.tabs?.onActivated?.addListener(onTabActivated);
-  api.tabs?.onUpdated?.addListener(onTabUpdated);
-  api.windows?.onFocusChanged?.addListener(onWindowFocusChanged);
   attempt(refreshActiveTabs);
 }
 
 function stopTabTracking() {
+  listenToTabs(false);
   if (!tabTracking) return;
   tabTracking = false;
-  api.tabs?.onActivated?.removeListener(onTabActivated);
-  api.tabs?.onUpdated?.removeListener(onTabUpdated);
-  api.windows?.onFocusChanged?.removeListener(onWindowFocusChanged);
   for (const timer of pendingBroadcasts.values()) clearTimeout(timer);
   pendingBroadcasts.clear();
   checkedTabs.clear();
@@ -467,8 +514,16 @@ function scheduleLibraryRefresh() {
   }, 500);
 }
 
-export async function captureScreenshot(tab, { persistAttachment = saveAttachment, removeAttachment = deleteAttachment, persistItem = saveItem, limiter = captureRateLimiter } = {}) {
-  const sourceUrl = safeUrl(tab?.url, { optional: false });
+// Without 'tabs' or an activeTab grant Chrome hides the tab URL. Say so in words the UI maps to its toolbar hint
+// instead of the address validation message.
+function screenshotSourceUrl(tab) {
+  if (tab && typeof tab === 'object' && !tab.url) throw new Error('Cannot access this tab until you click the Still toolbar button on it (activeTab).');
+  return safeUrl(tab?.url, { optional: false });
+}
+
+export async function captureScreenshot(tab, { persistAttachment = saveAttachment, removeAttachment = deleteAttachment, persistItem = saveItem,
+  limiter = captureRateLimiter, makePreview = imagePreviewDataUrl } = {}) {
+  const sourceUrl = screenshotSourceUrl(tab);
   if (activeFullPageJob) throw new Error('Wait for the full-page screenshot to finish or cancel it first.');
   visibleScreenshotJobs++;
   try {
@@ -477,11 +532,13 @@ export async function captureScreenshot(tab, { persistAttachment = saveAttachmen
     await assertCaptureTab(api, tab);
     const file = pngDataUrlBlob(dataUrl);
     Object.defineProperty(file, 'name', { value: `screenshot-${new Date().toISOString().replace(/[:.]/g, '-')}.png` });
+    // The cover is a small card preview; the PNG itself is the attachment (the detail view shows it when there is no cover).
+    const cover = await Promise.resolve().then(() => makePreview(file)).catch(() => '');
     const attachment = await persistAttachment(file);
     let item;
     try {
       item = await persistItem({ type: 'image', title: `Screenshot of ${tab.title || new URL(sourceUrl).hostname}`, url: '', sourceUrl,
-        excerpt: 'Visible page screenshot', content: '', articleContent: '', cover: dataUrl, ...attachment });
+        excerpt: 'Visible page screenshot', content: '', articleContent: '', cover, ...attachment });
     } catch (error) {
       try { await removeAttachment(attachment.attachmentId); }
       catch (cleanupError) { throw new Error(`${error.message} Screenshot file cleanup also failed: ${cleanupError.message}`); }
@@ -524,7 +581,7 @@ export function startFullPageCapture(tab, { jobId = crypto.randomUUID(), persist
   if (fullPageJobs.has(jobId)) throw new Error('This capture job ID has already been used.');
   // A runtime request registers its handle before resolving the active tab, so
   // a Cancel arriving during tabs.query cannot race ahead of job ownership.
-  if (!tab?.then) safeUrl(tab?.url, { optional: false });
+  if (!tab?.then) screenshotSourceUrl(tab);
   const job = { id: jobId, controller: new AbortController(), status: 'preparing', progress: {}, startedAt: Date.now() };
   // Retain a small number of status receipts, never the PNG/blob or library item.
   for (const [id, previous] of fullPageJobs) if (previous !== activeFullPageJob && (fullPageJobs.size >= 8 || Date.now() - previous.startedAt > 180_000)) fullPageJobs.delete(id);
@@ -537,7 +594,7 @@ export function startFullPageCapture(tab, { jobId = crypto.randomUUID(), persist
     try {
       tab = { ...await tab };
       checkCaptureCancelled(job.controller.signal);
-      const sourceUrl = safeUrl(tab?.url, { optional: false });
+      const sourceUrl = screenshotSourceUrl(tab);
       const image = await capturePixels(tab, { ...pixelOptions, api: captureApi, jobId, signal: job.controller.signal, limiter,
         onProgress: progress => publishCaptureProgress(job, progress, captureApi.runtime) });
       checkCaptureCancelled(job.controller.signal);
@@ -640,7 +697,13 @@ export async function handleMessage(message, sender) {
   if (message.type === 'still:store') return handleStoreOperation(input.operation, input.args);
   if (CAPTURE_MESSAGES.includes(message.type)) return captureCurrentTab(input);
   if (['captureScreenshot', 'still:capture-screenshot'].includes(message.type)) return captureScreenshot(await targetTab(input));
-  if (message.type === 'captureFullPage') return captureFullPage(targetTab(input), { jobId: input.jobId });
+  if (message.type === 'captureFullPage') {
+    // The tab lookup starts first so a Cancel can own the job at once; if the job is refused (one already runs,
+    // bad jobId) nothing awaits the lookup, so its rejection must not surface as an unhandled one.
+    const tab = targetTab(input);
+    tab.catch(() => {});
+    return captureFullPage(tab, { jobId: input.jobId });
+  }
   if (message.type === 'cancelFullPageCapture') return cancelFullPageCapture(input.jobId);
   if (message.type === 'getFullPageCaptureJob') return getFullPageCaptureJob(input.jobId);
   if (['openLibrary', 'still:open-library'].includes(message.type)) return openLibrary(typeof input.itemId === 'string' ? input.itemId : '');
@@ -690,22 +753,22 @@ if (api?.runtime?.onMessage) {
     handleMessage(message, sender).then(result => respond({ ok: true, result }), error => respond({ ok: false, error: error.message }));
     return true;
   });
-  api.runtime.onInstalled.addListener(() => {
+  api.runtime.onInstalled?.addListener(() => {
     installMenus().then(readLibrary).then(library => installCollectionMenus(library, { force: true })).catch(reportError);
     Promise.resolve(api.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })).catch(reportError);
     // The UI seeds a new library; installing does not overwrite existing captures.
   });
-  api.runtime.onStartup.addListener(() => {
+  api.runtime.onStartup?.addListener(() => {
     Promise.resolve(api.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })).catch(reportError);
     restoreReminders().catch(reportError);
     readLibrary().then(library => installCollectionMenus(library)).catch(error => console.warn('Still menus:', error?.message));
   });
-  api.contextMenus.onClicked.addListener(handleMenuClick);
-  api.commands.onCommand.addListener(handleCommand);
-  api.alarms.onAlarm.addListener(alarm => { handleAlarm(alarm).catch(reportError); });
-  api.notifications.onClicked.addListener(id => {
+  api.contextMenus?.onClicked?.addListener(handleMenuClick);
+  api.commands?.onCommand?.addListener(handleCommand);
+  api.alarms?.onAlarm?.addListener(alarm => { handleAlarm(alarm).catch(reportError); });
+  api.notifications?.onClicked?.addListener(id => {
     if (id.startsWith('still:item:')) openLibrary(id.slice('still:item:'.length)).catch(reportError);
-    api.notifications.clear(id);
+    attempt(() => api.notifications.clear(id));
   });
   api.storage?.onChanged?.addListener((changes, area) => { if (area === 'local' && changes[RECENT_COLLECTIONS_KEY]) scheduleLibraryRefresh(); });
   api.permissions?.onAdded?.addListener(change => { if (change?.permissions?.includes('tabs')) startTabTracking(); });
@@ -716,7 +779,10 @@ if (api?.runtime?.onMessage) {
     scheduleLibraryRefresh();
   });
   restoreReminders().catch(reportError);
-  hasPermission({ permissions: ['tabs'] }).then(granted => { if (granted) startTabTracking(); });
+  listenToTabs(true);
+  tabTrackingReady = hasPermission({ permissions: ['tabs'] }).then(granted => {
+    if (granted) startTabTracking(); else if (!tabTracking) listenToTabs(false);
+  });
 }
 
 export { MENU_ITEMS, MESSAGE_TYPES, STORAGE_KEY };

@@ -81,19 +81,34 @@ test('an external link does not inherit the source page article snapshot', () =>
   assert.equal(item.cover, '');
 });
 
-test('screenshot captures the visible web tab into a local PNG attachment', async () => {
-  let persisted;
+test('screenshot captures the visible web tab into a local PNG attachment with a small cover preview', async () => {
+  let persisted, previewed;
+  const preview = 'data:image/webp;base64,UklGRg==';
   const item = await captureScreenshot({ id: 7, windowId: 1, url: 'https://example.com/post', title: 'Page' }, {
     persistAttachment: async file => { persisted = file; return { attachmentId: 'shot-1', fileName: file.name, mime: file.type, size: file.size }; },
+    makePreview: async file => { previewed = file; return preview; },
   });
   assert.deepEqual(screenshotCalls.at(-1), { windowId: 1, options: { format: 'png' } });
   assert.ok(persisted instanceof Blob);
   assert.equal(persisted.type, 'image/png');
+  assert.equal(previewed, persisted, 'the preview is made from the captured PNG');
   assert.equal(item.type, 'image');
   assert.equal(item.url, '');
   assert.equal(item.sourceUrl, 'https://example.com/post');
   assert.equal(item.attachmentId, 'shot-1');
-  assert.equal(item.cover, screenshotDataUrl);
+  assert.equal(item.cover, preview, 'the full-resolution PNG never goes into the library JSON');
+  // Without OffscreenCanvas (or on a decode failure) the item has no cover and the detail view shows the attachment.
+  const fallback = await captureScreenshot({ id: 7, windowId: 1, url: 'https://example.com/post', title: 'Page' }, {
+    persistAttachment: async () => ({ attachmentId: 'shot-2' }), makePreview: async () => { throw new Error('no canvas'); },
+  });
+  assert.deepEqual([fallback.cover, fallback.attachmentId], ['', 'shot-2']);
+});
+
+test('screenshots of a tab Chrome has not granted explain the toolbar step instead of an address error', async () => {
+  const before = screenshotCalls.length;
+  await assert.rejects(captureScreenshot({ id: 7, windowId: 1 }), /Cannot access this tab.*activeTab/);
+  assert.throws(() => startFullPageCapture({ id: 7, windowId: 1 }, { jobId: 'job-without-url' }), /Cannot access this tab/);
+  assert.equal(screenshotCalls.length, before);
 });
 
 test('screenshot rejects protected pages and cleans file storage if library persistence fails', async () => {

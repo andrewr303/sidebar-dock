@@ -201,6 +201,28 @@ export async function stitchFullPageTiles(plan, captures, { signal, Canvas = glo
   } finally { canvas.width = 0; canvas.height = 0; }
 }
 
+// A bounded WebP card preview (data URL, longest side <= maxSide) for a screenshot. The full PNG lives in the
+// attachment store; a full-resolution data URL in `cover` would be rewritten with the whole library on every save.
+export async function imagePreviewDataUrl(blob, { maxSide = 640, Canvas = globalThis.OffscreenCanvas, decode = globalThis.createImageBitmap } = {}) {
+  if (!Canvas || !decode) throw new Error('This Chrome version cannot create a screenshot preview.');
+  const bitmap = await decode(blob);
+  let canvas;
+  try {
+    const ratio = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+    canvas = new Canvas(Math.max(1, Math.round(bitmap.width * ratio)), Math.max(1, Math.round(bitmap.height * ratio)));
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) throw new Error('Chrome could not allocate a screenshot preview.');
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const preview = await canvas.convertToBlob({ type: 'image/webp', quality: 0.8 });
+    const bytes = new Uint8Array(await preview.arrayBuffer());
+    let binary = ''; for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    return `data:${preview.type || 'image/webp'};base64,${btoa(binary)}`;
+  } finally {
+    bitmap.close?.();
+    if (canvas) { canvas.width = 0; canvas.height = 0; }
+  }
+}
+
 export async function assertCaptureTab(api, tab) {
   if (!Number.isInteger(tab?.id) || !Number.isInteger(tab?.windowId) || !/^https?:\/\//i.test(tab.url || '')) throw new Error('Open an http or https webpage before saving a screenshot.');
   const [current] = await api.tabs.query({ active: true, windowId: tab.windowId });

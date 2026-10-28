@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { planFullPageCapture, createCaptureRateLimiter, prepareFullPageCapture, scrollFullPageCapture, restoreFullPageCapture,
-  captureFullPagePixels, stitchFullPageTiles, pngDataUrlBlob } from '../extension/lib/full-page-capture.js';
+  captureFullPagePixels, stitchFullPageTiles, pngDataUrlBlob, imagePreviewDataUrl } from '../extension/lib/full-page-capture.js';
 
 const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jp1sAAAAASUVORK5CYII=';
 const tab = { id: 7, windowId: 1, url: 'https://example.com/page', title: 'An example' };
@@ -221,6 +221,25 @@ test('stitcher crops overlapping final viewports, closes images and creates a bo
   await assert.rejects(stitchFullPageTiles(plan, captured, { Canvas, decode, signal: bad.signal }), /cancelled before stitching/);
   const mismatch = async () => ({ width: 300, height: 160, close() { this.closed = true; } });
   await assert.rejects(stitchFullPageTiles(plan, captured, { Canvas, decode: mismatch }), /viewport changed/);
+});
+
+test('screenshot preview is a bounded WebP data URL and releases its bitmap and canvas', async () => {
+  const canvases = [], drawn = [];
+  let closed = false;
+  class Canvas {
+    constructor(width, height) { this.width = width; this.height = height; canvases.push(this); }
+    getContext() { return { drawImage: (...args) => drawn.push(args) }; }
+    async convertToBlob({ type }) { return new Blob(['webp-bytes'], { type }); }
+  }
+  const decode = async () => ({ width: 2560, height: 1440, close() { closed = true; } });
+  const preview = await imagePreviewDataUrl(pngDataUrlBlob(png), { Canvas, decode });
+  assert.equal(preview, `data:image/webp;base64,${Buffer.from('webp-bytes').toString('base64')}`);
+  assert.deepEqual(drawn[0].slice(1), [0, 0, 640, 360], 'longest side scaled to 640');
+  assert.ok(closed && canvases.every(canvas => canvas.width === 0 && canvas.height === 0));
+  await assert.rejects(imagePreviewDataUrl(pngDataUrlBlob(png), { Canvas: undefined, decode }), /cannot create a screenshot preview/);
+  const small = await imagePreviewDataUrl(pngDataUrlBlob(png), { Canvas, decode: async () => ({ width: 1, height: 1, close() {} }) });
+  assert.match(small, /^data:image\/webp;base64,/);
+  assert.deepEqual(drawn.at(-1).slice(1), [0, 0, 1, 1], 'never upscaled');
 });
 
 // The following exercises job/persistence ownership with a mocked Chrome edge.
