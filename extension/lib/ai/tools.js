@@ -202,6 +202,7 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
         if (wantedCollection.toLowerCase() === 'inbox') filter.collectionId = '';
         else if (collections.some(collection => collection.id === wantedCollection)) filter.collectionId = wantedCollection;
         else if (byName.length === 1) filter.collectionId = byName[0].id;
+        else if (byName.length > 1) throw new Error(`Several collections are named "${wantedCollection.slice(0, 80)}". Use list_collections and pass the id.`);
         else throw new Error(`Unknown collection "${wantedCollection.slice(0, 80)}". Use list_collections for collection ids.`);
       }
       if (text(input.tag).trim()) filter.tag = text(input.tag).trim().replace(/^#/, '');
@@ -309,7 +310,8 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
     if (collections.some(collection => collection.id === raw)) return raw;
     const byName = collections.filter(collection => text(collection.name).toLowerCase() === raw.toLowerCase());
     if (byName.length === 1) return byName[0].id;
-    throw new Error(`Unknown collection id "${raw}". Use list_collections, or create_collection first.`);
+    if (byName.length > 1) throw new Error(`Several collections are named "${raw.slice(0, 80)}". Use list_collections and pass the id.`);
+    throw new Error(`Unknown collection id "${raw.slice(0, 80)}". Use list_collections, or create_collection first.`);
   }
   const pathIn = (library, draft, id) => {
     const staged = draft.collections.find(collection => collection.id === id);
@@ -462,7 +464,7 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
   }
 
   /**
-   * Narrows a draft to what the user kept in Review. answer is 'apply', or a proposal-shaped object whose changes
+   * Narrows a draft to what the user kept in Review. answer is 'apply', or { decision: 'apply', changes } whose changes
    * (matched by change id, else by position and op) list the itemIds to keep; changes left out are dropped. It can only
    * remove work, never add it. A proposed collection that a kept change still needs is created anyway.
    * Returns { draft, filtered } (filtered is false when everything was kept).
@@ -581,17 +583,17 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
     }
   };
 
-  // onProposal resolves 'apply', 'discard', or (after Review) a proposal-shaped object: { changes: [{ id, itemIds }], decision? }.
-  // Anything else, a rejection, or no handler at all means discard: nothing is written without an explicit apply.
+  // onProposal resolves 'apply', 'discard', or (after Review) { decision: 'apply', changes: [{ id, itemIds }] }.
+  // Only the string 'apply' or an object whose decision is exactly 'apply' writes anything. Anything else (including
+  // the proposal object handed back unchanged), a rejection, or no handler at all means discard.
   const waitForDecision = proposal => new Promise((resolve, reject) => {
     if (typeof onProposal !== 'function') { resolve({ decision: 'discard' }); return; }
     if (signal?.aborted) { reject(signal.reason || new DOMException('Stopped', 'AbortError')); return; }
     const onAbort = () => reject(signal.reason || new DOMException('Stopped', 'AbortError'));
     signal?.addEventListener?.('abort', onAbort, { once: true });
     Promise.resolve().then(() => onProposal(structuredClone(proposal))).then(answer => {
-      const reviewed = answer && typeof answer === 'object'
-        && (answer.decision === 'apply' || (answer.decision === undefined && (Array.isArray(answer.changes) || Array.isArray(answer.proposal?.changes))));
-      resolve(answer === 'apply' || reviewed ? { decision: 'apply', answer } : { decision: 'discard' });
+      const apply = answer === 'apply' || (!!answer && typeof answer === 'object' && answer.decision === 'apply');
+      resolve(apply ? { decision: 'apply', answer } : { decision: 'discard' });
     }, () => resolve({ decision: 'discard' }))
       .finally(() => signal?.removeEventListener?.('abort', onAbort));
   });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { tokenize, parseQuery, lexicalSearch, makeSnippet, plainText, cosine, dot, centroid, semanticRank, reciprocalRankFusion, semanticHead, itemMatcher, createSearch } from '../extension/lib/ai/search.js';
+import { tokenize, parseQuery, lexicalSearch, makeSnippet, plainText, cosine, dot, centroid, semanticRank, reciprocalRankFusion, semanticHead, itemMatcher, createSearch, createAnalysisCache, MAX_QUERY_TERMS } from '../extension/lib/ai/search.js';
 import { createVectorStore } from '../extension/lib/ai/vector-store.js';
 import { normalizeVector } from '../extension/lib/ai/embeddings.js';
 import { queryItems } from '../extension/lib/store.js';
@@ -185,4 +185,42 @@ test('cached query vectors are dropped when the index is rebuilt for another mod
   for (const item of library.items.filter(entry => !entry.deletedAt)) await vectorStore.putItem(item.id, { hash: item.id, chunks: [{ n: 0, text: item.title, vector: embedText(item.title) }] });
   await search.searchLibrary('shrines trip');
   assert.deepEqual(models, ['fake', 'fake-2'], 'the query is embedded again with the new model');
+});
+
+test('long queries are capped so a pasted page cannot freeze search', () => {
+  const pasted = Array.from({ length: 400 }, (_, i) => `word${i}`).join(' ');
+  const parsed = parseQuery(`${pasted} "a quoted phrase"`);
+  assert.equal(parsed.terms.length, MAX_QUERY_TERMS);
+  assert.ok(parsed.words.length <= MAX_QUERY_TERMS);
+  assert.ok(parsed.semanticText.length <= 4000);
+  assert.deepEqual(parsed.terms.slice(0, 2), ['word0', 'word1'], 'the first terms carry the topic');
+});
+
+test('after a query cannot be embedded, searches stay keyword-only for a while instead of waiting on the provider again', async () => {
+  const vectorStore = await semanticFixture();
+  let clock = 1000;
+  let attempts = 0;
+  const search = createSearch({ getLibrary: async () => library, vectorStore, isSemanticReady: async () => true, failureBackoffMs: 20000, now: () => clock,
+    embedQuery: async () => { attempts++; throw new Error('The embedding provider did not answer in time.'); } });
+  assert.equal((await search.searchLibrary('kyoto'))[0].source, 'lexical');
+  await search.searchLibrary('calm');
+  await search.searchLibrary('ramen');
+  assert.equal(attempts, 1, 'one failed embedding pauses semantic search');
+  clock += 20001;
+  await search.searchLibrary('calm');
+  assert.equal(attempts, 2, 'semantic search is tried again after the pause');
+  // The caller's own stop is not a provider failure: it is rethrown and does not pause anything.
+  const controller = new AbortController();
+  const stoppable = createSearch({ getLibrary: async () => library, vectorStore, isSemanticReady: async () => true,
+    embedQuery: async (query, { signal }) => { controller.abort(); throw signal.reason || new DOMException('Aborted', 'AbortError'); } });
+  await assert.rejects(stoppable.searchLibrary('kyoto', { signal: controller.signal }), error => error.name === 'AbortError');
+});
+
+test('records without updatedAt are analyzed once per snapshot, not on every keystroke', () => {
+  const cache = createAnalysisCache();
+  const legacy = { id: 'old', title: 'Legacy record without timestamps', content: 'Saved before 0.2.' };
+  assert.equal(cache.get(legacy), cache.get(legacy));
+  const replaced = { ...legacy, title: 'Renamed legacy record' };
+  assert.notEqual(cache.get(replaced), cache.get(legacy), 'a replaced record is analyzed again');
+  assert.deepEqual(lexicalSearch([replaced], 'renamed', { cache }).map(hit => hit.id), ['old']);
 });

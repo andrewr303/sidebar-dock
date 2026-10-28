@@ -74,3 +74,28 @@ test('init hands the semanticSearch adapter to the bridge client and removes it 
   handle.dispose();
   assert.equal(hooks.at(-1).search, null);
 });
+
+test('undoProposal reverts an applied proposal from its saved record through the app store', async () => {
+  const { createLibraryStore } = await import('../extension/lib/store.js');
+  const { createToolSession } = await import('../extension/lib/ai/tools.js');
+  let state = null;
+  const library = createLibraryStore({ read: async () => state, write: async next => { state = next; } });
+  const op = (name, ...args) => library.dispatch(name, args);
+  await op('loadLibrary', { schemaVersion: 1, collections: [], items: [{ id: 'kyoto', type: 'bookmark', title: 'Kyoto', url: 'https://example.com/kyoto', tags: ['japan'] }] });
+  const store = { loadLibrary: () => op('loadLibrary'), bulkUpdateItems: (changes, options = {}) => op('bulkUpdateItems', changes, options), createCollection: input => op('createCollection', input),
+    saveItem: input => op('saveItem', input), deleteItem: (id, options = {}) => op('deleteItem', id, options), permanentlyDeleteItem: (id, options = {}) => op('permanentlyDeleteItem', id, options),
+    deleteCollection: (id, options = {}) => op('deleteCollection', id, options) };
+  const getLibrary = () => store.loadLibrary();
+  const handle = ai.init({ store, getLibrary, onLibraryChange: () => () => {} });
+  await handle.ready;
+  const session = createToolSession({ getLibrary, searchLibrary: async () => [], store, onProposal: async () => 'apply' });
+  await session.execute([{ id: 'a', name: 'add_tags', input: { ids: ['kyoto'], tags: ['trip'] } }, { id: 'b', name: 'create_collection', input: { name: 'Trips' } }]);
+  assert.deepEqual((await getLibrary()).items[0].tags, ['japan', 'trip']);
+  const saved = JSON.parse(JSON.stringify(session.proposals[0].undo));
+  assert.deepEqual(await ai.undoProposal(saved), { reverted: 2, kept: 0 });
+  const after = await getLibrary();
+  assert.deepEqual(after.items[0].tags, ['japan']);
+  assert.deepEqual(after.collections, []);
+  assert.deepEqual(await ai.undoProposal(null), { reverted: 0, kept: 0 });
+  handle.dispose();
+});

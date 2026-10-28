@@ -259,3 +259,159 @@ test('stopping while a proposal waits for review closes it as discarded and chan
   assert.equal(tools.proposals[0].status, 'discarded');
   assert.equal((await getLibrary()).items.find(item => item.id === 'tokyo').deletedAt, null);
 });
+
+test('nothing is written without an explicit apply: only "apply" or { decision: "apply" } count', async () => {
+  for (const answer of [undefined, 'yes', true, 1, 'APPLY', { changes: [] }, 'proposal']) {
+    const { tools, getLibrary } = await session({ session: { onProposal: async proposal => answer === 'proposal' ? proposal : answer } });
+    const before = JSON.stringify(await getLibrary());
+    const [result] = await tools.execute([call('add_tags', { ids: ['kyoto'], tags: ['x'] })]);
+    assert.equal(parse(result).status, 'declined', `${JSON.stringify(answer)} is not an apply`);
+    assert.equal(tools.proposals[0].status, 'discarded');
+    assert.equal(JSON.stringify(await getLibrary()), before);
+  }
+  const rejected = await session({ session: { onProposal: async () => { throw new Error('UI crashed'); } } });
+  await rejected.tools.execute([call('trash_items', { ids: ['tokyo'] })]);
+  assert.equal((await rejected.getLibrary()).items.find(item => item.id === 'tokyo').deletedAt, null);
+  const none = await session({ session: { onProposal: undefined } });
+  await none.tools.execute([call('trash_items', { ids: ['tokyo'] })]);
+  assert.equal(none.tools.proposals[0].status, 'discarded');
+  // The handler gets a copy: changing it cannot change what Apply writes.
+  const tampered = await session({ session: { onProposal: async proposal => { proposal.changes[0].itemIds.push('osaka'); proposal.changes[0].tags = ['evil']; return 'apply'; } } });
+  await tampered.tools.execute([call('add_tags', { ids: ['kyoto'], tags: ['trip'] })]);
+  const after = await tampered.getLibrary();
+  assert.deepEqual(after.items.find(item => item.id === 'kyoto').tags, ['Japan', 'trip']);
+  assert.deepEqual(after.items.find(item => item.id === 'osaka').tags, []);
+});
+
+test('Review: the answer can only narrow the proposal; left-out changes and items are untouched and reported', async () => {
+  const seen = [];
+  const { tools, events, getLibrary } = await session({ session: {
+    onProposal: async proposal => {
+      seen.push(proposal);
+      // Keep the collection, the tag change for tokyo only (plus an id that was never proposed), drop the move and favorite.
+      return { decision: 'apply', changes: proposal.changes.map(change => change.op === 'add_tags' ? { id: change.id, itemIds: ['tokyo', 'osaka'] }
+        : change.op === 'create_collection' ? { id: change.id, itemIds: [] } : { id: change.id, itemIds: [] }) };
+    } } });
+  const results = await tools.execute([
+    call('add_tags', { ids: ['kyoto', 'tokyo'], tags: ['trip'] }, 'a'),
+    call('create_collection', { name: 'Japan 2027' }, 'b'),
+    call('move_items', { ids: ['kyoto'], collectionId: 'new:Japan 2027' }, 'c'),
+    call('set_favorite', { ids: ['kyoto'], favorite: true }, 'd'),
+  ]);
+  assert.ok(seen[0].changes.every(change => /^change_\d+$/.test(change.id)), 'every change has a stable id for Review');
+  assert.deepEqual(results.map(result => result.toolUseId), ['a', 'b', 'c', 'd']);
+  assert.deepEqual(parse(results[0]), { status: 'applied', tagged: 1, tags: ['trip'], excludedByUser: 1 });
+  assert.equal(parse(results[1]).status, 'applied');
+  assert.equal(parse(results[2]).status, 'declined');
+  assert.equal(parse(results[3]).status, 'declined');
+  const library = await getLibrary();
+  const byId = id => library.items.find(item => item.id === id);
+  assert.deepEqual(byId('tokyo').tags, ['food', 'trip']);
+  assert.deepEqual(byId('kyoto').tags, ['Japan'], 'an item left out in Review keeps its tags');
+  assert.equal(byId('kyoto').collectionId, '');
+  assert.equal(byId('kyoto').favorite, false);
+  assert.deepEqual(byId('osaka').tags, [], 'ids that were never proposed are ignored');
+  assert.ok(library.collections.some(collection => collection.name === 'Japan 2027'));
+  const outcome = events.find(event => event.type === 'proposal_result');
+  assert.deepEqual(outcome.applied.map(change => change.label), ['Create collection Japan 2027', 'Add tag #trip to 1 item']);
+  assert.equal(tools.proposals[0].result.summary, 'Create collection Japan 2027. Add tag #trip to 1 item.');
+  await outcome.undo();
+  const reverted = await getLibrary();
+  assert.deepEqual(reverted.items.find(item => item.id === 'tokyo').tags, ['food']);
+  assert.ok(!reverted.collections.some(collection => collection.name === 'Japan 2027'));
+  // A Review answer that keeps nothing is a discard.
+  const empty = await session({ session: { onProposal: async proposal => ({ decision: 'apply', changes: proposal.changes.map(change => ({ id: change.id, itemIds: [] })) }) } });
+  const [none] = await empty.tools.execute([call('archive_items', { ids: ['kyoto', 'tokyo'] })]);
+  assert.equal(parse(none).status, 'declined');
+  assert.equal(empty.tools.proposals[0].status, 'discarded');
+});
+
+test('every call gets exactly one result in call order, even with repeated or missing ids', async () => {
+  const { tools } = await session();
+  const results = await tools.execute([
+    call('list_tags', {}, 'dup'),
+    call('add_tags', { ids: ['kyoto'], tags: ['a'] }, 'dup'),
+    { name: 'add_tags', input: { ids: ['tokyo'], tags: ['b'] } },
+    call('no_such_tool', {}, 'dup'),
+  ]);
+  assert.equal(results.length, 4);
+  assert.ok(parse(results[0]).tags);
+  assert.equal(parse(results[1]).status, 'applied');
+  assert.equal(parse(results[2]).status, 'applied');
+  assert.equal(results[3].isError, true);
+  assert.equal(tools.proposals.length, 1);
+  assert.deepEqual(tools.proposals[0].changes.map(change => change.itemIds), [['kyoto'], ['tokyo']]);
+});
+
+test('search_library accepts a collection name or "inbox" and reports an unknown collection', async () => {
+  const filters = [];
+  const { tools } = await session({ session: { searchLibrary: async (query, options) => { filters.push(options.filter); return []; } } });
+  const results = await tools.execute([
+    call('search_library', { query: 'x', collectionId: 'travel' }),
+    call('search_library', { query: 'x', collectionId: 'Travel' }),
+    call('search_library', { query: 'x', collectionId: 'Inbox' }),
+    call('search_library', { query: 'x', collectionId: 'Nowhere' }),
+  ]);
+  assert.deepEqual(filters.map(filter => filter.collectionId), ['travel', 'travel', '']);
+  assert.equal(results[3].isError, true);
+  assert.match(parse(results[3]).error, /Unknown collection "Nowhere"/);
+  // Two collections with one name: the model is asked for the id instead of guessing (reads and writes alike).
+  const twins = await session({ session: { searchLibrary: async () => [] } });
+  await twins.store.createCollection({ id: 'travel-2', name: 'travel', parentId: 'design' });
+  const [read, write] = await twins.tools.execute([call('search_library', { query: 'x', collectionId: 'Travel' }), call('move_items', { ids: ['kyoto'], collectionId: 'Travel' })]);
+  assert.match(parse(read).error, /Several collections are named "Travel"/);
+  assert.match(parse(write).error, /Several collections are named "Travel"/);
+});
+
+test('undo keeps edits made after Apply and works from the saved record after a reload', async () => {
+  const { tools, events, getLibrary, store } = await session();
+  await tools.execute([
+    call('add_tags', { ids: ['kyoto', 'tokyo'], tags: ['trip'] }, 'a'),
+    call('create_collection', { name: 'Japan 2027' }, 'b'),
+    call('move_items', { ids: ['kyoto', 'tokyo'], collectionId: 'new:Japan 2027' }, 'c'),
+    call('remove_tags', { ids: ['tokyo'], tags: ['food'] }, 'd'),
+    call('append_to_note', { id: 'plan', markdown: '- [ ] Book hotel' }, 'e'),
+    call('create_note', { title: 'Reading list', markdown: 'See [[kyoto]].', collectionId: 'new:Japan 2027' }, 'f'),
+  ]);
+  const applied = await getLibrary();
+  const tokyo = applied.items.find(item => item.id === 'tokyo');
+  // The user keeps working: tokyo moves to Travel and gets a tag; the note gets another line.
+  await store.bulkUpdateItems([{ id: 'tokyo', patch: { collectionId: 'travel', tags: [...tokyo.tags, 'mine'] } },
+    { id: 'plan', patch: { content: `${applied.items.find(item => item.id === 'plan').content}- [ ] Pack\n` } }]);
+  // Undo from the persisted record (JSON round trip, as after a reload).
+  const record = JSON.parse(JSON.stringify(tools.proposals[0].undo));
+  const outcome = await undoChanges(store, record, { getLibrary });
+  assert.equal(outcome.kept, 2, 'tokyo and the note changed after Apply');
+  const library = await getLibrary();
+  const byId = id => library.items.find(item => item.id === id);
+  assert.deepEqual(byId('kyoto').tags, ['Japan']);
+  assert.equal(byId('kyoto').collectionId, '');
+  assert.equal(byId('tokyo').collectionId, 'travel', 'a later move is kept');
+  assert.deepEqual([...byId('tokyo').tags].sort(), ['food', 'mine'], 'the proposal tag goes, the removed tag returns, the user tag stays');
+  assert.match(byId('plan').content, /Pack/, 'a note edited after Apply keeps its text');
+  const created = events.find(event => event.type === 'proposal_result');
+  assert.ok(created);
+  assert.ok(library.items.find(item => item.title === 'Reading list').deletedAt, 'the created note goes to Trash');
+  assert.ok(!library.collections.some(collection => collection.name === 'Japan 2027'), 'the created collection is removed once empty');
+  // A collection that now holds the user's own items is kept.
+  const second = await session();
+  await second.tools.execute([call('create_collection', { name: 'Keep me' }, 'x')]);
+  const keepId = second.tools.proposals[0].undo.createdCollections[0];
+  await second.store.bulkUpdateItems([{ id: 'osaka', patch: { collectionId: keepId } }]);
+  assert.deepEqual(await undoChanges(second.store, second.tools.proposals[0].undo, { getLibrary: second.getLibrary }), { reverted: 0, kept: 1 });
+  assert.ok((await second.getLibrary()).collections.some(collection => collection.id === keepId));
+});
+
+test('a failed Apply removes notes it already wrote outright instead of leaving them in Trash', async () => {
+  const { store, getLibrary } = await session();
+  let saves = 0;
+  const removed = [];
+  const failing = { ...store, saveItem: async input => { if (++saves === 2) throw new Error('Quota exceeded'); return store.saveItem(input); },
+    permanentlyDeleteItem: async id => { removed.push(id); }, deleteItem: async () => { throw new Error('a rollback must not trash'); } };
+  const session2 = createToolSession({ getLibrary, searchLibrary: async () => [], store: failing, onProposal: async () => 'apply' });
+  const results = await session2.execute([call('create_note', { title: 'One', markdown: 'a' }, 'a'), call('create_note', { title: 'Two', markdown: 'b' }, 'b'), call('add_tags', { ids: ['kyoto'], tags: ['t'] }, 'c')]);
+  assert.ok(results.every(result => result.isError && /Quota exceeded/.test(parse(result).message)));
+  assert.equal(removed.length, 1, 'the note written before the failure is removed with permanentlyDeleteItem');
+  assert.deepEqual((await getLibrary()).items.find(item => item.id === 'kyoto').tags, ['Japan'], 'the tag change is rolled back');
+  assert.equal(session2.proposals[0].status, 'failed');
+});

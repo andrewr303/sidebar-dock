@@ -16,6 +16,10 @@ const text = value => typeof value === 'string' ? value : '';
 const uidDefault = prefix => `${prefix}_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
 const isAbort = (error, signal) => signal?.aborted || error?.name === 'AbortError';
 const safeCanonical = url => { try { return canonicalUrl(url); } catch { return ''; } };
+// A model that cannot take tool definitions fails the request itself (a 400 or a provider error naming tools). Refusals,
+// key, permission, rate-limit and network failures carry their own codes and are reported, never retried without tools.
+const TOOL_REJECTION_CODES = new Set(['', 'error', 'bad_request', 'provider_error']);
+const rejectsTools = error => TOOL_REJECTION_CODES.has(text(error?.code)) && /\btools?\b|function/i.test(text(error?.message));
 
 /** The conversation's scope record (context without page text). */
 export function scopeRecord(context = {}) {
@@ -214,7 +218,7 @@ export function createAssistant({ streamChat, resolveConnection, modelInfo, getA
           result = await streamChat({ connectionId: useConnection, model: useModel, system, messages, tools: toolMode ? session.definitions() : undefined, effort: useEffort, signal, onEvent: onStepEvent });
         } catch (error) {
           // Some local or custom models reject tool definitions: answer once without tools instead of failing.
-          if (step === 0 && toolMode && !fullText && !isAbort(error, signal) && /\btools?\b|function/i.test(error?.message || '')) {
+          if (step === 0 && toolMode && !fullText && !isAbort(error, signal) && rejectsTools(error)) {
             toolMode = false;
             system = assistantSystemPrompt({ tools: false, today });
             emit({ type: 'status', label: 'This model cannot use library tools, so it will answer without making changes.' });
@@ -259,7 +263,7 @@ export function createAssistant({ streamChat, resolveConnection, modelInfo, getA
     // and sources already cited earlier in this conversation. Any other [[id]] is an invented citation and stays
     // unresolved (the UI shows it as unavailable) even when the id happens to exist in the library.
     const known = new Map();
-    for (const message of previous) for (const citation of message?.citations || []) if (citation?.id && citation.id !== 'page:current') known.set(citation.id, citation);
+    for (const earlier of previous) for (const citation of earlier?.citations || []) if (citation?.id && citation.id !== 'page:current') known.set(citation.id, citation);
     for (const entry of gathered.collection?.items || []) known.set(entry.id, entry);
     for (const source of gathered.sources || []) known.set(source.id, source);
     for (const [id, source] of session?.sources || []) known.set(id, source);

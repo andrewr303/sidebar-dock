@@ -247,3 +247,66 @@ test('citation extraction and history replay helpers', () => {
     { role: 'user', text: 'dangling' },
   ]), [{ role: 'user', content: 'one\n\ntwo' }, { role: 'assistant', content: '[Incomplete previous answer: Stopped]\npartial' }]);
 });
+
+test('failures reach the UI with their code; a refusal is reported and never retried without tools', async () => {
+  const refusal = Object.assign(new Error('Claude declined this request. It asked to use tools on private data.'), { code: 'refusal', partialText: '' });
+  const refused = await harness({ script: async () => { throw refusal; } });
+  const events = [];
+  const { conversation, message } = await refused.assistant.runAssistant({ input: 'x', onEvent: event => events.push(event) });
+  assert.equal(refused.calls.length, 1, 'a refusal that mentions tools is not mistaken for a model without tool support');
+  assert.ok(!events.some(event => event.type === 'status' && /cannot use library tools/.test(event.label)));
+  const error = events.find(event => event.type === 'error');
+  assert.deepEqual([error.code, error.message], ['refusal', refusal.message]);
+  assert.equal(message.errorCode, 'refusal');
+  assert.equal((await refused.conversations.getConversation(conversation.id)).messages[1].errorCode, 'refusal', 'the code is saved with the message');
+
+  for (const code of ['auth', 'permission', 'rate_limit']) {
+    const failing = await harness({ script: async () => { throw Object.assign(new Error(`Failure mentioning tools (${code}).`), { code }); } });
+    const seen = [];
+    await failing.assistant.runAssistant({ input: 'x', onEvent: event => seen.push(event) });
+    assert.equal(failing.calls.length, 1, `${code} is not retried without tools`);
+    assert.equal(seen.find(event => event.type === 'error').code, code);
+  }
+
+  // resolveConnection fails before any model call: the setup state needs the no_connection code.
+  const store = memoryStore(seed());
+  await store.ready;
+  const unconnected = createAssistant({ store, getLibrary: () => store.loadLibrary(), searchLibrary: async () => [], getAiSettings: async () => ({}),
+    resolveConnection: async () => { throw Object.assign(new Error('Connect an AI provider in Settings.'), { code: 'no_connection' }); },
+    streamChat: async () => { throw new Error('must not be called'); } });
+  const setup = [];
+  const result = await unconnected.runAssistant({ input: 'hello', onEvent: event => setup.push(event) });
+  assert.equal(setup.find(event => event.type === 'error').code, 'no_connection');
+  assert.equal(result.message.errorCode, 'no_connection');
+
+  // A provider 400 that names tools is the "model cannot take tools" case and still falls back once.
+  const noTools = await harness({ script: async ({ tools, onEvent }, n) => {
+    if (n === 1) { assert.ok(tools.length); throw Object.assign(new Error('Ollama: registry.ollama.ai/library/tiny does not support tools.'), { code: 'bad_request', status: 400 }); }
+    text(onEvent, 'Plain.');
+    return { text: 'Plain.', toolCalls: [] };
+  } });
+  assert.equal((await noTools.assistant.runAssistant({ input: 'x' })).message.text, 'Plain.');
+  assert.equal(noTools.calls.length, 2);
+
+  // Plain errors still get a code.
+  const plain = await harness({ script: async () => { throw new Error('Something broke.'); } });
+  assert.equal((await plain.assistant.runAssistant({ input: 'x' })).message.errorCode, 'error');
+  // A refusal reported as a stop reason (no exception) gets the same code.
+  const stopped = await harness({ script: async () => ({ text: '', toolCalls: [], stopReason: 'refusal' }) });
+  assert.equal((await stopped.assistant.runAssistant({ input: 'x' })).message.errorCode, 'refusal');
+});
+
+test('citations resolve only to material the model received in this conversation', async () => {
+  const { assistant } = await harness({
+    script: async ({ onEvent }, n) => {
+      const answer = n === 1 ? 'Temples [[kyoto]]; the castle [[osaka]] was never sent; [[page:current]] is not attached.' : 'As before [[kyoto]], and now [[tokyo]].';
+      text(onEvent, answer);
+      return { text: answer, toolCalls: [] };
+    },
+  });
+  const first = await assistant.runAssistant({ input: 'kyoto temples', context: { scope: 'item', ids: ['kyoto'] } });
+  assert.deepEqual(first.message.citations.map(c => c.id), ['kyoto'], 'osaka exists in the library but was not supplied, so it stays unresolved');
+  // Next turn: kyoto was cited before (the model sees that answer again); tokyo is the selected item now.
+  const second = await assistant.runAssistant({ conversationId: first.conversation.id, input: 'and tokyo?', context: { scope: 'item', ids: ['tokyo'] } });
+  assert.deepEqual(second.message.citations.map(c => [c.n, c.id, c.title]), [[1, 'kyoto', 'Kyoto temples'], [2, 'tokyo', 'Tokyo food map']]);
+});

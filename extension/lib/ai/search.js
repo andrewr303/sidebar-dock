@@ -149,12 +149,21 @@ function analyze(item) {
   return { terms, len, prefix, fields, haystack: null };
 }
 
-/** Per-item analysis cached by updatedAt so typing a query does not re-tokenize the library. */
+/**
+ * Per-item analysis cached by updatedAt so typing a query does not re-tokenize the library. Records without an
+ * updatedAt (legacy or hand-made) are cached by object identity instead: library snapshots are replaced, not mutated.
+ */
 export function createAnalysisCache() {
   const entries = new Map();
+  const unstamped = new WeakMap();
   return {
     get(item) {
       const stamp = text(item.updatedAt);
+      if (!stamp) {
+        let value = unstamped.get(item);
+        if (!value) { value = analyze(item); unstamped.set(item, value); }
+        return value;
+      }
       const cached = entries.get(item.id);
       if (cached && stamp && cached.stamp === stamp) return cached.value;
       const value = analyze(item);

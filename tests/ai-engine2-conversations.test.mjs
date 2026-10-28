@@ -86,3 +86,30 @@ test('titles come from the first question', () => {
   assert.ok(long.length <= 61 && long.endsWith('…'));
   assert.ok(!/\s…$/.test(long));
 });
+
+test('the total size cap drops the oldest conversations; the one being saved always stays', async () => {
+  const storage = createMemoryStorage();
+  let tick = 0;
+  const store = createConversationStore({ storage, now: () => new Date(Date.UTC(2026, 9, 1) + tick++ * 1000).toISOString() });
+  // Each conversation is about 3.4 MB (17 answers at the per-message cap), so ten of them pass the 32 MB total.
+  const answer = 'z'.repeat(CONVERSATION_LIMITS.messageChars);
+  const messages = Array.from({ length: 34 }, (_, n) => n % 2 ? { role: 'assistant', text: answer } : { role: 'user', text: `q${n}` });
+  const count = 12;
+  for (let i = 0; i < count; i++) await store.saveConversation({ id: `big${i}`, messages });
+  const list = await store.listConversations();
+  const total = list.reduce((sum, item) => sum + item.bytes, 0);
+  assert.ok(list.length < count, `the oldest conversations were dropped (${list.length} kept)`);
+  assert.ok(total <= CONVERSATION_LIMITS.totalBytes, `summaries stay under the total cap (${total})`);
+  assert.ok(total > CONVERSATION_LIMITS.totalBytes - list[0].bytes, 'and nothing is dropped that would have fit');
+  assert.equal(list[0].id, `big${count - 1}`);
+  assert.ok(!list.some(item => item.id === 'big0'));
+  const kept = new Set(list.map(item => item.id));
+  for (let i = 0; i < count; i++) {
+    const body = await storage.get(`still.ai.conversation.v2:big${i}`);
+    assert.equal(!!body, kept.has(`big${i}`), `body and summary agree for big${i}`);
+  }
+  // Message fields the UI branches on survive a save.
+  const saved = await store.saveConversation({ id: 'codes', messages: [{ role: 'user', text: 'q' }, { role: 'assistant', text: '', error: 'Claude declined this request.', errorCode: 'refusal', stopReason: 'refusal' }] });
+  assert.deepEqual([saved.messages[1].errorCode, saved.messages[1].stopReason], ['refusal', 'refusal']);
+  assert.equal((await store.getConversation('codes')).messages[1].errorCode, 'refusal');
+});

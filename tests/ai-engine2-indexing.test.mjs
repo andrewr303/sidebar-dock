@@ -396,3 +396,86 @@ test('pause and clear are shared through the index, so other views and reloads h
   assert.equal((await b.rebuildIndex()).indexed, 2);
   assert.equal(await vectorStore.isHeld(), false);
 });
+
+test('a write from a run that started before the index was emptied is refused inside the write', async () => {
+  const store = createVectorStore({ indexedDB: null });
+  await store.ensureConfig({ providerId: 'fake', connectionId: 'c', model: 'm' });
+  const generation = await store.generation();
+  assert.equal(await store.putItems([{ itemId: 'a', hash: 'h', chunks: [{ n: 0, text: 'a', vector: [1, 0] }] }], { generation }), true);
+  await store.clear();
+  assert.notEqual(await store.generation(), generation, 'clearing starts a new generation');
+  assert.equal(await store.putItems([{ itemId: 'b', hash: 'h', chunks: [{ n: 0, text: 'b', vector: [0, 1] }] }], { generation }), false);
+  assert.deepEqual(await store.allChunks(), []);
+  assert.equal((await store.itemStates()).size, 0);
+  const reset = await store.generation();
+  await store.ensureConfig({ providerId: 'fake', connectionId: 'c', model: 'other' });
+  assert.notEqual(await store.generation(), reset, 'a reset for another model also starts a new generation');
+});
+
+test('clearing the index in another view stops a running indexer before it writes into the emptied index', async () => {
+  const library = { items: Array.from({ length: 3 }, (_, i) => ({ id: `i${i}`, title: `Item ${i}`, updatedAt: '1' })) };
+  const settings = { embeddings: { enabled: true, connectionId: 'c1', model: 'm' } };
+  const vectorStore = createVectorStore({ indexedDB: null });
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let calls = 0;
+  const embedder = {
+    async describe() { return { providerId: 'fake', provider: 'Fake', via: 'direct', defaultModel: 'm' }; },
+    async embed({ inputs, model }) { if (++calls === 1) await gate; return { vectors: inputs.map(input => normalizeVector(fakeVector(input))), model, dims: 16, usage: { tokens: 1 } }; },
+  };
+  const make = () => createIndexer({ vectorStore, embedder, getLibrary: async () => library, getSettings: async () => settings, locks: null, batchSize: 1, concurrency: 1 });
+  const leader = make();
+  const other = make();
+  const running = leader.startIndexing();
+  await until(() => calls === 1);
+  await other.clearIndex();
+  release();
+  const status = await running;
+  assert.equal(status.error, '', 'a reset elsewhere is not an indexing error');
+  assert.equal(status.paused, true, 'the cleared index stays held');
+  assert.equal((await vectorStore.itemStates()).size, 0, 'nothing from the old run lands in the emptied index');
+  assert.deepEqual(await vectorStore.allChunks(), []);
+  assert.equal(calls, 1, 'no further paid requests');
+});
+
+test('query embeddings never wait through rate-limit back-off and give up after a timeout', async () => {
+  const seen = [];
+  const embedder = {
+    async describe() { return { providerId: 'fake', provider: 'Fake', via: 'direct', defaultModel: 'm' }; },
+    embed: ({ retries, signal, inputType }) => new Promise((resolve, reject) => {
+      seen.push({ retries, inputType });
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }),
+  };
+  const vectorStore = createVectorStore({ indexedDB: null });
+  const indexer = createIndexer({ vectorStore, embedder, getLibrary: async () => ({ items: [] }), getSettings: async () => ({ embeddings: { enabled: true, connectionId: 'c1', model: 'm' } }), locks: null });
+  await indexer.refresh({ start: false });
+  await assert.rejects(indexer.embedQuery('kyoto', { timeoutMs: 20 }), error => error.name === 'TimeoutError');
+  assert.deepEqual(seen, [{ retries: 0, inputType: 'query' }]);
+  const controller = new AbortController();
+  const pending = indexer.embedQuery('kyoto', { signal: controller.signal, timeoutMs: 0 });
+  controller.abort();
+  await assert.rejects(pending);
+
+  // The embedder honours the per-call retry limit.
+  let attempts = 0;
+  const limited = createEmbedder({ sleep: async () => {}, providerFetch: async () => { attempts++; throw Object.assign(new Error('Rate limited.'), { status: 429 }); },
+    resolveConnection: async id => ({ connection: { id }, provider: { id: 'openai', name: 'OpenAI', embeddings: { default: 'text-embedding-3-small' }, supports: { embeddings: true } }, apiKey: 'k', via: 'direct' }) });
+  await assert.rejects(limited.embed({ connectionId: 'o', inputs: ['q'], inputType: 'query', retries: 0 }), /Rate limited/);
+  assert.equal(attempts, 1);
+  await assert.rejects(limited.embed({ connectionId: 'o', inputs: ['d'] }), /Rate limited/);
+  assert.equal(attempts, 1 + 5, 'background indexing keeps the default four retries');
+});
+
+test('vectors from another provider with the same model name are not used for search', async () => {
+  const vectorStore = createVectorStore({ indexedDB: null });
+  let providerId = 'openai';
+  const embedder = { async describe() { return { providerId, provider: providerId, via: 'direct', defaultModel: 'shared-name' }; }, async embed() { throw new Error('unused'); } };
+  const indexer = createIndexer({ vectorStore, embedder, getLibrary: async () => ({ items: [] }), getSettings: async () => ({ embeddings: { enabled: true, connectionId: 'c1' } }), locks: null });
+  await vectorStore.ensureConfig({ providerId: 'openai', connectionId: 'c1', model: 'shared-name' });
+  await indexer.refresh({ start: false });
+  assert.equal(await indexer.isReady(), true);
+  providerId = 'lmstudio';
+  await indexer.refresh({ start: false });
+  assert.equal(await indexer.isReady(), false);
+});

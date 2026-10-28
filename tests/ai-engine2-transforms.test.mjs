@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { extractJson, cleanTransformOutput, cleanTitle, heuristicSuggestion, sanitizeSuggestion, createTransforms, TRANSFORM_ACTIONS } from '../extension/lib/ai/transforms.js';
+import { extractJson, cleanTransformOutput, cleanTitle, heuristicSuggestion, sanitizeSuggestion, createTransforms, TRANSFORM_ACTIONS, SHORT_REPLY_TOKENS } from '../extension/lib/ai/transforms.js';
 
 test('JSON extraction survives fences, prose, smart quotes, trailing commas, bare keys and braces in strings', () => {
   const expected = { title: 'Calm UI', tags: ['design'], collectionId: 'c1', summary: 'About calm {interfaces}.' };
@@ -137,5 +137,29 @@ test('the fast model comes from resolveChatTarget when the connections module pr
   });
   assert.equal(await transforms.transformText({ action: 'title', text: 'Notes about temples and maple leaves in Kyoto.' }), 'Kyoto in autumn');
   assert.deepEqual(purposes, ['quick']);
-  assert.deepEqual([requests[0].connectionId, requests[0].model, requests[0].maxTokens], ['anthropic-1', 'claude-haiku-5-5', 2000]);
+  // Thinking counts toward the output limit, so even a short answer gets room to think first.
+  assert.deepEqual([requests[0].connectionId, requests[0].model, requests[0].maxTokens], ['anthropic-1', 'claude-haiku-5-5', SHORT_REPLY_TOKENS.direct]);
+});
+
+test('suggestForSave cannot run out of output budget while thinking: low effort and room before the JSON', async () => {
+  const requests = [];
+  let target = { connectionId: 'anthropic-1', model: 'claude-opus-5-5', effort: 'high', via: 'direct' };
+  let reply = { text: '{"title":"Inter","tags":["fonts"],"collectionId":"","summary":"A font."}', toolCalls: [], stopReason: 'end_turn' };
+  const transforms = createTransforms({
+    resolveChatTarget: async () => target,
+    streamChat: async request => { requests.push(request); return reply; },
+  });
+  const page = { url: 'https://fonts.example.com/inter', title: 'Inter', collections, tags };
+  assert.equal((await transforms.suggestForSave(page)).source, 'ai');
+  assert.equal(requests[0].effort, 'low', 'the fast model setting is high, but filing a page always runs at low effort');
+  assert.ok(requests[0].maxTokens >= 8000, `direct connections get ${requests[0].maxTokens} output tokens`);
+  target = { ...target, via: 'bridge' };
+  await transforms.suggestForSave(page);
+  assert.equal(requests[1].maxTokens, SHORT_REPLY_TOKENS.bridge, 'bridge providers with a 4,096-token cap still accept the limit');
+  assert.ok(SHORT_REPLY_TOKENS.bridge < 4096);
+  // If the model still stops at the limit before writing JSON, the heuristic answers and says why.
+  reply = { text: '', toolCalls: [], stopReason: 'max_tokens' };
+  const cut = await transforms.suggestForSave(page);
+  assert.equal(cut.source, 'heuristic');
+  assert.match(cut.error, /ran out of output space/);
 });
