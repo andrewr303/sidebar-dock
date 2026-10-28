@@ -147,8 +147,8 @@ export function undoFor(changes, lookup) {
 
 const uniq = list => [...new Set(list)];
 /**
- * Merges duplicate copies into the first item (the newest): tags, highlights, links, notes and missing metadata are
- * combined, the other copies go to Trash, and links that pointed at a removed copy now point at the kept one.
+ * Merges duplicate copies into the first item (the newest): tags, highlights, links, notes, missing metadata and an
+ * attached file are combined, the other copies go to Trash, and links that pointed at a removed copy now point at the kept one.
  */
 export function planMerge(groupItems, allItems = [], { now = new Date().toISOString() } = {}) {
   const [keep, ...rest] = groupItems;
@@ -169,6 +169,11 @@ export function planMerge(groupItems, allItems = [], { now = new Date().toISOStr
   if (contents.length > 1 || (contents.length === 1 && !keep.content)) patch.content = contents.join('\n\n---\n\n');
   for (const field of ['excerpt', 'cover', 'articleContent', 'collectionId', 'reminderAt']) {
     if (!keep[field]) { const donor = rest.find(item => item[field]); if (donor) patch[field] = donor[field]; }
+  }
+  // An attached file moves with its metadata; left on a trashed copy, emptying the trash would delete the blob.
+  if (!keep.attachmentId) {
+    const donor = rest.find(item => item.attachmentId);
+    if (donor) Object.assign(patch, { attachmentId: donor.attachmentId, fileName: donor.fileName || '', mime: donor.mime || '', size: donor.size || 0 });
   }
   if (!keep.favorite && rest.some(item => item.favorite)) patch.favorite = true;
   const changes = [{ id: keep.id, patch }, ...rest.map(item => ({ id: item.id, patch: { deletedAt: now } }))];
@@ -490,6 +495,16 @@ export function pickCollection(ctx, anchor, { value, onPick, title = 'Move to' }
 
 const collectionName = (ctx, id) => id ? ctx.select.collection(id)?.name || 'collection' : 'Inbox';
 
+/**
+ * Anchor for popovers that a menu opens next (Move to…, Export). A row's hover toolbar hides as soon as the pointer
+ * moves into the menu, which would pin the follow-up popover to the window corner, so keep where the button was.
+ */
+function stableAnchor(anchor) {
+  if (!(anchor instanceof Element) || !anchor.closest('.item-actions')) return anchor;
+  const rect = anchor.getBoundingClientRect();
+  return rect.width ? { x: rect.left, y: rect.bottom } : anchor.closest('[data-item-card]') || anchor;
+}
+
 export function moveItems(ctx, ids, anchor) {
   const items = ids.map(byId(ctx)).filter(Boolean);
   const common = items.every(item => item.collectionId === items[0]?.collectionId) ? items[0]?.collectionId || '' : null;
@@ -626,6 +641,7 @@ export function openItemMenu(ctx, id, anchor) {
   const selected = ctx.state.selection;
   if (selected.size > 1 && selected.has(id)) return openSelectionMenu(ctx, [...selected], anchor);
   const ids = [id];
+  const follow = stableAnchor(anchor);
   let items;
   if (item.deletedAt) {
     items = [
@@ -641,7 +657,7 @@ export function openItemMenu(ctx, id, anchor) {
       item.url && { label: 'Copy link', icon: 'link', action: 'app.copy', data: { text: item.url, done: 'Link copied' } },
       { label: 'Edit details', icon: 'pencil', run: () => ctx.openItem(id, { tab: 'details' }) },
       { separator: true },
-      { label: 'Move to…', icon: 'folder-input', run: () => moveItems(ctx, ids, anchor) },
+      { label: 'Move to…', icon: 'folder-input', run: () => moveItems(ctx, ids, follow) },
       { label: 'Add tags…', icon: 'tag', run: () => ctx.run(() => tagItems(ctx, ids)) },
       { label: item.favorite ? 'Remove from favorites' : 'Add to favorites', icon: 'star', run: () => ctx.run(() => setFavorite(ctx, ids, !item.favorite, { quiet: true })) },
       item.type !== 'note' && { label: 'Add note', icon: 'notebook-pen', run: () => ctx.run(() => addNoteFor(ctx, item)) },
@@ -657,6 +673,7 @@ export function openItemMenu(ctx, id, anchor) {
 function openSelectionMenu(ctx, ids, anchor) {
   const items = ids.map(byId(ctx)).filter(Boolean);
   const n = items.length;
+  const follow = stableAnchor(anchor);
   if (ctx.state.view === 'trash' || items.every(item => item.deletedAt)) {
     return ctx.openMenu(anchor, [
       { heading: `${n} selected` },
@@ -719,9 +736,10 @@ async function addHere(ctx, collectionId) {
   }
   const item = result?.item || result;
   if (!item?.id) return openAdd(ctx, { collectionId });
-  if (collectionId) ctx.prefs.touchCollection?.(collectionId);
+  const savedTo = result?.collectionFallback ? '' : collectionId;
+  if (savedTo) ctx.prefs.touchCollection?.(savedTo);
   const created = result?.created ?? false;
-  ctx.toast(`Saved to ${collectionName(ctx, collectionId)}`, {
+  ctx.toast(`Saved to ${collectionName(ctx, savedTo)}`, {
     tone: 'success',
     action: created ? { label: 'Undo', run: () => ctx.store.deleteItem(item.id) } : { label: 'Open', run: () => ctx.openItem(item.id) },
   });
