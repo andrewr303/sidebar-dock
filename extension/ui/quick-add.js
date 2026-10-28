@@ -561,12 +561,12 @@ function renderAddDialog(ctx) {
     ${button({ label: saveLabel, variant: 'primary', type: 'submit', loading: d.saving, disabled: d.saving || (d.type === 'file' && !validFiles),
       tooltip: `${saveLabel} (${shortcutLabel('mod+enter')})`, attrs: { 'aria-keyshortcuts': keyshortcuts('mod+enter') }, className: 'add-save' })}`;
   return html`<form class="dialog-form add-form" data-submit="add.save" data-type="${d.type}" novalidate data-key="add-form">
-    <header class="dialog-header add-header">
+    <div class="dialog-header add-header">
       <div class="dialog-heading"><h2 class="dialog-title" id="dialog-title-add.item">${heading}</h2></div>
       ${headerActions}${iconButton({ icon: 'x', label: 'Close', action: 'overlay.dismiss', size: 'sm', className: 'dialog-close' })}
-    </header>
+    </div>
     <div class="dialog-body add-body">${renderBody(ctx, d)}</div>
-    <footer class="dialog-footer add-footer">${footer}</footer>
+    <div class="dialog-footer add-footer">${footer}</div>
   </form>`;
 }
 
@@ -776,11 +776,12 @@ function renderTabsDialog(ctx) {
     ${button({ label: 'Cancel', variant: 'ghost', action: 'overlay.dismiss' })}
     ${button({ label: ready ? `Save ${plural(count, 'tab')}` : 'Save tabs', variant: 'primary', action: 'add.tabs-save', disabled: !ready || !count || t.saving, loading: t.saving,
       tooltip: `Save (${shortcutLabel('mod+enter')})`, attrs: { 'aria-keyshortcuts': keyshortcuts('mod+enter') } })}`;
-  return html`<header class="dialog-header"><div class="dialog-heading"><h2 class="dialog-title" id="dialog-title-add.tabs">Save all tabs</h2>
+  // Divs, not header/footer: inside a dialog those would be announced as page-level banner landmarks.
+  return html`<div class="dialog-header"><div class="dialog-heading"><h2 class="dialog-title" id="dialog-title-add.tabs">Save all tabs</h2>
       <p class="dialog-subtitle">Keep every page in this window in one collection.</p></div>
-      ${iconButton({ icon: 'x', label: 'Close', action: 'overlay.dismiss', size: 'sm', className: 'dialog-close' })}</header>
+      ${iconButton({ icon: 'x', label: 'Close', action: 'overlay.dismiss', size: 'sm', className: 'dialog-close' })}</div>
     <div class="dialog-body tabs-dialog-body">${body}</div>
-    <footer class="dialog-footer add-footer">${footer}</footer>`;
+    <div class="dialog-footer add-footer">${footer}</div>`;
 }
 
 registerDialog('add.tabs', renderTabsDialog, { size: 'md', className: 'tabs-dialog' });
@@ -793,6 +794,8 @@ async function saveTabs(ctx) {
   if (t.mode === 'new' && !t.name.trim()) { t.error = 'Name the new collection.'; ctx.render(); ctx.nextFrame(() => document.getElementById('tabs-name')?.focus()); return; }
   t.saving = true;
   ctx.render();
+  // Items that already existed are never deleted by Undo, even when the worker reports them as saved.
+  const beforeIds = new Set((ctx.library?.items || []).map(item => item.id));
   let result;
   try {
     const windowId = await ensureWindowId(ctx);
@@ -810,8 +813,18 @@ async function saveTabs(ctx) {
   if (tabsDraft === t) { tabsDraft = null; ctx.closeDialog('add.tabs'); }
   const where = result.collectionFallback ? 'Inbox' : t.mode === 'new' ? t.name.trim() : collectionLabel(ctx, result.collectionId);
   const skipped = result.skipped ? `. ${plural(result.skipped, 'tab')} skipped` : '';
-  ctx.toast(`Saved ${plural(result.saved || 0, 'tab')} to ${where}${skipped}`, { tone: result.saved ? 'success' : 'warning',
-    action: result.collectionId ? { label: 'Open', run: () => ctx.navigate(`collection:${result.collectionId}`) } : null });
+  // saved counts new and already-saved pages; already-saved ones that changed collection come back in moved.
+  const moved = Array.isArray(result.moved) ? result.moved : [];
+  const movedNote = moved.length ? ` (${plural(moved.length, 'page')} moved from other collections)` : '';
+  const createdIds = (result.itemIds || []).filter(id => !moved.some(entry => entry.id === id) && !beforeIds.has(id));
+  const open = result.collectionId ? { label: 'Open', run: () => ctx.navigate(`collection:${result.collectionId}`) } : null;
+  const undo = createdIds.length || moved.length ? { label: 'Undo', run: () => ctx.run(async () => {
+    if (moved.length) await ctx.store.bulkUpdateItems(moved.map(entry => ({ id: entry.id, patch: { collectionId: entry.from } })));
+    for (const id of createdIds) await ctx.store.deleteItem(id);
+    ctx.toast(moved.length && !createdIds.length ? 'Moved back' : 'Undone. Removed pages are in Trash.');
+  }) } : null;
+  ctx.toast(`Saved ${plural(result.saved || 0, 'tab')} to ${where}${movedNote}${skipped}`, { tone: result.saved ? 'success' : 'warning',
+    action: undo || open, actions: [undo, open].filter(Boolean) });
 }
 
 /* ------------------------------------------------------------------ capture menu + screenshots */

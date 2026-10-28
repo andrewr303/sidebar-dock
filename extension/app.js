@@ -166,6 +166,9 @@ function applyBootParams() {
 const modules = [sidebar, command, collections, libraryView, detail, map, quickAdd, pickers, page, notes, noteEditor, aiPanel, settings];
 
 async function boot() {
+  // Fetch the AI engine while the library loads; module listeners (context-menu handoffs) wait on it below.
+  const aiModule = import('./lib/ai/index.js');
+  aiModule.catch(() => {});
   try {
     library = await store.loadLibrary(SEED_LIBRARY);
   } catch (error) {
@@ -192,7 +195,7 @@ async function boot() {
   runtime.renderNow();
 
   try {
-    const ai = await import('./lib/ai/index.js');
+    const ai = await aiModule;
     ai.init?.({ store, getLibrary: () => library, integrations, onLibraryChange: fn => store.subscribe(fn) });
     ctx.ai = ai;
   } catch (error) { console.warn('[still] AI engine unavailable', error); }
@@ -202,11 +205,13 @@ async function boot() {
   }
   startBridgeSync();
   if (isExtension) chrome.runtime.onMessage?.addListener(message => {
-    // Only the job this view started: another window's capture must not show here.
-    if (message?.type === 'still:full-page-progress' && message.jobId && message.jobId === state.capture?.jobId) {
-      state.capture = { ...state.capture, ...message };
-      runtime.render();
-    }
+    if (message?.type !== 'still:full-page-progress' || !message.jobId) return;
+    // The job this view started, or (when idle) one started from the context menu in this window. Never another window's.
+    const own = message.jobId === state.capture?.jobId;
+    const idle = !['preparing', 'capturing', 'stitching', 'saving'].includes(state.capture?.status);
+    if (!own && !(idle && isSidepanel && Number.isInteger(message.windowId) && message.windowId === state.windowId)) return;
+    state.capture = own ? { ...state.capture, ...message } : { ...message };
+    runtime.render();
   });
   runtime.render();
 }

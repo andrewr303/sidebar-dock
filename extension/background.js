@@ -232,7 +232,8 @@ function openSidePanel(tab) {
   return Promise.resolve(false);
 }
 
-async function deliverToPanel(message, { attempts = 9, interval = 250 } = {}) {
+// About 6 s: a cold side panel loads the app and the library before its listeners exist.
+async function deliverToPanel(message, { attempts = 24, interval = 250 } = {}) {
   const request = { ...message, requestId: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}` };
   for (let round = 0; round < attempts; round++) {
     if (round) await wait(interval);
@@ -593,6 +594,8 @@ export function startFullPageCapture(tab, { jobId = crypto.randomUUID(), persist
     let attachment, committed = false;
     try {
       tab = { ...await tab };
+      // Progress names the window so a side panel there can follow a capture started from the context menu.
+      if (Number.isInteger(tab.windowId)) job.progress.windowId = tab.windowId;
       checkCaptureCancelled(job.controller.signal);
       const sourceUrl = screenshotSourceUrl(tab);
       const image = await capturePixels(tab, { ...pixelOptions, api: captureApi, jobId, signal: job.controller.signal, limiter,
