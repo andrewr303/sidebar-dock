@@ -1,8 +1,49 @@
+/*
+ * Still service worker: the single library writer, capture, context menus, commands, reminders and the
+ * saved-page badge.
+ *
+ * Runtime messages from extension pages: { type, ...fields } (fields may also sit under `payload`).
+ * Every reply is { ok: true, result } or { ok: false, error }. Pass windowId from the side panel
+ * (chrome.windows.getCurrent()): without it "active tab" means the last focused window.
+ *
+ *   still:store              { operation, args[] }                  -> store operation result
+ *   captureCurrent | saveCurrentTab | still:capture-current
+ *                            { tabId?, windowId?, collectionId?, tags?, note?, title? }
+ *                            -> saved Item + { created } (+ collectionFallback: true when collectionId no longer
+ *                               exists and Inbox was used); { needsPermission: 'tabs', tabId, windowId } when the
+ *                               tab URL is unreadable. collectionId '' = Inbox; omitted = settings.defaultCollectionId
+ *                               for new items. note fills content only when the item is new or its note is empty.
+ *   saveTabs                 { windowId?, tabIds?, collectionId?, newCollectionName?, tags? }
+ *                            -> { saved, created, skipped, collectionId, itemIds } | { needsPermission: 'tabs' }
+ *   listTabs                 { windowId? } -> [{ tabId, windowId, url, title, favIconUrl, active, saved }] (http/https)
+ *                            | { needsPermission: 'tabs' }
+ *   getActiveTab             { windowId? } -> { granted: true, tabId, windowId, url, title, favIconUrl, saved, itemId }
+ *                            | { granted: false, tabId, windowId } when neither 'tabs' nor an activeTab grant exposes the URL
+ *   getPageContext           { tabId?, windowId? } -> { tabId, url, title, excerpt, cover, selection, text (<= 120000 chars),
+ *                               truncated, lang } | { needsPermission: '<scheme>://<host>/*' | 'tabs', tabId, windowId }
+ *                               (request it with chrome.permissions.request inside a click, then ask again)
+ *   captureScreenshot | still:capture-screenshot, captureFullPage { jobId }, cancelFullPageCapture { jobId },
+ *   getFullPageCaptureJob { jobId? }, openLibrary | still:open-library { itemId? },
+ *   openSidePanel | still:open-sidepanel { windowId? } -> { opened, windowId }, newNote | still:new-note,
+ *   importBrowserBookmarks
+ *
+ * Broadcasts to extension pages (runtime.sendMessage; nobody listening is fine):
+ *   still:full-page-progress { jobId, status, ... }
+ *   still:active-tab { tab: { tabId, windowId, url, title, favIconUrl, saved, itemId } }   (only with 'tabs')
+ *   still:open-add  { payload: { url, title, kind: 'page'|'link'|'image', sourceUrl }, windowId, requestId }
+ *   still:open-note { id, windowId, requestId }
+ * still:open-add and still:open-note are retried for about 2 s while the side panel loads: the side panel
+ * answers with sendResponse({ ok: true }) once handled and ignores a requestId it has already seen.
+ */
 import {
   configureStoreWorker, handleStoreOperation, loadLibrary, saveItem, updateItem,
   createCollection, subscribe, STORAGE_KEY, canonicalUrl, safeUrl, saveAttachment, deleteAttachment,
 } from './lib/store.js';
-import { buildCapture, readPageMetadata } from './lib/capture.js';
+import {
+  buildCapture, readPageMetadata, readPageContext, collectionMenuEntries, parseSaveToMenuId, saveToMenuId,
+  resolveCaptureCollection, findSavedItem, indexSavedUrls, isPlaceholderTitle, isVideoUrl, normalizeTags,
+  normalizeRecentCollections, PAGE_TEXT_LIMIT, CHOOSE_MENU_ID, SEPARATOR_MENU_ID, INBOX_MENU_ID,
+} from './lib/capture.js';
 import { assertCaptureTab, captureRateLimiter, captureFullPagePixels, checkCaptureCancelled, pngDataUrlBlob } from './lib/full-page-capture.js';
 
 configureStoreWorker();
@@ -10,26 +51,147 @@ configureStoreWorker();
 const api = globalThis.chrome;
 let visibleScreenshotJobs = 0;
 const REMINDER_PREFIX = 'still:reminder:';
+const RECENT_COLLECTIONS_KEY = 'still.ui.recent.v1';
+const WEB_PAGES = ['http://*/*', 'https://*/*'];
+const SAVED_COLOR = '#718a77';
+const SAVED_DOT_COLOR = '#6b7280';
 const MENU_ITEMS = [
-  { id: 'still-save-page', title: 'Save page to Still', contexts: ['page'], documentUrlPatterns: ['http://*/*', 'https://*/*'] },
-  { id: 'still-save-link', title: 'Save link to Still', contexts: ['link'], targetUrlPatterns: ['http://*/*', 'https://*/*'] },
-  { id: 'still-save-selection', title: 'Highlight selection in Still', contexts: ['selection'], documentUrlPatterns: ['http://*/*', 'https://*/*'] },
-  { id: 'still-note-selection', title: 'Create a note from selection', contexts: ['selection'], documentUrlPatterns: ['http://*/*', 'https://*/*'] },
-  { id: 'still-save-image', title: 'Save image to Still', contexts: ['image'], targetUrlPatterns: ['http://*/*', 'https://*/*'] },
+  { id: 'still-save-page', title: 'Save page to Still', contexts: ['page'], documentUrlPatterns: WEB_PAGES },
+  { id: 'still-save-link', title: 'Save link to Still', contexts: ['link'], targetUrlPatterns: WEB_PAGES },
+  { id: 'still-save-selection', title: 'Highlight selection in Still', contexts: ['selection'], documentUrlPatterns: WEB_PAGES },
+  { id: 'still-note-selection', title: 'Create a note from selection', contexts: ['selection'], documentUrlPatterns: WEB_PAGES },
+  { id: 'still-save-image', title: 'Save image to Still', contexts: ['image'], targetUrlPatterns: WEB_PAGES },
   { id: 'still-screenshot', title: 'Save a screenshot to Still', contexts: ['action'] },
-  { id: 'still-screenshot-full', title: 'Save full-page screenshot to Still', contexts: ['page', 'action'], documentUrlPatterns: ['http://*/*', 'https://*/*'] },
+  { id: 'still-screenshot-full', title: 'Save full-page screenshot to Still', contexts: ['page', 'action'], documentUrlPatterns: WEB_PAGES },
   { id: 'still-open-library', title: 'Open Still in a new tab', contexts: ['action'] },
+  { id: 'still-save-page-to', title: 'Save page to', contexts: ['page'], documentUrlPatterns: WEB_PAGES },
+  { id: 'still-save-link-to', title: 'Save link to', contexts: ['link'], targetUrlPatterns: WEB_PAGES },
+  { id: 'still-save-image-to', title: 'Save image to', contexts: ['image'], targetUrlPatterns: WEB_PAGES },
 ];
+const SAVE_TO_MENUS = { page: 'still-save-page-to', link: 'still-save-link-to', image: 'still-save-image-to' };
+const CAPTURE_MESSAGES = ['captureCurrent', 'saveCurrentTab', 'still:capture-current'];
+const MESSAGE_TYPES = ['still:store', ...CAPTURE_MESSAGES, 'captureScreenshot', 'still:capture-screenshot', 'captureFullPage',
+  'cancelFullPageCapture', 'getFullPageCaptureJob', 'openLibrary', 'still:open-library', 'openSidePanel', 'still:open-sidepanel',
+  'newNote', 'still:new-note', 'importBrowserBookmarks', 'saveTabs', 'getActiveTab', 'getPageContext', 'listTabs'];
+
+// Badge and broadcast calls are best effort: a closed view or a missing API never fails the capture.
+function attempt(call) {
+  try { return Promise.resolve(call()).catch(() => undefined); } catch { return Promise.resolve(undefined); }
+}
+
+function later(task, delay) {
+  const timer = setTimeout(task, delay);
+  timer?.unref?.();
+  return timer;
+}
+
+const wait = delay => new Promise(resolve => setTimeout(resolve, delay));
 
 function reportError(error) {
   console.error('Still:', error?.message || String(error));
-  api.action?.setBadgeText({ text: '!' });
-  api.action?.setBadgeBackgroundColor({ color: '#bc6666' });
+  attempt(() => api.action.setBadgeText({ text: '!' }));
+  attempt(() => api.action.setBadgeBackgroundColor({ color: '#bc6666' }));
+  scheduleBadgeClear(8000);
 }
 
-export async function installMenus() {
-  await api.contextMenus.removeAll();
-  for (const item of MENU_ITEMS) await api.contextMenus.create(item);
+let libraryCache = null;
+// Read without the store: loadLibrary() on an empty store would persist an empty library before the UI seeds it.
+async function readLibrary() {
+  if (libraryCache) return libraryCache;
+  const stored = api?.storage?.local ? (await api.storage.local.get(STORAGE_KEY))[STORAGE_KEY] : await loadLibrary();
+  return stored || { items: [], collections: [], settings: {} };
+}
+
+async function hasPermission(request) {
+  try { return (await api.permissions?.contains?.(request)) === true; } catch { return false; }
+}
+
+function messageInput(message) {
+  return message.payload && typeof message.payload === 'object' && !Array.isArray(message.payload) ? { ...message, ...message.payload, type: message.type } : message;
+}
+
+function captureOptions(input = {}) {
+  const options = {};
+  if (typeof input.collectionId === 'string') options.collectionId = input.collectionId === INBOX_MENU_ID ? '' : input.collectionId;
+  if (input.tags !== undefined) options.tags = input.tags;
+  if (typeof input.note === 'string') options.note = input.note;
+  if (typeof input.title === 'string') options.title = input.title;
+  return options;
+}
+
+function contextMenuCall(method, argument) {
+  return new Promise(resolve => {
+    const done = () => {
+      const error = api.runtime?.lastError;
+      if (error && !/cannot find|not found/i.test(error.message || '')) console.warn('Still menu:', error.message);
+      resolve();
+    };
+    try {
+      const call = api.contextMenus?.[method];
+      if (!call) { resolve(); return; }
+      const result = call.call(api.contextMenus, argument, done);
+      if (result?.then) result.then(() => resolve(), error => { if (!/cannot find|not found/i.test(error?.message || '')) console.warn('Still menu:', error?.message); resolve(); });
+      // create() returns its id at once and reports failures through the callback; calls stay ordered.
+      else if (method === 'create') resolve();
+    } catch (error) {
+      if (!/cannot find|not found/i.test(error?.message || '')) console.warn('Still menu:', error?.message);
+      resolve();
+    }
+  });
+}
+
+let collectionMenuSignature = '';
+let collectionMenuQueue = Promise.resolve();
+
+// Shares the collection-menu queue so a rebuild never interleaves with removeAll().
+export function installMenus() {
+  const run = async () => {
+    collectionMenuSignature = '';
+    await api.contextMenus.removeAll();
+    for (const item of MENU_ITEMS) await contextMenuCall('create', item);
+  };
+  const next = collectionMenuQueue.then(run, run);
+  collectionMenuQueue = next.catch(() => {});
+  return next;
+}
+
+async function readRecentCollections() {
+  try { return normalizeRecentCollections((await api.storage.local.get(RECENT_COLLECTIONS_KEY))[RECENT_COLLECTIONS_KEY]); } catch { return []; }
+}
+
+async function touchRecentCollection(id) {
+  if (!id || !api?.storage?.local) return;
+  const stored = (await api.storage.local.get(RECENT_COLLECTIONS_KEY))[RECENT_COLLECTIONS_KEY];
+  const recentCollections = [id, ...normalizeRecentCollections(stored).filter(value => value !== id)].slice(0, 12);
+  // Keep the UI's shape (ui/prefs.js mirrors { recentCollections } here).
+  await api.storage.local.set({ [RECENT_COLLECTIONS_KEY]: Array.isArray(stored) ? recentCollections
+    : { ...(stored && typeof stored === 'object' ? stored : {}), recentCollections } });
+}
+
+// Rebuilds the children of the three "Save … to" parents. Removing a parent drops its children in one
+// call; parents are the last top-level items, so recreating them keeps the menu order.
+export function installCollectionMenus(library, { recent, force = false } = {}) {
+  const run = async () => {
+    const entries = collectionMenuEntries(library, recent ?? await readRecentCollections());
+    const signature = JSON.stringify(entries);
+    if (!force && signature === collectionMenuSignature) return false;
+    collectionMenuSignature = signature;
+    for (const [kind, parentId] of Object.entries(SAVE_TO_MENUS)) {
+      const parent = MENU_ITEMS.find(item => item.id === parentId);
+      const scope = { contexts: parent.contexts, documentUrlPatterns: parent.documentUrlPatterns, targetUrlPatterns: parent.targetUrlPatterns };
+      for (const key of Object.keys(scope)) if (!scope[key]) delete scope[key];
+      await contextMenuCall('remove', parentId);
+      await contextMenuCall('create', parent);
+      const child = properties => contextMenuCall('create', { ...scope, ...properties, parentId });
+      for (const entry of entries) await child({ id: saveToMenuId(kind, entry.id), title: entry.title });
+      await child({ id: saveToMenuId(kind, SEPARATOR_MENU_ID), type: 'separator' });
+      await child({ id: saveToMenuId(kind, CHOOSE_MENU_ID), title: 'Choose collection…' });
+    }
+    return true;
+  };
+  const next = collectionMenuQueue.then(run, run);
+  collectionMenuQueue = next.catch(() => { collectionMenuSignature = ''; });
+  return next;
 }
 
 export function openLibrary(itemId = '') {
@@ -37,19 +199,60 @@ export function openLibrary(itemId = '') {
   return api.tabs.create({ url: target });
 }
 
+// Call synchronously inside the user gesture (context menu click, command): Chrome rejects sidePanel.open
+// once the handler has awaited anything. Resolves true when Chrome accepted the request.
 function openSidePanel(tab) {
-  if (Number.isInteger(tab?.windowId)) return api.sidePanel.open({ windowId: tab.windowId });
-  if (Number.isInteger(tab?.id)) return api.sidePanel.open({ tabId: tab.id });
-  return Promise.resolve();
+  if (!api.sidePanel?.open) return Promise.resolve(false);
+  try {
+    if (Number.isInteger(tab?.windowId)) return Promise.resolve(api.sidePanel.open({ windowId: tab.windowId })).then(() => true);
+    if (Number.isInteger(tab?.id)) return Promise.resolve(api.sidePanel.open({ tabId: tab.id })).then(() => true);
+  } catch (error) { return Promise.reject(error); }
+  return Promise.resolve(false);
 }
 
-async function activeTab() {
-  const tabs = await api.tabs.query({ active: true, currentWindow: true });
+async function deliverToPanel(message, { attempts = 9, interval = 250 } = {}) {
+  const request = { ...message, requestId: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}` };
+  for (let round = 0; round < attempts; round++) {
+    if (round) await wait(interval);
+    try { if (await api.runtime.sendMessage(request)) return true; } catch { /* The side panel is still loading. */ }
+  }
+  return false;
+}
+
+async function activeTab(windowId) {
+  const tabs = await api.tabs.query(Number.isInteger(windowId) ? { active: true, windowId } : { active: true, currentWindow: true });
   if (!tabs[0]) throw new Error('No active browser tab was found.');
   return tabs[0];
 }
 
-export async function captureTab(tab, info = {}) {
+async function targetTab({ tabId, windowId } = {}) {
+  if (Number.isInteger(tabId) && api.tabs.get) return api.tabs.get(tabId);
+  return activeTab(windowId);
+}
+
+let badgeTimer = null;
+const checkedTabs = new Set();
+
+function scheduleBadgeClear(delay) {
+  clearTimeout(badgeTimer);
+  // Chrome may hold short alarms for 30 s; the timer clears on time while the worker is awake.
+  badgeTimer = later(() => { handleAlarm({ name: 'still:clear-badge' }).catch(error => console.warn('Still badge:', error?.message)); }, delay);
+  return attempt(() => api.alarms.create('still:clear-badge', { when: Date.now() + delay }));
+}
+
+async function showSavedBadge(tabId) {
+  await attempt(() => api.action.setBadgeText({ text: '✓' }));
+  await attempt(() => api.action.setBadgeBackgroundColor({ color: SAVED_COLOR }));
+  if (tabTracking && Number.isInteger(tabId)) {
+    checkedTabs.add(tabId);
+    await attempt(() => api.action.setBadgeText({ tabId, text: '✓' }));
+    await attempt(() => api.action.setBadgeBackgroundColor({ tabId, color: SAVED_COLOR }));
+  }
+  await scheduleBadgeClear(4000);
+}
+
+export async function captureTab(tab, info = {}, options = {}) {
+  info ||= {}; options ||= {};
   let metadata = {};
   if (!info.linkUrl && !info.srcUrl && Number.isInteger(tab?.id) && /^https?:\/\//i.test(tab.url || info.pageUrl || '')) {
     try {
@@ -61,17 +264,207 @@ export async function captureTab(tab, info = {}) {
       console.info('Still saved tab metadata; page content could not be read:', error?.message);
     }
   }
-  const input = buildCapture(info, tab, metadata);
-  if (input.type === 'note') {
-    const state = await loadLibrary();
-    const linked = state.items.find(item => !item.deletedAt && item.type !== 'note' && canonicalUrl(item.url) === canonicalUrl(input.url));
-    if (linked) input.relatedIds = [linked.id];
-  }
+  const draft = buildCapture(info, tab, metadata);
+  const library = await readLibrary();
+  const existing = draft.type === 'note' ? null : findSavedItem(library, draft.url);
+  const source = draft.type === 'note' ? findSavedItem(library, draft.url) : null;
+  const target = resolveCaptureCollection(library, options.collectionId, { existing, preferred: source?.collectionId });
+  const input = buildCapture(info, tab, metadata, { ...options, collectionId: target.collectionId, existing });
+  if (source) input.relatedIds = [source.id];
   const item = await saveItem(input);
-  await api.action.setBadgeText({ text: '✓' });
-  await api.action.setBadgeBackgroundColor({ color: '#718a77' });
-  await api.alarms.create('still:clear-badge', { when: Date.now() + 4000 });
-  return item;
+  await showSavedBadge(tab?.id);
+  const created = !(library.items || []).some(entry => entry?.id === item.id);
+  return { ...item, created, ...(target.collectionFallback ? { collectionFallback: true } : {}) };
+}
+
+async function captureCurrentTab(input) {
+  const tab = await targetTab(input);
+  if (!tab.url) return { needsPermission: 'tabs', tabId: tab.id, windowId: tab.windowId };
+  return captureTab(tab, {}, captureOptions(input));
+}
+
+async function saveTabs(input) {
+  if (!(await hasPermission({ permissions: ['tabs'] }))) return { needsPermission: 'tabs' };
+  const windowId = Number.isInteger(input.windowId) ? input.windowId : null;
+  const wanted = Array.isArray(input.tabIds) ? new Set(input.tabIds.filter(Number.isInteger)) : null;
+  const tabs = await api.tabs.query(windowId !== null ? { windowId } : wanted ? {} : { currentWindow: true });
+  const library = await readLibrary();
+  const name = typeof input.newCollectionName === 'string' ? input.newCollectionName.trim() : '';
+  const explicit = Boolean(name) || typeof input.collectionId === 'string';
+  const target = name ? { collectionId: (await createCollection({ name })).id }
+    : resolveCaptureCollection(library, typeof input.collectionId === 'string' ? input.collectionId : undefined);
+  const tags = normalizeTags(input.tags);
+  const seen = new Set(), itemIds = [];
+  let saved = 0, created = 0, skipped = 0;
+  for (const tab of wanted ? tabs.filter(tab => wanted.has(tab.id)) : tabs) {
+    let url = '', key = '';
+    try { if (/^https?:\/\//i.test(tab.url || '')) { url = safeUrl(tab.url); key = canonicalUrl(url); } } catch { url = ''; }
+    if (!url || seen.has(key)) { skipped++; continue; }
+    seen.add(key);
+    const existing = findSavedItem(library, url);
+    // An existing item keeps its type, title and (for quick saves) its collection.
+    const entry = { url, tags, collectionId: explicit || !existing ? target.collectionId : '' };
+    if (!existing) entry.type = isVideoUrl(url) ? 'video' : 'bookmark';
+    if (!existing || isPlaceholderTitle(existing.title, url)) entry.title = tab.title || '';
+    try {
+      const item = await saveItem(entry);
+      saved++; itemIds.push(item.id);
+      if (!existing) created++;
+    } catch (error) { skipped++; console.info('Still skipped a tab:', error?.message); }
+  }
+  return { saved, created, skipped, collectionId: target.collectionId, itemIds, ...(target.collectionFallback ? { collectionFallback: true } : {}) };
+}
+
+async function listTabs(input) {
+  if (!(await hasPermission({ permissions: ['tabs'] }))) return { needsPermission: 'tabs' };
+  const tabs = await api.tabs.query(Number.isInteger(input.windowId) ? { windowId: input.windowId } : { currentWindow: true });
+  const index = indexSavedUrls(await readLibrary());
+  return tabs.filter(tab => /^https?:\/\//i.test(tab.url || '')).map(tab => {
+    let saved = false;
+    try { saved = index.has(canonicalUrl(tab.url)); } catch { saved = false; }
+    return { tabId: tab.id, windowId: tab.windowId, url: tab.url, title: tab.title || '', favIconUrl: tab.favIconUrl || '', active: tab.active === true, saved };
+  });
+}
+
+async function lookupSaved(url) {
+  if (!/^https?:\/\//i.test(url || '')) return null;
+  return findSavedItem(await readLibrary(), url);
+}
+
+async function getActiveTab(input) {
+  const tab = await activeTab(input.windowId);
+  if (!tab.url) return { granted: false, tabId: tab.id, windowId: tab.windowId };
+  const saved = await lookupSaved(tab.url);
+  return { granted: true, tabId: tab.id, windowId: tab.windowId, url: tab.url, title: tab.title || '', favIconUrl: tab.favIconUrl || '',
+    saved: Boolean(saved), itemId: saved?.id || '' };
+}
+
+async function getPageContext(input) {
+  const tab = await targetTab(input);
+  if (tab.url && !/^https?:\/\//i.test(tab.url)) throw new Error('Still can read web pages only (http or https).');
+  let result;
+  try {
+    [result] = await api.scripting.executeScript({ target: { tabId: tab.id }, func: readPageContext, args: [PAGE_TEXT_LIMIT] });
+  } catch (error) {
+    if (!tab.url) return { needsPermission: 'tabs', tabId: tab.id, windowId: tab.windowId };
+    const { protocol, hostname } = new URL(tab.url);
+    const origin = `${protocol}//${hostname}/*`;
+    if (await hasPermission({ origins: [origin] })) throw error;
+    return { needsPermission: origin, tabId: tab.id, windowId: tab.windowId };
+  }
+  const page = result?.result || {};
+  let url = '';
+  try { url = safeUrl(page.url || tab.url); } catch { url = tab.url || ''; }
+  let cover = '';
+  try { cover = page.cover ? safeUrl(new URL(page.cover, url).href) : ''; } catch { cover = ''; }
+  const text = typeof page.text === 'string' ? page.text.slice(0, PAGE_TEXT_LIMIT) : '';
+  return { tabId: tab.id, url, title: page.title || tab.title || '', excerpt: page.excerpt || '', cover,
+    selection: page.selection || '', text, truncated: page.truncated === true, lang: page.lang || '' };
+}
+
+export async function createPageNote(tab) {
+  let url = '';
+  try { url = /^https?:\/\//i.test(tab?.url || '') ? safeUrl(tab.url) : ''; } catch { url = ''; }
+  if (!url) return saveItem({ type: 'note', title: 'Untitled note', content: '' });
+  const library = await readLibrary();
+  const source = findSavedItem(library, url);
+  const { collectionId } = resolveCaptureCollection(library, undefined, { preferred: source?.collectionId });
+  return saveItem({ type: 'note', title: `Notes on ${tab.title?.trim() || new URL(url).hostname}`, url, content: '',
+    relatedIds: source ? [source.id] : [], collectionId });
+}
+
+function newPageNote(tab) {
+  const opening = Number.isInteger(tab?.windowId) ? openSidePanel(tab).catch(() => false) : Promise.resolve(false);
+  return (async () => {
+    const page = Number.isInteger(tab?.id) ? tab : await activeTab().catch(() => null);
+    const item = await createPageNote(page);
+    if (await opening) await deliverToPanel({ type: 'still:open-note', id: item.id, windowId: tab.windowId });
+    else await openLibrary(item.id);
+    return item;
+  })();
+}
+
+async function chooseCollection(info, tab, kind) {
+  const opening = openSidePanel(tab);
+  const url = safeUrl(kind === 'image' ? info.srcUrl : kind === 'link' ? info.linkUrl : info.pageUrl || tab?.url, { optional: false });
+  const title = kind === 'page' ? tab?.title || '' : kind === 'link' ? (info.linkText || info.selectionText || '').replace(/\s+/g, ' ').trim() : '';
+  const payload = { url, title, kind, sourceUrl: safeUrl(info.pageUrl || tab?.url) };
+  return opening.then(() => deliverToPanel({ type: 'still:open-add', payload, windowId: tab?.windowId }));
+}
+
+// Saved-page dot: only with the optional 'tabs' permission, which lets the worker read every tab URL.
+let tabTracking = false;
+
+async function updateTabBadge(tab) {
+  if (!Number.isInteger(tab?.id)) return null;
+  const saved = tabTracking ? await lookupSaved(tab.url) : null;
+  if (!checkedTabs.has(tab.id)) {
+    // null falls back to the global badge (for example the error mark).
+    await attempt(() => api.action.setBadgeText({ tabId: tab.id, text: saved ? '•' : null }));
+    if (saved) await attempt(() => api.action.setBadgeBackgroundColor({ tabId: tab.id, color: SAVED_DOT_COLOR }));
+  }
+  return saved;
+}
+
+// A page load fires several updates (about:blank, URL, title, complete); send the last one per tab.
+const pendingBroadcasts = new Map();
+async function refreshTab(tab, broadcast) {
+  if (!tabTracking || !tab) return;
+  const saved = await updateTabBadge(tab);
+  if (!broadcast || tab.active === false) return;
+  const message = { type: 'still:active-tab', tab: { tabId: tab.id, windowId: tab.windowId, url: tab.url || '',
+    title: tab.title || '', favIconUrl: tab.favIconUrl || '', saved: Boolean(saved), itemId: saved?.id || '' } };
+  clearTimeout(pendingBroadcasts.get(tab.id));
+  pendingBroadcasts.set(tab.id, later(() => {
+    pendingBroadcasts.delete(tab.id);
+    attempt(() => api.runtime.sendMessage(message));
+  }, 120));
+}
+
+async function refreshActiveTabs() {
+  if (!tabTracking) return;
+  for (const tab of await api.tabs.query({ active: true })) await refreshTab(tab, false);
+}
+
+const onTabActivated = ({ tabId }) => { attempt(async () => refreshTab(await api.tabs.get(tabId), true)); };
+const onTabUpdated = (tabId, change, tab) => {
+  if (!('url' in change || change.status === 'complete' || 'title' in change || 'favIconUrl' in change)) return;
+  attempt(() => refreshTab(tab || { id: tabId }, tab?.active === true));
+};
+const onWindowFocusChanged = windowId => {
+  if (!Number.isInteger(windowId) || windowId < 0) return;
+  attempt(async () => refreshTab((await api.tabs.query({ active: true, windowId }))[0], true));
+};
+
+function startTabTracking() {
+  if (tabTracking) return;
+  tabTracking = true;
+  api.tabs?.onActivated?.addListener(onTabActivated);
+  api.tabs?.onUpdated?.addListener(onTabUpdated);
+  api.windows?.onFocusChanged?.addListener(onWindowFocusChanged);
+  attempt(refreshActiveTabs);
+}
+
+function stopTabTracking() {
+  if (!tabTracking) return;
+  tabTracking = false;
+  api.tabs?.onActivated?.removeListener(onTabActivated);
+  api.tabs?.onUpdated?.removeListener(onTabUpdated);
+  api.windows?.onFocusChanged?.removeListener(onWindowFocusChanged);
+  for (const timer of pendingBroadcasts.values()) clearTimeout(timer);
+  pendingBroadcasts.clear();
+  checkedTabs.clear();
+  attempt(async () => { for (const tab of await api.tabs.query({})) await attempt(() => api.action.setBadgeText({ tabId: tab.id, text: null })); });
+}
+
+let libraryRefreshTimer = null;
+function scheduleLibraryRefresh() {
+  clearTimeout(libraryRefreshTimer);
+  libraryRefreshTimer = later(() => {
+    readLibrary()
+      .then(library => Promise.all([installCollectionMenus(library), refreshActiveTabs()]))
+      .catch(error => console.warn('Still could not refresh menus or badges:', error?.message));
+  }, 500);
 }
 
 export async function captureScreenshot(tab, { persistAttachment = saveAttachment, removeAttachment = deleteAttachment, persistItem = saveItem, limiter = captureRateLimiter } = {}) {
@@ -194,11 +587,22 @@ async function syncReminders(state) {
 
 async function restoreReminders() {
   const stored = (await api.storage.local.get(STORAGE_KEY))[STORAGE_KEY];
-  if (stored) await syncReminders(stored);
+  if (stored) { libraryCache ??= stored; await syncReminders(stored); }
 }
 
 export async function handleAlarm(alarm) {
-  if (alarm.name === 'still:clear-badge') { await api.action.setBadgeText({ text: '' }); return; }
+  if (alarm.name === 'still:clear-badge') {
+    clearTimeout(badgeTimer);
+    await attempt(() => api.action.setBadgeText({ text: '' }));
+    const tabIds = [...checkedTabs];
+    checkedTabs.clear();
+    for (const tabId of tabIds) {
+      const tab = tabTracking ? await attempt(() => api.tabs.get(tabId)) : null;
+      if (tab) await updateTabBadge(tab);
+      else await attempt(() => api.action.setBadgeText({ tabId, text: null }));
+    }
+    return;
+  }
   if (!alarm.name.startsWith(REMINDER_PREFIX)) return;
   const id = alarm.name.slice(REMINDER_PREFIX.length);
   const state = await loadLibrary();
@@ -232,58 +636,87 @@ async function importBrowserBookmarks() {
 export async function handleMessage(message, sender) {
   if (!sender || sender.id !== api.runtime.id) throw new Error('Untrusted extension message.');
   if (!message || typeof message !== 'object') throw new Error('Invalid request.');
-  if (message.type === 'still:store') return handleStoreOperation(message.operation, message.args);
-  if (['captureCurrent', 'saveCurrentTab', 'still:capture-current'].includes(message.type)) return captureTab(await activeTab());
-  if (['captureScreenshot', 'still:capture-screenshot'].includes(message.type)) return captureScreenshot(await activeTab());
-  if (message.type === 'captureFullPage') return captureFullPage(activeTab(), { jobId: message.jobId });
-  if (message.type === 'cancelFullPageCapture') return cancelFullPageCapture(message.jobId);
-  if (message.type === 'getFullPageCaptureJob') return getFullPageCaptureJob(message.jobId);
-  if (['openLibrary', 'still:open-library'].includes(message.type)) return openLibrary(typeof message.itemId === 'string' ? message.itemId : '');
-  if (['openSidePanel', 'still:open-sidepanel'].includes(message.type)) return openSidePanel(sender.tab || await activeTab());
+  const input = messageInput(message);
+  if (message.type === 'still:store') return handleStoreOperation(input.operation, input.args);
+  if (CAPTURE_MESSAGES.includes(message.type)) return captureCurrentTab(input);
+  if (['captureScreenshot', 'still:capture-screenshot'].includes(message.type)) return captureScreenshot(await targetTab(input));
+  if (message.type === 'captureFullPage') return captureFullPage(targetTab(input), { jobId: input.jobId });
+  if (message.type === 'cancelFullPageCapture') return cancelFullPageCapture(input.jobId);
+  if (message.type === 'getFullPageCaptureJob') return getFullPageCaptureJob(input.jobId);
+  if (['openLibrary', 'still:open-library'].includes(message.type)) return openLibrary(typeof input.itemId === 'string' ? input.itemId : '');
+  if (['openSidePanel', 'still:open-sidepanel'].includes(message.type)) {
+    // Opened before any await so a gesture forwarded with the message is still usable.
+    const windowId = sender.tab?.windowId ?? input.windowId;
+    const tab = Number.isInteger(windowId) ? { windowId } : await activeTab();
+    return { opened: await openSidePanel(tab), windowId: tab.windowId ?? null };
+  }
   if (['newNote', 'still:new-note'].includes(message.type)) return saveItem({ type: 'note', title: 'Untitled note', content: '' });
   if (message.type === 'importBrowserBookmarks') return importBrowserBookmarks();
+  if (message.type === 'saveTabs') return saveTabs(input);
+  if (message.type === 'listTabs') return listTabs(input);
+  if (message.type === 'getActiveTab') return getActiveTab(input);
+  if (message.type === 'getPageContext') return getPageContext(input);
   throw new Error('Unknown Still request.');
+}
+
+function handleMenuClick(info, tab) {
+  if (info.menuItemId === 'still-open-library') { openLibrary().catch(reportError); return; }
+  const saveTo = parseSaveToMenuId(info.menuItemId);
+  if (saveTo?.choose) { chooseCollection(info, tab, saveTo.kind).catch(reportError); return; }
+  // Side panel open is invoked directly inside the user gesture, before capture awaits.
+  const quiet = libraryCache?.settings?.openPanelOnSave === false && !['still-screenshot', 'still-screenshot-full'].includes(info.menuItemId);
+  const panelOpening = quiet ? Promise.resolve(false) : openSidePanel(tab).catch(reportError);
+  if (info.menuItemId === 'still-screenshot') { captureScreenshot(tab).catch(reportError); return; }
+  if (info.menuItemId === 'still-screenshot-full') { panelOpening.then(() => captureFullPage(tab)).catch(reportError); return; }
+  if (saveTo) {
+    captureTab(tab, info, { collectionId: saveTo.collectionId })
+      .then(item => (saveTo.collectionId && !item.collectionFallback ? touchRecentCollection(saveTo.collectionId) : null))
+      .catch(reportError);
+    return;
+  }
+  captureTab(tab, info).catch(reportError);
+}
+
+function handleCommand(command, tab) {
+  if (command === 'open-library') { openLibrary().catch(reportError); return; }
+  if (command === 'new-note') { newPageNote(tab).catch(reportError); return; }
+  if (command === 'save-current') (Number.isInteger(tab?.id) ? Promise.resolve(tab) : activeTab()).then(target => captureTab(target)).catch(reportError);
 }
 
 if (api?.runtime?.onMessage) {
   api.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (!message || !['still:store', 'captureCurrent', 'saveCurrentTab', 'still:capture-current', 'captureScreenshot', 'still:capture-screenshot', 'captureFullPage', 'cancelFullPageCapture', 'getFullPageCaptureJob', 'openLibrary', 'still:open-library',
-      'openSidePanel', 'still:open-sidepanel', 'newNote', 'still:new-note', 'importBrowserBookmarks'].includes(message.type)) return false;
+    if (!message || !MESSAGE_TYPES.includes(message.type)) return false;
     const respond = response => { try { sendResponse(response); } catch { /* The requesting view closed. */ } };
     handleMessage(message, sender).then(result => respond({ ok: true, result }), error => respond({ ok: false, error: error.message }));
     return true;
   });
   api.runtime.onInstalled.addListener(() => {
-    installMenus().catch(reportError);
-    api.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(reportError);
+    installMenus().then(readLibrary).then(library => installCollectionMenus(library, { force: true })).catch(reportError);
+    Promise.resolve(api.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })).catch(reportError);
     // The UI seeds a new library; installing does not overwrite existing captures.
   });
   api.runtime.onStartup.addListener(() => {
-    api.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(reportError);
+    Promise.resolve(api.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })).catch(reportError);
     restoreReminders().catch(reportError);
+    readLibrary().then(library => installCollectionMenus(library)).catch(error => console.warn('Still menus:', error?.message));
   });
-  api.contextMenus.onClicked.addListener((info, tab) => {
-    if (info.menuItemId === 'still-open-library') { openLibrary().catch(reportError); return; }
-    // Side panel open is invoked directly inside the user gesture, before capture awaits.
-    const panelOpening = openSidePanel(tab).catch(reportError);
-    if (info.menuItemId === 'still-screenshot') { captureScreenshot(tab).catch(reportError); return; }
-    if (info.menuItemId === 'still-screenshot-full') { panelOpening.then(() => captureFullPage(tab)).catch(reportError); return; }
-    captureTab(tab, info).catch(reportError);
-  });
-  api.commands.onCommand.addListener(command => {
-    if (command === 'open-library') { openLibrary().catch(reportError); return; }
-    if (command === 'new-note') {
-      saveItem({ type: 'note', title: 'Untitled note' }).then(item => openLibrary(item.id)).catch(reportError); return;
-    }
-    if (command === 'save-current') activeTab().then(tab => captureTab(tab)).catch(reportError);
-  });
+  api.contextMenus.onClicked.addListener(handleMenuClick);
+  api.commands.onCommand.addListener(handleCommand);
   api.alarms.onAlarm.addListener(alarm => { handleAlarm(alarm).catch(reportError); });
   api.notifications.onClicked.addListener(id => {
     if (id.startsWith('still:item:')) openLibrary(id.slice('still:item:'.length)).catch(reportError);
     api.notifications.clear(id);
   });
-  subscribe(state => { syncReminders(state).catch(reportError); });
+  api.storage?.onChanged?.addListener((changes, area) => { if (area === 'local' && changes[RECENT_COLLECTIONS_KEY]) scheduleLibraryRefresh(); });
+  api.permissions?.onAdded?.addListener(change => { if (change?.permissions?.includes('tabs')) startTabTracking(); });
+  api.permissions?.onRemoved?.addListener(change => { if (change?.permissions?.includes('tabs')) stopTabTracking(); });
+  subscribe(state => {
+    libraryCache = state;
+    syncReminders(state).catch(reportError);
+    scheduleLibraryRefresh();
+  });
   restoreReminders().catch(reportError);
+  hasPermission({ permissions: ['tabs'] }).then(granted => { if (granted) startTabTracking(); });
 }
 
-export { MENU_ITEMS, STORAGE_KEY };
+export { MENU_ITEMS, MESSAGE_TYPES, STORAGE_KEY };

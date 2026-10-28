@@ -1,4 +1,4 @@
-import { createAiProviderService, PROVIDER_TYPES } from './providers.mjs';
+import { createAiProviderService, PROVIDER_TYPES, ANTHROPIC_VERSION } from './providers.mjs';
 import { createCliService, redactCliOutput } from './cli.mjs';
 import { assemblePrompt } from '../../extension/lib/ai-prompts.js';
 import { fileURLToPath } from 'node:url';
@@ -48,15 +48,26 @@ function assembleRequest(body) {
   return { prompt, settings };
 }
 
-export function createAiRouter({ providers = createAiProviderService(), cli = createCliService(), timeoutMs = 300000 } = {}) {
+const runtimeInfo = () => {
+  const projectRoot = fileURLToPath(new URL('../../', import.meta.url));
+  // The extension builds MCP setup snippets from these so they match what bridge/connections.mjs writes.
+  return { projectRoot, nodePath: process.execPath, mcpEntry: fileURLToPath(new URL('../mcp.mjs', import.meta.url)), platform: process.platform,
+    features: { embeddings: true, thinkingEvents: true, semanticSearchTool: true, anthropicVersion: ANTHROPIC_VERSION } };
+};
+
+export function createAiRouter({ timeoutMs = 300000, providers = createAiProviderService({ timeoutMs }), cli = createCliService(), embeddingTimeoutMs = 120000 } = {}) {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 15 * 60 * 1000) throw new Error('AI route timeout must be between one millisecond and fifteen minutes.');
-  async function chat(request, response, { readJson, reply }) {
+  function lifecycle(request, response, limit, message) {
     const controller = new AbortController();
-    let partialText = '', started = false;
     const abortUpload = () => controller.abort(new Error('The AI request was disconnected.'));
     const abortResponse = () => { if (!response.writableEnded) controller.abort(new Error('The AI response was disconnected.')); };
     request.once('aborted', abortUpload); response.once('close', abortResponse);
-    const timer = setTimeout(() => controller.abort(new Error('The AI request timed out.')), timeoutMs); timer.unref?.();
+    const timer = setTimeout(() => controller.abort(new Error(message)), limit); timer.unref?.();
+    return { controller, cleanup: () => { clearTimeout(timer); request.removeListener('aborted', abortUpload); response.removeListener('close', abortResponse); } };
+  }
+  async function chat(request, response, { readJson, reply }) {
+    const { controller, cleanup } = lifecycle(request, response, timeoutMs, 'The AI request timed out.');
+    let partialText = '', thinkingSize = 0, started = false;
     const send = event => {
       if (response.destroyed || controller.signal.aborted) return;
       response.write(`${JSON.stringify(event)}\n`);
@@ -79,7 +90,13 @@ export function createAiRouter({ providers = createAiProviderService(), cli = cr
         if (partialText.length > 4 * 1024 * 1024) { controller.abort(new Error('The AI output exceeded the local limit.')); throw controller.signal.reason; }
         if (value) send({ type: 'delta', text: value });
       };
-      const input = { system: prompt.system, messages: prompt.messages, ...settings, signal: controller.signal, onDelta };
+      // Reasoning summaries travel as their own event type; clients that predate it ignore unknown types.
+      const onThinking = value => {
+        if (controller.signal.aborted) throw controller.signal.reason;
+        if (typeof value !== 'string' || !value || thinkingSize + value.length > 4 * 1024 * 1024) return;
+        thinkingSize += value.length; send({ type: 'thinking', text: value });
+      };
+      const input = { system: prompt.system, messages: prompt.messages, ...settings, signal: controller.signal, onDelta, onThinking };
       let rejectAborted;
       const aborted = new Promise((_, reject) => { rejectAborted = () => reject(controller.signal.reason); });
       controller.signal.addEventListener('abort', rejectAborted, { once: true });
@@ -93,27 +110,41 @@ export function createAiRouter({ providers = createAiProviderService(), cli = cr
       controller.signal.throwIfAborted();
       if (!result || typeof result.text !== 'string' || !result.text.trim()) throw new Error('The AI generator completed without a text answer.');
       send({ type: 'done', text: result.text, model: result.model || settings.model || null, usage: result.usage || null, stopReason: result.stopReason || result.finishReason || null,
-        providerId: body.providerId, promptVersion: prompt.version, sources: prompt.sources });
+        providerId: body.providerId, promptVersion: prompt.version, sources: prompt.sources, ...(result.fallback ? { fallback: result.fallback } : {}) });
     } catch (error) {
       const message = redactCliOutput(error.message || 'AI request failed.');
       if (!started && !response.headersSent && !response.destroyed) reply(error.status || 400, { error: message });
       else if (!response.destroyed) {
         // Write a terminal error even for a server timeout; a client disconnect has no receiver.
-        response.write(`${JSON.stringify({ type: 'error', message, partialText: (typeof error.partialText === 'string' ? error.partialText : partialText).slice(0, 4 * 1024 * 1024), aborted: controller.signal.aborted || error.aborted === true || error.name === 'AbortError' })}\n`);
+        response.write(`${JSON.stringify({ type: 'error', message, partialText: (typeof error.partialText === 'string' ? error.partialText : partialText).slice(0, 4 * 1024 * 1024), aborted: controller.signal.aborted || error.aborted === true || error.name === 'AbortError', ...(typeof error.stopReason === 'string' ? { stopReason: error.stopReason } : {}) })}\n`);
       }
     } finally {
-      clearTimeout(timer); request.removeListener('aborted', abortUpload); response.removeListener('close', abortResponse);
+      cleanup();
       if (started && !response.writableEnded && !response.destroyed) response.end();
     }
+  }
+  async function embeddings(request, response, { readJson, reply }) {
+    const { controller, cleanup } = lifecycle(request, response, embeddingTimeoutMs, 'The embedding request timed out.');
+    try {
+      const body = await readJson(request);
+      if (!object(body)) throw new Error('The embedding request must be a JSON object.');
+      if (typeof body.providerId !== 'string' || !ID.test(body.providerId)) throw new Error('Choose a saved embeddings provider.');
+      const result = await providers.embed({ providerId: body.providerId, inputs: body.inputs, model: stringOption(body.model, 'Model'), dimensions: body.dimensions ?? undefined, inputType: body.inputType ?? 'document', signal: controller.signal });
+      controller.signal.throwIfAborted();
+      reply(200, result);
+    } catch (error) {
+      if (!response.headersSent && !response.destroyed) reply(error.status || 400, { error: redactCliOutput(controller.signal.aborted ? controller.signal.reason?.message || error.message : error.message) });
+    } finally { cleanup(); }
   }
   async function handle(request, response, context) {
     const path = new URL(request.url, 'http://127.0.0.1').pathname;
     if (!path.startsWith('/ai/')) return false;
     const { reply, readJson } = context;
     if (path === '/ai/chat' && request.method === 'POST') { await chat(request, response, context); return true; }
+    if (path === '/ai/embeddings' && request.method === 'POST') { await embeddings(request, response, context); return true; }
     try {
       if (path === '/ai/providers') {
-        if (request.method === 'GET') { const [saved, agents] = await Promise.all([providers.listProviders(), cli.listAgents()]); reply(200, { providers: saved, catalog: PROVIDER_TYPES, agents, runtime: { projectRoot: fileURLToPath(new URL('../../', import.meta.url)) } }); }
+        if (request.method === 'GET') { const [saved, agents] = await Promise.all([providers.listProviders(), cli.listAgents()]); reply(200, { providers: saved, catalog: PROVIDER_TYPES, agents, runtime: runtimeInfo() }); }
         else if (request.method === 'POST') reply(201, { provider: await providers.saveProvider(await readJson(request)) });
         else reply(405, { error: 'Use GET or POST for provider settings.' });
         return true;
@@ -143,6 +174,7 @@ export function createAiRouter({ providers = createAiProviderService(), cli = cr
         return true;
       }
       if (path === '/ai/chat') { reply(405, { error: 'Use POST to send an AI chat request.' }); return true; }
+      if (path === '/ai/embeddings') { reply(405, { error: 'Use POST to request embeddings.' }); return true; }
       return false;
     } catch (error) { if (!response.headersSent && !response.destroyed) reply(error.status || 400, { error: redactCliOutput(error.message) }); return true; }
   }

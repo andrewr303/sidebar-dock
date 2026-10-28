@@ -16,5 +16,8 @@ export async function loadConfig(path = process.env.STILL_BRIDGE_CONFIG || DEFAU
   const url = new URL(value.url);
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.pathname !== '/' || url.search || url.hash || url.username || url.password) throw new Error('Bridge configuration must use http://127.0.0.1 with an optional port.');
   if (typeof value.token !== 'string' || value.token.length < 24 || /[\r\n]/.test(value.token)) throw new Error('Bridge configuration needs a valid random token.');
-  return { url: url.origin, token: value.token, path: resolve(path) };
+  // Optional hardening: list Chrome extension IDs to accept only those extension origins.
+  const extensionIds = value.extensionIds ?? [];
+  if (!Array.isArray(extensionIds) || extensionIds.length > 20 || extensionIds.some(id => typeof id !== 'string' || !/^[a-p]{32}$/.test(id))) throw new Error('Bridge configuration extensionIds must list Chrome extension IDs (32 letters a-p).');
+  return { url: url.origin, token: value.token, path: resolve(path), extensionIds };
 }

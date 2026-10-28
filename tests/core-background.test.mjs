@@ -12,7 +12,8 @@ const screenshotDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAA
 const chrome = {
   runtime: { id: 'test-extension', getURL: path => `chrome-extension://test-extension/${path}`, onMessage: events(), onInstalled: events(), onStartup: events() },
   storage: { local: { get: async key => ({ [key]: values[key] }), set: async patch => { Object.assign(values, structuredClone(patch)); } }, onChanged: events() },
-  contextMenus: { removeAll: async () => { menus.length = 0; }, create: item => { menus.push(item); return item.id; }, onClicked: events() },
+  contextMenus: { removeAll: async () => { menus.length = 0; }, create: item => { menus.push(item); return item.id; },
+    remove: async id => { const index = menus.findIndex(menu => menu.id === id); if (index < 0) throw new Error(`Cannot find menu item with id ${id}`); menus.splice(index, 1); }, onClicked: events() },
   tabs: { query: async () => [{ id: 7, windowId: 1, title: 'A page', url: 'https://example.com/post' }], create: async tab => { tabs.push(tab); return tab; },
     captureVisibleTab: async (windowId, options) => { screenshotCalls.push({ windowId, options }); return screenshotDataUrl; } },
   scripting: { executeScript: async () => [{ result: { title: 'Captured article', url: 'https://example.com/post', articleText: 'An article about linked thinking.', cover: '/cover.jpg' } }] },
@@ -29,7 +30,10 @@ const { buildCapture } = await import('../extension/lib/capture.js');
 
 test('registers capture menus and captures selected text into source-linked highlights', async () => {
   await installMenus();
-  assert.deepEqual(menus.map(menu => menu.id), ['still-save-page', 'still-save-link', 'still-save-selection', 'still-note-selection', 'still-save-image', 'still-screenshot', 'still-screenshot-full', 'still-open-library']);
+  // The 8 original ids keep their order; the "Save … to" parents follow (their children are built per collection).
+  assert.deepEqual(menus.map(menu => menu.id), ['still-save-page', 'still-save-link', 'still-save-selection', 'still-note-selection', 'still-save-image', 'still-screenshot', 'still-screenshot-full', 'still-open-library',
+    'still-save-page-to', 'still-save-link-to', 'still-save-image-to']);
+  assert.deepEqual(menus.slice(8).map(menu => [menu.title, menu.contexts.join()]), [['Save page to', 'page'], ['Save link to', 'link'], ['Save image to', 'image']]);
   const item = await captureTab({ id: 7, title: 'Page', url: 'https://example.com/post' }, { menuItemId: 'still-save-selection', selectionText: 'A source passage', pageUrl: 'https://example.com/post' });
   assert.equal(item.type, 'article');
   assert.equal(item.content, '');

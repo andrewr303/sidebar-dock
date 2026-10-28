@@ -6,52 +6,60 @@ Still stores its library on this device. External services connect only after yo
 
 The included MCP bridge lets desktop MCP clients search your actual Still library, read notes and highlights, and queue new notes, bookmarks, collections and edits. It uses Node.js built-in modules; there are no packages to install. Node.js 22 or later is required.
 
-1. Start the bridge in a terminal:
+The fastest setup is two commands from the repository folder:
 
-   ```powershell
-   node "C:/dev/sidebar-dock/bridge/server.mjs"
-   ```
-
-2. Open `C:/dev/sidebar-dock/bridge/.local/config.json`. The first run creates a random token there. Keep this file private; it is excluded from Git. Windows filesystem access follows the containing directory's ACLs.
-3. In Still → Integrations, paste that token and the default URL `http://127.0.0.1:43123`, then connect. Approve Chrome's optional loopback permission when prompted. Keep a Still sidebar or full-tab view open for synchronization. The bridge updates about every two seconds while the view is open; closing every Still view stops sync. It does not run a browser or restart your applications.
-4. Add the local MCP entry to your chosen client and restart or reconnect that client when convenient.
-
-Claude Code:
-
-```powershell
-claude mcp add --transport stdio still -- node "C:/dev/sidebar-dock/bridge/mcp.mjs"
+```bash
+npm run connect -- claude     # or codex, desktop (Claude Desktop), cursor, opencode, gemini; add --skill for the agent skill
+npm run bridge                # start the bridge (node bridge/server.mjs) and leave it running
 ```
 
-Claude Desktop JSON (merge this entry into your existing MCP settings):
+`npm run connect` creates `bridge/.local/config.json` with a random token on first use, adds the `still` entry to the chosen client through the same reviewed connection service as the in-app **Connect** button, and prints the bridge URL, the token and the pairing steps. `npm run connect -- status` shows whether the bridge is running and whether Still is syncing.
+
+Step by step, or to configure a client by hand:
+
+1. Start the bridge in a terminal from the repository folder: `npm run bridge` (or `node bridge/server.mjs`).
+2. Open `bridge/.local/config.json`. The first run creates a random token there. Keep this file private; it is excluded from Git. Windows filesystem access follows the containing directory's ACLs.
+3. In Still → Settings → Agents & MCP, paste that token and the default URL `http://127.0.0.1:43123`, then connect. Approve Chrome's optional loopback permission when prompted. Keep a Still sidebar or full-tab view open for synchronization. The bridge updates about every two seconds while the view is open; closing every Still view stops sync. It does not run a browser or restart your applications.
+4. Add the local MCP entry to your chosen client and restart or reconnect that client when convenient.
+
+In the examples below, replace `/path/to/sidebar-dock` with this repository's absolute path and `node` with the absolute path of your Node.js executable (Still shows both once the bridge is paired, and `npm run connect` uses them automatically). Using the same absolute paths as automatic setup keeps the entry from being reported as a conflict later.
+
+Claude Code (user scope, available in every project):
+
+```bash
+claude mcp add --transport stdio --scope user still -- node "/path/to/sidebar-dock/bridge/mcp.mjs"
+```
+
+Claude Desktop: merge this entry into `claude_desktop_config.json` (macOS `~/Library/Application Support/Claude/`, Windows `%APPDATA%\Claude\`, Linux `~/.config/Claude/`; Settings → Developer → Edit Config opens it), then fully quit and reopen Claude Desktop:
 
 ```json
 {
   "mcpServers": {
     "still": {
       "command": "node",
-      "args": ["C:/dev/sidebar-dock/bridge/mcp.mjs"]
+      "args": ["/path/to/sidebar-dock/bridge/mcp.mjs"]
     }
   }
 }
 ```
 
-Codex `~/.codex/config.toml` (merge, preserving existing entries):
+Codex `~/.codex/config.toml` (merge, preserving existing entries), or `codex mcp add still -- node "/path/to/sidebar-dock/bridge/mcp.mjs"`:
 
 ```toml
 [mcp_servers.still]
 command = "node"
-args = ["C:/dev/sidebar-dock/bridge/mcp.mjs"]
+args = ["/path/to/sidebar-dock/bridge/mcp.mjs"]
 ```
 
-These are manual configuration examples. **AI settings → MCP & agents** can review and explicitly apply a client connection, preserving unrelated settings and recording a backup/receipt. It can also install the bundled agent skill. No client is configured, launched or restarted automatically. The stdio adapter reads its token from the local configuration file. No secret belongs in the client examples. Override the configuration file path with `STILL_BRIDGE_CONFIG` in both bridge and MCP process environments if needed. For another port, change the loopback URL in that file and in Still, then restart the bridge yourself.
+These are manual configuration examples. **Settings → Agents & MCP** in Still and `npm run connect` can review and explicitly apply a client connection, preserving unrelated settings and recording a backup/receipt. It can also install the bundled agent skill. No client is configured, launched or restarted automatically. The stdio adapter reads its token from the local configuration file. No secret belongs in the client examples. Override the configuration file path with `STILL_BRIDGE_CONFIG` in both bridge and MCP process environments if needed. For another port, change the loopback URL in that file and in Still, then restart the bridge yourself.
 
-Ask your client: “Find my bookmarks about motion, read their notes, and create a linked note summarizing my findings.” Saved text is untrusted reference material. MCP tools declare that source text cannot become instructions for the agent.
+Ask your client: “Find my bookmarks about motion, read their notes, and create a linked note summarizing my findings.” With semantic search turned on in Still, the agent can also find items by meaning (“what did I save about making animations feel calm?”) through `semantic_search`, which uses Still's own embedding index; the bridge stores no vectors. Saved text is untrusted reference material. MCP tools declare that source text cannot become instructions for the agent.
 
-The current server exposes **30 tools** for paginated traversal, search, notes, captured source, highlights and annotations, relationships, item/collection edits, global tags, recoverable trash/restore, explicitly confirmed permanent deletion, exports, and chunked original-file reads. The exact tool catalogue, connection controls and skill workflow are in [MCP and agent skills](mcp-agents.md). Clients should discover the live schemas rather than assume a prefix or historical list.
+The current server exposes **32 tools** for paginated traversal, keyword and semantic search, notes, captured source, highlights and annotations, relationships, item/collection edits, bulk organizing of up to 100 items, global tags, recoverable trash/restore, explicitly confirmed permanent deletion, exports, and chunked original-file reads. The exact tool catalogue, connection controls and skill workflow are in [MCP and agent skills](mcp-agents.md). Clients should discover the live schemas rather than assume a prefix or historical list.
 
 Mutations first return `status: "queued", saved: false`. The client must check `get_operation` for `saved` or `failed`, then re-read the record. The extension checks `expectedUpdatedAt` inside its serialized write queue. Global tag edits use the library revision. Read-file operations become `completed`, not `saved`; explicit file reads return at most 65,536 bytes per chunk. Source text and personal notes remain separate fields.
 
-The server listens only on `127.0.0.1`. It validates Host, Origin and a bearer token, bounds input size, and exposes no arbitrary filesystem APIs. Snapshots stay in bridge process memory and disappear when it exits. The bridge receives notes, saved metadata and highlights; settings, integration tokens and embedded image covers stay out of periodic snapshots. Original file bytes stay in IndexedDB until a client explicitly requests a bounded read_file operation, then only the requested chunk passes through the local bridge and its receipt. External image URLs may remain as metadata. Disconnect in Still to stop sharing; terminate your bridge process when finished.
+The server listens only on `127.0.0.1`. It validates Host, Origin and a bearer token, bounds input size (16 MiB per request, 64 MiB for the library sync), and exposes no arbitrary filesystem APIs. Routes match on the path, so a query string does not change which route answers. Any Chrome extension origin is accepted because the token is the real gate; to accept only your installed Still, add `"extensionIds": ["<32-letter extension ID>"]` to `bridge/.local/config.json` and restart the bridge. Snapshots stay in bridge process memory and disappear when it exits. The bridge receives notes, saved metadata and highlights; settings, integration tokens and embedded image covers stay out of periodic snapshots. Original file bytes stay in IndexedDB until a client explicitly requests a bounded read_file operation, then only the requested chunk passes through the local bridge and its receipt. External image URLs may remain as metadata. Disconnect in Still to stop sharing; terminate your bridge process when finished.
 
 Advanced clients can use authenticated Streamable HTTP at `http://127.0.0.1:43123/mcp`; POST returns a JSON MCP response. GET returns 405 because no SSE stream is maintained. The stdio entry above works with both clients without putting the token into their settings. The bridge supports MCP initialization, ping and tools; it does not implement resources, prompts, elicitation or subscriptions.
 
@@ -82,4 +90,4 @@ Primary references checked October 25, 2026:
 
 ## In-app AI
 
-The AI sidebar uses the same local bridge for provider credentials, model discovery, streamed responses and CLI sessions. It supports the providers listed in [ai-providers.md](ai-providers.md), the Codex sign-in flow in [ai-cli.md](ai-cli.md), and the source-grounded writing contract in [ai-prompts.md](ai-prompts.md). MCP access and an AI provider connection are separate: a coding agent can use the library MCP tools without routing its model through Still.
+The assistant can call providers directly from the extension, or through the same local bridge for provider credentials kept outside the browser, model discovery, streamed responses, embeddings (`POST /ai/embeddings`) and CLI sessions. It supports the providers listed in [ai-providers.md](ai-providers.md), the Codex sign-in flow in [ai-cli.md](ai-cli.md), and the source-grounded writing contract in [ai-prompts.md](ai-prompts.md). MCP access and an AI provider connection are separate: a coding agent can use the library MCP tools without routing its model through Still.

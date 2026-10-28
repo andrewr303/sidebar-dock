@@ -165,6 +165,49 @@ export function createLibraryStore({ read, write, withLock = task => task() }) {
           for (const item of state.items) item.relatedIds = item.relatedIds.filter(id => id !== input);
           result = { id: input }; changed = true; break;
         }
+        case 'bulkUpdateItems': {
+          // One write for many item patches: [{ id, patch }]. Trash via patch.deletedAt, restore via deletedAt: null.
+          if (!Array.isArray(input) || !input.length) throw new Error('Choose at least one item.');
+          if (patch?.expectedLibraryUpdatedAt && patch.expectedLibraryUpdatedAt !== state.updatedAt) throw new Error('Conflict: the library changed. Refresh before applying these changes.');
+          const updates = input.map(entry => {
+            if (!entry || typeof entry.id !== 'string' || !entry.patch || typeof entry.patch !== 'object') throw new Error('Each change needs an item id and a patch.');
+            const existing = findItem(entry.id);
+            const next = normalizeItem({ ...entry.patch, id: entry.id }, existing);
+            if (next.collectionId) findCollection(next.collectionId);
+            return [existing, next];
+          });
+          for (const [existing, next] of updates) state.items[state.items.indexOf(existing)] = next;
+          result = updates.map(([, next]) => next); changed = true; break;
+        }
+        case 'emptyTrash': {
+          const removed = state.items.filter(i => i.deletedAt);
+          const ids = new Set(removed.map(i => i.id));
+          state.items = state.items.filter(i => !i.deletedAt);
+          for (const item of state.items) if (item.relatedIds.some(id => ids.has(id))) item.relatedIds = item.relatedIds.filter(id => !ids.has(id));
+          const stillUsed = new Set(state.items.map(i => i.attachmentId).filter(Boolean));
+          result = { ids: [...ids], attachmentIds: [...new Set(removed.map(i => i.attachmentId).filter(id => id && !stillUsed.has(id)))] };
+          changed = ids.size > 0; break;
+        }
+        case 'moveCollection': {
+          // Reparent and/or reorder: { parentId, beforeId } places the collection before a sibling (or last when beforeId is empty).
+          const existing = findCollection(input);
+          const parentId = typeof patch?.parentId === 'string' ? patch.parentId : existing.parentId || '';
+          let ancestorId = parentId;
+          const seen = new Set([input]);
+          while (ancestorId) {
+            if (seen.has(ancestorId)) throw new Error('A collection cannot contain itself.');
+            seen.add(ancestorId); ancestorId = findCollection(ancestorId).parentId;
+          }
+          const moved = normalizeCollection({ parentId }, existing);
+          const rest = state.collections.filter(c => c.id !== input);
+          const before = patch?.beforeId ? rest.findIndex(c => c.id === patch.beforeId) : -1;
+          if (before >= 0) rest.splice(before, 0, moved);
+          else {
+            const lastSibling = rest.findLastIndex(c => (c.parentId || '') === parentId);
+            rest.splice(lastSibling >= 0 ? lastSibling + 1 : rest.length, 0, moved);
+          }
+          state.collections = rest; result = moved; changed = true; break;
+        }
         case 'createCollection': {
           result = normalizeCollection(input);
           if (state.collections.some(c => c.id === result.id)) throw new Error('Collection ID already exists.');
@@ -269,6 +312,9 @@ export const createCollection = input => operation('createCollection', [input]);
 export const updateCollection = (id, patch, options = {}) => operation('updateCollection', [id, patch, options]);
 export const deleteCollection = (id, options = {}) => operation('deleteCollection', [id, options]);
 export const mutateTags = input => operation('mutateTags', [input]);
+export const bulkUpdateItems = (changes, options = {}) => operation('bulkUpdateItems', [changes, options]);
+export const emptyTrash = () => operation('emptyTrash', []);
+export const moveCollection = (id, placement = {}) => operation('moveCollection', [id, placement]);
 export const updateSettings = patch => operation('updateSettings', [patch]);
 export const importLibrary = data => operation('importLibrary', [data]);
 export const exportLibrary = async () => {

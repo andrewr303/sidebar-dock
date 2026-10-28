@@ -1,24 +1,72 @@
 {
   "manifest_version": 3,
-  "name": "Still — bookmarks & notes",
+  "name": "Still: bookmarks, notes and AI",
   "short_name": "Still",
-  "description": "A quiet place for everything worth keeping. Bookmarks, articles, files, highlights and connected notes in your sidebar.",
-  "version": "0.2.0",
-  "minimum_chrome_version": "116",
-  "permissions": ["storage", "unlimitedStorage", "sidePanel", "activeTab", "contextMenus", "scripting", "alarms", "notifications"],
-  "optional_permissions": ["bookmarks"],
-  "optional_host_permissions": ["http://127.0.0.1/*", "http://localhost/*", "https://api.raindrop.io/*"],
-  "background": {"service_worker": "background.js", "type": "module"},
+  "description": "Save links into collections, write page-linked notes, keep highlights and ask Claude, ChatGPT, Grok or local models about your library. Local-first.",
+  "version": "0.3.0",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "sidePanel",
+    "activeTab",
+    "contextMenus",
+    "scripting",
+    "alarms",
+    "notifications"
+  ],
+  "optional_permissions": [
+    "bookmarks",
+    "tabs"
+  ],
+  "optional_host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "https://api.raindrop.io/*",
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
   "action": {
-    "default_title": "Open Still sidebar",
-    "default_icon": {"16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png"}
+    "default_title": "Open Still",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
-  "icons": {"16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png"},
-  "side_panel": {"default_path": "index.html?view=sidepanel"},
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "side_panel": {
+    "default_path": "index.html?view=sidepanel"
+  },
   "commands": {
-    "save-current": {"suggested_key": {"default": "Alt+Shift+S"}, "description": "Save this page to Still"},
-    "new-note": {"suggested_key": {"default": "Alt+Shift+N"}, "description": "Create a note in Still"},
-    "open-library": {"suggested_key": {"default": "Alt+Shift+L"}, "description": "Open Still in a new tab"}
+    "save-current": {
+      "suggested_key": {
+        "default": "Alt+Shift+S"
+      },
+      "description": "Save this page to Still"
+    },
+    "new-note": {
+      "suggested_key": {
+        "default": "Alt+Shift+N"
+      },
+      "description": "Write a note about this page"
+    },
+    "open-library": {
+      "suggested_key": {
+        "default": "Alt+Shift+L"
+      },
+      "description": "Open Still in a new tab"
+    }
   },
-  "content_security_policy": {"extension_pages": "script-src 'self'; object-src 'self'; base-uri 'self';"}
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; base-uri 'self';"
+  }
 }

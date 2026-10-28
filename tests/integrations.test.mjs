@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
 import { createServer, request as httpRequest } from 'node:http';
-import { mkdtemp, readFile, unlink, rmdir } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, unlink, rmdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createBridgeServer } from '../bridge/server.mjs';
@@ -243,8 +243,48 @@ test('local config creates a unique secret once and generated client setup keeps
     assert.equal(JSON.parse(await readFile(path, 'utf8')).token, initial.token);
     const setup = getMcpSetup();
     assert.match(setup.codex, /\[mcp_servers.still\]/);
-    assert.match(setup.claudeCommand, /--transport stdio still -- node/);
+    // User scope makes the entry available in every project, matching the in-app Connect action.
+    assert.match(setup.claudeCommand, /--transport stdio --scope user still -- node/);
+    assert.equal(setup.rootKnown, false); assert.match(setup.entry, /^\/path\/to\/sidebar-dock\/bridge\/mcp\.mjs$/);
+    assert.equal(JSON.stringify(setup).includes('C:/dev'), false);
     assert.equal(JSON.stringify(setup).includes(initial.token), false);
     assert.equal(mapRaindropLibrary([], [{ _id: 1, link: 'https://example.com', collection: { $id: -1 } }]).items[0].collectionId, '');
+  } finally { await unlink(path); await rmdir(directory); }
+});
+
+test('MCP setup snippets reproduce the exact node and adapter paths the bridge writes on each platform', async () => {
+  const posix = getMcpSetup('/home/me/sidebar-dock/', { nodePath: '/usr/local/bin/node' });
+  assert.equal(posix.entry, '/home/me/sidebar-dock/bridge/mcp.mjs');
+  assert.equal(posix.claudeCommand, 'claude mcp add --transport stdio --scope user still -- "/usr/local/bin/node" "/home/me/sidebar-dock/bridge/mcp.mjs"');
+  assert.equal(posix.codexCommand, 'codex mcp add still -- "/usr/local/bin/node" "/home/me/sidebar-dock/bridge/mcp.mjs"');
+  assert.equal(posix.codex, '[mcp_servers.still]\ncommand = "/usr/local/bin/node"\nargs = ["/home/me/sidebar-dock/bridge/mcp.mjs"]\n');
+  assert.deepEqual(JSON.parse(posix.claudeDesktop).mcpServers.still, { command: '/usr/local/bin/node', args: ['/home/me/sidebar-dock/bridge/mcp.mjs'] });
+  assert.equal(JSON.parse(posix.cursor).mcpServers.still.type, 'stdio');
+  assert.deepEqual(JSON.parse(posix.vscode), { servers: { still: { type: 'stdio', command: '/usr/local/bin/node', args: ['/home/me/sidebar-dock/bridge/mcp.mjs'] } } });
+  const windows = getMcpSetup('C:\\Users\\me\\sidebar-dock\\', { nodePath: 'C:\\Program Files\\nodejs\\node.exe' });
+  assert.equal(windows.entry, 'C:\\Users\\me\\sidebar-dock\\bridge\\mcp.mjs');
+  assert.deepEqual(JSON.parse(windows.claude).mcpServers.still, { command: 'C:\\Program Files\\nodejs\\node.exe', args: ['C:\\Users\\me\\sidebar-dock\\bridge\\mcp.mjs'] });
+  assert.equal(windows.configPath, 'C:\\Users\\me\\sidebar-dock\\bridge\\.local\\config.json');
+});
+
+test('bridge routes match the path even with a query string, and pinned extension IDs restrict extension origins', async () => {
+  const state = createBridgeState();
+  const pinned = 'b'.repeat(32);
+  const server = createBridgeServer({ token: TOKEN, state, extensionIds: [pinned] });
+  const url = await listen(server);
+  try {
+    const headers = { Authorization: `Bearer ${TOKEN}` };
+    assert.equal((await fetch(`${url}/status?cache=1`, { headers })).status, 200);
+    assert.equal((await fetch(`${url}/health?probe=1`)).status, 200);
+    assert.equal((await fetch(`${url}/status`, { headers: { ...headers, Origin: `chrome-extension://${pinned}` } })).status, 200);
+    assert.equal((await fetch(`${url}/status`, { headers: { ...headers, Origin: `chrome-extension://${'a'.repeat(32)}` } })).status, 403);
+  } finally { await close(server); }
+  const directory = await mkdtemp(join(tmpdir(), 'still-integration-'));
+  const path = join(directory, 'config.json');
+  try {
+    await writeFile(path, JSON.stringify({ url: 'http://127.0.0.1:43123', token: TOKEN, extensionIds: [pinned] }));
+    assert.deepEqual((await loadConfig(path)).extensionIds, [pinned]);
+    await writeFile(path, JSON.stringify({ url: 'http://127.0.0.1:43123', token: TOKEN, extensionIds: ['not-an-id'] }));
+    await assert.rejects(loadConfig(path), /extensionIds/);
   } finally { await unlink(path); await rmdir(directory); }
 });

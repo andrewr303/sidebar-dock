@@ -93,18 +93,87 @@ test('OpenAI Responses streams fragmented UTF-8 live, uses exact model, and omit
   assert.deepEqual(sent.body.input[0].content, [{ type: 'input_text', text: 'Summarize my notes.' }]);
 });
 
-test('Anthropic Messages maps image blocks, explicit effort and temperature, and usage events', async t => {
-  let sent;
+test('Anthropic Messages uses API version 2026-10-21 with summarized adaptive thinking, effort, caching and images, and never sends sampling controls', async t => {
+  let sent, calls = 0; const thoughts = [];
   const { service } = await serviceFixture(t, { fetch: async (url, options) => {
-    sent = { url, ...options, body: JSON.parse(options.body) };
-    return responseStream(sse({ type: 'message_start', message: { model: 'anthropic-model', usage: { input_tokens: 8 } } }, { type: 'content_block_delta', delta: { type: 'text_delta', text: 'A visual note' } }, { type: 'message_delta', usage: { output_tokens: 3 }, delta: { stop_reason: 'end_turn' } }, { type: 'message_stop' }));
+    calls++; sent = { url, ...options, body: JSON.parse(options.body) };
+    return responseStream(sse({ type: 'message_start', message: { model: 'anthropic-model', usage: { input_tokens: 8 } } }, { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } }, { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Looking at the image.' } }, { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'opaque' } }, { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'A visual note' } }, { type: 'message_delta', usage: { output_tokens: 3 }, delta: { stop_reason: 'end_turn' } }, { type: 'message_stop' }));
   } });
+  // Temperature is ignored as a capability and rejected as a stored setting for Anthropic types.
   const saved = await provider(service, 'anthropic', { capabilities: { images: true, temperature: true, reasoningEfforts: ['high'] } });
-  const result = await service.generate({ providerId: saved.id, system: prompt.system, messages: [{ role: 'user', content: [{ type: 'text', text: 'Describe' }, { type: 'image', dataUrl: 'data:image/png;base64,AA==' }] }], reasoningEffort: 'high', temperature: 0.5 });
+  assert.equal(saved.capabilities.temperature, false);
+  await assert.rejects(provider(service, 'anthropic', { config: { temperature: 0.3 } }), /temperature/);
+  const result = await service.generate({ providerId: saved.id, system: prompt.system, messages: [{ role: 'user', content: [{ type: 'text', text: 'Describe' }, { type: 'image', dataUrl: 'data:image/png;base64,AA==' }] }], reasoningEffort: 'high', onThinking: text => { thoughts.push(text); } });
   assert.equal(result.text, 'A visual note'); assert.deepEqual(result.usage, { input_tokens: 8, output_tokens: 3 });
-  assert.equal(sent.url, 'https://api.anthropic.com/v1/messages'); assert.equal(sent.headers['x-api-key'], FAKE_KEY);
-  assert.equal(sent.body.output_config.effort, 'high'); assert.equal(sent.body.thinking.type, 'adaptive');
-  assert.equal(sent.body.temperature, 0.5); assert.equal(sent.body.messages[0].content[1].source.media_type, 'image/png');
+  assert.deepEqual(thoughts, ['Looking at the image.']); assert.equal(result.thinking, 'Looking at the image.');
+  assert.equal(sent.url, 'https://api.anthropic.com/v1/messages'); assert.equal(sent.headers['x-api-key'], FAKE_KEY); assert.equal(sent.headers['anthropic-version'], '2026-10-21');
+  assert.equal(sent.headers['anthropic-beta'], undefined); assert.equal(sent.body.fallbacks, undefined);
+  assert.deepEqual(sent.body.thinking, { type: 'adaptive', display: 'summarized' }); assert.equal(sent.body.output_config.effort, 'high');
+  assert.deepEqual(sent.body.cache_control, { type: 'ephemeral' }); assert.equal(sent.body.max_tokens, 32000);
+  for (const field of ['temperature', 'top_p', 'top_k']) assert.equal(field in sent.body, false);
+  assert.equal(sent.body.messages[0].content[1].source.media_type, 'image/png');
+  await assert.rejects(service.generate({ providerId: saved.id, ...prompt, temperature: 0.5 }), /Temperature is disabled/);
+  assert.equal(calls, 1);
+  const defaults = await provider(service, 'anthropic');
+  assert.equal(defaults.capabilities.images, true); assert.deepEqual(defaults.capabilities.reasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max']);
+});
+
+test('Claude 5.5-generation models opt into server-side fallback; Haiku, older models and compatible endpoints do not', async t => {
+  const requests = [];
+  const { service } = await serviceFixture(t, { fetch: async (url, options) => {
+    requests.push({ url, ...options, body: JSON.parse(options.body) });
+    return responseStream(sse({ type: 'message_start', message: { model: 'claude-opus-5-5', usage: { input_tokens: 4 } } }, { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Partial ' } }, { type: 'content_block_start', index: 1, content_block: { type: 'fallback', from: { model: 'claude-opus-5-5' }, to: { model: 'claude-opus-5' } } }, { type: 'content_block_stop', index: 1 }, { type: 'content_block_delta', index: 2, delta: { type: 'text_delta', text: 'answer' } }, { type: 'message_delta', usage: { output_tokens: 2 }, delta: { stop_reason: 'end_turn' } }, { type: 'message_stop' }));
+  } });
+  const opus = await provider(service, 'anthropic', { model: 'claude-opus-5-5', config: { workspaceId: 'wrkspc_test01' } });
+  const result = await service.generate({ providerId: opus.id, ...prompt });
+  assert.equal(result.text, 'Partial answer'); assert.equal(result.model, 'claude-opus-5'); assert.deepEqual(result.fallback, { from: 'claude-opus-5-5', to: 'claude-opus-5' });
+  let sent = requests.at(-1);
+  assert.equal(sent.headers['anthropic-beta'], 'server-side-fallback-2026-07-01'); assert.equal(sent.body.fallbacks, 'default'); assert.equal(sent.headers['anthropic-workspace-id'], 'wrkspc_test01');
+  assert.deepEqual(sent.body.thinking, { type: 'adaptive', display: 'summarized' }); assert.equal(sent.body.output_config, undefined);
+  for (const model of ['claude-sonnet-5-5', 'claude-fable-5-1']) { await service.generate({ providerId: opus.id, ...prompt, model }); assert.equal(requests.at(-1).body.fallbacks, 'default'); }
+  await service.generate({ providerId: opus.id, ...prompt, model: 'claude-haiku-5-5' });
+  sent = requests.at(-1); assert.equal(sent.headers['anthropic-beta'], undefined); assert.equal(sent.body.fallbacks, undefined); assert.equal(sent.body.thinking.type, 'adaptive');
+  await service.generate({ providerId: opus.id, ...prompt, model: 'claude-haiku-4-5' });
+  assert.equal(requests.at(-1).body.thinking, undefined);
+  // Only the three models SPEC §7.1 names opt into fallback; Claude Opus 5 and dated older IDs do not.
+  for (const model of ['claude-opus-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-opus-5-5-preview']) {
+    await service.generate({ providerId: opus.id, ...prompt, model });
+    sent = requests.at(-1); assert.equal(sent.body.fallbacks, undefined, model); assert.equal(sent.headers['anthropic-beta'], undefined, model);
+  }
+  assert.equal(sent.body.thinking.type, 'adaptive');
+  // A Claude model before 4.6 rejects adaptive thinking, so a chosen effort travels alone.
+  const efforts = await provider(service, 'anthropic', { model: 'claude-opus-4-5' });
+  await service.generate({ providerId: efforts.id, ...prompt, reasoningEffort: 'high' });
+  sent = requests.at(-1); assert.equal(sent.body.thinking, undefined); assert.deepEqual(sent.body.output_config, { effort: 'high' });
+  const compatible = await provider(service, 'anthropic-compatible', { model: 'claude-opus-5-5' });
+  await service.generate({ providerId: compatible.id, ...prompt });
+  sent = requests.at(-1);
+  assert.equal(sent.url, 'https://compatible.example/v1/messages'); assert.equal(sent.headers['anthropic-version'], '2023-06-01'); assert.equal(sent.headers['anthropic-beta'], undefined);
+  assert.equal(sent.body.fallbacks, undefined); assert.equal(sent.body.cache_control, undefined); assert.equal(sent.body.thinking, undefined); assert.equal(sent.body.max_tokens, 4096);
+  await service.saveProvider({ id: compatible.id, config: { anthropicVersion: '2026-10-21' } });
+  await service.generate({ providerId: compatible.id, ...prompt });
+  assert.equal(requests.at(-1).headers['anthropic-version'], '2026-10-21');
+  await assert.rejects(service.saveProvider({ id: compatible.id, config: { anthropicVersion: 'latest' } }), /Anthropic version/);
+});
+
+test('refusals and exhausted output budgets end as explicit failures that keep partial text', async t => {
+  let stream;
+  const { service } = await serviceFixture(t, { fetch: async () => responseStream(stream) });
+  const saved = await provider(service, 'anthropic', { model: 'claude-opus-5-5' });
+  stream = sse({ type: 'message_start', message: { model: 'claude-opus-5-5' } }, { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Partial' } }, { type: 'message_delta', delta: { stop_reason: 'refusal', stop_details: { type: 'refusal', category: 'cyber', explanation: 'This touches exploit development.' } } }, { type: 'message_stop' });
+  await assert.rejects(service.generate({ providerId: saved.id, ...prompt }), error => {
+    assert.match(error.message, /declined this request \(cyber\)\. This touches exploit development\./); assert.equal(error.partialText, 'Partial'); assert.equal(error.stopReason, 'refusal'); assert.equal(error.aborted, false); return true;
+  });
+  stream = sse({ type: 'message_start', message: {} }, { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'Long deliberation' } }, { type: 'message_delta', delta: { stop_reason: 'max_tokens' } }, { type: 'message_stop' });
+  await assert.rejects(service.generate({ providerId: saved.id, ...prompt }), error => /whole output budget/.test(error.message) && error.stopReason === 'max_tokens');
+  stream = sse({ type: 'message_start', message: {} }, { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Cut off' } }, { type: 'message_delta', delta: { stop_reason: 'max_tokens' } }, { type: 'message_stop' });
+  assert.equal((await service.generate({ providerId: saved.id, ...prompt })).stopReason, 'max_tokens');
+  const openai = await provider(service);
+  stream = sse({ type: 'response.output_text.delta', delta: 'Truncated answer' }, { type: 'response.incomplete', response: { model: 'gpt-model', incomplete_details: { reason: 'max_output_tokens' } } });
+  const truncated = await service.generate({ providerId: openai.id, ...prompt });
+  assert.equal(truncated.text, 'Truncated answer'); assert.equal(truncated.stopReason, 'max_tokens');
+  stream = sse({ type: 'response.incomplete', response: { incomplete_details: { reason: 'content_filter' } } });
+  await assert.rejects(service.generate({ providerId: openai.id, ...prompt }), /content_filter/);
 });
 
 test('Chat Completions adapters route compatible, OpenRouter, Cloudflare and LM Studio correctly', async t => {
@@ -122,7 +191,118 @@ test('Chat Completions adapters route compatible, OpenRouter, Cloudflare and LM 
     assert.equal(result.text, 'Hello world'); assert.equal(requests.at(-1).url, endpoint);
     assert.equal(requests.at(-1).body.messages[0].role, 'system');
     assert.equal(result.usage.completion_tokens, 2);
+    // Cloudflare's endpoint keeps a bounded default and no stream_options; the others ask for streamed usage.
+    assert.deepEqual(requests.at(-1).body.stream_options, type === 'cloudflare' ? undefined : { include_usage: true });
+    assert.equal(requests.at(-1).body.max_tokens, type === 'cloudflare' ? 4096 : undefined);
   }
+});
+
+test('xAI, Mistral, Groq and DeepSeek stream Chat Completions with Bearer keys, reasoning summaries and usage', async t => {
+  const requests = [];
+  const { service } = await serviceFixture(t, { fetch: async (url, options) => {
+    requests.push({ url, ...options, body: JSON.parse(options.body) });
+    return responseStream(sse({ choices: [{ delta: { reasoning_content: 'Weighing sources. ' }, finish_reason: null }] }, { choices: [{ delta: { content: 'Grounded answer' }, finish_reason: null }] }, { choices: [{ delta: {}, finish_reason: 'stop' }] }, { choices: [], usage: null, x_groq: { usage: { prompt_tokens: 7, completion_tokens: 2 } } }, '[DONE]'));
+  } });
+  for (const [type, endpoint, streamUsage] of [['xai', 'https://api.x.ai/v1/chat/completions', true], ['mistral', 'https://api.mistral.ai/v1/chat/completions', false], ['groq', 'https://api.groq.com/openai/v1/chat/completions', true], ['deepseek', 'https://api.deepseek.com/chat/completions', true]]) {
+    const thoughts = [];
+    const saved = await provider(service, type, { capabilities: { reasoningEfforts: ['high'] } });
+    const result = await service.generate({ providerId: saved.id, ...prompt, reasoningEffort: 'high', onThinking: text => thoughts.push(text) });
+    const sent = requests.at(-1);
+    assert.equal(sent.url, endpoint); assert.equal(sent.headers.Authorization, `Bearer ${FAKE_KEY}`); assert.equal(sent.headers['x-api-key'], undefined);
+    assert.equal(result.text, 'Grounded answer'); assert.deepEqual(thoughts, ['Weighing sources. ']); assert.equal(result.usage.completion_tokens, 2);
+    assert.equal(sent.body.reasoning_effort, 'high'); assert.equal(sent.body.max_tokens, undefined); assert.equal(sent.body.temperature, undefined);
+    assert.deepEqual(sent.body.stream_options, streamUsage ? { include_usage: true } : undefined);
+  }
+  await assert.rejects(service.saveProvider({ type: 'xai', name: 'No key', model: 'grok-4.7' }).then(saved => service.generate({ providerId: saved.id, ...prompt })), /API key/);
+});
+
+test('model discovery follows Anthropic and Gemini pagination and labels chat and embedding models', async t => {
+  const urls = [];
+  const { service } = await serviceFixture(t, { fetch: async (url, options) => {
+    urls.push({ url, headers: options.headers });
+    if (url.startsWith('https://api.anthropic.com')) return Response.json(url.includes('after_id') ? { data: [{ id: 'claude-haiku-5-5', display_name: 'Claude Haiku 5.5' }], has_more: false, last_id: 'claude-haiku-5-5' } : { data: [{ id: 'claude-opus-5-5', display_name: 'Claude Opus 5.5', max_input_tokens: 1000000, max_tokens: 128000, capabilities: { image_input: { supported: true }, effort: { supported: true, low: { supported: true }, max: { supported: true } } } }], has_more: true, last_id: 'claude-opus-5-5' });
+    return Response.json(url.includes('pageToken') ? { models: [{ name: 'models/gemini-4-argon', supportedGenerationMethods: ['generateContent'], outputTokenLimit: 65536 }] } : { models: [{ name: 'models/gemini-3.8-flash', displayName: 'Gemini 3.8 Flash', inputTokenLimit: 1048576, supportedGenerationMethods: ['generateContent', 'countTokens'] }, { name: 'models/gemini-embedding-2', supportedGenerationMethods: ['embedContent'] }, { name: 'models/imagen-5', supportedGenerationMethods: ['predict'] }], nextPageToken: 'next page' });
+  } });
+  const anthropic = await provider(service, 'anthropic');
+  const models = await service.listModels(anthropic.id);
+  assert.deepEqual(urls.map(entry => entry.url), ['https://api.anthropic.com/v1/models?limit=1000', 'https://api.anthropic.com/v1/models?limit=1000&after_id=claude-opus-5-5']);
+  assert.equal(urls[0].headers['anthropic-version'], '2026-10-21');
+  assert.deepEqual(models.map(model => model.id), ['claude-opus-5-5', 'claude-haiku-5-5']);
+  assert.equal(models[0].maxOutputTokens, 128000); assert.equal(models[0].contextWindow, 1000000); assert.equal(models[0].kind, 'chat'); assert.deepEqual(models[0].reasoningEfforts, ['low', 'max']);
+  urls.length = 0;
+  const gemini = await provider(service, 'gemini');
+  const listed = await service.listModels(gemini.id);
+  assert.deepEqual(urls.map(entry => entry.url), ['https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000', 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&pageToken=next+page']);
+  assert.deepEqual(listed.map(model => [model.id, model.kind]), [['gemini-3.8-flash', 'chat'], ['gemini-embedding-2', 'embedding'], ['gemini-4-argon', 'chat']]);
+  assert.equal(listed[2].maxOutputTokens, 65536);
+});
+
+test('embeddings map OpenAI, Voyage, Gemini, Ollama, Mistral and LM Studio requests to ordered plain vectors', async t => {
+  const requests = [];
+  const vector = (seed, size = 4) => Array.from({ length: size }, (_, index) => seed + index);
+  const { service } = await serviceFixture(t, { fetch: async (url, options) => {
+    const body = JSON.parse(options.body); requests.push({ url, headers: options.headers, body });
+    if (url.includes(':batchEmbedContents')) return Response.json({ embeddings: body.requests.map((_, index) => ({ values: [3 * (index + 1), 4 * (index + 1)] })) });
+    if (url.endsWith('/api/embed')) return Response.json({ model: 'embeddinggemma', embeddings: body.input.map((_, index) => vector(index)), prompt_eval_count: 6 });
+    const data = body.input.map((_, index) => ({ object: 'embedding', index, embedding: vector(index * 10) })).reverse();
+    return Response.json({ object: 'list', data, model: `${body.model}-served`, usage: { prompt_tokens: 5, total_tokens: 5 } });
+  } });
+  const openai = await provider(service);
+  const result = await service.embed({ providerId: openai.id, inputs: ['First note', 'Second note'], dimensions: 4 });
+  assert.equal(requests.at(-1).url, 'https://api.openai.com/v1/embeddings'); assert.equal(requests.at(-1).headers.Authorization, `Bearer ${FAKE_KEY}`);
+  assert.deepEqual(requests.at(-1).body, { model: 'text-embedding-3-small', input: ['First note', 'Second note'], encoding_format: 'float', dimensions: 4 });
+  assert.deepEqual(result, { vectors: [vector(0), vector(10)], model: 'text-embedding-3-small-served', dimensions: 4, usage: { inputTokens: 5 } });
+  const voyage = await provider(service, 'voyage', { model: '' });
+  await service.embed({ providerId: voyage.id, inputs: ['what did I save about motion'], inputType: 'query', dimensions: 4 });
+  assert.equal(requests.at(-1).url, 'https://api.voyageai.com/v1/embeddings');
+  assert.deepEqual(requests.at(-1).body, { input: ['what did I save about motion'], model: 'voyage-4', input_type: 'query', truncation: true, output_dimension: 4 });
+  const gemini = await provider(service, 'gemini', { config: { embeddingModel: 'gemini-embedding-001' } });
+  const many = Array.from({ length: 150 }, (_, index) => `Chunk ${index}`);
+  const batched = await service.embed({ providerId: gemini.id, inputs: many, dimensions: 2 });
+  const geminiCalls = requests.filter(entry => entry.url.includes(':batchEmbedContents'));
+  assert.deepEqual(geminiCalls.map(entry => entry.body.requests.length), [100, 50]);
+  assert.equal(geminiCalls[0].url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents'); assert.equal(geminiCalls[0].headers['x-goog-api-key'], FAKE_KEY);
+  assert.deepEqual(geminiCalls[0].body.requests[0], { model: 'models/gemini-embedding-001', content: { parts: [{ text: 'Chunk 0' }] }, taskType: 'RETRIEVAL_DOCUMENT', outputDimensionality: 2 });
+  assert.equal(batched.vectors.length, 150); assert.deepEqual(batched.vectors[0], [0.6, 0.8]);
+  await service.embed({ providerId: gemini.id, inputs: ['motion'], inputType: 'query', model: 'gemini-embedding-2' });
+  assert.deepEqual(requests.at(-1).body.requests[0], { model: 'models/gemini-embedding-2', content: { parts: [{ text: 'task: search result | query: motion' }] } });
+  const ollama = await provider(service, 'ollama', { credentials: {} });
+  const local = await service.embed({ providerId: ollama.id, inputs: ['Local text'] });
+  assert.equal(requests.at(-1).url, 'http://127.0.0.1:11434/api/embed'); assert.equal(requests.at(-1).headers.Authorization, undefined);
+  assert.deepEqual(requests.at(-1).body, { model: 'embeddinggemma', input: ['Local text'], truncate: true }); assert.deepEqual(local.usage, { inputTokens: 6 });
+  const mistral = await provider(service, 'mistral');
+  await service.embed({ providerId: mistral.id, inputs: ['Bonjour'] });
+  assert.equal(requests.at(-1).url, 'https://api.mistral.ai/v1/embeddings'); assert.deepEqual(requests.at(-1).body, { model: 'mistral-embed', input: ['Bonjour'] });
+  const lmstudio = await provider(service, 'lmstudio', { credentials: {}, config: { embeddingModel: 'text-embedding-nomic-embed-text-v1.5' } });
+  await service.embed({ providerId: lmstudio.id, inputs: ['Offline'] });
+  assert.equal(requests.at(-1).url, 'http://127.0.0.1:1234/v1/embeddings'); assert.equal(requests.at(-1).body.model, 'text-embedding-nomic-embed-text-v1.5');
+});
+
+test('embedding requests are validated before any network call and never reach chat-only providers', async t => {
+  let calls = 0, reply = () => Response.json({ data: [{ index: 0, embedding: [1, 2] }] });
+  const { service } = await serviceFixture(t, { fetch: async () => { calls++; return reply(); } });
+  const anthropic = await provider(service, 'anthropic'), groq = await provider(service, 'groq'), openai = await provider(service), voyage = await provider(service, 'voyage');
+  await assert.rejects(service.embed({ providerId: anthropic.id, inputs: ['x'] }), /Voyage AI/);
+  await assert.rejects(service.embed({ providerId: groq.id, inputs: ['x'] }), /does not offer embeddings/);
+  for (const inputs of [[], Array(257).fill('x'), ['   '], [42], 'text']) await assert.rejects(service.embed({ providerId: openai.id, inputs }));
+  await assert.rejects(service.embed({ providerId: openai.id, inputs: ['x'], inputType: 'passage' }), /input type/);
+  await assert.rejects(service.embed({ providerId: openai.id, inputs: ['x'], dimensions: 0 }), /dimensions/);
+  await assert.rejects(service.generate({ providerId: voyage.id, ...prompt }), /embeddings only/);
+  await assert.rejects(provider(service, 'openai', { config: { embeddingDimensions: 9000 } }), /dimensions/);
+  assert.equal(calls, 0);
+  await assert.rejects(service.embed({ providerId: openai.id, inputs: ['a', 'b'] }), /unexpected embedding response/);
+  reply = () => Response.json({ error: { message: `Invalid key ${FAKE_KEY}` } }, { status: 401 });
+  await assert.rejects(service.embed({ providerId: openai.id, inputs: ['a'] }), error => error.message.includes('[redacted]') && !error.message.includes(FAKE_KEY));
+});
+
+test('Voyage lists its documented models offline and tests the key with one explicit query embedding', async t => {
+  const requests = [];
+  const { service } = await serviceFixture(t, { fetch: async (url, options) => { requests.push({ url, body: JSON.parse(options.body) }); return Response.json({ data: [{ index: 0, embedding: [0.6, 0.8] }], model: 'voyage-4', usage: { total_tokens: 3 } }); } });
+  const saved = await provider(service, 'voyage', { model: '' });
+  assert.ok((await service.listModels(saved.id)).every(model => model.kind === 'embedding'));
+  assert.equal(requests.length, 0);
+  const tested = await service.testProvider(saved.id);
+  assert.equal(tested.inferenceTested, true); assert.equal(tested.dimensions, 2); assert.equal(requests.length, 1); assert.equal(requests[0].body.input_type, 'query');
 });
 
 test('Gemini SSE and Ollama NDJSON preserve message roles and generation settings', async t => {
@@ -131,13 +311,13 @@ test('Gemini SSE and Ollama NDJSON preserve message roles and generation setting
     requests.push({ url, ...options, body: JSON.parse(options.body) });
     return url.includes('/api/chat')
       ? responseStream(`${JSON.stringify({ message: { content: 'Local ' }, done: false })}\n${JSON.stringify({ message: { content: 'answer' }, done: true, prompt_eval_count: 5, eval_count: 2 })}\n`, { contentType: 'application/x-ndjson' })
-      : responseStream(sse({ candidates: [{ content: { parts: [{ text: 'Gemini answer' }] }, finishReason: 'STOP' }], usageMetadata: { promptTokenCount: 6 }, modelVersion: 'returned-model' }));
+      : responseStream(sse({ candidates: [{ content: { parts: [{ text: 'Planning the reply.', thought: true }] } }] }, { candidates: [{ content: { parts: [{ text: 'Gemini answer' }] }, finishReason: 'STOP' }], usageMetadata: { promptTokenCount: 6 }, modelVersion: 'returned-model' }));
   } });
   const gemini = await provider(service, 'gemini', { capabilities: { reasoningEfforts: ['low'] } });
   const result = await service.generate({ providerId: gemini.id, ...prompt, reasoningEffort: 'low' });
-  assert.equal(result.text, 'Gemini answer'); assert.equal(result.model, 'returned-model');
+  assert.equal(result.text, 'Gemini answer'); assert.equal(result.thinking, 'Planning the reply.'); assert.equal(result.model, 'returned-model');
   assert.equal(requests[0].url, 'https://generativelanguage.googleapis.com/v1beta/models/explicit-model-id:streamGenerateContent?alt=sse');
-  assert.equal(requests[0].headers['x-goog-api-key'], FAKE_KEY); assert.equal(requests[0].body.generationConfig.thinkingConfig.thinkingLevel, 'low');
+  assert.equal(requests[0].headers['x-goog-api-key'], FAKE_KEY); assert.deepEqual(requests[0].body.generationConfig.thinkingConfig, { thinkingLevel: 'low', includeThoughts: true });
   const ollama = await provider(service, 'ollama', { credentials: {}, capabilities: { temperature: true }, config: { temperature: 0.2 } });
   const local = await service.generate({ providerId: ollama.id, ...prompt });
   assert.equal(local.text, 'Local answer'); assert.equal(requests[1].body.options.temperature, 0.2);

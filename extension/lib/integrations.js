@@ -63,9 +63,22 @@ export function mapRaindropLibrary(collections, items) {
   };
 }
 
-export function createIntegrationClient({ storage = defaultStorage, fetch: fetcher = globalThis.fetch?.bind(globalThis), store = libraryStore } = {}) {
+// search(query, { limit, type, collectionId, tag }) -> { results: [{ id, title, type, url, score, snippet }], index } answers MCP semantic_search
+// from the extension's embedding index; searchAvailable() reports whether that index is enabled so the bridge can advertise it.
+export function createIntegrationClient({ storage = defaultStorage, fetch: fetcher = globalThis.fetch?.bind(globalThis), store = libraryStore, search, searchAvailable } = {}) {
   let pendingAcks = [];
   let syncPromise;
+  let searchHook = typeof search === 'function' ? search : null;
+  let searchReady = typeof searchAvailable === 'function' ? searchAvailable : null;
+  function setSearch(fn, { available } = {}) {
+    searchHook = typeof fn === 'function' ? fn : null;
+    searchReady = typeof available === 'function' ? available : null;
+  }
+  async function semanticSearchAdvertised() {
+    if (!searchHook) return false;
+    if (!searchReady) return true;
+    try { return (await searchReady()) === true; } catch { return false; }
+  }
   const request = async (url, options = {}) => {
     const response = await fetcher(url, { ...options, signal: options.signal || AbortSignal.timeout(15000), cache: 'no-store' });
     let data;
@@ -156,17 +169,31 @@ export function createIntegrationClient({ storage = defaultStorage, fetch: fetch
       const state = await store.loadLibrary();
       return state.collections.find(c => c.id === args.id) || store.createCollection(args);
     }
+    if (command.operation === 'bulkUpdateItems') {
+      const items = await store.bulkUpdateItems(args.updates, args.expectedLibraryUpdatedAt ? { expectedLibraryUpdatedAt: args.expectedLibraryUpdatedAt } : {});
+      return { updated: items.length, items: items.map(({ id, updatedAt, collectionId, tags, favorite, archived, pinned, read, reminderAt }) => ({ id, updatedAt, collectionId, tags, favorite, archived, pinned, read, reminderAt })) };
+    }
+    if (command.operation === 'semanticSearch') {
+      if (!searchHook) throw new Error('Semantic search is not enabled in Still.');
+      const limit = Number.isInteger(args.limit) && args.limit > 0 ? Math.min(args.limit, 50) : 10;
+      const output = await searchHook(String(args.query || ''), { limit, type: args.type, collectionId: args.collectionId, tag: args.tag });
+      const results = (Array.isArray(output?.results) ? output.results : []).slice(0, limit).map(result => ({
+        id: String(result.id), title: String(result.title || ''), type: String(result.type || ''), url: String(result.url || ''),
+        score: Number.isFinite(result.score) ? result.score : null, snippet: String(result.snippet || '').slice(0, 1000),
+      }));
+      return { results, index: output?.index && typeof output.index === 'object' ? output.index : null };
+    }
     throw new Error('Unsupported bridge command.');
   }
   async function performSync() {
     const settings = await storage.read();
     if (!settings.bridgeEnabled || !settings.bridgeToken) throw new Error('Configure and enable the local bridge first.');
     const url = bridgeUrl(settings.bridgeUrl);
-    const post = async () => request(`${url}/sync`, { method: 'POST', headers: { Authorization: `Bearer ${settings.bridgeToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ library: publicSnapshot(await store.loadLibrary()), acknowledgements: pendingAcks }) });
+    const post = async () => request(`${url}/sync`, { method: 'POST', headers: { Authorization: `Bearer ${settings.bridgeToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ library: publicSnapshot(await store.loadLibrary()), acknowledgements: pendingAcks, semanticSearch: await semanticSearchAdvertised() }) });
     const data = await post(); pendingAcks = [];
     let changed = false;
     for (const command of data.commands || []) {
-      try { const result = await applyCommand(command); pendingAcks.push({ id: command.id, result }); changed = changed || command.operation !== 'readAttachment'; }
+      try { const result = await applyCommand(command); pendingAcks.push({ id: command.id, result }); changed = changed || !['readAttachment', 'semanticSearch'].includes(command.operation); }
       catch (error) { pendingAcks.push({ id: command.id, error: error.message }); }
     }
     if (pendingAcks.length) { await post(); pendingAcks = []; }
@@ -190,7 +217,7 @@ export function createIntegrationClient({ storage = defaultStorage, fetch: fetch
     tick();
     return () => { stopped = true; clearTimeout(timer); };
   }
-  return { getIntegrationSettings, setRaindropToken, testRaindropConnection, importFromRaindrop, sendToRaindrop, configureBridge, syncBridgeOnce, startBridgeSync,
+  return { getIntegrationSettings, setRaindropToken, testRaindropConnection, importFromRaindrop, sendToRaindrop, configureBridge, syncBridgeOnce, startBridgeSync, setSearch,
     disconnectRaindrop: () => update({ raindropToken: '', raindropConnectedAt: null }),
     disconnectBridge: () => update({ bridgeToken: '', bridgeEnabled: false, lastBridgeSyncAt: null }),
   };
@@ -207,6 +234,7 @@ export const configureBridge = (...args) => client.configureBridge(...args);
 export const disconnectBridge = (...args) => client.disconnectBridge(...args);
 export const syncBridgeOnce = (...args) => client.syncBridgeOnce(...args);
 export const startBridgeSync = (...args) => client.startBridgeSync(...args);
+export const setBridgeSearch = (...args) => client.setSearch(...args);
 export async function requestBridge(path, { method = 'GET', body, signal, onEvent } = {}) {
   if (typeof path !== 'string' || !/^\/(?:ai|connections)(?:\/|$)/.test(path) || path.includes('..') || /[\r\n#]/.test(path)) throw new Error('Unsupported bridge route.');
   const settings = await defaultStorage.read();
@@ -216,18 +244,34 @@ export async function requestBridge(path, { method = 'GET', body, signal, onEven
   if (!onEvent) return response.json();
   if (!response.body) throw new Error('The AI bridge returned no response stream.');
   const reader = response.body.getReader(), decoder = new TextDecoder();let buffer = '', completed = false, result, partialText = '';
-  const consume = line => { if (!line.trim()) return;const event = JSON.parse(line);if (event.type === 'delta') partialText += event.text || '';onEvent(event);if (event.type === 'error') { const error = new Error(event.message || 'AI request failed.');error.partialText = event.partialText || partialText;error.aborted = !!event.aborted;throw error; }if (event.type === 'done') { completed = true;result = event; } };
+  const consume = line => { if (!line.trim()) return;const event = JSON.parse(line);if (event.type === 'delta') partialText += event.text || '';onEvent(event);if (event.type === 'error') { const error = new Error(event.message || 'AI request failed.');error.partialText = event.partialText || partialText;error.aborted = !!event.aborted;if (event.stopReason) error.stopReason = event.stopReason;throw error; }if (event.type === 'done') { completed = true;result = event; } };
   try { for (;;) { const { value, done } = await reader.read();if (done) break;buffer += decoder.decode(value, { stream: true });if (buffer.length > 4 * 1024 * 1024) throw new Error('AI response exceeded the local stream limit.');let index;while ((index = buffer.indexOf('\n')) >= 0) { consume(buffer.slice(0, index));buffer = buffer.slice(index + 1); } }buffer += decoder.decode();if (buffer.trim()) consume(buffer);if (!completed) { const error = new Error('The AI response ended before completion. The partial answer was kept.');error.partialText = partialText;throw error; }return result; }
   finally { await reader.cancel().catch(() => {});reader.releaseLock(); }
 }
-export function getMcpSetup(root = 'C:/dev/sidebar-dock') {
-  const entry = `${root.replace(/\\/g, '/').replace(/\/$/, '')}/bridge/mcp.mjs`;
+// Pass GET /ai/providers runtime.projectRoot and runtime.nodePath so these snippets match the entries the bridge
+// writes itself (absolute node, OS path separators); otherwise a placeholder root and `node` from PATH are shown.
+export function getMcpSetup(root = '', { nodePath = '' } = {}) {
+  const known = typeof root === 'string' && !!root.trim();
+  const base = known ? root.trim().replace(/[\\/]+$/, '') : '/path/to/sidebar-dock';
+  const sep = /\\/.test(base) && !base.includes('/') ? '\\' : '/';
+  const file = (...parts) => [base, ...parts].join(sep);
+  const entry = file('bridge', 'mcp.mjs');
+  const node = typeof nodePath === 'string' && nodePath.trim() ? nodePath.trim() : 'node';
+  const nodeArg = node === 'node' ? 'node' : `"${node}"`;
   return {
-    start: `node "${root.replace(/\\/g, '/')}/bridge/server.mjs"`,
-    configPath: `${root.replace(/\\/g, '/')}/bridge/.local/config.json`,
-    claudeCommand: `claude mcp add --transport stdio still -- node "${entry}"`,
-    claude: JSON.stringify({ mcpServers: { still: { command: 'node', args: [entry] } } }, null, 2),
-    codex: `[mcp_servers.still]\ncommand = "node"\nargs = [${JSON.stringify(entry)}]\n`,
+    rootKnown: known,
+    entry, node,
+    start: `${nodeArg} "${file('bridge', 'server.mjs')}"`,
+    configPath: file('bridge', '.local', 'config.json'),
+    claudeCommand: `claude mcp add --transport stdio --scope user still -- ${nodeArg} "${entry}"`,
+    codexCommand: `codex mcp add still -- ${nodeArg} "${entry}"`,
+    claude: JSON.stringify({ mcpServers: { still: { command: node, args: [entry] } } }, null, 2),
+    claudeDesktop: JSON.stringify({ mcpServers: { still: { command: node, args: [entry] } } }, null, 2),
+    cursor: JSON.stringify({ mcpServers: { still: { type: 'stdio', command: node, args: [entry] } } }, null, 2),
+    // VS Code's mcp.json uses a top-level `servers` key rather than `mcpServers`.
+    vscode: JSON.stringify({ servers: { still: { type: 'stdio', command: node, args: [entry] } } }, null, 2),
+    codex: `[mcp_servers.still]\ncommand = ${JSON.stringify(node)}\nargs = [${JSON.stringify(entry)}]\n`,
+    connectCommand: 'npm run connect -- claude',
     raindropMcp: RAINDROP_MCP_URL,
   };
 }

@@ -8,3 +8,6 @@
 *.png -text
 *.jpg -text
 *.avif -text
+*.woff2 -text
+*.webp -text
+*.svg text eol=lf
