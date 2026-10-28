@@ -311,13 +311,13 @@ test('Gemini SSE and Ollama NDJSON preserve message roles and generation setting
     requests.push({ url, ...options, body: JSON.parse(options.body) });
     return url.includes('/api/chat')
       ? responseStream(`${JSON.stringify({ message: { content: 'Local ' }, done: false })}\n${JSON.stringify({ message: { content: 'answer' }, done: true, prompt_eval_count: 5, eval_count: 2 })}\n`, { contentType: 'application/x-ndjson' })
-      : responseStream(sse({ candidates: [{ content: { parts: [{ text: 'Gemini answer' }] }, finishReason: 'STOP' }], usageMetadata: { promptTokenCount: 6 }, modelVersion: 'returned-model' }));
+      : responseStream(sse({ candidates: [{ content: { parts: [{ text: 'Planning the reply.', thought: true }] } }] }, { candidates: [{ content: { parts: [{ text: 'Gemini answer' }] }, finishReason: 'STOP' }], usageMetadata: { promptTokenCount: 6 }, modelVersion: 'returned-model' }));
   } });
   const gemini = await provider(service, 'gemini', { capabilities: { reasoningEfforts: ['low'] } });
   const result = await service.generate({ providerId: gemini.id, ...prompt, reasoningEffort: 'low' });
-  assert.equal(result.text, 'Gemini answer'); assert.equal(result.model, 'returned-model');
+  assert.equal(result.text, 'Gemini answer'); assert.equal(result.thinking, 'Planning the reply.'); assert.equal(result.model, 'returned-model');
   assert.equal(requests[0].url, 'https://generativelanguage.googleapis.com/v1beta/models/explicit-model-id:streamGenerateContent?alt=sse');
-  assert.equal(requests[0].headers['x-goog-api-key'], FAKE_KEY); assert.equal(requests[0].body.generationConfig.thinkingConfig.thinkingLevel, 'low');
+  assert.equal(requests[0].headers['x-goog-api-key'], FAKE_KEY); assert.deepEqual(requests[0].body.generationConfig.thinkingConfig, { thinkingLevel: 'low', includeThoughts: true });
   const ollama = await provider(service, 'ollama', { credentials: {}, capabilities: { temperature: true }, config: { temperature: 0.2 } });
   const local = await service.generate({ providerId: ollama.id, ...prompt });
   assert.equal(local.text, 'Local answer'); assert.equal(requests[1].body.options.temperature, 0.2);
