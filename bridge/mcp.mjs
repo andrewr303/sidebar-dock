@@ -5,6 +5,14 @@ export async function runStdio({ input = process.stdin, output = process.stdout,
   config ||= await loadConfig();
   let buffer = '';
   let queue = Promise.resolve();
+  // semantic_search can wait up to 15 s for the extension. It is read-only, so it runs beside the ordered queue
+  // instead of holding back pings and other tool calls that a client sends meanwhile.
+  const waiting = new Set();
+  const awaitsExtension = line => { try { const message = JSON.parse(line); return message?.method === 'tools/call' && message.params?.name === 'semantic_search'; } catch { return false; } };
+  const dispatch = line => {
+    if (!awaitsExtension(line)) { queue = queue.then(() => forward(line)); return; }
+    const task = forward(line).catch(() => {}).finally(() => waiting.delete(task)); waiting.add(task);
+  };
   const send = value => output.write(`${JSON.stringify(value)}\n`);
   async function forward(line) {
     let message;
@@ -27,11 +35,12 @@ export async function runStdio({ input = process.stdin, output = process.stdout,
     let end;
     while ((end = buffer.indexOf('\n')) !== -1) {
       const line = buffer.slice(0, end).trim(); buffer = buffer.slice(end + 1);
-      if (line) queue = queue.then(() => forward(line));
+      if (line) dispatch(line);
     }
   }
   await queue;
   if (buffer.trim()) await forward(buffer);
+  await Promise.all(waiting);
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   runStdio().catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });

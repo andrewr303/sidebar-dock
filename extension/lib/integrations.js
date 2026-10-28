@@ -268,6 +268,8 @@ export function getMcpSetup(root = '', { nodePath = '' } = {}) {
     claude: JSON.stringify({ mcpServers: { still: { command: node, args: [entry] } } }, null, 2),
     claudeDesktop: JSON.stringify({ mcpServers: { still: { command: node, args: [entry] } } }, null, 2),
     cursor: JSON.stringify({ mcpServers: { still: { type: 'stdio', command: node, args: [entry] } } }, null, 2),
+    // VS Code's mcp.json uses a top-level `servers` key rather than `mcpServers`.
+    vscode: JSON.stringify({ servers: { still: { type: 'stdio', command: node, args: [entry] } } }, null, 2),
     codex: `[mcp_servers.still]\ncommand = ${JSON.stringify(node)}\nargs = [${JSON.stringify(entry)}]\n`,
     connectCommand: 'npm run connect -- claude',
     raindropMcp: RAINDROP_MCP_URL,

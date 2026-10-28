@@ -143,10 +143,16 @@ function contextMenuCall(method, argument) {
 let collectionMenuSignature = '';
 let collectionMenuQueue = Promise.resolve();
 
-export async function installMenus() {
-  collectionMenuSignature = '';
-  await api.contextMenus.removeAll();
-  for (const item of MENU_ITEMS) await contextMenuCall('create', item);
+// Shares the collection-menu queue so a rebuild never interleaves with removeAll().
+export function installMenus() {
+  const run = async () => {
+    collectionMenuSignature = '';
+    await api.contextMenus.removeAll();
+    for (const item of MENU_ITEMS) await contextMenuCall('create', item);
+  };
+  const next = collectionMenuQueue.then(run, run);
+  collectionMenuQueue = next.catch(() => {});
+  return next;
 }
 
 async function readRecentCollections() {
@@ -172,7 +178,8 @@ export function installCollectionMenus(library, { recent, force = false } = {}) 
     collectionMenuSignature = signature;
     for (const [kind, parentId] of Object.entries(SAVE_TO_MENUS)) {
       const parent = MENU_ITEMS.find(item => item.id === parentId);
-      const { id, title, ...scope } = parent;
+      const scope = { contexts: parent.contexts, documentUrlPatterns: parent.documentUrlPatterns, targetUrlPatterns: parent.targetUrlPatterns };
+      for (const key of Object.keys(scope)) if (!scope[key]) delete scope[key];
       await contextMenuCall('remove', parentId);
       await contextMenuCall('create', parent);
       const child = properties => contextMenuCall('create', { ...scope, ...properties, parentId });
@@ -257,8 +264,8 @@ export async function captureTab(tab, info = {}, options = {}) {
       console.info('Still saved tab metadata; page content could not be read:', error?.message);
     }
   }
-  const library = await readLibrary();
   const draft = buildCapture(info, tab, metadata);
+  const library = await readLibrary();
   const existing = draft.type === 'note' ? null : findSavedItem(library, draft.url);
   const source = draft.type === 'note' ? findSavedItem(library, draft.url) : null;
   const target = resolveCaptureCollection(library, options.collectionId, { existing, preferred: source?.collectionId });
@@ -377,7 +384,7 @@ function newPageNote(tab) {
   })();
 }
 
-function chooseCollection(info, tab, kind) {
+async function chooseCollection(info, tab, kind) {
   const opening = openSidePanel(tab);
   const url = safeUrl(kind === 'image' ? info.srcUrl : kind === 'link' ? info.linkUrl : info.pageUrl || tab?.url, { optional: false });
   const title = kind === 'page' ? tab?.title || '' : kind === 'link' ? (info.linkText || info.selectionText || '').replace(/\s+/g, ' ').trim() : '';

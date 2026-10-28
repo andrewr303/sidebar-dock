@@ -68,9 +68,10 @@ export function historyMessages(messages = []) {
 }
 
 /**
- * createAssistant({ streamChat, resolveConnection, getAiSettings, getLibrary, store, searchLibrary, conversations }) -> { runAssistant }
+ * createAssistant({ streamChat, resolveConnection, modelInfo, getAiSettings, getLibrary, store, searchLibrary, conversations }) -> { runAssistant, gatherContext }
+ * modelInfo(resolved, model) is optional; a model whose capabilities say tools: false gets the no-tools path.
  */
-export function createAssistant({ streamChat, resolveConnection, getAiSettings, getLibrary, store, searchLibrary, conversations, uid = uidDefault,
+export function createAssistant({ streamChat, resolveConnection, modelInfo, getAiSettings, getLibrary, store, searchLibrary, conversations, uid = uidDefault,
   now = () => new Date().toISOString(), maxSteps = MAX_TOOL_STEPS, contextChars = 120000 } = {}) {
 
   async function gatherContext({ question, context, library, signal }) {
@@ -160,15 +161,17 @@ export function createAssistant({ streamChat, resolveConnection, getAiSettings, 
     try {
       const settings = (await getAiSettings?.()) || {};
       const chat = settings.chat || {};
-      const useConnection = connectionId || chat.connectionId;
-      if (!useConnection) throw new Error('Connect an AI provider in Settings');
-      const target = await resolveConnection(useConnection);
+      // An empty id lets resolveConnection pick the default connection when settings name none.
+      const target = await resolveConnection(connectionId || chat.connectionId || '');
+      const useConnection = target?.connection?.id || connectionId || chat.connectionId;
       const via = target?.via || target?.connection?.via || 'direct';
       const provider = target?.provider || null;
-      const useModel = model || (useConnection === chat.connectionId ? chat.model : '') || target?.connection?.defaultModel || provider?.chat?.recommended || undefined;
-      const useEffort = effort || (useConnection === chat.connectionId ? chat.effort : '') || undefined;
+      const usesDefault = !connectionId || connectionId === chat.connectionId;
+      const useModel = model || (usesDefault ? chat.model : '') || target?.connection?.defaultModel || provider?.chat?.recommended || undefined;
+      const useEffort = effort || (usesDefault ? chat.effort : '') || undefined;
       Object.assign(message, { connectionId: useConnection, ...(useModel ? { model: useModel } : {}) });
-      let toolMode = via === 'direct' && provider?.supports?.tools !== false && !!store && !!searchLibrary;
+      const info = modelInfo && useModel ? await modelInfo(target, useModel).catch(() => null) : null;
+      let toolMode = via === 'direct' && provider?.supports?.tools !== false && info?.capabilities?.tools !== false && !!store && !!searchLibrary;
 
       emit({ type: 'status', label: scope.scope === 'page' ? 'Reading this page' : 'Looking through your library' });
       library = await getLibrary();

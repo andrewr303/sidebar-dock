@@ -1,5 +1,7 @@
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { loadConfig as loadBridgeConfig } from './config.mjs';
+import { access } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { loadConfig as loadBridgeConfig, DEFAULT_CONFIG_PATH } from './config.mjs';
 import { createConnectionsService } from './connections.mjs';
 
 const ALIASES = { claude: 'claude', 'claude-code': 'claude', code: 'claude', codex: 'codex', desktop: 'claude-desktop', 'claude-desktop': 'claude-desktop', cursor: 'cursor', opencode: 'opencode', gemini: 'gemini' };
@@ -23,8 +25,13 @@ export async function runSetup({ argv = [], stdout = process.stdout, connections
   if (!words.length || flags.has('--help') || words[0] === 'help') { print(USAGE); return words.length || flags.has('--help') ? 0 : 1; }
   const target = words[0].toLowerCase();
   if (unknownFlag || words.length > 1 || (target !== 'status' && !ALIASES[target])) { print(`${unknownFlag ? `Unknown option ${unknownFlag}.` : `Unknown client "${words.join(' ')}".`}\n`); print(USAGE); return 1; }
-  // The bridge config (URL + pairing token) is created on first use so pairing steps can be printed right away.
-  const config = await loadConfig(configPath, { create: true });
+  // The bridge config (URL + pairing token) is created on first use so pairing steps can be printed right away;
+  // a dry run writes nothing, so it only describes the token a real run would create.
+  const dryRun = flags.has('--dry-run') && target !== 'status';
+  const path = configPath || process.env.STILL_BRIDGE_CONFIG || DEFAULT_CONFIG_PATH;
+  const config = dryRun && !(await access(path).then(() => true, () => false))
+    ? { url: 'http://127.0.0.1:43123', token: null, path: resolve(path) }
+    : await loadConfig(path, { create: !dryRun });
   connections ||= createConnectionsService();
 
   if (target === 'status') {
@@ -55,7 +62,7 @@ export async function runSetup({ argv = [], stdout = process.stdout, connections
     print('');
     print(preview.configSnippet);
     code = 2;
-  } else if (flags.has('--dry-run')) {
+  } else if (dryRun) {
     print(preview.commands?.length ? `Would run: ${preview.commands.map(command => [command.command, ...command.args].map(part => /\s/.test(part) ? JSON.stringify(part) : part).join(' ')).join('\n')}` : `Would merge into ${preview.configPath}:\n\n${preview.configSnippet}`);
   } else {
     const result = await connections.connectClient(id, { expectedHash: preview.previewHash });
@@ -64,7 +71,7 @@ export async function runSetup({ argv = [], stdout = process.stdout, connections
   }
   if (flags.has('--skill')) {
     if (preview.skillSupported === false) print(`${preview.name} does not read a personal skills folder; skipped the skill.`);
-    else if (flags.has('--dry-run')) print(`Would install the still-workspace skill into ${preview.skillPath}.`);
+    else if (dryRun) print(`Would install the still-workspace skill into ${preview.skillPath}.`);
     else try { const skill = await connections.installSkills(id); print(skill.unchanged ? `Skill already installed at ${skill.skillPath}.` : `Installed the still-workspace skill at ${skill.skillPath}.`); }
     catch (failure) { print(`Skill not installed: ${failure.message}`); if (!code) code = 2; }
   }
@@ -79,7 +86,7 @@ function printPairing(print, config, clientName) {
   print(`   (or: node "${ROOT}bridge/server.mjs")`);
   print('2. In Still, open Settings → Agents & MCP and pair the bridge:');
   print(`     URL    ${config.url}`);
-  print(`     Token  ${config.token}`);
+  print(`     Token  ${config.token ?? `(a new random token is written to ${config.path} on the first run without --dry-run)`}`);
   print('   Keep one Still view open; it syncs with the bridge every 2 seconds.');
   print(`3. Restart ${clientName || 'your MCP client'} so it loads the "still" server, then ask it to call bridge_status.`);
 }

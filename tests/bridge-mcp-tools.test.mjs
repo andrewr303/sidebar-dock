@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
+import { PassThrough } from 'node:stream';
 import { createBridgeState, TOOLS } from '../bridge/protocol.mjs';
+import { runStdio } from '../bridge/mcp.mjs';
 import { createBridgeServer } from '../bridge/server.mjs';
 import { createIntegrationClient } from '../extension/lib/integrations.js';
 import { createLibraryStore } from '../extension/lib/store.js';
@@ -136,4 +138,24 @@ test('bulk_update_items applies organizing patches atomically through the store 
   assert.equal(conflict.status, 'failed'); assert.equal(conflict.errorCode, 'VERSION_CONFLICT');
   assert.equal(h.library().items.find(item => item.id === 'type').favorite, false);
   assert.equal(TOOLS.find(entry => entry.name === 'bulk_update_items').annotations.destructiveHint, true);
+});
+
+test('the stdio adapter keeps answering other messages while a semantic_search waits for the extension', async () => {
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  const forwarded = [];
+  const fetcher = async (url, options) => {
+    const message = JSON.parse(options.body); forwarded.push(message.id);
+    if (message.params?.name === 'semantic_search') await gate;
+    return Response.json({ jsonrpc: '2.0', id: message.id, result: { echoed: message.method } });
+  };
+  const input = new PassThrough(), output = new PassThrough();
+  let received = ''; output.setEncoding('utf8'); output.on('data', chunk => { received += chunk; });
+  const job = runStdio({ input, output, config: { url: 'http://127.0.0.1:9', token: TOKEN }, fetch: fetcher });
+  input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'semantic_search', arguments: { query: 'calm motion' } } })}\n`);
+  input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'ping' })}\n${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'search_library', arguments: { query: 'motion' } } })}\n`);
+  for (let attempt = 0; attempt < 200 && !received.includes('"id":3'); attempt++) await delay(5);
+  assert.deepEqual(received.trim().split('\n').map(line => JSON.parse(line).id), [2, 3], 'ping and search_library answer before the pending semantic_search');
+  release(); input.end(); await job;
+  assert.deepEqual(received.trim().split('\n').map(line => JSON.parse(line).id), [2, 3, 1]);
+  assert.deepEqual(forwarded.sort(), [1, 2, 3]);
 });

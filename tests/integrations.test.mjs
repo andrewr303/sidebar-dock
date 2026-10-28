@@ -260,6 +260,7 @@ test('MCP setup snippets reproduce the exact node and adapter paths the bridge w
   assert.equal(posix.codex, '[mcp_servers.still]\ncommand = "/usr/local/bin/node"\nargs = ["/home/me/sidebar-dock/bridge/mcp.mjs"]\n');
   assert.deepEqual(JSON.parse(posix.claudeDesktop).mcpServers.still, { command: '/usr/local/bin/node', args: ['/home/me/sidebar-dock/bridge/mcp.mjs'] });
   assert.equal(JSON.parse(posix.cursor).mcpServers.still.type, 'stdio');
+  assert.deepEqual(JSON.parse(posix.vscode), { servers: { still: { type: 'stdio', command: '/usr/local/bin/node', args: ['/home/me/sidebar-dock/bridge/mcp.mjs'] } } });
   const windows = getMcpSetup('C:\\Users\\me\\sidebar-dock\\', { nodePath: 'C:\\Program Files\\nodejs\\node.exe' });
   assert.equal(windows.entry, 'C:\\Users\\me\\sidebar-dock\\bridge\\mcp.mjs');
   assert.deepEqual(JSON.parse(windows.claude).mcpServers.still, { command: 'C:\\Program Files\\nodejs\\node.exe', args: ['C:\\Users\\me\\sidebar-dock\\bridge\\mcp.mjs'] });

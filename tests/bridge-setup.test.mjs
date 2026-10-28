@@ -39,6 +39,8 @@ test('dry runs change nothing, CLI clients without their executable get the manu
   assert.equal(await runSetup({ argv: ['cursor', '--dry-run', '--skill'], stdout: dry.stream, connections: connectionsFor(home), configPath, fetch: offline }), 0);
   assert.match(dry.text(), /Would merge into/); assert.match(dry.text(), /Would install the still-workspace skill/);
   await assert.rejects(readFile(join(home, '.cursor', 'mcp.json')), { code: 'ENOENT' });
+  // Not even the bridge's own pairing token is written by a dry run.
+  await assert.rejects(readFile(configPath), { code: 'ENOENT' }); assert.match(dry.text(), /new random token is written .* without --dry-run/);
   const manual = output();
   assert.equal(await runSetup({ argv: ['claude'], stdout: manual.stream, connections: connectionsFor(home), configPath, fetch: offline }), 2);
   assert.match(manual.text(), /Automatic setup is not possible: CLI not installed/); assert.match(manual.text(), /"mcpServers"/);

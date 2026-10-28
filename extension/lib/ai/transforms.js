@@ -173,9 +173,16 @@ export function sanitizeSuggestion(raw, { collections = [], tags = [], fallback 
   return { title, tags: suggested.length ? suggested : fallback.tags, collectionId, summary, source: 'ai' };
 }
 
-/** createTransforms({ streamChat, getAiSettings, resolveConnection, getLibrary }) -> { transformText, suggestForSave } */
-export function createTransforms({ streamChat, getAiSettings, resolveConnection, getLibrary = async () => null } = {}) {
+/**
+ * createTransforms({ streamChat, getAiSettings, resolveConnection, resolveChatTarget, getLibrary }) -> { transformText, suggestForSave }
+ * resolveChatTarget({ purpose: 'quick' }) (connections.js) picks the fast model when available; otherwise settings.quick, then the chat model.
+ */
+export function createTransforms({ streamChat, getAiSettings, resolveConnection, resolveChatTarget, getLibrary = async () => null } = {}) {
   async function quickTarget() {
+    if (resolveChatTarget) {
+      const target = await resolveChatTarget({ purpose: 'quick' });
+      return { connectionId: target.connectionId, model: target.model || undefined };
+    }
     const settings = (await getAiSettings?.()) || {};
     const quick = settings.quick || {};
     const chat = settings.chat || {};

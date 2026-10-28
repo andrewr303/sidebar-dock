@@ -43,9 +43,10 @@ function engine() {
   const vectorStore = createVectorStore();
   const indexer = createIndexer({ vectorStore, embedder, getLibrary: currentLibrary, getSettings: aiSettings });
   const search = createSearch({ getLibrary: currentLibrary, vectorStore, isSemanticReady: () => indexer.isReady(), embedQuery: (query, options) => indexer.embedQuery(query, options) });
-  const assistant = createAssistant({ streamChat: chatStream, resolveConnection: connections.resolveConnection, getAiSettings: aiSettings, getLibrary: currentLibrary,
-    store, searchLibrary: search.searchLibrary, conversations });
-  const transforms = createTransforms({ streamChat: chatStream, resolveConnection: connections.resolveConnection, getAiSettings: aiSettings, getLibrary: currentLibrary });
+  const assistant = createAssistant({ streamChat: chatStream, resolveConnection: connections.resolveConnection, modelInfo: connections.modelInfo, getAiSettings: aiSettings,
+    getLibrary: currentLibrary, store, searchLibrary: search.searchLibrary, conversations });
+  const transforms = createTransforms({ streamChat: chatStream, resolveConnection: connections.resolveConnection, resolveChatTarget: connections.resolveChatTarget,
+    getAiSettings: aiSettings, getLibrary: currentLibrary });
   services = { conversations, indexer, search, assistant, transforms };
   return services;
 }
@@ -97,6 +98,7 @@ export function init({ store: appStore, getLibrary, integrations, onLibraryChang
   if (appStore) runtime.store = appStore;
   if (typeof getLibrary === 'function') runtime.getLibrary = getLibrary;
   if (typeof integrations?.requestBridge === 'function') runtime.requestBridge = integrations.requestBridge;
+  if (integrations) connections.configureConnections({ integrations });
   const { indexer } = engine();
   const subscribe = typeof onLibraryChange === 'function' ? onLibraryChange : typeof runtime.store?.subscribe === 'function' ? runtime.store.subscribe : null;
   const unsubscribe = subscribe?.(library => {
