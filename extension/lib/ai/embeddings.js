@@ -146,9 +146,9 @@ async function defaultPostJson(url, { headers, body, signal }) {
  * embed({ connectionId, model, inputs, inputType: 'document'|'query', dimensions, signal }) -> { vectors: Float32Array[], model, dims, usage: { tokens } }
  */
 export function createEmbedder({ resolveConnection, providerFetch, requestBridge, sleep = sleepFor, retries = 4, baseDelayMs = 1000 } = {}) {
-  const postJson = async (url, { headers, body, signal }) => {
+  const postJson = async (url, { headers, body, signal, provider, apiKey, model }) => {
     if (!providerFetch) return defaultPostJson(url, { headers, body: JSON.stringify(body), signal });
-    const response = await providerFetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal, timeoutMs: 90000 });
+    const response = await providerFetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal, timeoutMs: 90000, provider, model, secrets: apiKey ? [apiKey] : [] });
     if (response && response.ok === false) {
       const error = new Error(response.status === 429 ? 'Rate limited by the embedding provider.' : `Embedding request failed (HTTP ${response.status}).`);
       error.status = response.status;
@@ -173,24 +173,28 @@ export function createEmbedder({ resolveConnection, providerFetch, requestBridge
     const via = resolved.via || connection?.via || 'direct';
     if (via === 'agent') throw new Error(`${connection?.label || 'This agent'} cannot create embeddings. Choose Voyage, OpenAI, Gemini, Mistral or Ollama for semantic search.`);
     const providerId = provider?.id || connection?.providerId || '';
-    if (via !== 'bridge' && (NO_EMBEDDINGS.has(providerId) || provider?.supports?.embeddings === false)) {
+    if (via !== 'bridge' && (NO_EMBEDDINGS.has(providerId) || provider?.supports?.embeddings === false || provider?.embeddings === null)) {
       throw new Error(`${provider?.name || 'This provider'} has no embeddings API. Choose Voyage, OpenAI, Gemini, Mistral or Ollama for semantic search.`);
     }
     return { ...resolved, via, providerId, kind: embeddingKind({ provider, connection, via }) };
   }
-  const defaultModel = target => target.connection?.embeddingModel || target.provider?.embeddings?.default
-    || DEFAULT_EMBEDDING_MODELS[target.kind === 'bridge' ? embeddingKind({ provider: target.provider, connection: target.connection, via: 'direct' }) : target.kind] || '';
+  // An explicit empty default in the catalog (LM Studio, custom servers) means the user must pick a model; bridge
+  // connections let the bridge use its provider's configured model.
+  const defaultModel = target => target.connection?.embeddingModel || (target.kind === 'bridge' ? ''
+    : target.provider?.embeddings?.default ?? DEFAULT_EMBEDDING_MODELS[target.kind] ?? '');
 
   async function describe(connectionId) {
     const target = await resolve(connectionId);
-    return { providerId: target.providerId, provider: target.provider?.name || target.connection?.label || target.providerId, via: target.via, defaultModel: defaultModel(target) };
+    // Bridge connections share the catalog id 'bridge'; the connection id tells their vectors apart.
+    const providerId = target.via === 'bridge' ? String(target.connection?.id || connectionId) : target.providerId;
+    return { providerId, provider: target.connection?.label || target.provider?.name || target.providerId, via: target.via, defaultModel: defaultModel(target) };
   }
 
   async function embed({ connectionId, model, inputs, inputType = 'document', dimensions, signal } = {}) {
     if (!Array.isArray(inputs) || !inputs.length) return { vectors: [], model: model || '', dims: 0, usage: { tokens: 0 } };
     const target = await resolve(connectionId);
     const useModel = model || defaultModel(target);
-    if (!useModel) throw new Error('Choose an embedding model in Settings.');
+    if (!useModel && target.kind !== 'bridge') throw new Error('Choose an embedding model in Settings.');
     const limits = EMBEDDING_LIMITS[target.kind] || EMBEDDING_LIMITS.openai;
     const inputCap = target.kind === 'gemini' && /embedding-001/.test(useModel) ? 7000 : limits.inputChars;
     const texts = inputs.map(input => String(input ?? '').slice(0, inputCap) || ' ');
@@ -205,11 +209,11 @@ export function createEmbedder({ resolveConnection, providerFetch, requestBridge
         if (!requestBridge) throw new Error('Pair the local bridge first to use bridge embeddings.');
         const providerId = target.connection?.bridgeProviderId || String(target.connection?.id || connectionId).replace(/^bridge:/, '');
         const data = await withRetry(() => requestBridge('/ai/embeddings', { method: 'POST', signal,
-          body: { providerId, inputs: batch, model: useModel, dimensions: dimensions || undefined, inputType } }), signal);
+          body: { providerId, inputs: batch, model: useModel || undefined, dimensions: dimensions || undefined, inputType } }), signal);
         parsed = parseEmbeddingResponse('bridge', data, batch.length);
       } else {
         const request = buildEmbeddingRequest(target.kind, { baseUrl: target.baseUrl || target.provider?.baseUrl, apiKey: target.apiKey, model: useModel, inputs: batch, inputType, dimensions });
-        const data = await withRetry(() => postJson(request.url, { headers: request.headers, body: request.body, signal }), signal);
+        const data = await withRetry(() => postJson(request.url, { headers: request.headers, body: request.body, signal, provider: target.provider, apiKey: target.apiKey, model: useModel }), signal);
         parsed = parseEmbeddingResponse(target.kind, data, batch.length);
       }
       parsed.vectors.forEach((vector, offset) => { vectors[indexes[offset]] = vector; });
@@ -218,7 +222,7 @@ export function createEmbedder({ resolveConnection, providerFetch, requestBridge
     }
     const dims = vectors[0].length;
     if (vectors.some(vector => vector.length !== dims)) throw new Error('The embedding provider returned vectors of different sizes.');
-    return { vectors, model: useModel, dims, usage: { tokens }, ...(reportedModel && reportedModel !== useModel ? { providerModel: reportedModel } : {}) };
+    return { vectors, model: useModel || reportedModel, dims, usage: { tokens }, ...(reportedModel && useModel && reportedModel !== useModel ? { providerModel: reportedModel } : {}) };
   }
   return { embed, describe };
 }

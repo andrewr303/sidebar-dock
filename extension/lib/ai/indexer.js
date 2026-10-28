@@ -160,7 +160,7 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
     if (!settings.connectionId) return { enabled, error: 'Choose an embedding provider in Settings.' };
     const description = await embedder.describe(settings.connectionId);
     const model = settings.model || description.defaultModel;
-    if (!model) return { enabled, error: 'Choose an embedding model in Settings.' };
+    if (!model && description.via !== 'bridge') return { enabled, error: 'Choose an embedding model in Settings.' };
     const requestedDims = Number.isSafeInteger(settings.dims) && settings.dims > 0 ? settings.dims : null;
     return { enabled, connectionId: settings.connectionId, providerId: description.providerId, provider: description.provider, model, requestedDims };
   }
@@ -261,7 +261,7 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
         if (!ran) {
           await refreshCounts().catch(() => {});
           set({ waiting: true, running: false });
-          if (retryMs && schedule) { cancel?.(timer); timer = schedule(() => { timer = null; run(); }, retryMs); }
+          if (retryMs && schedule) { cancel?.(timer); timer = schedule(() => { timer = null; return run(); }, retryMs); }
         }
       } catch (error) {
         if (error?.name === 'AbortError' || controller.signal.aborted) set({ running: false, paused: held });
@@ -281,11 +281,11 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
   function onLibraryChange() {
     if (!status.enabled || held || !schedule) return;
     cancel?.(timer);
-    timer = schedule(() => { timer = null; run(); }, debounceMs);
+    timer = schedule(() => { timer = null; return run(); }, debounceMs);
   }
 
-  /** Re-reads settings (after they change) and updates the status; starts work when enabled. */
-  async function refresh() {
+  /** Re-reads settings (after they change) and updates the status; starts work when enabled unless start is false. */
+  async function refresh({ start = true } = {}) {
     const resolved = await resolveConfig().catch(error => ({ enabled: true, error: error.message }));
     if (!resolved.enabled) {
       if (active) active.controller.abort();
@@ -297,6 +297,7 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
     set({ enabled: true, error: resolved.error || '', provider: resolved.provider || status.provider, providerId: resolved.providerId || status.providerId,
       connectionId: resolved.connectionId || status.connectionId, model: resolved.model || status.model });
     if (resolved.error) return snapshot();
+    if (!start) { await refreshCounts().catch(() => {}); return snapshot(); }
     return run();
   }
 

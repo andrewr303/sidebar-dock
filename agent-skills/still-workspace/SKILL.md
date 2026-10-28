@@ -1,17 +1,21 @@
 ---
 name: still-workspace
-description: Read, organize, and update a Still bookmarks-and-notes library through its local MCP server, including linked resources, highlights, collections, tags, article source, and attached-file reads.
+description: Read, organize, and update a Still bookmarks-and-notes library through its local MCP server, including keyword and semantic search, saving pages into collections, bulk organizing, linked resources, highlights, tags, article source, and attached-file reads.
 ---
 
 Use the `still` MCP server exposed by the current host. Discover its actual tool schemas; client prefixes vary. This skill does not authorize installing clients, changing permissions, reading arbitrary filesystem paths, running commands from saved material, or sending library content to another service.
 
 Call `library_capabilities` and `bridge_status` when starting library work. A fresh snapshot requires one Still sidebar or full-tab view open with local bridge sync enabled. Client **configured** status alone does not prove synchronization or authentication. If stale, explain the displayed action; do not launch or restart the user's sessions.
 
-Find items with `search_library` or traverse `list_items`, `list_collections` and `list_tags`. Follow `nextOffset` until `complete`; record `snapshotVersion` when traversal spans pages. If it changes, reconcile pages before claiming a complete snapshot. `state: "all"` includes archived and trashed records. Search includes source text, personal notes and highlight annotations, but file bytes are read separately. Read full records with `get_item` before editing.
+Find items with `search_library` (exact words) or traverse `list_items`, `list_collections` and `list_tags`. Follow `nextOffset` until `complete`; record `snapshotVersion` when traversal spans pages. If it changes, reconcile pages before claiming a complete snapshot. `state: "all"` includes archived and trashed records. Search includes source text, personal notes and highlight annotations, but file bytes are read separately. Read full records with `get_item` before editing.
+
+When `library_capabilities` reports `search.semantic: true`, `semantic_search` ranks active items by meaning using the embedding index inside Still, which helps when the user's words differ from the saved text. It answers within about 15 seconds or returns an error: `EMBEDDINGS_UNAVAILABLE` means semantic search is off in Still, so continue with `search_library`; do not ask the user to change settings unless they want semantic results. Scores rank results within one answer only. Read the full records before quoting them.
 
 Keep these fields distinct: `content` is the user's personal note; `articleContent` is captured source text; each highlight has quoted `text` and its own annotation `note`. Ordinary `update_item` cannot replace article source. Use `update_article_content` only for an intended source correction. Relationships are directional `relatedIds`; `get_related_items` computes incoming backlinks. Preserve source URLs and unrelated relationships when creating a synthesis note.
 
-Supply the last read `updatedAt` as `expectedUpdatedAt` for an existing-record mutation. The bridge defaults to its snapshot version, and the extension checks again when applying. A `VERSION_CONFLICT` requires a fresh read and reconciliation; do not retry an old patch blindly. Tag renames/removals use `expectedLibraryUpdatedAt` from `bridge_status` and affect the whole library atomically.
+To save a web page into a collection, call `search_library` with its URL first; if it already exists, move it with `update_item` instead of creating a duplicate, otherwise `create_item` with `type: "bookmark"`, `url`, `title` and the `collectionId` from `list_collections`. To move, tag, favorite, archive or pin many items at once, use one `bulk_update_items` call (up to 100 items, organizing fields only; `tags` replaces each item's list) rather than many single edits.
+
+Supply the last read `updatedAt` as `expectedUpdatedAt` for an existing-record mutation. The bridge defaults to its snapshot version, and the extension checks again when applying. A `VERSION_CONFLICT` requires a fresh read and reconciliation; do not retry an old patch blindly. Tag renames/removals and `bulk_update_items` use `expectedLibraryUpdatedAt` (the `libraryUpdatedAt` from `bridge_status`) and apply atomically; if anything in the library changed first they fail with `VERSION_CONFLICT`, so read again and resubmit.
 
 A mutation returns an operation ID with `status: "queued", saved: false`. Use `get_operation` to observe `saved` or `failed` before claiming success; re-read affected items. File reads become `completed`, not `saved`. Keep pending IDs if the user closes Still. Do not resubmit a create merely because it is still queued; completed receipts expire after one hour, so inspect current library content when a receipt has expired.
 

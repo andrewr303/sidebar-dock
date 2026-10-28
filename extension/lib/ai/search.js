@@ -177,7 +177,7 @@ function snippetFor(analysis, needles) {
  * Lexical ranking (BM25F over weighted fields with prefix matches on short fields). Returns [{ id, score, snippet }].
  * Queries with only filters (tag:, type:, phrases) return every match, newest first.
  */
-export function lexicalSearch(items, query, { allow = () => true, cache = createAnalysisCache(), limit = Infinity } = {}) {
+export function lexicalSearch(items, query, { allow = item => !item.deletedAt && !item.archived, cache = createAnalysisCache(), limit = Infinity } = {}) {
   const parsed = typeof query === 'object' && query ? query : parseQuery(query);
   const matches = queryMatcher(parsed, cache);
   const candidates = (Array.isArray(items) ? items : []).filter(item => allow(item) && matches(item));

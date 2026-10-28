@@ -12,6 +12,8 @@ Select **Sign in with ChatGPT** to begin an explicit Codex device-code login. St
 
 The displayed state remains pending or awaiting your action until `account/login/completed` confirms success. Cancelling sends `account/login/cancel` and stops the bridge-owned login process. A failed, expired, or unsupported login remains a failure. Still does not invent OAuth client IDs, copy a credential cache, read token files, expose account identity, or store Codex access/refresh tokens in the extension. The Codex CLI owns its normal authentication storage. [Official app-server login protocol](https://developers.openai.com/codex/app-server/)
 
+A sign-in job expires after 15 minutes. Finished jobs stay readable for an hour so a status poll still resolves, then the bridge drops them when the next sign-in starts.
+
 Existing Codex authentication can also be used. The status action calls the CLI's read-only login status command and returns only an authenticated/unauthenticated/unknown state and authentication method. It excludes credential text and account details. There is no automatic logout or account switching.
 
 ## Execution boundaries
@@ -30,7 +32,11 @@ Selected saved text remains untrusted reference material. The CLI integration is
 
 Cancellation targets only the `ChildProcess` retained for the current Still request. Windows cancellation uses that owned PID's process tree with hidden `taskkill.exe`; it never kills agents by process name or selects unrelated sessions. Native child launches set `windowsHide: true` and `shell: false`.
 
-Partial text is streamed as it arrives, but it becomes a completed answer only after the CLI reports a successful terminal event and exits successfully. Invalid JSON, failed turns, nonzero exits, unexpected tools, cancellation, output overflow, and timeouts remain explicit failures. Diagnostic output redacts common API-key, bearer-token, JWT, and named-token patterns. Authentication process output is not forwarded to the UI or retained as a transcript.
+Partial text is streamed as it arrives as NDJSON `delta` events, the same stream API providers use; CLI agents emit no `thinking` events because the bridge reads only their answer text. A generation is limited to 300 seconds, the same limit as API providers. It becomes a completed answer only after the CLI reports a successful terminal event and exits successfully. Invalid JSON, failed turns, nonzero exits, unexpected tools, cancellation, output overflow, and timeouts remain explicit failures. Diagnostic output redacts common API-key, bearer-token, JWT, and named-token patterns. Authentication process output is not forwarded to the UI or retained as a transcript.
+
+## Using Still from these agents
+
+Answering inside Still (this page) and giving an agent access to your library are separate. To let Claude Code or Codex search and edit the library through MCP, run `npm run connect -- claude` or `npm run connect -- codex` from the repository folder; it registers `bridge/mcp.mjs` with `claude mcp add --transport stdio --scope user` or `codex mcp add`, using the same discovered executable as this adapter. See [MCP and agent skills](mcp-agents.md).
 
 ## Developer interface
 

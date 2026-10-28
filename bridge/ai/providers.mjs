@@ -49,7 +49,7 @@ function validateProvider(input, existing) {
   if (!isObject(input)) throw new Error('Provider settings must be an object.');
   const definition = TYPE_MAP.get(input.type || existing?.type); if (!definition) throw new Error('Unsupported AI provider type.');
   if (existing && input.type && input.type !== existing.type) throw new Error('Create a separate provider to change its protocol type.');
-  if (!definition.temperature && Number.isFinite(input.config?.temperature)) throw new Error(`${definition.name} requests never include temperature; Anthropic API version ${ANTHROPIC_VERSION} rejects it on every model.`);
+  if (!definition.temperature && Number.isFinite(input.config?.temperature)) throw new Error(definition.transport === 'messages' ? `${definition.name} requests never include temperature; Anthropic API version ${ANTHROPIC_VERSION} rejects it on every model.` : `${definition.name} has no temperature setting.`);
   const config = { ...(existing?.config || {}), ...(input.config || {}) };
   for (const key of Object.keys(config)) if (config[key] === null) delete config[key];
   // A stored temperature from before the 2026-10-21 Messages API is dropped rather than blocking later edits.

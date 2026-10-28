@@ -1,0 +1,111 @@
+// streamChat: one streaming chat call against any connection. Emits normalized events and resolves with the
+// final text, thinking, tool calls, usage and the provider-native assistant message for tool loops.
+
+import { TRANSPORTS, modelInfo, resolveConnection } from './connections.js';
+import { aiError } from './http.js';
+import { redactError } from './secrets.js';
+import { abortError } from './stream.js';
+import * as bridgeTransport from './transports/bridge.js';
+
+const ROLES = new Set(['user', 'assistant']);
+const PART_TYPES = new Set(['text', 'image', 'tool_use', 'tool_result']);
+const TOOL_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
+const IMAGE_NOTE = '[An image was attached, but this model cannot read images.]';
+
+export function normalizeMessages(messages) {
+  if (!Array.isArray(messages) || !messages.length) throw aiError('Write a message first.', { code: 'bad_request' });
+  if (messages.length > 2000) throw aiError('This conversation is too long. Start a new chat.', { code: 'too_large' });
+  return messages.map(message => {
+    if (!message || !ROLES.has(message.role)) throw aiError('Chat messages must come from the user or the assistant.', { code: 'bad_request' });
+    let content = message.content;
+    if (typeof content !== 'string') {
+      if (!Array.isArray(content)) throw aiError('Chat message content must be text or a list of parts.', { code: 'bad_request' });
+      content = content.filter(Boolean).map(part => typeof part === 'string' ? { type: 'text', text: part } : part);
+      for (const part of content) if (!PART_TYPES.has(part.type)) throw aiError(`Unsupported message part: ${String(part.type).slice(0, 40)}.`, { code: 'bad_request' });
+    }
+    return { role: message.role, content, ...(message.native ? { native: message.native } : {}) };
+  });
+}
+
+export function normalizeTools(tools) {
+  if (tools === undefined || tools === null) return [];
+  if (!Array.isArray(tools)) throw aiError('Tools must be a list.', { code: 'bad_request' });
+  const seen = new Set();
+  return tools.map(tool => {
+    if (!tool || !TOOL_NAME.test(tool.name || '')) throw aiError('Each tool needs a name of letters, numbers, dashes or underscores.', { code: 'bad_request' });
+    if (seen.has(tool.name)) throw aiError(`The tool ${tool.name} is listed twice.`, { code: 'bad_request' });
+    seen.add(tool.name);
+    const inputSchema = tool.inputSchema && typeof tool.inputSchema === 'object' ? tool.inputSchema : { type: 'object', properties: {} };
+    return { name: tool.name, description: typeof tool.description === 'string' ? tool.description : '', inputSchema };
+  });
+}
+
+// Models without image input get a short note instead of the image, so the rest of the request still works.
+function withoutImages(messages) {
+  return messages.map(message => typeof message.content === 'string' || message.native ? message
+    : { ...message, content: message.content.map(part => part.type === 'image' ? { type: 'text', text: IMAGE_NOTE } : part) });
+}
+
+const systemText = system => Array.isArray(system) ? system.filter(entry => typeof entry === 'string' && entry).join('\n\n') : typeof system === 'string' ? system : '';
+
+function finalizeError(caught, { text, thinking, secrets, signal }) {
+  let error = caught instanceof Error ? caught : new Error(String(caught || 'The AI request failed.'));
+  if (signal?.aborted && error.code !== 'aborted') {
+    const stopped = abortError(signal);
+    stopped.partialText = error.partialText;
+    error = stopped;
+  }
+  redactError(error, secrets);
+  if (typeof error.partialText !== 'string' || error.partialText.length < text.length) error.partialText = text;
+  error.partialThinking = thinking;
+  if (!error.code) error.code = 'error';
+  return error;
+}
+
+export function streamChat({ connectionId, model, system, messages, tools, effort, maxTokens, signal, onEvent } = {}) {
+  const emit = event => {
+    if (typeof onEvent !== 'function') return;
+    try { onEvent(event); } catch (error) { console.error(error); }
+  };
+  let text = '', thinking = '', secrets = [];
+  const relay = event => {
+    if (event.type === 'text') text += event.delta;
+    else if (event.type === 'thinking') thinking += event.delta;
+    emit(event);
+  };
+  return (async () => {
+    try {
+      if (signal?.aborted) throw abortError(signal);
+      const resolved = await resolveConnection(connectionId);
+      secrets = resolved.apiKey ? [resolved.apiKey] : [];
+      const { provider, connection, via } = resolved;
+      if (!provider.chat) throw aiError(`${provider.name} only provides embeddings. Pick a chat connection in AI settings.`, { code: 'bad_request' });
+      const chosen = (typeof model === 'string' && model.trim()) || connection.defaultModel || provider.chat.recommended;
+      if (!chosen) throw aiError(`Pick a model for ${connection.label} in AI settings.`, { code: 'no_model' });
+      const info = await modelInfo(resolved, chosen);
+      let list = normalizeMessages(messages);
+      if (provider.supports.images === false || info?.capabilities?.images === false) list = withoutImages(list);
+      const toolList = provider.supports.tools && info?.capabilities?.tools !== false ? normalizeTools(tools) : [];
+      const transport = via === 'direct' ? TRANSPORTS[provider.transport] : bridgeTransport;
+      if (!transport) throw aiError(`${provider.name} cannot be used for chat here.`, { code: 'bad_request' });
+      emit({ type: 'start', connectionId: connection.id, providerId: provider.id, providerName: provider.name, label: connection.label, model: chosen, modelLabel: info?.name || chosen, via });
+      const result = await transport.stream({
+        ...resolved, model: chosen, modelInfo: info, system: systemText(system), messages: list, tools: toolList,
+        effort: typeof effort === 'string' && effort ? effort : undefined, maxTokens: Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : undefined,
+        signal, emit: relay,
+      });
+      const final = {
+        text: result.text ?? text, thinking: result.thinking ?? thinking, toolCalls: result.toolCalls || [], usage: result.usage || {},
+        stopReason: result.stopReason || 'end_turn', rawStopReason: result.rawStopReason ?? null, notice: result.notice || null,
+        assistantMessage: result.assistantMessage, model: result.model || chosen, connectionId: connection.id, providerId: provider.id,
+      };
+      if (Object.keys(final.usage).length) emit({ type: 'usage', usage: final.usage });
+      emit({ type: 'done', ...final });
+      return final;
+    } catch (caught) {
+      const error = finalizeError(caught, { text, thinking, secrets, signal });
+      emit({ type: 'error', message: error.message, code: error.code, partialText: error.partialText, aborted: error.code === 'aborted' });
+      throw error;
+    }
+  })();
+}

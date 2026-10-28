@@ -1,10 +1,19 @@
 # Coding agents and the Still workspace
 
-Still exposes the same saved resources and notes to local coding agents through its MCP bridge. The bridge can read the library and queue changes through the extension's serialized store. An agent can search source text, edit personal notes, maintain collections/tags/highlights/links, and read attached browser files in chunks. It cannot run arbitrary commands, open arbitrary filesystem paths, upload replacement file bytes, or change integration credentials through MCP.
+Still exposes the same saved resources and notes to local coding agents through its MCP bridge. The bridge can read the library and queue changes through the extension's serialized store. An agent can search source text by keyword or by meaning, save pages into collections, edit personal notes, maintain collections/tags/highlights/links (one item at a time or up to 100 in one write), and read attached browser files in chunks. It cannot run arbitrary commands, open arbitrary filesystem paths, upload replacement file bytes, or change integration credentials through MCP.
 
 ## Connect a client
 
-Start `node bridge/server.mjs`, configure the bridge token in Still → Integrations, and keep one Still sidebar or full-tab view open with bridge sync enabled. The stdio adapter is `bridge/mcp.mjs`; it reads the token from the bridge's separate local configuration, so client snippets contain no token. See [the integration guide](integrations.md) for the underlying loopback setup and Raindrop import/export.
+The quickest path is one terminal command from the repository root:
+
+```bash
+npm run connect -- claude      # Claude Code (also: codex, desktop, cursor, opencode, gemini)
+npm run bridge                 # start the bridge and leave it running
+```
+
+`npm run connect -- <client>` (`node bridge/setup.mjs <client>`) creates the bridge's local configuration and token if needed, previews the client configuration, applies it through the same connection service as the in-app **Connect** button (with its backup, receipt and conflict checks), and prints the bridge URL, the pairing token and the next steps. Add `--skill` to install the agent skill and `--dry-run` to see the change without writing it. `npm run connect -- status` reports whether the bridge is running, whether a Still view is syncing, and each client's state. A client whose configuration cannot be edited safely gets the manual snippet and exit code 2.
+
+Then pair Still with the printed URL and token in Settings → Agents & MCP and keep one Still sidebar or full-tab view open with bridge sync enabled. The stdio adapter is `bridge/mcp.mjs`; it reads the token from the bridge's separate local configuration, so client snippets contain no token. See [the integration guide](integrations.md) for the underlying loopback setup and Raindrop import/export.
 
 The **Coding agent connections** controls offer a catalog, configuration preview, explicit **Connect** action and separate **Install skill** action. Preview reads configuration and discovers the Codex/Claude executable without launching a model or making changes. A fresh preview hash is required to apply it.
 
@@ -15,6 +24,7 @@ The **Coding agent connections** controls offer a catalog, configuration preview
 | OpenCode | `~/.config/opencode/opencode.json` | Targeted JSON merge under `mcp.still`, `type: "local"` | `~/.config/opencode/skills/still-workspace` |
 | Cursor | `~/.cursor/mcp.json` | Targeted JSON merge under `mcpServers.still` | `~/.cursor/skills/still-workspace` |
 | Gemini CLI | `~/.gemini/settings.json` | Targeted JSON merge under `mcpServers.still` | `~/.gemini/skills/still-workspace` |
+| Claude Desktop | macOS `~/Library/Application Support/Claude/claude_desktop_config.json`, Windows `%APPDATA%\Claude\claude_desktop_config.json`, Linux `~/.config/Claude/claude_desktop_config.json` | Targeted JSON merge under `mcpServers.still` as `{command, args}` with no `type` | None: Claude Desktop reads no personal skills folder, so **Install skill** reports `SKILL_UNSUPPORTED` |
 
 `<node>` is the running Node executable's absolute path; `<bridge/mcp.mjs>` is this checkout's absolute adapter path. These are passed as argv, with `shell: false` and `windowsHide: true`, rather than interpolated shell commands. Native executables or validated npm launchers use the same resolver as the in-app CLI integration. The controls never invoke generation, login, or another agent session merely to add an MCP entry.
 
@@ -22,7 +32,9 @@ Each actual change takes an exact local backup when a configuration file already
 
 **Configured** means that the intended client entry was verified on disk. It does not establish client authentication, active MCP loading, workspace trust approval, or a live extension connection. Reconnect/restart the client at a convenient time, approve its normal tool/workspace prompts, then call `bridge_status` from that client. Its `connected` field means an extension view synced within the last 30 seconds. The connection catalog deliberately reports `runtimeConnected: false` rather than inventing a live-session claim.
 
-These controls manage default personal locations. They do not guess effective settings when `CODEX_HOME`, `CLAUDE_CONFIG_DIR` or an OpenCode configuration override selects another layout. JSONC users can merge the displayed snippet using their own editor.
+These controls manage default personal locations. They do not guess effective settings when `CODEX_HOME`, `CLAUDE_CONFIG_DIR` or an OpenCode configuration override selects another layout, or when Windows `%APPDATA%` lies outside the home folder. JSONC users can merge the displayed snippet using their own editor. Fully quit and reopen Claude Desktop after a change; it reads its configuration only at startup.
+
+Manual snippets in Still use the bridge's `runtime.projectRoot` and `runtime.nodePath` from `GET /ai/providers`, so they produce exactly the entry that automatic setup writes (absolute Node path, `--scope user` for Claude Code) and do not show up as a conflict later. Before the bridge is paired they show `/path/to/sidebar-dock` and `node` as placeholders.
 
 ## Agent skill
 
@@ -38,9 +50,11 @@ Call `library_capabilities` and `bridge_status` first, then use the exposed tool
 | --- | --- |
 | Discovery | `library_capabilities`, `bridge_status` expose freshness, versions, types, editable fields and limits. |
 | Traverse/search | `list_items`, `search_library` return paginated summaries; search includes title, URL/source URL, article text, personal notes, excerpt, tags, filename/MIME and highlight text/annotation. |
+| Semantic search | `semantic_search({query, limit?, type?, collectionId?, tag?})` ranks active items by meaning with the extension's embedding index (see below). |
 | Full records | `get_item` reads the complete saved record; `get_related_items` returns outgoing links and computed incoming backlinks. |
 | Collections | `list_collections`, `get_collection`, `create_collection`, `update_collection`, `delete_collection`; parent cycles are rejected, and deletion rehomes items without deleting their content. |
-| Items | `create_item`, `update_item`, `update_article_content`; ordinary patches cannot alter IDs, timestamps, attachment IDs/bytes or captured source text. |
+| Items | `create_item`, `update_item`, `update_article_content`; ordinary patches cannot alter IDs, timestamps, attachment IDs/bytes or captured source text. To save a page into a collection, `create_item` with `type: "bookmark"`, `url`, `title` and `collectionId` (search the URL first so an existing item is moved rather than duplicated). |
+| Bulk organize | `bulk_update_items({updates: [{id, patch}], expectedLibraryUpdatedAt?})` changes `collectionId`, `tags`, `favorite`, `archived`, `pinned`, `read` and `reminderAt` on up to 100 items in one atomic store write. `tags` replaces each item's list. The library revision defaults to the snapshot's, so a change made in Still first fails the receipt with `VERSION_CONFLICT`. |
 | Highlights | `add_highlight`, `update_highlight`, `remove_highlight` maintain each quote, annotation, color and URL while preserving existing identity/time during updates. |
 | Relationships | `link_items`, `unlink_items` change the source item's directional `relatedIds`; incoming backlinks are computed. |
 | Tags | `list_tags`, `set_item_tags`, `rename_tag`, `remove_tag`; library-wide renames/removals are atomic version-checked mutations, including archived and trashed items. Empty tags have no separate record. |
@@ -48,6 +62,14 @@ Call `library_capabilities` and `bridge_status` first, then use the exposed tool
 | Export | `export_item`, `export_library` produce JSON/Markdown with source, notes, highlights and relationships. Library export is paginated; credentials/settings/file bytes are excluded. |
 | Files | `read_file` queues one attached browser-file chunk of at most 65,536 bytes, identified by item ID rather than path. |
 | Receipts | `get_operation` reports queued/saved/completed/failed and error details; completed receipts expire after one hour. |
+
+### Semantic search
+
+There is one embedding index, and it lives in the extension (IndexedDB), built with the embeddings provider chosen in Still's Semantic search settings. The bridge holds no vectors. When an open Still view has semantic search enabled, its sync advertises `semanticSearch: true` and `library_capabilities.search` reports `{lexical: true, semantic: true}`.
+
+`semantic_search` queues a `semanticSearch` command (`{query, limit, type?, collectionId?, tag?}`) on the sync channel and waits for the extension's answer, at most 15 seconds, instead of returning a receipt. The extension runs the query through `createIntegrationClient({search})` (or `setBridgeSearch(fn, {available})` on the shared client), and the bridge re-checks every hit against its current snapshot, dropping trashed, missing and filtered-out items. The result is `{query, total, items: [{id, type, title, url, collectionId, tags, archived, updatedAt, score, snippet}], index, syncedAt, libraryUpdatedAt, snapshotVersion}`; `index` is whatever status the extension reports (provider, model, counts). Errors: `STALE_SNAPSHOT` (no recent sync), `EMBEDDINGS_UNAVAILABLE` (semantic search is off in Still, or the open view cannot run it), `SEARCH_TIMEOUT` (no answer in 15 seconds; the command is withdrawn) and `SEARCH_FAILED` (the embeddings provider failed). Agents should fall back to `search_library`.
+
+Because it awaits the extension, `semantic_search` runs only through MCP `tools/call` (or `state.callToolAsync`); the synchronous `callTool` used by tests rejects it.
 
 Pagination uses `offset`, `limit` (1–100; default 20), `total`, `nextOffset`, `complete`, and `snapshotVersion`. Use `state: "all"` to include archived and trashed items; default traversal includes active items. Maintain identical filters across pages. If the snapshot version changes, reconcile or restart traversal before claiming one consistent export. Attached bytes never appear automatically in item listings.
 
@@ -90,11 +112,11 @@ Continue using the returned offset until `complete`. The client needs a supporte
 - `connectClient(client,{expectedHash})` / `disconnectClient(client,{expectedHash})` → verified result, backup/receipt paths and restart requirement. Legacy aliases `expectedConfigHash` and `previewHash` are accepted.
 - `installSkills(client)` → explicit, bounded copy of the bundled skill and receipt.
 
-The client IDs are `codex`, `claude`, `opencode`, `cursor`, and `gemini`. The authenticated bridge routes expose the preview/apply controls; these methods are not MCP tools available to coding agents.
+The client IDs are `codex`, `claude`, `opencode`, `cursor`, `gemini` and `claude-desktop`. Each preview also reports `skillSupported`. The authenticated bridge routes (`/connections/<id>/preview|connect|disconnect|skills`) expose the preview/apply controls; these methods are not MCP tools available to coding agents. `bridge/setup.mjs` exports `runSetup({argv, stdout, connections?, configPath?, fetch?})`, which returns the process exit code.
 
 ## Verification and primary references
 
-`node --test tests/mcp-workspace.test.mjs tests/agent-connections.test.mjs tests/integrations.test.mjs` passes 21 tests. Coverage includes real authenticated HTTP → extension executor → serialized store writes, source/note separation, highlight/link/tag/collection mutations, queued stale-edit rejection, recoverable/permanent removal, a complete 150,001-byte file round trip in bounded chunks, pagination, secret isolation, exact config backups, preview conflicts, protected foreign configs, hidden native-launch argv mocks and explicit skill installation. The symlink test executed on this host. Skill Creator's `quick_validate.py` accepts the bundled skill.
+`node --test tests/mcp-workspace.test.mjs tests/agent-connections.test.mjs tests/integrations.test.mjs tests/bridge-mcp-tools.test.mjs tests/bridge-setup.test.mjs` passes 31 tests. Coverage includes real authenticated HTTP → extension executor → serialized store writes, source/note separation, highlight/link/tag/collection mutations, queued stale-edit rejection, recoverable/permanent removal, a complete 150,001-byte file round trip in bounded chunks, pagination, secret isolation, exact config backups, preview conflicts, protected foreign configs, hidden native-launch argv mocks and explicit skill installation. The newer tests cover `semantic_search` end to end through the real extension client (advertisement, filtering against the snapshot, unavailable/failed/timed-out/stale cases and older extensions), `bulk_update_items` through the real store including a version conflict, Claude Desktop paths on each platform, and the setup CLI against temporary homes. The symlink test executed on this host. Skill Creator's `quick_validate.py` accepts the bundled skill.
 
 Live agent sessions, provider authentication, actual personal configuration writes, installed skill activation and client workspace-trust prompts were not exercised by these tests.
 
@@ -105,3 +127,4 @@ Primary contracts checked October 25, 2026:
 - [OpenCode MCP](https://opencode.ai/docs/mcp-servers/), [configuration](https://opencode.ai/docs/config/) and [skills](https://opencode.ai/docs/skills/).
 - [Cursor MCP](https://cursor.com/docs/mcp) and [skills](https://cursor.com/docs/skills).
 - [Gemini CLI MCP](https://geminicli.com/docs/tools/mcp-server/) and [skills](https://geminicli.com/docs/cli/skills/).
+- [Claude Desktop local MCP servers](https://modelcontextprotocol.io/docs/develop/connect-local-servers) (checked October 28, 2026).

@@ -10,6 +10,18 @@ These examples describe tool argument objects, not shell commands. Use the names
 4. `create_item({"type":"note","title":"Motion accessibility synthesis","content":"<supported synthesis>","relatedIds":["<saved-id>"],"collectionId":"<existing-collection>"})`.
 5. Keep the operation ID, call `get_operation`, and verify the saved result with `get_item`. State which saved resources support the synthesis.
 
+## Find by meaning, then organize in one write
+
+1. `library_capabilities({})`; continue only if `search.semantic` is true, otherwise use `search_library` with likely keywords.
+2. `semantic_search({"query":"how to make animations feel calm","limit":10,"collectionId":"<optional>"})` returns `items` with `score` and `snippet`, plus `index` details. An `EMBEDDINGS_UNAVAILABLE` error means semantic search is off in Still; fall back to `search_library`.
+3. `get_item` for the results you intend to act on.
+4. `bulk_update_items({"updates":[{"id":"<id>","patch":{"collectionId":"<collection>","tags":["motion","accessibility"]}}],"expectedLibraryUpdatedAt":"<libraryUpdatedAt from bridge_status>"})`. Each item appears once; `tags` replaces that item's list, so merge with its current tags first. Personal notes and source text are not editable here.
+5. `get_operation` until `saved`; on `VERSION_CONFLICT`, read the items and `bridge_status` again before resubmitting.
+
+## Save a web page into a collection
+
+`search_library({"query":"<url>"})` first. If the page already exists, move it with `update_item({"id":"<id>","patch":{"collectionId":"<collection>"}})`. Otherwise `create_item({"type":"bookmark","title":"<page title>","url":"<url>","collectionId":"<collection>"})`, or omit `collectionId` to save to Inbox. Check the operation until `saved`.
+
 ## Edit without losing newer work
 
 Read the complete current record, then `update_item({"id":"<id>","patch":{"content":"<intended personal note>"},"expectedUpdatedAt":"<current updatedAt>"})`. Patches preserve omitted fields. The source, attachment metadata and highlight identities cannot be altered through this patch.
