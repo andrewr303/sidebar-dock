@@ -565,3 +565,173 @@ test('bridge providers only get a reasoning effort they enable, and bridge think
   await streamChat({ connectionId: 'bridge:provider_1', messages: [{ role: 'user', content: 'Again' }], effort: 'high' });
   assert.equal(requests[2].reasoningEffort, 'high');
 });
+
+// ---------- review regressions ----------
+
+test('bridge refusals arrive as refusal errors, and a bridge fallback reaches the caller', async t => {
+  localStorage.clear();
+  let mode = 'refusal';
+  configureConnections({ integrations: {
+    getIntegrationSettings: async () => ({ bridgeConfigured: true }),
+    requestBridge: async (path, options = {}) => {
+      if (path === '/ai/providers') return { providers: [{ id: 'provider_1', type: 'anthropic', name: 'Bridge Claude', model: 'claude-opus-5-5', hasCredentials: true, capabilities: { images: true, reasoningEfforts: [] } }], agents: [] };
+      options.onEvent?.({ type: 'start' });
+      options.onEvent?.({ type: 'thinking', delta: 'Checking.' });
+      options.onEvent?.({ type: 'delta', text: 'Part' });
+      if (mode === 'refusal') {
+        // requestBridge turns the bridge's terminal error event into a thrown Error carrying stopReason.
+        const event = { type: 'error', message: 'Claude declined this request (cyber). It asks for malware.', partialText: 'Part', aborted: false, stopReason: 'refusal' };
+        options.onEvent?.(event);
+        throw Object.assign(new Error(event.message), { partialText: event.partialText, aborted: false, stopReason: 'refusal' });
+      }
+      return { type: 'done', text: 'Part of it', model: 'claude-opus-5', stopReason: 'end_turn', fallback: { from: 'claude-opus-5-5', to: 'claude-opus-5' } };
+    },
+  } });
+  const events = [];
+  const error = await streamChat({ connectionId: 'bridge:provider_1', messages: [{ role: 'user', content: 'Write malware' }], onEvent: event => events.push(event) }).catch(caught => caught);
+  assert.equal(error.code, 'refusal');
+  assert.equal(error.stopReason, 'refusal');
+  assert.match(error.message, /declined this request \(cyber\)\. It asks for malware\./);
+  assert.equal(error.partialText, 'Part');
+  assert.equal(events.at(-1).type, 'error');
+  assert.equal(events.at(-1).code, 'refusal');
+  assert.deepEqual(events.filter(event => event.type === 'thinking').map(event => event.delta), ['Checking.']);
+  mode = 'ok';
+  const result = await streamChat({ connectionId: 'bridge:provider_1', messages: [{ role: 'user', content: 'Hello' }] });
+  assert.deepEqual(result.fallback, { from: 'claude-opus-5-5', to: 'claude-opus-5' });
+  assert.equal(result.model, 'claude-opus-5');
+  assert.equal(result.thinking, 'Checking.');
+});
+
+test('Gemini and Ollama calls without ids stay distinct across tool-loop steps, so replay names each result correctly', async t => {
+  let step = 0;
+  mockFetch(t, call => {
+    if (call.url.endsWith('/api/show')) return new Response(JSON.stringify({ capabilities: ['completion', 'tools'] }));
+    step++;
+    const name = step % 2 ? 'search_library' : 'list_items';
+    if (call.url.includes('/api/chat')) return new Response(body(ndjson([{ message: { content: '', tool_calls: [{ function: { name, arguments: {} } }] }, done: true, done_reason: 'stop' }])));
+    return new Response(body(sse([{ candidates: [{ content: { role: 'model', parts: [{ functionCall: { name, args: {} } }] }, finishReason: 'STOP' }] }], { named: false })));
+  });
+  for (const [label, transport, overrides] of [['gemini', gemini, {}], ['ollama', ollama, { baseUrl: 'http://localhost:11434', model: 'qwen3', apiKey: '' }]]) {
+    step = 0;
+    const { value } = ctx(label === 'gemini' ? 'google' : 'ollama', { tools: TOOLS, ...overrides });
+    const messages = [{ role: 'user', content: 'Go' }];
+    for (let index = 0; index < 2; index++) {
+      const result = await transport.stream({ ...value, messages });
+      messages.push(result.assistantMessage, { role: 'user', content: [{ type: 'tool_result', toolUseId: result.toolCalls[0].id, content: `result ${index + 1}` }] });
+    }
+    const ids = messages.filter(message => message.role === 'assistant').map(message => message.content[0].id);
+    assert.notEqual(ids[0], ids[1], `${label} synthetic ids are unique per step`);
+    if (label === 'gemini') {
+      const responsesSent = gemini.toGeminiContents(messages).filter(entry => entry.parts[0].functionResponse).map(entry => entry.parts[0].functionResponse);
+      assert.deepEqual(responsesSent.map(entry => entry.name), ['search_library', 'list_items']);
+      assert.ok(responsesSent.every(entry => !('id' in entry)), 'synthetic ids are never sent to Gemini');
+    } else {
+      assert.deepEqual(ollama.toOllamaMessages(messages, '').filter(message => message.role === 'tool').map(message => message.tool_name), ['search_library', 'list_items']);
+    }
+  }
+});
+
+test('Anthropic leaves out adaptive thinking and effort only for listed models that reject them', async t => {
+  const effortOff = { low: { supported: false }, medium: { supported: false }, high: { supported: false }, xhigh: { supported: false }, max: { supported: false } };
+  mockFetch(t, () => new Response(JSON.stringify({ has_more: false, data: [
+    { id: 'claude-haiku-4-5', display_name: 'Claude Haiku 4.5', max_tokens: 64000, capabilities: { image_input: { supported: true }, effort: effortOff, thinking: { types: { adaptive: { supported: false }, enabled: { supported: true } } } } },
+    { id: 'claude-opus-4-5', display_name: 'Claude Opus 4.5', capabilities: { effort: { ...effortOff, low: { supported: true }, medium: { supported: true }, high: { supported: true } }, thinking: { types: { adaptive: { supported: false } } } } },
+    { id: 'claude-next', display_name: 'Claude Next' },
+  ] })));
+  const [haiku, opus45, unknown] = await anthropic.listModels({ provider: getProvider('anthropic'), baseUrl: 'https://api.anthropic.com/v1', apiKey: KEY });
+  const build = (model, modelInfo) => anthropic.buildRequest(ctx('anthropic', { model, modelInfo, effort: 'high' }).value).body;
+  const legacy = build('claude-haiku-4-5', haiku);
+  assert.equal(legacy.thinking, undefined);
+  assert.equal(legacy.output_config, undefined);
+  assert.equal(legacy.fallbacks, undefined);
+  const older = build('claude-opus-4-5', opus45);
+  assert.equal(older.thinking, undefined);
+  assert.deepEqual(older.output_config, { effort: 'high' });
+  // A listing without capabilities (or a custom server) keeps the defaults every current model needs.
+  assert.deepEqual(build('claude-next', unknown).thinking, { type: 'adaptive', display: 'summarized' });
+  assert.deepEqual(build('claude-next', unknown).output_config, { effort: 'high' });
+  assert.deepEqual(build('claude-opus-5-5', modelFromCatalog(catalogModel('anthropic', 'claude-opus-5-5'))).thinking, { type: 'adaptive', display: 'summarized' });
+});
+
+test('tool input cut off by the output limit ends with max_tokens instead of failing, and is never replayed', async t => {
+  const anthropicEvents = (stopReason, { fallback = false } = {}) => sse([
+    { type: 'message_start', message: { model: 'claude-opus-5-5', usage: { input_tokens: 4 } } },
+    { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_ok', name: 'list_items', input: {} } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"limit":3}' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_cut', name: 'search_library', input: {} } },
+    { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"query":"long que' } },
+    { type: 'content_block_stop', index: 1 },
+    ...(fallback ? [{ type: 'content_block_start', index: 2, content_block: { type: 'fallback', from: { model: 'claude-opus-5-5' }, to: { model: 'claude-opus-5' } } }, { type: 'content_block_stop', index: 2 },
+      { type: 'content_block_start', index: 3, content_block: { type: 'text', text: 'Answer.' } }, { type: 'content_block_stop', index: 3 }] : []),
+    { type: 'message_delta', delta: { stop_reason: stopReason }, usage: { output_tokens: 9 } },
+    { type: 'message_stop' },
+  ]);
+  let script = anthropicEvents('max_tokens');
+  mockFetch(t, () => new Response(body(script)));
+  const cut = await anthropic.stream(ctx('anthropic', { tools: TOOLS }).value);
+  assert.equal(cut.stopReason, 'max_tokens');
+  assert.deepEqual(cut.toolCalls, [{ id: 'toolu_ok', name: 'list_items', input: { limit: 3 } }]);
+  assert.deepEqual(cut.assistantMessage.native.content.map(block => block.id), ['toolu_ok']);
+  script = anthropicEvents('tool_use');
+  const broken = await anthropic.stream(ctx('anthropic', { tools: TOOLS }).value).catch(caught => caught);
+  assert.equal(broken.code, 'bad_tool_input');
+  // A call the declined model left unfinished before a server-side fallback is not an error.
+  script = anthropicEvents('end_turn', { fallback: true });
+  const rescued = await anthropic.stream(ctx('anthropic', { tools: TOOLS }).value);
+  assert.equal(rescued.text, 'Answer.');
+  assert.deepEqual(rescued.toolCalls, []);
+
+  script = sse([
+    { type: 'response.output_item.added', output_index: 0, item: { type: 'function_call', id: 'fc_1', call_id: 'call_cut', name: 'search_library', arguments: '' } },
+    { type: 'response.function_call_arguments.delta', item_id: 'fc_1', output_index: 0, delta: '{"query":"lo' },
+    { type: 'response.output_item.done', output_index: 0, item: { type: 'function_call', id: 'fc_1', call_id: 'call_cut', name: 'search_library', arguments: '{"query":"lo', status: 'incomplete' } },
+    { type: 'response.incomplete', response: { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output: [{ type: 'function_call', id: 'fc_1', call_id: 'call_cut', name: 'search_library', arguments: '{"query":"lo' }] } },
+  ]);
+  const responsesCut = await responses.stream(ctx('openai', { tools: TOOLS }).value);
+  assert.equal(responsesCut.stopReason, 'max_tokens');
+  assert.deepEqual(responsesCut.toolCalls, []);
+  assert.deepEqual(responsesCut.assistantMessage.native.output, []);
+
+  script = sse([
+    { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_x', function: { name: 'search_library', arguments: '{"query":"lo' } }] } }] },
+    { choices: [{ delta: {}, finish_reason: 'length' }] },
+    '[DONE]',
+  ], { named: false });
+  const chatCut = await chat.stream(ctx('mistral', { tools: TOOLS }).value);
+  assert.equal(chatCut.stopReason, 'max_tokens');
+  assert.deepEqual(chatCut.toolCalls, []);
+});
+
+test('Anthropic: a full context window ends like the output limit, with the cut-off notice', async t => {
+  mockFetch(t, () => new Response(body(sse([
+    { type: 'message_start', message: { model: 'claude-opus-5-5', usage: { input_tokens: 4 } } },
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'Long answ' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'message_delta', delta: { stop_reason: 'model_context_window_exceeded' }, usage: { output_tokens: 3 } },
+    { type: 'message_stop' },
+  ]))));
+  const result = await anthropic.stream(ctx('anthropic').value);
+  assert.equal(result.stopReason, 'max_tokens');
+  assert.equal(result.rawStopReason, 'model_context_window_exceeded');
+  assert.match(result.notice, /output limit/);
+});
+
+test('Anthropic fallback replay keeps text and paired server-tool blocks before the switch, and drops the rest', () => {
+  const blocks = [
+    { type: 'thinking', thinking: '', signature: 'sig-declined' },
+    { type: 'redacted_thinking', data: 'opaque' },
+    { type: 'text', text: 'Searching. ' },
+    { type: 'server_tool_use', id: 'srvtoolu_paired', name: 'web_search', input: { query: 'a' } },
+    { type: 'web_search_tool_result', tool_use_id: 'srvtoolu_paired', content: [] },
+    { type: 'server_tool_use', id: 'srvtoolu_open', name: 'web_search', input: { query: 'b' } },
+    { type: 'tool_use', id: 'toolu_declined', name: 'list_items', input: {} },
+    { type: 'text', text: '' },
+    { type: 'fallback', from: { model: 'claude-opus-5-5' }, to: { model: 'claude-opus-5' } },
+    { type: 'thinking', thinking: 'After.', signature: 'sig-kept' },
+    { type: 'text', text: 'Done.' },
+  ];
+  assert.deepEqual(anthropic.replayableContent(blocks).map(block => block.signature || block.id || block.tool_use_id || block.text), ['Searching. ', 'srvtoolu_paired', 'srvtoolu_paired', 'sig-kept', 'Done.']);
+  assert.deepEqual(anthropic.replayableContent(blocks.slice(9)), blocks.slice(9), 'without a switch every block is replayed unchanged');
+});

@@ -73,10 +73,15 @@ export async function stream(ctx) {
   const calls = new Map();
   const outputs = [];
   const toolCalls = [];
+  const broken = [];
   const finishCall = call => {
     if (call.emitted) return;
     call.emitted = true;
-    const entry = { id: call.callId, name: call.name, input: parseToolInput(call.arguments, call.name) };
+    // Arguments cut off by max_output_tokens are not valid JSON; whether that is an error is decided once the stream
+    // says why it ended.
+    let input;
+    try { input = parseToolInput(call.arguments, call.name); } catch (error) { broken.push({ callId: call.callId, error }); return; }
+    const entry = { id: call.callId, name: call.name, input };
     toolCalls.push(entry);
     emit({ type: 'tool_call', ...entry });
   };
@@ -146,8 +151,12 @@ export async function stream(ctx) {
   }
   if (!completed && !ended) throw incompleteError(provider);
   for (const call of calls.values()) finishCall(call);
+  if (broken.length && incomplete !== 'max_output_tokens') { broken[0].error.partialText = text; throw broken[0].error; }
   if (finalResponse?.model) actualModel = finalResponse.model;
-  const output = Array.isArray(finalResponse?.output) && finalResponse.output.length ? finalResponse.output : outputs.filter(Boolean);
+  const dropped = new Set(broken.map(entry => entry.callId));
+  // A truncated call is not replayed: the API would expect a function_call_output for it.
+  const output = (Array.isArray(finalResponse?.output) && finalResponse.output.length ? finalResponse.output : outputs.filter(Boolean))
+    .filter(item => !(item?.type === 'function_call' && dropped.has(item.call_id)));
   const content = [];
   if (text) content.push({ type: 'text', text });
   for (const call of toolCalls) content.push({ type: 'tool_use', ...call });

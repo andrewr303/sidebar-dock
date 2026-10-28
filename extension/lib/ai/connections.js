@@ -561,7 +561,7 @@ export async function saveConnection(input = {}) {
   if (isBridgedId(input.id) || BRIDGED_PROVIDERS.has(input.providerId) || isObject(input.bridgeProvider)) return saveBridged(input);
   const early = input.providerId ? requireProvider(input.providerId) : null;
   const earlyTarget = early && (input.baseUrl ? normalizeBaseUrl(input.baseUrl, early) : !input.id || !early.editableBaseUrl ? early.baseUrl : '');
-  const permission = earlyTarget ? ensureHostPermission(earlyTarget) : null;
+  const permission = earlyTarget && input.enabled !== false ? ensureHostPermission(earlyTarget) : null;
   const apiKey = typeof input.apiKey === 'string' && input.apiKey.trim() ? validateApiKey(input.apiKey) : null;
   const label = cleanLabel(input.label), defaultModel = cleanModel(input.defaultModel);
   if (input.workspaceId !== undefined && input.workspaceId !== null && input.workspaceId !== '' && !/^[\w-]{1,120}$/.test(String(input.workspaceId))) throw aiError('Enter a valid workspace ID.', { code: 'bad_request' });
@@ -576,7 +576,8 @@ export async function saveConnection(input = {}) {
     if (requestedBase && !provider.editableBaseUrl && requestedBase !== provider.baseUrl) throw aiError(`${provider.name} uses a fixed address.`, { code: 'bad_request' });
     const baseUrl = requestedBase || (existing ? effectiveBaseUrl(existing, provider) : provider.baseUrl);
     if (!baseUrl) throw aiError('Enter the server base URL.', { code: 'bad_request' });
-    if (!earlyTarget) await ensureHostPermissionLate(baseUrl);
+    // Turning a connection off makes no request, so it must not depend on host access (which may have been revoked).
+    if (!earlyTarget && input.enabled !== false) await ensureHostPermissionLate(baseUrl);
     const id = existing?.id || `${provider.id}-${randomId()}`;
     const hadKey = !!(await getApiKey(id));
     if (provider.needsKey && !apiKey && !hadKey) throw aiError(`Paste your ${provider.name} API key.`, { code: 'auth' });

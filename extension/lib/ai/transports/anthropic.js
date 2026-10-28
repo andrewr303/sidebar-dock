@@ -184,21 +184,24 @@ export async function stream(ctx) {
     error.usage = usage;
     throw error;
   }
+  // A full context window cuts the answer off just like the output limit, so it carries the same notice.
+  const mapped = stopReason === 'model_context_window_exceeded' ? 'max_tokens'
+    : ['tool_use', 'max_tokens', 'pause_turn', 'stop_sequence'].includes(stopReason) ? stopReason : 'end_turn';
   // A truncated tool call is dropped (and not replayed, since it would need a tool_result) when the answer hit the
   // output limit; anywhere else unreadable tool input is a real error.
   // A call a declined model left unfinished before a server-side fallback is never part of the answer either.
   const boundary = blocks.findLastIndex(block => block?.type === 'fallback');
   const broken = blocks.find((block, index) => block?.invalidInput && index > boundary);
-  if (broken && stopReason !== 'max_tokens') { broken.invalidInput.partialText = text; throw broken.invalidInput; }
+  if (broken && mapped !== 'max_tokens') { broken.invalidInput.partialText = text; throw broken.invalidInput; }
   const native = replayableContent(blocks.filter(block => !block?.invalidInput));
   const content = [];
   if (text) content.push({ type: 'text', text });
   for (const call of toolCalls) content.push({ type: 'tool_use', ...call });
   return {
     text, thinking, toolCalls, usage, model: actualModel,
-    stopReason: stopReason === 'tool_use' ? 'tool_use' : stopReason === 'max_tokens' ? 'max_tokens' : stopReason === 'pause_turn' ? 'pause_turn' : stopReason === 'stop_sequence' ? 'stop_sequence' : 'end_turn',
+    stopReason: mapped,
     rawStopReason: stopReason,
-    notice: STOP_NOTICES[stopReason] || null, fallback,
+    notice: STOP_NOTICES[mapped] || null, fallback,
     assistantMessage: { role: 'assistant', content, native: { transport: 'anthropic', content: native } },
   };
 }

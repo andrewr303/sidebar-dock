@@ -112,7 +112,19 @@ export async function stream(ctx) {
   }
   if (!ended && !finish) throw incompleteError(provider);
   const tag = calls.some(call => call && !call.id) ? uniqueTag() : '';
-  const toolCalls = calls.filter(Boolean).map((call, index) => ({ id: call.id || `call_${tag}_${index + 1}`, name: call.name, input: parseToolInput(call.arguments, call.name) }));
+  const toolCalls = [];
+  for (const [index, call] of calls.entries()) {
+    if (!call) continue;
+    let input;
+    try { input = parseToolInput(call.arguments, call.name); }
+    catch (error) {
+      // Arguments cut off by the output limit are dropped with the max_tokens notice; anything else is an error.
+      if (finish === 'length') continue;
+      error.partialText = text;
+      throw error;
+    }
+    toolCalls.push({ id: call.id || `call_${tag}_${index + 1}`, name: call.name, input });
+  }
   for (const call of toolCalls) emit({ type: 'tool_call', ...call });
   const stopReason = toolCalls.length ? 'tool_use' : STOP[finish] || (finish ? 'other' : 'end_turn');
   const native = { role: 'assistant', content: text || (toolCalls.length ? null : '') };

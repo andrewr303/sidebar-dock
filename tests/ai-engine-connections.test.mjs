@@ -287,3 +287,16 @@ test('OpenRouter connection test checks the key, because its model list is publi
   keyStatus = 404;
   assert.equal((await testConnection(connection.id)).ok, true, 'a server without the key route is not a failure');
 });
+
+test('turning a connection off needs no host access, even after access was revoked', async t => {
+  reset(t, { chrome: { permissions: { request: async () => true, contains: async () => true } } });
+  const local = await saveConnection({ providerId: 'ollama' });
+  const cloud = await saveConnection({ providerId: 'anthropic', apiKey: KEY });
+  const requested = [];
+  // Outside a gesture Chrome throws instead of asking, and the hosts are no longer granted.
+  globalThis.chrome = { permissions: { request: ({ origins }) => { requested.push(origins); throw new Error('This function must be called during a user gesture'); }, contains: async () => false } };
+  assert.equal((await saveConnection({ id: local.id, enabled: false })).enabled, false);
+  assert.equal((await saveConnection({ id: cloud.id, providerId: 'anthropic', enabled: false })).enabled, false);
+  assert.deepEqual(requested, []);
+  await assert.rejects(saveConnection({ id: local.id, enabled: true }), error => error.code === 'permission');
+});
