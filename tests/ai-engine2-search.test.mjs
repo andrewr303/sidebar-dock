@@ -171,3 +171,18 @@ test('warming tokenizes the library ahead of the first search without changing r
   await search.warm({ slice: 2 });
   assert.deepEqual(await search.searchLibrary('calm design'), cold);
 });
+
+test('cached query vectors are dropped when the index is rebuilt for another model', async () => {
+  const vectorStore = await semanticFixture();
+  const models = [];
+  let model = 'fake';
+  const search = createSearch({ getLibrary: async () => library, vectorStore, isSemanticReady: async () => true, embedQuery: async query => { models.push(model); return embedText(query); } });
+  await search.searchLibrary('shrines trip');
+  await search.searchLibrary('shrines trip');
+  assert.deepEqual(models, ['fake'], 'cached while the index is unchanged');
+  model = 'fake-2';
+  await vectorStore.ensureConfig({ providerId: 'fake', model: 'fake-2' });
+  for (const item of library.items.filter(entry => !entry.deletedAt)) await vectorStore.putItem(item.id, { hash: item.id, chunks: [{ n: 0, text: item.title, vector: embedText(item.title) }] });
+  await search.searchLibrary('shrines trip');
+  assert.deepEqual(models, ['fake', 'fake-2'], 'the query is embedded again with the new model');
+});

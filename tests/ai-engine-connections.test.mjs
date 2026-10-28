@@ -266,3 +266,24 @@ test('a local connection adopts its first model on test, and a custom server wit
   await new Promise(resolve => setTimeout(resolve, 40));
   assert.equal(calls.length, 0, 'unsubscribed listeners are not called');
 });
+
+test('OpenRouter connection test checks the key, because its model list is public', async t => {
+  reset(t, { chrome: { permissions: { request: async () => true } } });
+  const connection = await saveConnection({ providerId: 'openrouter', apiKey: 'sk-or-v1-WRONGKEY-0123456789abcdef' });
+  let keyStatus = 401;
+  const calls = mockFetch(call => {
+    if (call.url.endsWith('/models')) return new Response(JSON.stringify({ data: [{ id: 'anthropic/claude-opus-5.5', name: 'Claude Opus 5.5', architecture: { input_modalities: ['text', 'image'], output_modalities: ['text'] } }] }));
+    if (call.url.endsWith('/key')) return keyStatus === 200 ? new Response(JSON.stringify({ data: { label: 'still' } })) : new Response(JSON.stringify({ error: { message: 'No auth credentials found' } }), { status: keyStatus });
+    throw new Error(`unexpected ${call.url}`);
+  });
+  const failed = await testConnection(connection.id);
+  assert.equal(failed.ok, false);
+  assert.equal(failed.code, 'auth');
+  const check = calls.find(call => call.url === 'https://openrouter.ai/api/v1/key');
+  assert.equal(check.headers.Authorization, 'Bearer sk-or-v1-WRONGKEY-0123456789abcdef');
+  assert.ok(!failed.message.includes('WRONGKEY'));
+  keyStatus = 200;
+  assert.equal((await testConnection(connection.id)).ok, true);
+  keyStatus = 404;
+  assert.equal((await testConnection(connection.id)).ok, true, 'a server without the key route is not a failure');
+});

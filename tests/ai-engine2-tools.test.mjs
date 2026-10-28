@@ -236,3 +236,26 @@ test('helpers: collection paths, tag normalization and undo of append/update', a
   assert.equal(restored.items.find(i => i.id === 'tokyo').title, 'Tokyo food map');
   assert.equal(restored.items.find(i => i.id === 'tokyo').excerpt, '');
 });
+
+test('search_library keeps each snippet with its own item when a hit no longer exists', async () => {
+  const { tools } = await session({ session: { searchLibrary: async () => [
+    { id: 'vanished', score: 3, snippet: 'vanished snippet' },
+    { id: 'kyoto', score: 2, snippet: 'kyoto snippet' },
+    { id: 'osaka', score: 1, snippet: 'osaka snippet' },
+  ] } });
+  const [result] = await tools.execute([call('search_library', { query: 'anything' })]);
+  assert.deepEqual(parse(result).items.map(item => [item.id, item.snippet]), [['kyoto', 'kyoto snippet'], ['osaka', 'osaka snippet']]);
+});
+
+test('stopping while a proposal waits for review closes it as discarded and changes nothing', async () => {
+  const controller = new AbortController();
+  const { tools, events, getLibrary } = await session({ session: { signal: controller.signal, onProposal: () => new Promise(() => {}) } });
+  const pending = tools.execute([call('trash_items', { ids: ['tokyo'] })]);
+  setTimeout(() => controller.abort(), 5);
+  await assert.rejects(pending, error => error.name === 'AbortError');
+  const closed = events.find(event => event.type === 'proposal_result');
+  assert.equal(closed.status, 'discarded');
+  assert.equal(closed.proposalId, events.find(event => event.type === 'proposal').proposal.id);
+  assert.equal(tools.proposals[0].status, 'discarded');
+  assert.equal((await getLibrary()).items.find(item => item.id === 'tokyo').deletedAt, null);
+});

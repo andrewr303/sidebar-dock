@@ -9,7 +9,11 @@ const SPEC_EXPORTS = ['CATALOG', 'listConnections', 'saveConnection', 'deleteCon
 
 test('the facade exposes the SPEC 7.2 API (plus pauseIndexing and the semanticSearch adapters) with explicit re-exports', async () => {
   for (const name of SPEC_EXPORTS) assert.ok(name in ai, name);
-  assert.deepEqual(Object.keys(ai).filter(name => !SPEC_EXPORTS.includes(name)).sort(), ['pauseIndexing', 'semanticSearch', 'semanticSearchAvailable']);
+  // Beyond SPEC 7.2: indexing control, the bridge search adapter, and helpers the settings and assistant UIs need.
+  assert.deepEqual(Object.keys(ai).filter(name => !SPEC_EXPORTS.includes(name)).sort(), ['ANTHROPIC_EFFORTS', 'DEFAULT_AI_SETTINGS', 'EFFORT_LABELS', 'EFFORT_LEVELS',
+    'HANDOFF_TARGETS', 'cancelChatGptSignIn', 'chatGptSignInStatus', 'chatProviders', 'cliSignInStatus', 'embeddingProviders', 'ensureHostPermission', 'getBridgeStatus',
+    'getProvider', 'handoffPlan', 'hostPermissionOrigins', 'onConnectionsChanged', 'pairBridge', 'pauseIndexing', 'resolveChatTarget', 'semanticSearch',
+    'semanticSearchAvailable', 'startChatGptSignIn']);
   assert.ok(Array.isArray(ai.CATALOG) && ai.CATALOG.length > 5);
   for (const name of SPEC_EXPORTS.filter(name => name !== 'CATALOG')) assert.equal(typeof ai[name], 'function', name);
   const source = await readFile(new URL('../extension/lib/ai/index.js', import.meta.url), 'utf8');
@@ -57,4 +61,16 @@ test('init wires the app store and library hook; search, the semanticSearch adap
   assert.equal(suggestion.collectionId, 'design');
   handle.dispose();
   assert.equal(listeners.length, 0);
+});
+
+test('init hands the semanticSearch adapter to the bridge client and removes it on dispose', async () => {
+  const hooks = [];
+  const integrations = { setBridgeSearch: (search, options = {}) => hooks.push({ search, available: options.available }) };
+  const library = { updatedAt: '1', collections: [], items: [] };
+  const handle = ai.init({ store: { loadLibrary: async () => library }, getLibrary: () => library, integrations, onLibraryChange: () => () => {} });
+  await handle.ready;
+  assert.equal(hooks[0].search, ai.semanticSearch);
+  assert.equal(hooks[0].available, ai.semanticSearchAvailable);
+  handle.dispose();
+  assert.equal(hooks.at(-1).search, null);
 });

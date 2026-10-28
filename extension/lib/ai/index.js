@@ -14,10 +14,12 @@ import { createAssistant } from './assistant.js';
 import { createTransforms } from './transforms.js';
 import { createConversationStore } from './conversations.js';
 
-export { CATALOG } from './catalog.js';
-export { listConnections, saveConnection, deleteConnection, testConnection, listModels, getAiSettings } from './connections.js';
+export { CATALOG, EFFORT_LEVELS, ANTHROPIC_EFFORTS, EFFORT_LABELS, getProvider, chatProviders, embeddingProviders } from './catalog.js';
+export { listConnections, saveConnection, deleteConnection, testConnection, listModels, getAiSettings, onConnectionsChanged, ensureHostPermission,
+  hostPermissionOrigins, resolveChatTarget, getBridgeStatus, pairBridge, cliSignInStatus, startChatGptSignIn, chatGptSignInStatus, cancelChatGptSignIn,
+  DEFAULT_AI_SETTINGS } from './connections.js';
 export { streamChat } from './chat.js';
-export { handoffUrl, buildHandoffPrompt } from './handoff.js';
+export { handoffUrl, buildHandoffPrompt, handoffPlan, HANDOFF_TARGETS } from './handoff.js';
 
 const runtime = { store: libraryStore, getLibrary: null, snapshot: null, requestBridge, dispose: null };
 let services = null;

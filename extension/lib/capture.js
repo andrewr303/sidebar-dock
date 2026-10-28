@@ -212,8 +212,10 @@ export function buildCapture(info = {}, tab = {}, metadata = {}, options = {}) {
   tab ||= {}; metadata ||= {}; options ||= {};
   const target = parseSaveToMenuId(menuItemId)?.kind || '';
   const isNote = menuItemId === 'still-note-selection';
-  const isImage = !isNote && (menuItemId === 'still-save-image' || target === 'image' || (!target && mediaType === 'image'));
   const linkMenu = menuItemId === 'still-save-link' || target === 'link';
+  // Chrome reports mediaType for a linked image or an image inside a selection too: the chosen menu wins.
+  const isImage = !isNote && !linkMenu && (menuItemId === 'still-save-image' || target === 'image'
+    || (!target && menuItemId !== 'still-save-selection' && mediaType === 'image'));
   const isSelection = !isNote && !isImage && !linkMenu && target !== 'page' && (menuItemId === 'still-save-selection' || !!selectionText);
   const isLink = !isNote && !isImage && !isSelection && target !== 'page' && !!linkUrl;
   const url = safeUrl(isImage ? srcUrl : isLink ? linkUrl : pageUrl || metadata.url || tab.url, { optional: false });
@@ -224,8 +226,8 @@ export function buildCapture(info = {}, tab = {}, metadata = {}, options = {}) {
     || (existing && !isPlaceholderTitle(existing.title, url) ? existing.title : isNote ? `Notes on ${derived}` : derived);
   const articleContent = !isNote && !isImage && !isLink && typeof metadata.articleText === 'string' ? metadata.articleText.slice(0, 250000) : '';
   const captured = isNote ? 'note' : isImage ? 'image' : isVideoUrl(url) ? 'video' : articleContent ? 'article' : 'bookmark';
-  // A bare link or tab save never downgrades an item that was saved as an article, image or video.
-  const type = existing && captured === 'bookmark' && ['article', 'image', 'video'].includes(existing.type) ? existing.type : captured;
+  // A bare link or tab save never downgrades an item that was saved as an article, image, video or file.
+  const type = existing && captured === 'bookmark' && ['article', 'image', 'video', 'file'].includes(existing.type) ? existing.type : captured;
   let cover = existing?.cover ? '' : isImage ? url : isLink ? '' : metadata.cover || '';
   try { cover = cover ? safeUrl(new URL(cover, url).href) : ''; } catch { cover = ''; }
   const note = typeof options.note === 'string' ? options.note.trim() : '';
