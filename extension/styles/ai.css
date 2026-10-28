@@ -592,9 +592,11 @@ button.ai-thought-toggle:hover:not(:disabled), button.ai-tool-row:hover { backgr
 .ai-history-tools .icon-btn { color: var(--fg-subtle); }
 .ai-history-tools .icon-btn:hover { color: var(--fg-default); }
 @media (hover: hover) {
-  .ai-history-tools { position: absolute; inset-block: 0; inset-inline-end: 0; align-items: center; padding-inline-start: var(--space-6); opacity: 0;
-    background: linear-gradient(90deg, transparent, var(--bg-raised) var(--space-6)); }
+  /* The tools sit on the row's own fill; the title makes room for them instead of being covered by a painted block,
+     which cut a lighter rectangle out of hovered and selected rows. */
+  .ai-history-tools { position: absolute; inset-block: 0; inset-inline-end: 0; align-items: center; opacity: 0; }
   .ai-history-row:hover .ai-history-tools, .ai-history-row:focus-within .ai-history-tools { opacity: 1; }
+  .ai-history-row:hover .ai-history-main, .ai-history-row:focus-within .ai-history-main { padding-inline-end: calc(var(--control-h-sm) * 2 + var(--space-5)); }
 }
 
 .ai-model-pop .ai-model-menu { min-width: 280px; max-width: 340px; max-height: min(440px, calc(100dvh - 140px)); overflow-y: auto; }
