@@ -16,20 +16,33 @@ const FIELDS = [['title', 4, 0.3], ['tags', 3, 0], ['url', 1.5, 0.3], ['excerpt'
 const PREFIX_FIELDS = ['title', 'tags', 'url'];
 const K1 = 1.2;
 
-export function normalizeToken(raw) {
-  let token = String(raw).toLowerCase().normalize('NFKD').replace(/\p{M}+/gu, '');
-  if (token.length > 4 && token.endsWith('ies')) token = `${token.slice(0, -3)}y`;
-  else if (token.length > 3 && token.endsWith('s') && !/(?:ss|us|is)$/.test(token)) token = token.slice(0, -1);
+const foldPlural = token => {
+  if (token.length > 4 && token.endsWith('ies')) return `${token.slice(0, -3)}y`;
+  if (token.length > 3 && token.endsWith('s') && !/(?:ss|us|is)$/.test(token)) return token.slice(0, -1);
   return token;
-}
+};
+const foldCase = value => { const lower = value.toLowerCase(); return /[^\x00-\x7f]/.test(lower) ? lower.normalize('NFKD').replace(/\p{M}+/gu, '') : lower; };
+export const normalizeToken = raw => foldPlural(foldCase(String(raw)));
 
 /** Word tokens (lowercased, accent-folded, light plural folding); CJK runs become overlapping bigrams. */
 export function tokenize(value) {
+  const source = foldCase(String(value ?? ''));
   const tokens = [];
-  for (const [word] of String(value ?? '').matchAll(/[\p{L}\p{N}]+/gu)) {
-    if (!CJK.test(word)) { tokens.push(normalizeToken(word)); continue; }
+  if (!/[^\x00-\x7f]/.test(source)) {
+    // ASCII fast path (most saved text): a character scan is several times faster than a Unicode regex.
+    let start = -1;
+    for (let i = 0; i <= source.length; i++) {
+      const code = i < source.length ? source.charCodeAt(i) : 0;
+      const word = (code >= 97 && code <= 122) || (code >= 48 && code <= 57);
+      if (word && start < 0) start = i;
+      else if (!word && start >= 0) { tokens.push(foldPlural(source.slice(start, i))); start = -1; }
+    }
+    return tokens;
+  }
+  for (const [word] of source.matchAll(/[\p{L}\p{N}]+/gu)) {
+    if (!CJK.test(word)) { tokens.push(foldPlural(word)); continue; }
     for (const [run] of word.matchAll(SCRIPT_RUNS)) {
-      if (!CJK.test(run)) { tokens.push(normalizeToken(run)); continue; }
+      if (!CJK.test(run)) { tokens.push(foldPlural(run)); continue; }
       const chars = [...run];
       if (chars.length === 1) tokens.push(run);
       for (let i = 0; i < chars.length - 1; i++) tokens.push(chars[i] + chars[i + 1]);
@@ -101,7 +114,9 @@ function analyze(item) {
   const tf = {};
   const len = {};
   for (const [field] of FIELDS) {
-    const tokens = tokenize(field === 'title' ? `${fields.title} ${fields.fileName}` : fields[field]).filter(token => field !== 'url' || !URL_NOISE.has(token));
+    // Long captured articles are scored on their first 20k characters; quoted phrases still match the full text.
+    const source = field === 'title' ? `${fields.title} ${fields.fileName}` : field === 'article' ? fields.article.slice(0, 20000) : fields[field];
+    const tokens = tokenize(source).filter(token => field !== 'url' || !URL_NOISE.has(token));
     const map = new Map();
     for (const token of tokens) map.set(token, (map.get(token) || 0) + 1);
     tf[field] = map;

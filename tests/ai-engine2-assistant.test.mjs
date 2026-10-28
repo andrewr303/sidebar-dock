@@ -30,7 +30,7 @@ const seed = () => ({
   ],
 });
 
-async function harness({ script, via = 'direct', supportsTools = true, maxSteps, connectionLabel } = {}) {
+async function harness({ script, via = 'direct', supportsTools = true, maxSteps, connectionLabel, modelInfo } = {}) {
   const store = memoryStore(seed());
   await store.ready;
   const getLibrary = () => store.loadLibrary();
@@ -40,7 +40,7 @@ async function harness({ script, via = 'direct', supportsTools = true, maxSteps,
   let counter = 0;
   const assistant = createAssistant({
     store, getLibrary, searchLibrary: search.searchLibrary, conversations, uid: prefix => `${prefix}_${++counter}`, now: () => '2026-10-28T12:00:00.000Z',
-    ...(maxSteps ? { maxSteps } : {}),
+    ...(maxSteps ? { maxSteps } : {}), ...(modelInfo ? { modelInfo } : {}),
     getAiSettings: async () => ({ chat: { connectionId: 'conn', model: 'claude-opus-5-5', effort: 'medium' } }),
     resolveConnection: async id => ({ connection: { id, label: connectionLabel || 'Anthropic', defaultModel: 'x' }, provider: { id: 'anthropic', name: 'Anthropic', supports: { tools: supportsTools } }, via }),
     streamChat: async request => { calls.push(structuredClone({ ...request, onEvent: undefined, signal: undefined })); return script(request, calls.length); },
@@ -155,6 +155,18 @@ test('connections without tools get one retrieval-augmented answer and are told 
   assert.ok(events.some(event => event.type === 'status' && /Claude Code answers from the items Still sends it and cannot change your library/.test(event.label)));
   assert.deepEqual(message.citations.map(c => c.id), ['osaka']);
   assert.deepEqual(message.proposals, []);
+});
+
+test('a model whose capabilities exclude tools gets the no-tools prompt up front', async () => {
+  const asked = [];
+  const { assistant, calls } = await harness({
+    modelInfo: async (resolved, model) => { asked.push([resolved.connection.id, model]); return { capabilities: { tools: false } }; },
+    script: async ({ onEvent, tools, system }) => { assert.equal(tools, undefined); assert.match(system, /You have no tools/); text(onEvent, 'Plain answer.'); return { text: 'Plain answer.', toolCalls: [] }; },
+  });
+  const { message } = await assistant.runAssistant({ input: 'hi', model: 'tiny-local' });
+  assert.deepEqual(asked, [['conn', 'tiny-local']]);
+  assert.equal(calls[0].model, 'tiny-local');
+  assert.equal(message.text, 'Plain answer.');
 });
 
 test('models that reject tool definitions fall back to an answer without tools', async () => {

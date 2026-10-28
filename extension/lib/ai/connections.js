@@ -183,12 +183,17 @@ export function ensureHostPermission(target) {
   try { origins = hostPermissionOrigins(target); } catch (error) { return Promise.reject(error); }
   const api = globalThis.chrome?.permissions;
   if (!origins.length || typeof api?.request !== 'function') return Promise.resolve(true);
+  // Outside a gesture Chrome refuses to ask at all; access granted earlier still counts.
+  const alreadyGranted = async error => {
+    if (typeof api.contains === 'function' && await Promise.resolve(api.contains({ origins })).catch(() => false)) return true;
+    throw permissionError(origins, error);
+  };
   let pending;
-  try { pending = api.request({ origins }); } catch (error) { return Promise.reject(permissionError(origins, error)); }
+  try { pending = api.request({ origins }); } catch (error) { return alreadyGranted(error); }
   return Promise.resolve(pending).then(granted => {
     if (!granted) throw permissionError(origins);
     return true;
-  }, error => { throw permissionError(origins, error); });
+  }, alreadyGranted);
 }
 
 async function ensureHostPermissionLate(baseUrl) {

@@ -126,3 +126,16 @@ test('transformText streams deltas, uses the chat model when no fast model is se
   const offline = createTransforms({ getAiSettings: async () => ({}), streamChat: async () => ({}) });
   await assert.rejects(offline.transformText({ action: 'fix', text: 'teh' }), /Connect an AI provider/);
 });
+
+test('the fast model comes from resolveChatTarget when the connections module provides it', async () => {
+  const requests = [];
+  const purposes = [];
+  const transforms = createTransforms({
+    resolveChatTarget: async ({ purpose }) => { purposes.push(purpose); return { connectionId: 'anthropic-1', model: 'claude-haiku-5-5', effort: 'low' }; },
+    getAiSettings: async () => { throw new Error('settings are not read when a chat target resolver exists'); },
+    streamChat: async request => { requests.push(request); return { text: 'Kyoto in autumn', toolCalls: [] }; },
+  });
+  assert.equal(await transforms.transformText({ action: 'title', text: 'Notes about temples and maple leaves in Kyoto.' }), 'Kyoto in autumn');
+  assert.deepEqual(purposes, ['quick']);
+  assert.deepEqual([requests[0].connectionId, requests[0].model, requests[0].maxTokens], ['anthropic-1', 'claude-haiku-5-5', 2000]);
+});

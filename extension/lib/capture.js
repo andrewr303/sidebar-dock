@@ -31,7 +31,8 @@ export function readPageMetadata() {
 
 // Injected by the service worker for "chat with this page". It runs in the page, so it must not
 // reference anything outside its own body. Layout-aware innerText is used for every subtree that
-// contains no navigation chrome; only the path down to nav/footer/aside nodes is walked by hand.
+// contains no navigation chrome (it keeps code indentation); only the path down to nav/footer/aside
+// nodes is walked by hand, collapsing source whitespace the way the page renders it.
 export function readPageContext(limit = 120000) {
   const meta = selector => document.querySelector(selector)?.getAttribute('content') || '';
   const skip = 'nav, footer, aside, script, style, noscript, template, [role="navigation"], [role="contentinfo"], [role="complementary"]';
@@ -39,29 +40,39 @@ export function readPageContext(limit = 120000) {
     const parts = [];
     let size = 0;
     const push = value => { if (value) { parts.push(value); size += value.length; } };
+    const lineStart = () => !parts.length || parts[parts.length - 1].endsWith('\n');
+    const newline = () => {
+      if (parts.length) parts[parts.length - 1] = parts[parts.length - 1].replace(/[ \t]+$/, '');
+      push('\n');
+    };
     const visit = element => {
       for (const node of element.childNodes) {
         if (size > limit) return;
-        if (node.nodeType === 3) { push(node.nodeValue.replace(/\s+/g, ' ')); continue; }
+        if (node.nodeType === 3) {
+          const value = node.nodeValue.replace(/[ \t\n\r\f]+/g, ' ');
+          push(lineStart() ? value.replace(/^ +/, '') : value);
+          continue;
+        }
         if (node.nodeType !== 1 || node.matches(skip)) continue;
         const style = getComputedStyle(node);
         if (style.display === 'none' || style.visibility === 'hidden') continue;
         const block = !style.display.startsWith('inline');
-        if (block) push('\n');
-        if (node.localName === 'br') push('\n');
+        if (block) newline();
+        if (node.localName === 'br') newline();
         else if (node.querySelector(skip)) visit(node);
         else push(node.innerText || '');
-        if (block) push('\n');
+        if (block) newline();
       }
     };
     if (root) visit(root);
-    const text = parts.join('').split('\n').map(line => line.replace(/[ \t\f\v ]+/g, ' ').trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    const text = parts.join('').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+|\s+$/g, '');
     return { text, truncated: size > limit || text.length > limit };
   };
   const articles = document.querySelectorAll('article');
   const root = (articles.length === 1 ? articles[0] : null) || document.querySelector('main, [role="main"]') || document.body;
   let content = extract(root);
-  if (root !== document.body && content.text.length < 200) content = extract(document.body);
+  // A lone teaser <article> or an empty <main> is not the page: read the whole body instead.
+  if (root !== document.body && !content.truncated && content.text.length < 200) content = extract(document.body);
   return {
     url: location.href,
     title: document.title,
@@ -212,13 +223,15 @@ export function buildCapture(info = {}, tab = {}, metadata = {}, options = {}) {
   const title = clean(options.title, 2000)
     || (existing && !isPlaceholderTitle(existing.title, url) ? existing.title : isNote ? `Notes on ${derived}` : derived);
   const articleContent = !isNote && !isImage && !isLink && typeof metadata.articleText === 'string' ? metadata.articleText.slice(0, 250000) : '';
-  const type = isNote ? 'note' : isImage ? 'image' : isVideoUrl(url) ? 'video' : articleContent ? 'article' : 'bookmark';
+  const captured = isNote ? 'note' : isImage ? 'image' : isVideoUrl(url) ? 'video' : articleContent ? 'article' : 'bookmark';
+  // A bare link or tab save never downgrades an item that was saved as an article, image or video.
+  const type = existing && captured === 'bookmark' && ['article', 'image', 'video'].includes(existing.type) ? existing.type : captured;
   let cover = existing?.cover ? '' : isImage ? url : isLink ? '' : metadata.cover || '';
   try { cover = cover ? safeUrl(new URL(cover, url).href) : ''; } catch { cover = ''; }
   const note = typeof options.note === 'string' ? options.note.trim() : '';
   const content = isNote ? [selected, note].filter(Boolean).join('\n\n') : note && !str(existing?.content).trim() ? note : '';
   return {
-    type, title, url,
+    type, title, url: existing?.url && sameUrl(existing.url, url) ? existing.url : url,
     excerpt: isLink || existing?.excerpt ? '' : metadata.excerpt || '', content, articleContent,
     cover, tags: normalizeTags(options.tags), collectionId: typeof options.collectionId === 'string' ? options.collectionId : '',
     sourceUrl: safeUrl(pageUrl || metadata.url || tab.url),

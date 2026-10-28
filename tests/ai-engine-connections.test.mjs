@@ -146,6 +146,10 @@ test('saveConnection stops when access is denied or a key is missing, and valida
   assert.deepEqual(hostPermissionOrigins('ollama'), ['http://localhost/*']);
   assert.deepEqual(hostPermissionOrigins('agent:codex'), []);
   await assert.rejects(ensureHostPermission('http://evil.example.com'), /https/);
+  // Without a gesture Chrome throws instead of asking; a host granted earlier still passes.
+  globalThis.chrome = { permissions: { request: () => { throw new Error('This function must be called during a user gesture'); }, contains: async ({ origins }) => origins[0] === 'https://api.x.ai/*' } };
+  assert.equal(await ensureHostPermission('xai'), true);
+  await assert.rejects(ensureHostPermission('groq'), error => error.code === 'permission' && /api\.groq\.com/.test(error.message));
 });
 
 test('deleteConnection removes the key and clears settings that pointed at it', async t => {
