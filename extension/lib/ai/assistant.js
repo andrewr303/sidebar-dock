@@ -29,7 +29,7 @@ export function sourceRecord(item, library, limit = 8000) {
   const note = text(item.content);
   const article = text(item.articleContent);
   const description = text(item.excerpt).slice(0, 1000);
-  const highlights = (item.highlights || []).slice(0, 30).map(h => ({ text: text(h.text).slice(0, 600), ...(text(h.note) ? { note: text(h.note).slice(0, 300) } : {}) }));
+  const highlights = (Array.isArray(item.highlights) ? item.highlights : []).filter(h => h && typeof h === 'object').slice(0, 30).map(h => ({ text: text(h.text).slice(0, 600), ...(text(h.note) ? { note: text(h.note).slice(0, 300) } : {}) }));
   const room = Math.max(500, limit - description.length - JSON.stringify(highlights).length);
   const noteRoom = article ? Math.min(note.length, Math.max(Math.floor(room * 0.6), room - article.length)) : room;
   const articleRoom = Math.max(0, room - Math.min(note.length, noteRoom));
@@ -243,19 +243,34 @@ export function createAssistant({ streamChat, resolveConnection, modelInfo, getA
         messages.push({ role: 'user', content });
       }
 
-      if (message.stopReason === 'refusal' && !fullText.trim()) throw new Error('The model declined to answer this request.');
+      if (message.stopReason === 'refusal' && !fullText.trim()) throw Object.assign(new Error('The model declined to answer this request.'), { code: 'refusal' });
       if (message.stopReason === 'max_tokens') emit({ type: 'status', label: 'The answer reached the length limit and may be cut off.' });
     } catch (error) {
       const stopped = isAbort(error, signal);
       message.error = stopped ? 'Stopped' : text(error?.message) || 'The assistant could not answer.';
-      emit({ type: 'error', message: message.error, partialText: fullText, ...(stopped ? { aborted: true } : {}) });
+      // The UI branches on the code (no_connection -> setup card, permission -> grant access, auth -> settings, ...).
+      message.errorCode = stopped ? 'aborted' : text(error?.code) || 'error';
+      emit({ type: 'error', message: message.error, code: message.errorCode, partialText: fullText, ...(stopped ? { aborted: true } : {}) });
     }
 
     const finalLibrary = await Promise.resolve(getLibrary()).catch(() => library);
     const items = new Map((finalLibrary?.items || library?.items || []).map(item => [item.id, item]));
-    const known = new Map((gathered.sources || []).map(source => [source.id, source]));
+    // Citations resolve only to material the model actually received: this turn's reference data and tool results,
+    // and sources already cited earlier in this conversation. Any other [[id]] is an invented citation and stays
+    // unresolved (the UI shows it as unavailable) even when the id happens to exist in the library.
+    const known = new Map();
+    for (const message of previous) for (const citation of message?.citations || []) if (citation?.id && citation.id !== 'page:current') known.set(citation.id, citation);
+    for (const entry of gathered.collection?.items || []) known.set(entry.id, entry);
+    for (const source of gathered.sources || []) known.set(source.id, source);
+    for (const [id, source] of session?.sources || []) known.set(id, source);
     message.text = fullText;
-    message.citations = extractCitations(fullText, id => id === 'page:current' && gathered.page ? gathered.page : items.get(id) || session?.sources.get(id) || known.get(id));
+    message.citations = extractCitations(fullText, id => {
+      if (id === 'page:current') return gathered.page || session?.sources.get(id) || null;
+      const source = known.get(id);
+      if (!source) return null;
+      const item = items.get(id);
+      return item ? { title: item.title, url: item.url } : source;
+    });
     if (message.citations.length) emit({ type: 'citations', items: message.citations });
     message.proposals = (session?.proposals || []).map(proposal => ({ ...proposal, status: proposal.status === 'pending' ? 'discarded' : proposal.status }));
     if (thinkingMs || thinkingStarted) message.thinkingMs = thinkingMs || Date.now() - thinkingStarted;

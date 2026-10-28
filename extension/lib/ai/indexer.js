@@ -126,7 +126,7 @@ const configKey = value => value ? [value.connectionId, value.providerId, value.
  *   getIndexStatus, subscribeIndex, startIndexing, rebuildIndex, clearIndex, pauseIndexing, refresh, onLibraryChange, embedQuery, isReady, dispose }
  */
 export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, locks = globalThis.navigator?.locks, batchSize = 48, concurrency = 2,
-  debounceMs = 1500, retryMs = 30000, schedule = globalThis.setTimeout?.bind(globalThis), cancel = globalThis.clearTimeout?.bind(globalThis) } = {}) {
+  debounceMs = 1500, retryMs = 30000, queryTimeoutMs = 8000, schedule = globalThis.setTimeout?.bind(globalThis), cancel = globalThis.clearTimeout?.bind(globalThis) } = {}) {
   const status = { enabled: false, provider: '', providerId: '', connectionId: '', model: '', dims: null, total: 0, indexed: 0, pending: 0, failed: 0,
     pendingTokens: 0, running: false, paused: false, waiting: false, error: '', lastRunAt: '' };
   const listeners = new Set();
@@ -186,7 +186,7 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
   // Pause and clear must still stop this view's run when the shared flag cannot be written.
   const persistHold = value => Promise.resolve().then(() => vectorStore.setHeld?.(value)).catch(error => console.error(error));
 
-  async function embedItems(work, signal, runConfig) {
+  async function embedItems(work, signal, runConfig, generation) {
     // Flatten every pending item into chunk inputs, then group them into requests of at most `batchSize` inputs.
     const entries = work.map(({ item, hash }) => ({ item, hash, chunks: itemChunks(item), vectors: [], remaining: 0 }));
     const batches = [];
@@ -202,9 +202,12 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
     if (current.length) batches.push(current);
     const commit = async finished => {
       if (!finished.length) return;
-      await vectorStore.putItems(finished.map(entry => entry.error
+      const written = await vectorStore.putItems(finished.map(entry => entry.error
         ? { itemId: entry.item.id, hash: entry.hash, chunks: [], error: entry.error }
-        : { itemId: entry.item.id, hash: entry.hash, chunks: entry.chunks.map((chunk, i) => ({ n: chunk.n, text: chunk.text, vector: entry.vectors[i] })) }));
+        : { itemId: entry.item.id, hash: entry.hash, chunks: entry.chunks.map((chunk, i) => ({ n: chunk.n, text: chunk.text, vector: entry.vectors[i] })) }),
+        typeof generation === 'string' ? { generation } : undefined);
+      // Another view cleared or rebuilt the index after this run started: stop instead of writing into it.
+      if (written === false) throw Object.assign(new Error('The semantic index was reset in another view.'), { stale: true });
       const failed = finished.filter(entry => entry.error).length;
       set({ indexed: status.indexed + finished.length - failed, failed: status.failed + failed, pending: Math.max(0, status.pending - finished.length) }, false);
     };
@@ -276,13 +279,14 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
     try {
       const { reset, config: stored } = await vectorStore.ensureConfig(resolved);
       if (reset) hashes.clear();
+      const generation = typeof vectorStore.generation === 'function' ? await vectorStore.generation() : undefined;
       set({ enabled: true, running: true, waiting: false, paused: false, error: '', provider: resolved.provider, providerId: resolved.providerId, connectionId: resolved.connectionId, model: resolved.model, dims: stored?.dims || null });
       // Re-plan after each pass: the library may change while a pass runs.
       for (let pass = 0; pass < 3 && !signal.aborted; pass++) {
         const plan = await refreshCounts();
         if (plan.toDelete.length) await vectorStore.deleteItems(plan.toDelete);
         if (!plan.toIndex.length) break;
-        await embedItems(plan.toIndex, signal, resolved);
+        await embedItems(plan.toIndex, signal, resolved, generation);
       }
       if (signal.aborted) throw abortError();
       await refreshCounts();
@@ -306,7 +310,8 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
           if (retryMs && schedule) { cancel?.(timer); timer = schedule(() => { timer = null; return run(); }, retryMs); }
         }
       } catch (error) {
-        if (error?.name === 'AbortError' || controller.signal.aborted) set({ running: false, paused: held || error?.held === true });
+        if (error?.stale) { rerun = true; set({ running: false }); } // start over against the emptied index (unless now held)
+        else if (error?.name === 'AbortError' || controller.signal.aborted) set({ running: false, paused: held || error?.held === true });
         else set({ running: false, error: String(error?.message || error || 'Indexing failed.') });
       }
     };
@@ -405,12 +410,26 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
     async isReady() {
       if (!status.enabled || !config?.connectionId) return false;
       const stored = await vectorStore.getConfig();
-      return !!stored && stored.model === config.model && (stored.requestedDims || null) === (config.requestedDims || null);
+      return !!stored && stored.providerId === config.providerId && stored.model === config.model && (stored.requestedDims || null) === (config.requestedDims || null);
     },
-    async embedQuery(query, { signal } = {}) {
+    /**
+     * Embeds a search query. Interactive, so it never waits through rate-limit back-off (no retries) and gives up after
+     * queryTimeoutMs; callers fall back to keyword results.
+     */
+    async embedQuery(query, { signal, timeoutMs = queryTimeoutMs } = {}) {
       if (!status.enabled || !config?.connectionId) throw new Error('Semantic search is off.');
-      const result = await embedder.embed({ connectionId: config.connectionId, model: config.model, dimensions: config.requestedDims || undefined, inputs: [query], inputType: 'query', signal });
-      return result.vectors[0];
+      if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
+      const controller = new AbortController();
+      const onAbort = () => controller.abort(signal.reason);
+      signal?.addEventListener?.('abort', onAbort, { once: true });
+      const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(new DOMException('The embedding provider did not answer in time.', 'TimeoutError')), timeoutMs) : null;
+      try {
+        const result = await embedder.embed({ connectionId: config.connectionId, model: config.model, dimensions: config.requestedDims || undefined, inputs: [query], inputType: 'query', signal: controller.signal, retries: 0 });
+        return result.vectors[0];
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener?.('abort', onAbort);
+      }
     },
     dispose() { cancel?.(timer); listeners.clear(); active?.controller.abort(); },
   };

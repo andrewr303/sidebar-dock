@@ -143,7 +143,9 @@ async function defaultPostJson(url, { headers, body, signal }) {
 
 /**
  * createEmbedder({ resolveConnection, providerFetch, requestBridge }) -> { embed, describe }
- * embed({ connectionId, model, inputs, inputType: 'document'|'query', dimensions, signal }) -> { vectors: Float32Array[], model, dims, usage: { tokens } }
+ * embed({ connectionId, model, inputs, inputType: 'document'|'query', dimensions, signal, retries }) -> { vectors: Float32Array[], model, dims, usage: { tokens } }
+ * retries overrides the rate-limit retry count for one call (interactive query embeddings pass 0 so a search never
+ * waits through back-off; background indexing keeps the default).
  */
 export function createEmbedder({ resolveConnection, providerFetch, requestBridge, sleep = sleepFor, retries = 4, baseDelayMs = 1000 } = {}) {
   const postJson = async (url, { headers, body, signal, provider, apiKey, model }) => {
@@ -157,11 +159,11 @@ export function createEmbedder({ resolveConnection, providerFetch, requestBridge
     }
     return response.json();
   };
-  async function withRetry(task, signal) {
+  async function withRetry(task, signal, limit = retries) {
     for (let attempt = 0; ; attempt++) {
       try { return await task(); }
       catch (error) {
-        if (signal?.aborted || error?.name === 'AbortError' || attempt >= retries || !isRetryable(error)) throw error;
+        if (signal?.aborted || error?.name === 'AbortError' || attempt >= limit || !isRetryable(error)) throw error;
         await sleep(retryDelay(error, attempt, baseDelayMs), signal);
       }
     }
@@ -190,7 +192,8 @@ export function createEmbedder({ resolveConnection, providerFetch, requestBridge
     return { providerId, provider: target.connection?.label || target.provider?.name || target.providerId, via: target.via, defaultModel: defaultModel(target) };
   }
 
-  async function embed({ connectionId, model, inputs, inputType = 'document', dimensions, signal } = {}) {
+  async function embed({ connectionId, model, inputs, inputType = 'document', dimensions, signal, retries: retryLimit } = {}) {
+    const limit = Number.isInteger(retryLimit) && retryLimit >= 0 ? retryLimit : retries;
     if (!Array.isArray(inputs) || !inputs.length) return { vectors: [], model: model || '', dims: 0, usage: { tokens: 0 } };
     const target = await resolve(connectionId);
     const useModel = model || defaultModel(target);
@@ -210,11 +213,11 @@ export function createEmbedder({ resolveConnection, providerFetch, requestBridge
         if (!requestBridge) throw new Error('Pair the local bridge first to use bridge embeddings.');
         const providerId = target.connection?.bridgeProviderId || String(target.connection?.id || connectionId).replace(/^bridge:/, '');
         const data = await withRetry(() => requestBridge('/ai/embeddings', { method: 'POST', signal,
-          body: { providerId, inputs: batch, model: useModel || undefined, dimensions: dimensions || undefined, inputType } }), signal);
+          body: { providerId, inputs: batch, model: useModel || undefined, dimensions: dimensions || undefined, inputType } }), signal, limit);
         parsed = parseEmbeddingResponse('bridge', data, batch.length);
       } else {
         const request = buildEmbeddingRequest(target.kind, { baseUrl: target.baseUrl || target.provider?.baseUrl, apiKey: target.apiKey, model: useModel, inputs: batch, inputType, dimensions });
-        const data = await withRetry(() => postJson(request.url, { headers: request.headers, body: request.body, signal, provider: target.provider, apiKey: target.apiKey, model: useModel }), signal);
+        const data = await withRetry(() => postJson(request.url, { headers: request.headers, body: request.body, signal, provider: target.provider, apiKey: target.apiKey, model: useModel }), signal, limit);
         parsed = parseEmbeddingResponse(target.kind, data, batch.length);
       }
       parsed.vectors.forEach((vector, offset) => { vectors[indexes[offset]] = vector; });

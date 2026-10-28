@@ -101,11 +101,13 @@ export function shortAgo(iso, now = Date.now()) {
   return then.toLocaleDateString('en-US', then.getFullYear() === today.getFullYear() ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-/** "Edited 2 hours ago", "Edited yesterday", "Edited Oct 26". */
-export function editedLabel(iso) {
-  const label = relativeDate(iso);
-  if (!label) return '';
-  return `Edited ${/^[A-Z][a-z]{2} \d/.test(label) ? label : label.charAt(0).toLowerCase() + label.slice(1)}`;
+/** Card footer age: "Edited just now", "Edited 5m ago", "Edited 3h ago", "Edited yesterday", "Edited Mon", "Edited Oct 26". */
+export function editedLabel(iso, now = Date.now()) {
+  const age = shortAgo(iso, now);
+  if (!age) return '';
+  if (age === 'Now') return 'Edited just now';
+  if (age === 'Yesterday') return 'Edited yesterday';
+  return /^\d+[mh]$/.test(age) ? `Edited ${age} ago` : `Edited ${age}`;
 }
 
 /** What the one-line composer saves: the typed line starts the body; the title names the page. */
@@ -305,16 +307,22 @@ export function renderNotesWorkspace(ctx) {
   let selected = s.noteId ? latestItem(ctx, s.noteId) : null;
   if (selected && (selected.type !== 'note' || selected.deletedAt)) selected = null;
   if (!selected && list.length) {
-    selected = list[0];
+    // Reopen the note this device had open last (reloads keep only the view in the URL), else the newest.
+    const last = ctx.prefs.get('lastNote', '');
+    selected = (last && list.find(note => note.id === last)) || list[0];
     s.noteId = selected.id;
   }
+  if (selected && ctx.prefs.get('lastNote', '') !== selected.id) ctx.prefs.set('lastNote', selected.id);
   const railOpen = ctx.prefs.get('notesRail', true) !== false;
   return html`<div class="${cx('notes-ws', railOpen && selected && 'has-rail')}" data-key="notes-ws">
     ${renderListPane(ctx, { all, counts, list, selectedId: selected?.id || '' })}
     <section class="notes-editor-pane" aria-label="${selected ? `Editing ${noteName(selected)}` : 'Editor'}" data-key="notes-editor-pane">
       ${selected ? renderNoteEditor(ctx, selected.id, { surface: 'full' }) : renderEditorEmpty(ctx, all.length)}
     </section>
-    ${selected ? renderRail(ctx, selected, railOpen) : ''}
+    ${selected ? html`<div class="notes-rail-col" data-key="notes-rail-col">
+      ${railOpen || railPeek ? renderRail(ctx, selected, { peek: railPeek }) : ''}
+      <div class="${cx('notes-rail-strip', railOpen && 'has-rail')}">${iconButton({ icon: 'panel-right-open', label: 'Show note info', action: 'notes.rail', size: 'sm', tooltipPlacement: 'bottom end' })}</div>
+    </div>` : ''}
   </div>`;
 }
 
@@ -362,17 +370,19 @@ let listLimit = PAGE_SIZE;
 function renderChips(ctx, counts) {
   const s = notesState(ctx);
   const rows = collectionsWithNotes(ctx, counts, s.collectionId);
-  const visible = rows.slice(0, 4);
+  // Two rows at most: the biggest collections as chips, everything else (and "No collection") in the menu.
+  const visible = rows.slice(0, 3);
   const selectedHidden = s.collectionId && s.collectionId !== NO_COLLECTION && !visible.some(row => row.collection.id === s.collectionId);
-  if (selectedHidden) visible.push(rows.find(row => row.collection.id === s.collectionId));
+  if (selectedHidden) visible[visible.length - 1] = rows.find(row => row.collection.id === s.collectionId);
   const hidden = rows.length - visible.length;
+  const noneChip = counts.none && counts.none !== counts.total && (!hidden || s.collectionId === NO_COLLECTION);
   const chipButton = (value, label, n, color, selected) => html`<button type="button" class="${cx('notes-chip', selected && 'is-selected')}" data-action="notes.filter" data-collection="${value}" aria-pressed="${selected ? 'true' : 'false'}">
     ${color === undefined ? '' : color === null ? icon('inbox', { size: 12 }) : dot(color)}<span class="notes-chip-label">${label}</span><span class="notes-chip-count">${n}</span></button>`;
   return html`<div class="notes-chips" role="group" aria-label="Filter by collection">
     ${chipButton('', 'All', counts.total, undefined, !s.collectionId)}
     ${visible.filter(Boolean).map(({ collection, count: n }) => chipButton(collection.id, collection.name, n, collection.color, s.collectionId === collection.id))}
-    ${counts.none && counts.none !== counts.total ? chipButton(NO_COLLECTION, 'No collection', counts.none, null, s.collectionId === NO_COLLECTION) : ''}
-    ${hidden > 0 ? html`<button type="button" class="notes-chip is-more" data-action="notes.filter-menu" aria-haspopup="menu" aria-expanded="false">${hidden} more${icon('chevron-down', { size: 12 })}</button>` : ''}
+    ${noneChip ? chipButton(NO_COLLECTION, 'No collection', counts.none, null, s.collectionId === NO_COLLECTION) : ''}
+    ${hidden > 0 ? html`<button type="button" class="notes-chip is-more" data-action="notes.filter-menu" aria-haspopup="menu" aria-expanded="false">${hidden + (noneChip || !counts.none ? 0 : 1)} more${icon('chevron-down', { size: 12 })}</button>` : ''}
   </div>`;
 }
 
@@ -407,10 +417,10 @@ function railSection(id, title, content, countValue) {
   return html`<section class="notes-rail-section" aria-labelledby="rail-${id}"><h3 class="notes-rail-title" id="rail-${id}">${title}${countValue ? html`<span class="notes-rail-count">${countValue}</span>` : ''}</h3>${content}</section>`;
 }
 
-function renderRail(ctx, note, open) {
-  if (!open) {
-    return html`<aside class="notes-rail is-collapsed" aria-label="Note info" data-key="notes-rail">${iconButton({ icon: 'panel-right-open', label: 'Show note info', action: 'notes.rail', size: 'sm', tooltipPlacement: 'bottom end' })}</aside>`;
-  }
+let railPeek = false;
+const RAIL_INLINE_MIN = 1040;
+
+function renderRail(ctx, note, { peek = false } = {}) {
   const content = note.content || '';
   const headings = derive(`outline:${note.id}:${note.updatedAt}`, () => outline(content));
   const tasks = derive(`tasks:${note.id}:${note.updatedAt}`, () => extractTasks(content));
@@ -430,7 +440,7 @@ function renderRail(ctx, note, open) {
     : html`<p class="notes-rail-hint">Headings you add appear here.</p>`;
   const linkRow = entry => html`<li><button type="button" class="notes-rail-link" data-action="notes.open-linked" data-id="${entry.id}">
     ${entry.type === 'note' ? icon('sticky-note', { size: 14, className: 'notes-rail-link-icon' }) : favicon(entry.url, { size: 14 })}<span class="notes-rail-link-title">${noteName(entry)}</span></button></li>`;
-  return html`<aside class="notes-rail" aria-label="Note info" data-key="notes-rail">
+  return html`<aside class="${cx('notes-rail', peek && 'is-peek')}" aria-label="Note info" data-key="notes-rail" data-keydown="notes.rail-key">
     <header class="notes-rail-head"><h2 class="notes-rail-heading">Info</h2>${iconButton({ icon: 'panel-right', label: 'Hide note info', action: 'notes.rail', size: 'sm', tooltipPlacement: 'bottom end' })}</header>
     <div class="notes-rail-scroll">
       ${note.url ? railSection('page', 'Linked page', html`<div class="notes-rail-page">
@@ -696,7 +706,21 @@ registerActions({
     rows[next].scrollIntoView({ block: 'nearest' });
     openNote(ctx, rows[next].dataset.id);
   },
-  'notes.rail': ({ ctx }) => { ctx.prefs.set('notesRail', ctx.prefs.get('notesRail', true) === false); ctx.render(); },
+  'notes.rail': ({ ctx, el }) => {
+    // Below the inline width the rail opens over the editor for a moment instead of changing the saved preference.
+    const narrow = (el?.closest?.('.notes-ws')?.clientWidth || innerWidth) < RAIL_INLINE_MIN;
+    if (narrow) railPeek = !railPeek;
+    else { railPeek = false; ctx.prefs.set('notesRail', ctx.prefs.get('notesRail', true) === false); }
+    ctx.render();
+    if (narrow && railPeek) ctx.nextFrame(() => document.querySelector('.notes-rail.is-peek .notes-rail-head .icon-btn')?.focus({ preventScroll: true }));
+  },
+  'notes.rail-key': ({ ctx, event }) => {
+    if (event.key !== 'Escape' || !railPeek) return;
+    event.preventDefault();
+    railPeek = false;
+    ctx.render();
+    ctx.nextFrame(() => document.querySelector('.notes-rail-strip .icon-btn')?.focus({ preventScroll: true }));
+  },
   'notes.outline': ({ data }) => editorFor(data.id)?.scrollToHeading(data.text, Number(data.nth) || 0),
   'notes.card-body': ({ ctx, data, event }) => {
     const target = event?.target;

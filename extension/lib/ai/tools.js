@@ -103,12 +103,76 @@ const tagLabel = tags => {
 const safeWebUrl = value => { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : ''; } catch { return ''; } };
 export const noteExcerpt = markdown => { const plain = plainText(markdown); return plain.length > 180 ? `${plain.slice(0, 179).trimEnd()}…` : plain; };
 
-/** Reverts an applied proposal: restores previous item fields, trashes created notes, removes created collections. */
-export async function undoChanges(store, undo) {
-  if (!undo) return;
-  if (undo.patches?.length) await store.bulkUpdateItems(undo.patches);
-  for (const id of undo.createdNotes || []) await store.deleteItem(id);
-  for (const id of [...(undo.createdCollections || [])].reverse()) await store.deleteCollection(id);
+const sameValue = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+const lowerSet = tags => new Set((Array.isArray(tags) ? tags : []).map(tag => String(tag).toLowerCase()));
+
+/**
+ * Reverts an applied proposal: restores previous item fields, trashes created notes, removes created collections.
+ * With getLibrary (the normal case) the undo is conflict-aware: a field the user changed again after Apply keeps the
+ * user's value, tags added or removed since are kept, items deleted forever are skipped, and a created collection
+ * that now holds other items or sub-collections is kept. Without it (the rollback of a failed Apply), every recorded
+ * value is restored as is. Returns { reverted, kept } counts.
+ */
+export async function undoChanges(store, undo, { getLibrary } = {}) {
+  if (!undo) return { reverted: 0, kept: 0 };
+  const library = typeof getLibrary === 'function' ? await getLibrary() : null;
+  if (!library) {
+    if (undo.patches?.length) await store.bulkUpdateItems(undo.patches);
+    // Rolling back a failed Apply removes the notes it had written outright rather than leaving them in Trash.
+    for (const id of undo.createdNotes || []) await (typeof store.permanentlyDeleteItem === 'function' ? store.permanentlyDeleteItem(id) : store.deleteItem(id));
+    for (const id of [...(undo.createdCollections || [])].reverse()) await store.deleteCollection(id);
+    return { reverted: (undo.patches?.length || 0) + (undo.createdNotes?.length || 0) + (undo.createdCollections?.length || 0), kept: 0 };
+  }
+  const index = new Map((library.items || []).map(item => [item.id, item]));
+  const applied = new Map((Array.isArray(undo.applied) ? undo.applied : []).map(entry => [entry.id, entry.patch || {}]));
+  const patches = [];
+  let kept = 0;
+  for (const { id, patch: before = {} } of undo.patches || []) {
+    const current = index.get(id);
+    if (!current) { kept++; continue; } // deleted forever since
+    const after = applied.get(id);
+    const patch = {};
+    let edited = false; // the user changed a field this proposal wrote
+    for (const [key, value] of Object.entries(before)) {
+      if (key === 'excerpt' && 'content' in before) continue; // follows content below
+      if (!after || !(key in after)) { patch[key] = value; continue; } // records written before conflict-aware undo
+      if (key === 'tags') {
+        const afterTags = lowerSet(after.tags);
+        const beforeTags = lowerSet(before.tags);
+        const tags = (current.tags || []).filter(tag => { const lower = String(tag).toLowerCase(); return !afterTags.has(lower) || beforeTags.has(lower); });
+        for (const tag of before.tags || []) if (!afterTags.has(String(tag).toLowerCase()) && !tags.some(t => String(t).toLowerCase() === String(tag).toLowerCase())) tags.push(tag);
+        if (!sameValue([...lowerSet(current.tags)].sort(), [...afterTags].sort())) edited = true;
+        if (!sameValue(tags, current.tags || [])) patch.tags = tags;
+      } else if (sameValue(current[key], after[key])) {
+        patch[key] = value;
+        if (key === 'content' && 'excerpt' in before) patch.excerpt = before.excerpt;
+      } else edited = true;
+    }
+    if (Object.keys(patch).length) patches.push({ id, patch });
+    if (edited) kept++;
+  }
+  if (patches.length) await store.bulkUpdateItems(patches);
+  const notes = new Set(undo.createdNotes || []);
+  let reverted = patches.length;
+  for (const id of notes) {
+    const note = index.get(id);
+    if (!note || note.deletedAt) continue;
+    await store.deleteItem(id);
+    reverted++;
+  }
+  // Where each item lives once the item patches above are reverted.
+  const movedBack = new Map(patches.filter(entry => 'collectionId' in entry.patch).map(entry => [entry.id, entry.patch.collectionId]));
+  const created = [...(undo.createdCollections || [])];
+  const removing = new Set(created);
+  for (const id of [...created].reverse()) {
+    if (!(library.collections || []).some(collection => collection.id === id)) { removing.delete(id); continue; }
+    const holdsItems = (library.items || []).some(item => !notes.has(item.id) && (movedBack.has(item.id) ? movedBack.get(item.id) : item.collectionId) === id);
+    const holdsCollections = (library.collections || []).some(collection => collection.parentId === id && !removing.has(collection.id));
+    if (holdsItems || holdsCollections) { removing.delete(id); kept++; continue; }
+    await store.deleteCollection(id);
+    reverted++;
+  }
+  return { reverted, kept };
 }
 
 /**
@@ -128,11 +192,20 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       const query = text(input.query).trim();
       if (!query) throw new Error('Give search_library a query.');
       const filter = {};
+      const library = await getLibrary();
       if (ITEM_TYPES.includes(input.type)) filter.type = input.type;
-      if (typeof input.collectionId === 'string' && input.collectionId) filter.collectionId = input.collectionId === 'inbox' ? '' : input.collectionId;
+      const wantedCollection = text(input.collectionId).trim();
+      if (wantedCollection) {
+        // Models often pass a collection's name instead of its id; an unknown one is reported rather than silently empty.
+        const collections = library?.collections || [];
+        const byName = collections.filter(collection => text(collection.name).toLowerCase() === wantedCollection.toLowerCase());
+        if (wantedCollection.toLowerCase() === 'inbox') filter.collectionId = '';
+        else if (collections.some(collection => collection.id === wantedCollection)) filter.collectionId = wantedCollection;
+        else if (byName.length === 1) filter.collectionId = byName[0].id;
+        else throw new Error(`Unknown collection "${wantedCollection.slice(0, 80)}". Use list_collections for collection ids.`);
+      }
       if (text(input.tag).trim()) filter.tag = text(input.tag).trim().replace(/^#/, '');
       const results = await searchLibrary(query, { limit: clampInt(input.limit, 1, 50, 12), mode: 'hybrid', filter, signal });
-      const library = await getLibrary();
       const index = new Map((library?.items || []).map(item => [item.id, item]));
       // Pair each hit with its item before dropping ids that vanished, so snippets stay with the right item.
       const items = results.map(result => ({ result, item: index.get(result.id) })).filter(entry => entry.item).map(({ result, item }) => {
@@ -162,7 +235,7 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
         items.push({ id: item.id, title: text(item.title), type: item.type, url: text(item.url), collection: collectionPath(library, text(item.collectionId)), collectionId: text(item.collectionId),
           tags: item.tags || [], favorite: !!item.favorite, archived: !!item.archived, inTrash: !!item.deletedAt, createdAt: text(item.createdAt), updatedAt: text(item.updatedAt),
           description: text(item.excerpt).slice(0, 2000), note: note.slice(0, noteBudget), article: article.slice(0, articleBudget),
-          highlights: (item.highlights || []).slice(0, 40).map(h => ({ text: text(h.text).slice(0, 800), note: text(h.note).slice(0, 400) })),
+          highlights: (Array.isArray(item.highlights) ? item.highlights : []).filter(h => h && typeof h === 'object').slice(0, 40).map(h => ({ text: text(h.text).slice(0, 800), note: text(h.note).slice(0, 400) })),
           relatedIds: (item.relatedIds || []).slice(0, 50), fileName: text(item.fileName) || undefined,
           truncated: note.length > noteBudget || article.length > articleBudget });
       }
@@ -331,7 +404,8 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
     },
   };
 
-  function buildProposal(draft, library) {
+  // links (optional Map) receives, per change id, the draft parts it covers: { callIds } or { collectionId }.
+  function buildProposal(draft, library, { id = uid('proposal'), links = null } = {}) {
     const index = new Map((library?.items || []).map(item => [item.id, item]));
     const preview = itemIds => itemIds.slice(0, 50).map(id => summaryOf(index.get(id) || { id, title: id }));
     const groups = new Map();
@@ -374,9 +448,56 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
         changes.push({ ...base, label, ...(title ? { title } : {}), ...(excerpt !== undefined ? { excerpt } : {}) });
       }
     }
+    // Stable change ids let the Review step hand back a filtered proposal (see selectDraft).
+    const groupList = [...groups.values()].filter(group => group.op !== 'create_collection');
+    changes.forEach((change, n) => {
+      change.id = `change_${n + 1}`;
+      if (!links) return;
+      if (change.op === 'create_collection') links.set(change.id, { collectionId: change.collectionId });
+      else links.set(change.id, { callIds: groupList[n - draft.collections.length]?.callIds || [] });
+    });
     const touched = new Set(changes.flatMap(change => change.itemIds));
     const title = changes.length === 1 ? changes[0].label : touched.size ? `${plural(changes.length, 'change')} to ${plural(touched.size, 'item')}` : plural(changes.length, 'change');
-    return { id: uid('proposal'), title, summary: `${changes.map(change => change.label).join('. ')}.`, changes };
+    return { id, title, summary: `${changes.map(change => change.label).join('. ')}.`, changes };
+  }
+
+  /**
+   * Narrows a draft to what the user kept in Review. answer is 'apply', or a proposal-shaped object whose changes
+   * (matched by change id, else by position and op) list the itemIds to keep; changes left out are dropped. It can only
+   * remove work, never add it. A proposed collection that a kept change still needs is created anyway.
+   * Returns { draft, filtered } (filtered is false when everything was kept).
+   */
+  function selectDraft(draft, proposal, links, answer) {
+    const picked = answer && typeof answer === 'object' ? (Array.isArray(answer.changes) ? answer.changes : Array.isArray(answer.proposal?.changes) ? answer.proposal.changes : null) : null;
+    if (!picked) return { draft, filtered: false };
+    const keep = new Map(); // change id -> Set of kept item ids, or null for changes without items
+    proposal.changes.forEach((change, position) => {
+      const match = picked.find(entry => entry && entry.id === change.id)
+        || (picked[position] && !picked[position].id && picked[position].op === change.op ? picked[position] : null);
+      if (!match) return;
+      if (!change.itemIds.length || !Array.isArray(match.itemIds)) { keep.set(change.id, change.itemIds.length ? new Set(change.itemIds) : null); return; }
+      const wanted = new Set(match.itemIds.filter(itemId => typeof itemId === 'string'));
+      const kept = change.itemIds.filter(itemId => wanted.has(itemId));
+      if (kept.length) keep.set(change.id, new Set(kept));
+    });
+    const byCall = new Map();
+    for (const [changeId, link] of links) for (const callId of link.callIds || []) byCall.set(callId, changeId);
+    const ops = [];
+    for (const entry of draft.ops) {
+      const changeId = byCall.get(entry.callId);
+      if (!keep.has(changeId)) continue;
+      const items = keep.get(changeId);
+      if (!entry.op.itemIds || !items) { ops.push(entry); continue; }
+      const itemIds = entry.op.itemIds.filter(itemId => items.has(itemId));
+      if (itemIds.length) ops.push({ ...entry, op: { ...entry.op, itemIds } });
+    }
+    const wantedCollections = new Set([...links].filter(([changeId, link]) => link.collectionId && keep.has(changeId)).map(([, link]) => link.collectionId));
+    for (const { op } of ops) if (op.collectionId) wantedCollections.add(op.collectionId);
+    for (const collection of [...draft.collections].reverse()) if (wantedCollections.has(collection.id) && collection.parentId) wantedCollections.add(collection.parentId);
+    const collections = draft.collections.filter(collection => wantedCollections.has(collection.id));
+    const filtered = ops.length !== draft.ops.length || collections.length !== draft.collections.length
+      || ops.some((entry, n) => entry.op.itemIds?.length !== draft.ops[n].op.itemIds?.length);
+    return { draft: { collections, ops }, filtered };
   }
 
   async function applyDraft(draft) {
@@ -428,6 +549,8 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       if (patches.size) {
         await store.bulkUpdateItems([...patches].map(([id, patch]) => ({ id, patch })));
         undo.patches = [...previous].map(([id, patch]) => ({ id, patch }));
+        // What Apply wrote, so a later Undo can tell which fields the user has changed since.
+        undo.applied = [...patches].map(([id, patch]) => ({ id, patch: structuredClone(patch) }));
       }
       for (const { op } of draft.ops) {
         if (op.op !== 'create_note') continue;
@@ -443,7 +566,7 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
     return undo;
   }
 
-  const resultFor = (op, data, library) => {
+  const resultFor = (op, data) => {
     if (!op) return data;
     switch (op.op) {
       case 'create_collection': return { status: 'applied', collectionId: op.collectionId, ...(data?.path ? { path: data.path } : {}) };
@@ -458,20 +581,26 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
     }
   };
 
+  // onProposal resolves 'apply', 'discard', or (after Review) a proposal-shaped object: { changes: [{ id, itemIds }], decision? }.
+  // Anything else, a rejection, or no handler at all means discard: nothing is written without an explicit apply.
   const waitForDecision = proposal => new Promise((resolve, reject) => {
-    if (typeof onProposal !== 'function') { resolve('discard'); return; }
+    if (typeof onProposal !== 'function') { resolve({ decision: 'discard' }); return; }
     if (signal?.aborted) { reject(signal.reason || new DOMException('Stopped', 'AbortError')); return; }
     const onAbort = () => reject(signal.reason || new DOMException('Stopped', 'AbortError'));
     signal?.addEventListener?.('abort', onAbort, { once: true });
-    Promise.resolve().then(() => onProposal(proposal)).then(decision => resolve(decision === 'apply' ? 'apply' : 'discard'), () => resolve('discard'))
+    Promise.resolve().then(() => onProposal(structuredClone(proposal))).then(answer => {
+      const reviewed = answer && typeof answer === 'object'
+        && (answer.decision === 'apply' || (answer.decision === undefined && (Array.isArray(answer.changes) || Array.isArray(answer.proposal?.changes))));
+      resolve(answer === 'apply' || reviewed ? { decision: 'apply', answer } : { decision: 'discard' });
+    }, () => resolve({ decision: 'discard' }))
       .finally(() => signal?.removeEventListener?.('abort', onAbort));
   });
 
-  /** Runs one model step's tool calls; returns [{ toolUseId, content, isError }] in call order. */
+  /** Runs one model step's tool calls; returns [{ toolUseId, content, isError }] in call order (paired by position). */
   async function execute(calls) {
-    const results = new Map();
+    const results = new Map(); // call object -> result, so duplicate or missing ids still pair one result per call
     const done = (call, data, { isError = false, summary = '', result } = {}) => {
-      results.set(call.id, { toolUseId: call.id, content: typeof data === 'string' ? data : JSON.stringify(data), isError });
+      results.set(call, { toolUseId: call.id, content: typeof data === 'string' ? data : JSON.stringify(data), isError });
       onEvent({ type: 'tool', id: call.id, name: call.name, summary: summary || (isError ? `${call.name} failed` : call.name), result, isError });
     };
     const writes = [];
@@ -498,13 +627,14 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
         const staged = [];
         // Collections first so moves and notes in the same step can reference "new:<name>".
         const ordered = [...writes].sort((a, b) => (a.call.name === 'create_collection' ? 0 : 1) - (b.call.name === 'create_collection' ? 0 : 1));
-        for (const { call, input } of ordered) {
+        ordered.forEach((entry, n) => { entry.key = `call_${n + 1}`; }); // internal keys: provider call ids may repeat
+        for (const { call, input, key } of ordered) {
           try {
             const outcome = stagers[call.name](input, draft, library);
             if (outcome.skip) done(call, outcome.data, { summary: outcome.data.message || 'No change needed' });
             else {
-              if (outcome.op.op !== 'create_collection') draft.ops.push({ callId: call.id, op: outcome.op });
-              staged.push({ call, op: outcome.op, data: outcome.data });
+              if (outcome.op.op !== 'create_collection') draft.ops.push({ callId: key, op: outcome.op });
+              staged.push({ call, key, op: outcome.op, data: outcome.data });
             }
           } catch (error) {
             done(call, { status: 'invalid', error: error.message }, { isError: true, summary: `${call.name.replace(/_/g, ' ')} not proposed` });
@@ -512,7 +642,8 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
         }
         if (staged.length) {
           proposalUsed = true;
-          const proposal = buildProposal(draft, library);
+          const links = new Map();
+          const proposal = buildProposal(draft, library, { links });
           const record = { ...proposal, status: 'pending' };
           proposals.push(record);
           onEvent({ type: 'proposal', proposal });
@@ -525,17 +656,26 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
             onEvent({ type: 'proposal_result', proposalId: proposal.id, status: 'discarded' });
             throw error;
           }
-          if (decision === 'apply') {
+          const chosen = decision.decision === 'apply' ? selectDraft(draft, proposal, links, decision.answer) : null;
+          if (chosen && (chosen.draft.ops.length || chosen.draft.collections.length)) {
             try {
-              const undo = await applyDraft(draft);
-              const after = await getLibrary();
+              const undo = await applyDraft(chosen.draft);
+              const applied = chosen.filtered ? buildProposal(chosen.draft, library, { id: proposal.id }) : proposal;
               record.status = 'applied';
-              record.result = { summary: proposal.summary };
+              record.result = { summary: applied.summary };
+              if (chosen.filtered) record.applied = applied.changes;
               record.undo = undo;
-              onEvent({ type: 'proposal_result', proposalId: proposal.id, status: 'applied', summary: proposal.summary, undo: () => undoChanges(store, undo) });
-              for (const { call, op, data } of staged) {
-                if (op.op === 'create_note') { const note = (after?.items || []).find(item => item.id === op.noteId); if (note) remember(note, after); }
-                done(call, resultFor(op, data, after), { summary: labelFor(op, proposal) });
+              onEvent({ type: 'proposal_result', proposalId: proposal.id, status: 'applied', summary: applied.summary, ...(chosen.filtered ? { applied: applied.changes } : {}),
+                undo: () => undoChanges(store, undo, { getLibrary }) });
+              const keptOps = new Map(chosen.draft.ops.map(entry => [entry.callId, entry.op]));
+              const keptCollections = new Set(chosen.draft.collections.map(collection => collection.id));
+              for (const { call, key, op, data } of staged) {
+                const used = op.op === 'create_collection' ? (keptCollections.has(op.collectionId) ? op : null) : keptOps.get(key);
+                if (!used) { done(call, { status: 'declined', message: 'The user left this change out when reviewing the proposal. Nothing was changed for it.' }, { summary: 'Left out' }); continue; }
+                // Created notes are cited from what was written: the library snapshot may not show them yet.
+                if (used.op === 'create_note') sources.set(used.noteId, { id: used.noteId, title: used.title, url: used.url || '', type: 'note', collection: data?.collection || collectionPath(library, used.collectionId) });
+                const excluded = (op.itemIds?.length || 0) - (used.itemIds?.length || 0);
+                done(call, { ...resultFor(used, data), ...(excluded > 0 ? { excludedByUser: excluded } : {}) }, { summary: labelFor(used, applied) });
               }
             } catch (error) {
               record.status = 'failed';
@@ -551,7 +691,7 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
         }
       }
     }
-    return calls.map(call => results.get(call.id) || { toolUseId: call.id, content: JSON.stringify({ error: 'Tool did not run.' }), isError: true });
+    return calls.map(call => results.get(call) || { toolUseId: call.id, content: JSON.stringify({ error: 'Tool did not run.' }), isError: true });
   }
 
   const labelFor = (op, proposal) => {

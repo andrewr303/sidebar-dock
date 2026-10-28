@@ -3,7 +3,8 @@
 export const CONVERSATIONS_KEY = 'still.ai.conversations.v2';
 export const LEGACY_CHATS_KEY = 'still.ai.chats.v1';
 const BODY_PREFIX = 'still.ai.conversation.v2:';
-export const CONVERSATION_LIMITS = Object.freeze({ conversations: 300, messages: 400, messageChars: 200000, bytes: 4 * 1024 * 1024 });
+// bytes caps one conversation; totalBytes caps all of them together (oldest conversations go first).
+export const CONVERSATION_LIMITS = Object.freeze({ conversations: 300, messages: 400, messageChars: 200000, bytes: 4 * 1024 * 1024, totalBytes: 32 * 1024 * 1024 });
 const ROLES = ['user', 'assistant'];
 const SCOPES = ['page', 'item', 'items', 'collection', 'library'];
 
@@ -70,7 +71,7 @@ export function normalizeMessage(input = {}, now = new Date().toISOString()) {
     error: text(input.error, 2000),
     createdAt: stamp(input.createdAt) || now,
   };
-  for (const key of ['model', 'connectionId', 'stopReason']) if (typeof input[key] === 'string' && input[key]) message[key] = input[key].slice(0, 200);
+  for (const key of ['model', 'connectionId', 'stopReason', 'errorCode']) if (typeof input[key] === 'string' && input[key]) message[key] = input[key].slice(0, 200);
   if (Number.isFinite(input.thinkingMs) && input.thinkingMs >= 0) message.thinkingMs = Math.round(input.thinkingMs);
   if (input.usage && typeof input.usage === 'object') message.usage = plain(input.usage);
   if (input.context && typeof input.context === 'object') message.context = normalizeScope(input.context) || undefined;
@@ -93,8 +94,13 @@ export function normalizeConversation(input = {}, { now = new Date().toISOString
     messages,
   };
   // Oldest turns go first when one conversation grows past the byte cap; the latest exchange always stays.
-  while (messages.length > 2 && JSON.stringify(conversation).length > CONVERSATION_LIMITS.bytes) {
-    messages = messages.slice(1);
+  // Sizes are measured once per message so trimming stays linear for long conversations.
+  let size = JSON.stringify(conversation).length;
+  if (size > CONVERSATION_LIMITS.bytes && messages.length > 2) {
+    const sizes = messages.map(m => JSON.stringify(m).length + 1);
+    let drop = 0;
+    while (messages.length - drop > 2 && size > CONVERSATION_LIMITS.bytes) size -= sizes[drop++];
+    messages = messages.slice(drop);
     conversation.messages = messages;
   }
   return conversation;
@@ -104,7 +110,7 @@ const summarize = conversation => {
   const lastAnswer = [...conversation.messages].reverse().find(m => m.role === 'assistant' && m.text)?.text || '';
   return { id: conversation.id, title: conversation.title, createdAt: conversation.createdAt, updatedAt: conversation.updatedAt,
     connectionId: conversation.connectionId, model: conversation.model, scope: conversation.scope,
-    messageCount: conversation.messages.length, preview: lastAnswer.replace(/\s+/g, ' ').trim().slice(0, 140) };
+    messageCount: conversation.messages.length, preview: lastAnswer.replace(/\s+/g, ' ').trim().slice(0, 140), bytes: JSON.stringify(conversation).length };
 };
 
 /** Converts the 0.2 `still.ai.chats.v1` array into v2 conversations. Interrupted answers keep their text and get an error. */
@@ -173,9 +179,18 @@ export function createConversationStore({ storage, now = () => new Date().toISOS
     return exclusive(async () => {
       const conversation = normalizeConversation({ ...input, updatedAt: input.updatedAt || now() }, { now: now() });
       const index = await readIndex();
-      const items = [summarize(conversation), ...index.items.filter(item => item.id !== conversation.id)]
-        .sort((a, b) => text(b.updatedAt).localeCompare(text(a.updatedAt)));
-      const dropped = items.splice(CONVERSATION_LIMITS.conversations).map(item => BODY_PREFIX + item.id);
+      const saved = summarize(conversation);
+      const others = index.items.filter(item => item.id !== conversation.id).sort((a, b) => text(b.updatedAt).localeCompare(text(a.updatedAt)));
+      // The conversation being saved always stays; the oldest others go past the count or total size caps.
+      const items = [saved];
+      const dropped = [];
+      let total = saved.bytes;
+      for (const item of others) {
+        const bytes = Number.isFinite(item.bytes) ? item.bytes : 0;
+        if (items.length >= CONVERSATION_LIMITS.conversations || total + bytes > CONVERSATION_LIMITS.totalBytes) dropped.push(BODY_PREFIX + item.id);
+        else { items.push(item); total += bytes; }
+      }
+      items.sort((a, b) => text(b.updatedAt).localeCompare(text(a.updatedAt)));
       await backend().set({ [BODY_PREFIX + conversation.id]: conversation, [CONVERSATIONS_KEY]: { version: 2, migratedLegacy: true, items } });
       if (dropped.length) await backend().remove(dropped);
       return conversation;

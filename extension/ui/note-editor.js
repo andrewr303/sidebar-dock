@@ -141,6 +141,8 @@ export function latestItem(ctx, id) {
   const mine = fresh.get(id);
   if (!mine) return known;
   if (known && String(known.updatedAt) >= String(mine.updatedAt)) { fresh.delete(id); return known; }
+  // A library written after this copy that no longer has the item means it was deleted for good.
+  if (!known && String(ctx.library?.updatedAt || '') > String(mine.updatedAt)) { fresh.delete(id); return null; }
   return mine;
 }
 
@@ -204,8 +206,9 @@ export function editorFor(id) {
 export function getActiveEditor() {
   return active && live.has(active) ? active : [...live].find(instance => !instance.inline) || null;
 }
-/** Saves every editor with unsaved edits now (page hide, before export). */
+/** Saves every editor with unsaved edits now (page hide, before export); drafts are written first, synchronously. */
 export function flushAllEditors() {
+  for (const instance of live) instance.keepDraft();
   return Promise.all([...live].map(instance => instance.flush()));
 }
 
@@ -331,7 +334,7 @@ function createEditor(host, ctx) {
 
   const instance = {
     id, inline, key,
-    update, destroy, flush: () => save(), save: () => save(),
+    update, destroy, flush: () => save(), save: () => save(), keepDraft,
     getMarkdown: () => (editor ? editor.getMarkdown() : st.text),
     insertMarkdown: (md, options) => { editor?.insertMarkdown(md, options); },
     focus: (at = 'end') => editor?.focus({ at }),
@@ -453,13 +456,18 @@ function createEditor(host, ctx) {
 
   /* ---------- editing and autosave ---------- */
 
+  function keepDraft() {
+    clearTimeout(st.draftTimer);
+    if (st.dirty && st.built) putDraft(draftKey, { text: st.text, title: inline ? null : els.title?.value ?? null, base: st.base?.updatedAt });
+  }
+
   function changed(markdown) {
     if (st.destroyed) return;
     if (typeof markdown === 'string') st.text = markdown;
     active = instance;
     st.dirty = true;
     clearTimeout(st.draftTimer);
-    st.draftTimer = setTimeout(() => putDraft(draftKey, { text: st.text, title: inline ? null : els.title?.value ?? null, base: st.base?.updatedAt }), 300);
+    st.draftTimer = setTimeout(keepDraft, 300);
     if (st.conflict) return;
     if (st.status !== 'saving') setStatus('dirty');
     clearTimeout(st.timer);
@@ -915,6 +923,7 @@ function createEditor(host, ctx) {
     if (!els.ai || st.destroyed) return;
     const ai = st.ai;
     els.ai.hidden = !ai;
+    els.root?.classList.toggle('has-ai', !!ai);
     morph(els.ai, ai ? aiCard(ai) : '');
     placeAi();
   }
@@ -1014,10 +1023,9 @@ function createEditor(host, ctx) {
   function destroy() {
     if (st.destroyed) return;
     if (st.dirty && st.built && !st.conflict) save();
+    keepDraft();
     st.destroyed = true;
     clearTimeout(st.footTimer);
-    clearTimeout(st.draftTimer);
-    if (st.dirty) putDraft(draftKey, { text: currentText(), title: inline ? null : els.title?.value ?? null, base: st.base?.updatedAt });
     st.ai?.controller?.abort();
     if (st.aiFrame) cancelAnimationFrame(st.aiFrame);
     observer?.disconnect();
@@ -1047,7 +1055,9 @@ function renderMeta(ctx, instance, record, surface) {
   const reminder = record.reminderAt
     ? html`<button type="button" class="${cx('ne-prop', 'ne-reminder', record.reminderNotifiedAt && 'is-past')}" data-action="editor.reminder" aria-haspopup="menu" aria-label="Reminder: ${reminderText}. Change">
         ${icon(record.reminderNotifiedAt ? 'bell-off' : 'bell-ring', { size: 14 })}<span>${reminderText}</span></button>`
-    : button({ label: 'Remind', icon: 'bell', variant: 'ghost', size: 'sm', action: 'editor.reminder', className: 'ne-prop-add', attrs: { 'aria-haspopup': 'menu' } });
+    : surface === 'side'
+      ? iconButton({ icon: 'bell', label: 'Remind me', action: 'editor.reminder', size: 'sm', className: 'ne-prop-add', attrs: { 'aria-haspopup': 'menu' } })
+      : button({ label: 'Remind', icon: 'bell', variant: 'ghost', size: 'sm', action: 'editor.reminder', className: 'ne-prop-add', attrs: { 'aria-haspopup': 'menu' } });
   // The side panel keeps Pin in the note menu so the property row stays on one line.
   const pin = surface === 'side' ? '' : iconButton({ icon: 'pin', label: record.pinned ? 'Unpin note' : 'Pin note', pressed: !!record.pinned, action: 'editor.pin', size: 'sm', className: 'ne-pin' });
   const tags = typeof pickers.renderTagInput === 'function'

@@ -25,6 +25,7 @@
   --notes-list-w: 300px;
   --notes-rail-w: 264px;
   container: notes-ws / inline-size;
+  position: relative;
   display: grid;
   grid-template-columns: var(--notes-list-w) minmax(0, 1fr) auto;
   height: 100%;
@@ -160,7 +161,9 @@
   border-inline-start: 1px solid var(--border-default);
   background: var(--bg-app);
 }
-.notes-rail.is-collapsed { width: auto; align-items: center; padding: var(--space-4) var(--space-3); background: var(--bg-surface); border-inline-start-color: var(--border-subtle); }
+.notes-rail-col { display: flex; min-height: 0; }
+.notes-rail-strip { display: flex; flex-direction: column; align-items: center; padding: var(--space-4) var(--space-3); border-inline-start: 1px solid var(--border-subtle); background: var(--bg-surface); }
+.notes-rail-strip.has-rail { display: none; }
 .notes-rail-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); flex: none; min-height: 48px; padding: var(--space-4) var(--space-4) var(--space-4) var(--space-7); }
 .notes-rail-heading { margin: 0; color: var(--fg-default); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
 .notes-rail-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 0 var(--space-6) var(--space-9); }
@@ -216,8 +219,16 @@
 .notes-rail-details dt { color: var(--fg-subtle); }
 .notes-rail-details dd { margin: 0; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
 
+/* Narrow workspaces keep the editor wide: the rail collapses to a strip and opens over the editor on demand. */
 @container notes-ws (max-width: 1040px) {
-  .notes-ws .notes-rail { display: none; }
+  .notes-ws .notes-rail:not(.is-peek) { display: none; }
+  .notes-ws .notes-rail-strip.has-rail { display: flex; }
+  .notes-ws .notes-rail.is-peek {
+    position: absolute;
+    inset-block: 0; inset-inline-end: 0;
+    z-index: var(--z-dropdown);
+    box-shadow: var(--shadow-popover);
+  }
 }
 @container notes-ws (max-width: 760px) {
   .notes-ws { --notes-list-w: 248px; }
@@ -289,18 +300,18 @@
 .ne-ai-btn:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent-soft-fg); }
 
 /* Narrow editors fold block tools, then headings, into "More formatting". */
-@container ne-toolbar (max-width: 700px) {
+@container ne-toolbar (max-width: 590px) {
   .ne-tool[data-group="blocks"], .ne-tool-sep[data-group="blocks"] { display: none; }
   .ne-tool-more { display: inline-grid; }
 }
-@container ne-toolbar (max-width: 520px) {
+@container ne-toolbar (max-width: 440px) {
   .ne-ai-btn .btn-label { display: none; }
   .ne-ai-btn { width: var(--control-h-sm); padding: 0; justify-content: center; }
 }
-@container ne-toolbar (max-width: 430px) {
+@container ne-toolbar (max-width: 392px) {
   .ne-tool[data-group="headings"], .ne-tool-sep[data-group="inline"] { display: none; }
 }
-@container ne-toolbar (max-width: 300px) {
+@container ne-toolbar (max-width: 270px) {
   .ne-tool[data-group="lists"], .ne-tool-sep[data-group="lists"] { display: none; }
 }
 
@@ -411,7 +422,7 @@
 .ne-reminder:hover { background: var(--bg-hover); }
 .ne-reminder:focus-visible { outline-offset: 0; }
 .ne-reminder.is-past { color: var(--fg-subtle); }
-.ne-prop-add.btn-ghost { color: var(--fg-subtle); font-weight: var(--weight-regular); }
+.ne-prop-add.btn-ghost, .ne-prop-add.icon-btn { color: var(--fg-subtle); font-weight: var(--weight-regular); }
 .ne-prop-add.btn-ghost:hover:not(:disabled) { color: var(--fg-default); }
 .ne-pin[aria-pressed="false"] { color: var(--fg-subtle); }
 .ne-pin[aria-pressed="true"] { background: transparent; color: var(--accent-soft-fg); }
@@ -432,7 +443,7 @@
 
 /* ---------- Body ---------- */
 .ne-body { min-width: 0; }
-.ne-inline .ne-body { min-height: 72px; }
+.ne-inline .ne-body { min-height: 48px; }
 
 /* ---------- AI preview card ---------- */
 .ne-ai {
@@ -447,6 +458,8 @@
 .ne-ai.is-static { position: relative; inset: auto; margin-block-start: var(--space-6); }
 .ne-full .ne-ai.is-static { margin-inline: auto; padding-inline-start: var(--be-gutter); max-inline-size: calc(72ch + var(--be-gutter)); }
 .ne-ai[hidden] { display: none; }
+/* While a result is open the editor's selection toolbar would sit on top of it. */
+.ne.has-ai .block-editor-toolbar { display: none !important; }
 .ne-ai-card {
   display: flex; flex-direction: column;
   max-height: min(60vh, 520px);

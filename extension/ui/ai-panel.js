@@ -4,12 +4,14 @@
 import { html, raw, cx, plural } from './html.js';
 import { icon } from './icons.js';
 import { button, iconButton, collectionIcon, favicon, domainOf, relativeDate, emptyState, spinner, badge, avatarTile, TYPE_ICONS } from './components.js';
-import { registerActions, registerMount, registerShortcuts, hasAction } from './runtime.js';
+import { registerActions, registerMount, registerShortcuts } from './runtime.js';
 import { registerPopover } from './overlay.js';
 import { morph } from './morph.js';
 import { renderMarkdown } from '../lib/markdown.js';
+import { noteExcerpt } from '../lib/notes.js';
 import { openSettings } from './settings.js';
 import { createNote } from './notes.js';
+import { editorFor, getActiveEditor } from './note-editor.js';
 import { openAddForPage } from './quick-add.js';
 
 export const MAX_QUESTION = 32000;
@@ -143,7 +145,7 @@ export function exportAnswer(answer, citations = [], { links = 'markdown', isIte
 /** Error kind for the inline error row: the engine's error.code when present, else recognized from its message. */
 export function classifyError({ code = '', message = '', aborted = false } = {}) {
   if (aborted || code === 'aborted' || message === 'Stopped') return 'aborted';
-  if (code) return code;
+  if (code && code !== 'error') return code;
   const value = text(message);
   if (/^Allow Still to reach/i.test(value)) return 'permission';
   if (/OLLAMA_ORIGINS/.test(value)) return 'origin_blocked';
@@ -384,6 +386,7 @@ async function startRun(ctx, { question, scope, replaceFrom, access, fromDraft }
   const run = { id, controller: new AbortController(), question, scope, lastEvent: '', thinkingStartedAt: 0, thinkingMs: 0, notes: [], startedAt: Date.now(),
     user: { id: `${id}-q`, role: 'user', text: question, context: { scope: scope.scope, ids: scope.ids || [], collectionId: scope.collectionId || '', ...(scope.page ? { page: { url: scope.page.url, title: scope.page.title } } : {}) }, live: true },
     message: { id: `${id}-a`, role: 'assistant', text: '', thinking: '', tools: [], proposals: [], citations: [], error: '', status: '', live: true } };
+  const before = s.conversation;
   if (replaceFrom && s.conversation) {
     const index = s.conversation.messages.findIndex(message => message.id === replaceFrom);
     if (index >= 0) s.conversation = { ...s.conversation, messages: s.conversation.messages.slice(0, index) };
@@ -398,11 +401,13 @@ async function startRun(ctx, { question, scope, replaceFrom, access, fromDraft }
     if (s.run !== run) return;
     if (prepared.needsPermission) {
       s.run = null;
+      s.conversation = before;
       s.pagePermission = { origin: prepared.needsPermission, question, scope, replaceFrom };
-      if (fromDraft) s.draft = question;
+      if (fromDraft && !s.draft) { s.draft = question; const input = composer(); if (input) input.value = question; }
       announce(ctx, 'Still needs access to this page.');
       return;
     }
+    run.started = true;
     if (replaceFrom && s.conversation?.id) s.conversation = await ctx.ai.saveConversation(s.conversation);
     const t = s.target || {};
     const result = await ctx.ai.runAssistant({
@@ -418,7 +423,8 @@ async function startRun(ctx, { question, scope, replaceFrom, access, fromDraft }
   } catch (error) {
     console.error(error);
     if (s.run === run) {
-      if (fromDraft && !s.draft) s.draft = question;
+      if (!run.started) s.conversation = before;
+      if (fromDraft && !s.draft) { s.draft = question; const input = composer(); if (input) input.value = question; }
       ctx.toast(error?.message || 'The assistant could not answer.', { tone: 'danger' });
     }
   } finally {
@@ -482,6 +488,8 @@ function onEvent(ctx, run, event) {
     case 'error':
       m.error = text(event.message) || 'The assistant could not answer.';
       m.errorCode = text(event.code) || (event.aborted ? 'aborted' : '');
+      // A connection that disappeared or lost its key sends the panel back to the setup state.
+      if (['no_connection', 'auth', 'disabled'].includes(classifyError({ code: m.errorCode, message: m.error }))) refreshTarget(ctx);
       if (!m.text && event.partialText) m.text = text(event.partialText);
       render = true;
       break;
@@ -520,6 +528,7 @@ function proposalResult(ctx, run, event) {
   if (record) record.status = event.status;
   if (event.status === 'applied') {
     ui.undo = typeof event.undo === 'function' ? event.undo : null;
+    if (Array.isArray(event.applied)) ui.lines = appliedLines({ changes: event.applied });
     if (ui.restore?.length) {
       // The engine applies whole proposals; items left out in Review are put back right after.
       Promise.resolve(ctx.store.bulkUpdateItems(ui.restore)).catch(error => {
@@ -639,7 +648,7 @@ export function renderAiPanel(ctx, { surface = ctx.env?.isSidepanel ? 'side' : '
     ${!ready ? html`<div class="ai-scroll ai-start" data-key="ai.unavailable">${emptyState({ icon: 'sparkles', title: 'The assistant is not available',
       body: 'Still could not load its AI engine. Reload Still to try again.', actions: button({ label: 'Reload', icon: 'refresh-cw', action: 'app.retry-boot', size: 'sm' }) })}</div>`
       : hasThread ? html`<div class="ai-scroll ai-thread" data-mount="ai.transcript" data-morph="skip" data-key="ai.transcript" role="region" aria-label="Conversation" tabindex="-1"></div>`
-        : html`<div class="ai-scroll ai-start" data-key="ai.start">${s.target === null ? renderSetup(ctx, resolved) : renderEmpty(ctx, resolved)}</div>`}
+        : html`<div class="ai-scroll ai-start" data-key="ai.start">${s.target === null ? renderSetup() : renderEmpty(ctx, resolved)}</div>`}
     ${ready ? renderDock(ctx, resolved) : ''}
     <div class="sr-only" role="status" aria-live="polite" data-key="ai.announce">${s.announce}</div>
   </section>`;
@@ -679,17 +688,19 @@ function renderEmpty(ctx, resolved) {
   </div>`;
 }
 
-function renderSetup(ctx) {
+const setupPaths = () => html`<ul class="ai-setup-paths" role="list">
+  ${SETUP_PATHS.map(path => html`<li><button type="button" class="ai-setup-path" data-action="ai.setup" data-provider="${path.providerId}">
+    ${avatarTile({ label: path.letter || '', icon: path.icon, color: path.color, size: 28 })}
+    <span class="ai-setup-text"><span class="ai-setup-title">${path.title}</span><span class="ai-setup-body">${path.body}</span></span>
+    ${icon('chevron-right', { size: 16, className: 'ai-setup-chevron' })}</button></li>`)}
+</ul>`;
+
+function renderSetup() {
   return html`<div class="ai-empty ai-setup">
     <span class="ai-mark" aria-hidden="true">${icon('sparkles', { size: 18 })}</span>
     <h2 class="ai-empty-title">Connect a model to ask here</h2>
     <p class="ai-empty-body">Use your own API key or a model on this computer. Keys stay on this device.</p>
-    <ul class="ai-setup-paths" role="list">
-      ${SETUP_PATHS.map(path => html`<li><button type="button" class="ai-setup-path" data-action="ai.setup" data-provider="${path.providerId}">
-        ${avatarTile({ label: path.letter || '', icon: path.icon, color: path.color, size: 28 })}
-        <span class="ai-setup-text"><span class="ai-setup-title">${path.title}</span><span class="ai-setup-body">${path.body}</span></span>
-        ${icon('chevron-right', { size: 16, className: 'ai-setup-chevron' })}</button></li>`)}
-    </ul>
+    ${setupPaths()}
     <div class="ai-handoff">
       <p class="ai-handoff-label">Or ask without a key</p>
       <div class="ai-handoff-actions">${HANDOFFS.map(target => button({ label: target.label, iconRight: 'external-link', size: 'sm', action: 'ai.handoff', data: { target: target.id } }))}</div>
@@ -703,8 +714,10 @@ function renderDock(ctx, resolved) {
   const length = s.draft.length;
   const over = length > MAX_QUESTION;
   const canSend = !running && !!s.draft.trim() && !over && s.target !== null;
+  const thread = !!(s.conversation?.messages?.length || s.run);
   return html`<div class="ai-dock">
     ${s.pagePermission ? renderPageNotice(ctx) : ''}
+    ${s.target === null && thread ? renderNoModelNotice() : ''}
     <form class="${cx('ai-composer', running && 'is-running')}" data-submit="ai.send" aria-label="Ask the assistant">
       <div class="ai-chips" role="list" aria-label="Context">${resolved.chips.map(chip => renderChip(ctx, chip))}</div>
       ${s.editing ? html`<div class="ai-editing">${icon('pencil', { size: 12 })}<span>Editing your last question</span>
@@ -764,6 +777,15 @@ function renderPageNotice(ctx) {
   </div>`;
 }
 
+function renderNoModelNotice() {
+  return html`<div class="ai-notice" role="status">
+    ${icon('sparkles', { size: 16 })}
+    <div class="ai-notice-text"><p>No model is connected. Connect one to keep asking here, or open your question in another app.</p>
+      <div class="ai-notice-actions">${button({ label: 'Connect a model', variant: 'primary', size: 'sm', action: 'ai.settings' })}
+        ${HANDOFFS.map(target => button({ label: target.label, iconRight: 'external-link', variant: 'ghost', size: 'sm', action: 'ai.handoff', data: { target: target.id } }))}</div></div>
+  </div>`;
+}
+
 // ------------------------------------------------------------------------------------------------ rendering: transcript
 
 registerMount('ai.transcript', (el, ctx) => {
@@ -816,11 +838,13 @@ function renderQuestion(ctx, message, { last }) {
   const about = scopeLabel(ctx, message.context);
   return html`<div class="ai-q" data-key="q:${message.id}">
     ${about ? html`<p class="ai-q-about">${about.glyph}<span>${about.label}</span></p>` : ''}
-    <div class="ai-bubble">${message.text}</div>
-    ${message.live ? '' : html`<div class="ai-q-actions">
-      ${iconButton({ icon: 'copy', label: 'Copy', size: 'sm', action: 'ai.copy', data: { id: message.id } })}
-      ${last && !s.run ? iconButton({ icon: 'pencil', label: 'Edit', size: 'sm', action: 'ai.edit', data: { id: message.id } }) : ''}
-    </div>`}
+    <div class="ai-q-row">
+      ${message.live ? '' : html`<div class="ai-q-actions">
+        ${last && !s.run ? iconButton({ icon: 'pencil', label: 'Edit', size: 'sm', action: 'ai.edit', data: { id: message.id } }) : ''}
+        ${iconButton({ icon: 'copy', label: 'Copy', size: 'sm', action: 'ai.copy', data: { id: message.id } })}
+      </div>`}
+      <div class="ai-bubble"><span class="sr-only">You asked: </span>${message.text}</div>
+    </div>
   </div>`;
 }
 
@@ -858,8 +882,9 @@ function renderAnswer(ctx, view, message, { last }) {
   }
   pushText(body.slice(cursor), cursor, typing);
   const busy = live && !message.error;
-  const showStatus = busy && (!body || run?.lastEvent !== 'text');
-  return html`<article class="${cx('ai-a', live && 'is-live')}" data-key="a:${message.id}" aria-busy="${busy ? 'true' : 'false'}">
+  const thinkingNow = busy && !body && !!message.thinking && (!message.status || message.status === 'Thinking');
+  const showStatus = busy && !thinkingNow && (!body || run?.lastEvent !== 'text');
+  return html`<article class="${cx('ai-a', live && 'is-live')}" data-key="a:${message.id}" aria-label="Answer" aria-busy="${busy ? 'true' : 'false'}">
     ${renderThought(ctx, message, run)}
     ${renderTools(ctx, message)}
     ${blocks}
@@ -935,6 +960,10 @@ function renderError(ctx, message, { last }) {
   const canRetry = !message.live && last;
   const retryButton = canRetry ? button({ label: 'Retry', icon: 'refresh-cw', size: 'sm', action: 'ai.retry', data: { id: message.id } }) : '';
   if (kind === 'aborted') return html`<p class="ai-stopped">${icon('circle-stop', { size: 14 })}<span>Stopped</span>${retryButton}</p>`;
+  if (kind === 'no_connection') {
+    return html`<div class="ai-error is-setup" role="alert">${icon('circle-alert', { size: 16 })}
+      <div class="ai-error-text"><p>${message.error}</p>${setupPaths()}</div></div>`;
+  }
   const connectionId = message.connectionId || st(ctx).target?.connectionId || '';
   const fix = kind === 'permission' && canRetry
     ? button({ label: 'Allow access', icon: 'shield-check', variant: 'primary', size: 'sm', action: 'ai.allow-host', data: { id: message.id, connection: connectionId } })
@@ -946,8 +975,9 @@ function renderError(ctx, message, { last }) {
   </div>`;
 }
 
+// The note open in the notes view or side panel editor, else the note editor that last had focus.
 function openNote(ctx) {
-  const note = liveItem(ctx, ctx.state.notes?.noteId);
+  const note = liveItem(ctx, ctx.state.notes?.noteId || getActiveEditor()?.id);
   return note?.type === 'note' ? note : null;
 }
 
@@ -962,7 +992,7 @@ function renderActions(ctx, message, { last, citations }) {
     ${iconButton({ icon: 'copy', label: 'Copy', size: 'sm', action: 'ai.copy', data: { id: message.id } })}
     ${iconButton({ icon: 'notebook-pen', label: 'Save as note', size: 'sm', action: 'ai.save-note', data: { id: message.id } })}
     ${note ? iconButton({ icon: 'file-plus', label: `Insert into “${note.title || 'Untitled note'}”`, size: 'sm', action: 'ai.insert-note', data: { id: message.id } }) : ''}
-    ${last && !s.run ? iconButton({ icon: 'refresh-cw', label: 'Retry', size: 'sm', action: 'ai.retry', data: { id: message.id } }) : ''}
+    ${last && !s.run && !message.error ? iconButton({ icon: 'refresh-cw', label: 'Retry', size: 'sm', action: 'ai.retry', data: { id: message.id } }) : ''}
     ${iconButton({ icon: 'external-link', label: 'Open in another app', size: 'sm', action: 'ai.handoff-menu', data: { id: message.id } })}
     <span class="spacer"></span>
     ${sources.length ? html`<button type="button" class="ai-sources-toggle" data-action="ai.toggle" data-open="${sourcesKey}" aria-expanded="${showSources ? 'true' : 'false'}">
@@ -1046,7 +1076,7 @@ function renderProposal(ctx, proposal) {
       const out = ui.excluded.get(index) || new Set();
       const included = changeCount(change) - out.size;
       const sub = changeSub(ctx, change, out);
-      return html`<li class="${cx('ai-change', ITEM_CHANGES.has(change.op) && included <= 0 && 'is-skipped')}">
+      return html`<li class="${cx('ai-change', ITEM_CHANGES.has(change.op) && included <= 0 && 'is-skipped', change.op === 'trash_items' && 'is-danger')}">
         <span class="ai-change-icon">${icon(CHANGE_ICONS[change.op] || 'circle', { size: 16 })}</span>
         <div class="ai-change-body"><p class="ai-change-label">${changeLabel(ctx, change, Math.max(0, included), createdIds)}</p>
           ${sub ? html`<p class="ai-change-sub">${sub}</p>` : ''}
@@ -1055,7 +1085,7 @@ function renderProposal(ctx, proposal) {
     })}</ul>
     <footer class="ai-proposal-foot">
       ${button({ label: excludedTotal && left ? `Apply ${plural(left, 'change')}` : 'Apply', variant: 'primary', size: 'sm', action: 'ai.proposal-apply',
-        data: { id: proposal.id }, loading: status === 'applying', disabled: !ui.resolve || !left })}
+        data: { id: proposal.id }, loading: status === 'applying', disabled: status === 'pending' && (!ui.resolve || !left) })}
       ${reviewable ? button({ label: ui.open ? 'Hide review' : 'Review', variant: 'secondary', size: 'sm', action: 'ai.proposal-review', data: { id: proposal.id },
         attrs: { 'aria-expanded': ui.open ? 'true' : 'false' } }) : ''}
       <span class="spacer"></span>
@@ -1085,7 +1115,7 @@ function renderReview(ctx, proposal, change, index, ui) {
 
 function renderReceipt(ctx, proposal, status) {
   const ui = proposalUi.get(proposal.id);
-  const lines = ui?.lines || proposal.appliedLines || appliedLines(proposal);
+  const lines = ui?.lines || proposal.appliedLines || appliedLines(Array.isArray(proposal.applied) ? { changes: proposal.applied } : proposal);
   const undoing = !!ui?.undoing;
   if (status === 'applied') {
     const title = lines.length === 1 ? `Applied: ${lowerFirst(lines[0])}` : `Applied ${plural(lines.length, 'change')}`;
@@ -1121,7 +1151,7 @@ function renderHistoryPopover(ctx) {
       </span>
     </li>`;
   };
-  return html`<div class="ai-history" data-key="ai-history" data-keydown="ai.history-key">
+  return html`<div class="ai-history" data-key="ai-history" role="dialog" aria-label="Chat history" data-keydown="ai.history-key">
     <div class="ai-pop-search">${icon('search', { size: 16 })}<input class="ai-pop-input" id="ai-history-search" data-focus-key="ai-history-search" type="search"
       placeholder="Search chats" aria-label="Search chats" value="${s.historyQuery}" data-input="ai.history-query" data-autofocus autocomplete="off" spellcheck="false"></div>
     <div class="ai-history-list">
@@ -1150,18 +1180,22 @@ function renderModelPopover(ctx) {
       <button type="button" class="menu-item ai-menu-back" role="menuitem" data-action="ai.effort-back" tabindex="-1">${icon('chevron-left', { size: 16 })}<span class="menu-label">Reasoning effort</span></button>
       <div class="menu-separator" role="separator"></div>
       ${t.efforts.map(level => html`<button type="button" class="menu-item" role="menuitemradio" aria-checked="${level === t.effort ? 'true' : 'false'}" data-action="ai.pick-effort"
-        data-effort="${level}" tabindex="-1">${icon(level === t.effort ? 'check' : 'blank', { size: 16 })}<span class="menu-label">${labels[level] || level}</span>
+        data-effort="${level}" tabindex="-1" ${level === t.effort ? raw('data-autofocus') : ''}>${icon(level === t.effort ? 'check' : 'blank', { size: 16 })}<span class="menu-label">${labels[level] || level}</span>
         <span class="menu-hint">${EFFORT_HINTS[level] || ''}</span></button>`)}
     </div>`;
   }
   const connections = (s.connections || []).filter(usable);
+  const hasCurrent = connections.some(connection => connection.id === t?.connectionId && chatModels(connection, t?.model).some(model => model.id === t?.model));
+  let focusFirst = !hasCurrent;
   return html`<div class="menu ai-model-menu" role="menu" aria-label="Model">
     ${connections.length ? connections.map((connection, index) => html`${index ? html`<div class="menu-separator" role="separator"></div>` : ''}
       <div class="menu-heading" role="presentation">${connection.label || connection.providerName}</div>
       ${chatModels(connection, t?.model).map(model => {
         const checked = t?.connectionId === connection.id && t?.model === model.id;
+        const autofocus = checked || focusFirst;
+        focusFirst = false;
         return html`<button type="button" class="menu-item" role="menuitemradio" aria-checked="${checked ? 'true' : 'false'}" data-action="ai.pick-model"
-          data-connection="${connection.id}" data-model="${model.id}" tabindex="-1">${icon(checked ? 'check' : 'blank', { size: 16 })}
+          data-connection="${connection.id}" data-model="${model.id}" tabindex="-1" ${autofocus ? raw('data-autofocus') : ''}>${icon(checked ? 'check' : 'blank', { size: 16 })}
           <span class="menu-label">${model.name || model.id}</span>${model.description ? html`<span class="menu-hint">${model.description}</span>` : ''}</button>`;
       })}`)
       : html`<p class="ai-pop-empty">No models are connected yet.</p>`}
@@ -1219,7 +1253,7 @@ function renderContextPopover(ctx) {
         ${added.has(entry.id) ? icon('check', { size: 14, className: 'ai-ctx-check' }) : html`<span class="ai-ctx-hint">${domainOf(entry.item.url)}</span>`}</div>`;
   const scopes = options.map((entry, index) => [entry, index]).filter(([entry]) => entry.kind === 'scope');
   const items = options.map((entry, index) => [entry, index]).filter(([entry]) => entry.kind === 'item');
-  return html`<div class="ai-context" data-key="ai-context">
+  return html`<div class="ai-context" data-key="ai-context" role="dialog" aria-label="Add context">
     <div class="ai-pop-search">${icon('search', { size: 16 })}<input class="ai-pop-input" id="ai-ctx-search" data-focus-key="ai-ctx-search" type="text" role="combobox"
       aria-expanded="true" aria-controls="ai-ctx-list" aria-autocomplete="list" aria-activedescendant="${options.length ? `ai-ctx-${active}` : ''}" aria-label="Add items to the context"
       placeholder="Add items to the context" value="${s.ctxQuery}" data-input="ai.ctx-query" data-keydown="ai.ctx-key" data-autofocus autocomplete="off" spellcheck="false"></div>
@@ -1231,9 +1265,9 @@ function renderContextPopover(ctx) {
   </div>`;
 }
 
-registerPopover('ai.history', renderHistoryPopover, { role: 'dialog', className: 'ai-pop ai-history-pop' });
+registerPopover('ai.history', renderHistoryPopover, { role: 'none', className: 'ai-pop ai-history-pop' });
 registerPopover('ai.model', renderModelPopover, { role: 'menu', className: 'popover-menu ai-model-pop' });
-registerPopover('ai.context', renderContextPopover, { role: 'dialog', className: 'ai-pop ai-context-pop' });
+registerPopover('ai.context', renderContextPopover, { role: 'none', className: 'ai-pop ai-context-pop' });
 
 // ------------------------------------------------------------------------------------------------ export, notes, hand-off
 
@@ -1253,7 +1287,7 @@ async function saveAsNote(ctx, message) {
   const relatedIds = citations.map(source => source.id).filter(id => liveItem(ctx, id));
   const url = question?.context?.scope === 'page' && isWebUrl(question.context.page?.url) ? question.context.page.url : '';
   let note = await createNote(ctx, { title, content, url, relatedIds, open: false });
-  if (!note) note = await ctx.store.saveItem({ type: 'note', title, content, url, relatedIds, tags: [] });
+  if (!note) note = await ctx.store.saveItem({ type: 'note', title, content, excerpt: noteExcerpt(content), url, relatedIds, tags: [] });
   if (note?.id) ctx.toast('Saved as a note', { tone: 'success', action: { label: 'Open', run: () => ctx.openItem(note.id) } });
 }
 
@@ -1262,13 +1296,15 @@ async function insertIntoNote(ctx, message) {
   if (!note) { ctx.toast('Open a note first.'); return; }
   const { citations } = answerContext(ctx, message);
   const markdown = exportAnswer(message.text, citations, { links: 'wiki', isItem: id => !!liveItem(ctx, id) }).trim();
-  if (hasAction('editor.insert-markdown')) {
-    await ctx.dispatch('editor.insert-markdown', { data: { noteId: note.id, markdown } });
-    return;
+  const editor = editorFor(note.id);
+  // A mounted editor takes the text itself and saves it with its own conflict handling.
+  if (editor) editor.insertMarkdown(markdown, { at: 'end' });
+  else {
+    const current = text(note.content).trimEnd();
+    const content = `${current ? `${current}\n\n` : ''}${markdown}\n`;
+    await ctx.store.updateItem(note.id, { content, excerpt: noteExcerpt(content) }, { expectedUpdatedAt: note.updatedAt });
   }
-  const current = text(note.content).trimEnd();
-  await ctx.store.updateItem(note.id, { content: `${current ? `${current}\n\n` : ''}${markdown}\n` }, { expectedUpdatedAt: note.updatedAt });
-  ctx.toast(`Added to “${note.title || 'Untitled note'}”`, { tone: 'success' });
+  ctx.toast(`Added to “${note.title || 'Untitled note'}”`, { tone: 'success', action: { label: 'Open', run: () => ctx.openItem(note.id) } });
 }
 
 function sourcesForScope(ctx, scope) {
@@ -1473,7 +1509,7 @@ registerActions({
   'ai.effort-menu': ({ ctx }) => {
     st(ctx).modelView = 'effort';
     ctx.render();
-    ctx.nextFrame(() => document.querySelector('#still-popover [role="menuitemradio"][aria-checked="true"], #still-popover [role^="menuitem"]')?.focus());
+    ctx.nextFrame(() => document.querySelector('#still-popover [data-autofocus], #still-popover [role^="menuitem"]')?.focus());
   },
   'ai.effort-back': ({ ctx }) => {
     st(ctx).modelView = 'models';
@@ -1619,15 +1655,22 @@ registerActions({
     const excluded = new Map([...ui.excluded].filter(([, set]) => set.size));
     const left = (proposal.changes || []).filter((change, index) => !ITEM_CHANGES.has(change.op) || changeCount(change) - (excluded.get(index)?.size || 0) > 0);
     if (!left.length) { ui.status = 'discarded'; resolve('discard'); bump(ctx, { render: true }); return; }
+    let answer = 'apply';
     if (excluded.size) {
-      const before = new Map();
-      for (const set of excluded.values()) for (const id of set) { const item = ctx.select.byId(id); if (item) before.set(id, structuredClone(item)); }
-      ui.restore = exclusionPatches(proposal, excluded, before);
       ui.lines = appliedLines(proposal, excluded);
+      if ((proposal.changes || []).every(change => typeof change.id === 'string' && change.id)) {
+        // The engine applies only what Review kept (changes are matched by id; item changes left empty are dropped).
+        answer = { decision: 'apply', changes: proposal.changes.map((change, index) => ({ id: change.id, itemIds: (change.itemIds || []).filter(id => !excluded.get(index)?.has(id)) })) };
+      } else {
+        // An engine without Review filtering applies the whole proposal; the items left out are put back right after.
+        const before = new Map();
+        for (const set of excluded.values()) for (const id of set) { const item = ctx.select.byId(id); if (item) before.set(id, structuredClone(item)); }
+        ui.restore = exclusionPatches(proposal, excluded, before);
+      }
     }
     ui.status = 'applying';
     ui.open = false;
-    resolve('apply');
+    resolve(answer);
     bump(ctx, { render: true });
   },
   'ai.proposal-discard': ({ ctx, data }) => {
@@ -1645,11 +1688,12 @@ registerActions({
     ui.undoing = true;
     bump(ctx);
     try {
-      await ui.undo();
+      const result = await ui.undo();
       ui.undone = true;
       ui.undo = null;
+      const kept = Number(result?.kept) || 0;
       announce(ctx, 'Changes undone.');
-      ctx.toast('Changes undone');
+      ctx.toast(kept ? `Changes undone. ${plural(kept, 'later edit')} you made afterwards ${kept === 1 ? 'was' : 'were'} kept.` : 'Changes undone');
       await persistProposal(ctx, data.id, { status: 'undone' });
     } finally {
       ui.undoing = false;

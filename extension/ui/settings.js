@@ -8,6 +8,7 @@ import { button, iconButton, segmented, select, switchToggle, field, input, badg
 import { registerDialog } from './overlay.js';
 import { registerActions, listShortcuts } from './runtime.js';
 import { renderCollectionPickerTrigger } from './pickers.js';
+import { brandMark } from './sidebar.js';
 import * as integrations from '../lib/integrations.js';
 import { createFullBackup, importPortableFile, exportBookmarkHtml, exportNotesMarkdown } from '../lib/portability.js';
 import { REFERENCE_ASSETS } from '../lib/references.js';
@@ -49,7 +50,7 @@ const MARKS = {
   anthropic: { text: 'A', color: 'orange' }, openai: { text: 'O', color: 'green' }, xai: { text: 'x', color: 'gray' }, google: { text: 'G', color: 'blue' },
   openrouter: { text: 'OR', color: 'indigo' }, mistral: { text: 'M', color: 'amber' }, groq: { text: 'G', color: 'red' }, deepseek: { text: 'D', color: 'cyan' },
   perplexity: { text: 'P', color: 'teal' }, voyage: { text: 'V', color: 'violet' }, cohere: { text: 'C', color: 'pink' },
-  ollama: { icon: 'cpu', color: 'gray' }, lmstudio: { text: 'LM', color: 'gray' }, 'custom-openai': { icon: 'server', color: 'gray' }, 'custom-anthropic': { icon: 'server', color: 'gray' },
+  ollama: { icon: 'cpu', color: 'gray' }, lmstudio: { text: 'LM', color: 'gray' }, 'custom-openai': { icon: 'network', color: 'gray' }, 'custom-anthropic': { icon: 'network', color: 'gray' },
   bridge: { icon: 'plug-zap', color: 'blue' }, 'agent:claude-code': { icon: 'terminal', color: 'orange' }, 'agent:codex': { icon: 'terminal', color: 'gray' },
   'chatgpt-oauth': { icon: 'message-circle', color: 'green' }, raindrop: { icon: 'cloud', color: 'blue' }, cursor: { text: 'Cu', color: 'gray' },
   vscode: { icon: 'code-xml', color: 'blue' }, chrome: { icon: 'globe', color: 'blue' }, opencode: { text: 'OC', color: 'gray' }, gemini: { text: 'G', color: 'blue' }, 'claude-desktop': { text: 'A', color: 'orange' },
@@ -1011,7 +1012,8 @@ function clientRow(ctx, entry, client, setup, paired) {
   const actions = [];
   if (connectable && status?.tone === 'success') actions.push(button({ label: 'Disconnect', size: 'sm', variant: 'ghost', action: 'settings.client-disconnect', data: { id: entry.id, name: entry.name }, loading: busy.has(key) }));
   else if (connectable && client.canConnect) actions.push(button({ label: 'Connect', icon: 'plug', size: 'sm', variant: 'secondary', action: 'settings.client-connect', data: { id: entry.id, name: entry.name }, loading: busy.has(key) }));
-  if (connectable && client.skillSupported !== false && client.skillPath) {
+  // Skills go into the client's own folder, so offer them only for clients that are installed or already connected.
+  if (connectable && client.skillSupported !== false && client.skillPath && (client.installed || status?.tone === 'success')) {
     actions.push(client.skillInstalled ? html`<span class="settings-inline-status">${icon('circle-check', { size: 14 })}Skill installed</span>`
       : button({ label: 'Install the Still skill', size: 'sm', variant: 'ghost', action: 'settings.client-skill', data: { id: entry.id, name: entry.name }, loading: busy.has(`skill:${entry.id}`) }));
   }
@@ -1081,7 +1083,7 @@ function renderAbout(ctx) {
   const links = [{ label: 'Documentation', url: `${REPO}#readme`, icon: 'book-open' }, { label: 'Report a problem', url: `${REPO}/issues`, icon: 'flag' }, { label: 'Source code', url: REPO, icon: 'code' }];
   return html`
     ${group({ title: 'Still', body: card([
-      row({ lead: html`<span class="settings-brand" aria-hidden="true">${icon('bookmark', { size: 18 })}</span>`, label: `Still ${version()}`, description: 'Bookmarks, notes, highlights and AI in one local-first library.',
+      row({ lead: brandMark({ size: 32, className: 'settings-brand' }), label: `Still ${version()}`, description: 'Bookmarks, notes, highlights and AI in one local-first library.',
         control: button({ label: 'Help', icon: 'circle-help', size: 'sm', variant: 'ghost', action: 'settings.section', data: { section: 'help' } }) }),
     ]) })}
     ${group({ title: 'Where your data lives', body: card([
@@ -1267,6 +1269,14 @@ function pollLogin(ctx) {
     ctx.render();
     pollLogin(ctx);
   }, 2000);
+}
+
+// The bridge applies a client change only against the configuration it previewed, so take a fresh preview first.
+async function applyClientChange(id, action) {
+  const path = `/connections/${encodeURIComponent(id)}`;
+  const preview = await integrations.requestBridge(`${path}/preview`, { method: 'POST', body: {} });
+  if (action === 'connect' && !preview?.canConnect) throw new Error(preview?.reason || 'This agent needs manual setup. Use the setup steps instead.');
+  return integrations.requestBridge(`${path}/${action}`, { method: 'POST', body: { previewHash: preview?.previewHash ?? preview?.configHash ?? null } });
 }
 
 async function runImport(ctx, file) {
@@ -1497,22 +1507,22 @@ registerActions({
     ctx.stopBridgeSync?.();
     ctx.stopBridgeSync = null;
     ctx.state.bridge = null;
+    // Pausing keeps the pairing token (the old Stop sync deleted it); Unpair is the separate, explicit way to forget it.
     if (typeof integrations.setBridgeEnabled === 'function') {
       await integrations.setBridgeEnabled(false);
       await loadIntegration(ctx);
       ctx.toast('Bridge sync paused. Pairing is kept.');
     } else {
-      data.integration = { ...data.integration, bridgeEnabled: false };
+      live.pausedHere = true;
       ctx.toast('Bridge sync paused in this window. Pairing is kept.');
     }
   }),
   'settings.bridge-resume': ({ ctx }) => withBusy(ctx, 'bridge-sync', async () => {
+    live.pausedHere = false;
     if (typeof integrations.setBridgeEnabled === 'function') await integrations.setBridgeEnabled(true);
     await loadIntegration(ctx);
-    if (!data.integration?.bridgeEnabled) data.integration = { ...data.integration, bridgeEnabled: true };
     ctx.stopBridgeSync?.();
-    if (typeof integrations.setBridgeEnabled === 'function') await ctx.startBridgeSync?.();
-    else ctx.stopBridgeSync = integrations.startBridgeSync({ onStatus: info => { ctx.state.bridge = info; }, onChange: () => ctx.render() });
+    await ctx.startBridgeSync?.();
     ctx.toast('Bridge sync resumed');
   }),
   'settings.bridge-unpair': async ({ ctx }) => {
@@ -1522,6 +1532,7 @@ registerActions({
     ctx.stopBridgeSync?.();
     ctx.stopBridgeSync = null;
     ctx.state.bridge = null;
+    live.pausedHere = false;
     await integrations.disconnectBridge();
     data.clients = null;
     data.login = null;
@@ -1533,7 +1544,7 @@ registerActions({
   'settings.agent-auth': ({ ctx }) => withBusy(ctx, 'agent-auth', async () => {
     const agents = await ctx.ai.cliSignInStatus();
     await loadAi(ctx);
-    ctx.toast(['claude', 'codex'].filter(id => agents?.[id]).map(id => `${id === 'claude' ? 'Claude Code' : 'Codex'}: ${authText(agents[id]).toLowerCase()}`).join('. ') || 'No agents answered.');
+    ctx.toast(['claude', 'codex'].filter(id => agents?.[id]).map(id => `${id === 'claude' ? 'Claude Code' : 'Codex'}: ${authText(agents[id])}`).join('. ') || 'No agents answered.');
   }),
   'settings.chatgpt-signin': ({ ctx }) => withBusy(ctx, 'signin', async () => {
     data.login = await ctx.ai.startChatGptSignIn() || { status: 'failed', error: 'The bridge did not start a sign-in.' };
@@ -1601,21 +1612,15 @@ registerActions({
   // Agents & MCP
   'settings.mcp-root': ({ ctx, el }) => { ctx.prefs.set('settings.mcpRoot', el.value.trim()); ctx.render(); },
   'settings.client-connect': ({ ctx, data: payload }) => withBusy(ctx, `client:${payload.id}`, async () => {
-    const client = (data.clients || []).find(entry => (entry.clientId || entry.id) === payload.id);
-    try {
-      await integrations.requestBridge(`/connections/${encodeURIComponent(payload.id)}/connect`, { method: 'POST', body: { previewHash: client?.previewHash ?? client?.configHash ?? null } });
-      ctx.toast(`Still added to ${payload.name}. Restart ${payload.name} to load it.`, { tone: 'success' });
-    } finally { await loadClients(ctx); }
+    try { await applyClientChange(payload.id, 'connect'); ctx.toast(`Still added to ${payload.name}. Restart ${payload.name} to load it.`, { tone: 'success' }); }
+    finally { await loadClients(ctx); }
   }),
   'settings.client-disconnect': async ({ ctx, data: payload }) => {
     const ok = await ctx.confirm({ title: `Disconnect ${payload.name}?`, body: `Still’s entry is removed from ${payload.name}’s configuration. Other servers there are kept, and a backup is saved first.`, confirmLabel: 'Disconnect', tone: 'danger' });
     if (!ok) return;
     await withBusy(ctx, `client:${payload.id}`, async () => {
-      const client = (data.clients || []).find(entry => (entry.clientId || entry.id) === payload.id);
-      try {
-        await integrations.requestBridge(`/connections/${encodeURIComponent(payload.id)}/disconnect`, { method: 'POST', body: { previewHash: client?.previewHash ?? client?.configHash ?? null } });
-        ctx.toast(`Still removed from ${payload.name}`);
-      } finally { await loadClients(ctx); }
+      try { await applyClientChange(payload.id, 'disconnect'); ctx.toast(`Still removed from ${payload.name}`); }
+      finally { await loadClients(ctx); }
     });
   },
   'settings.client-skill': ({ ctx, data: payload }) => withBusy(ctx, `skill:${payload.id}`, async () => {

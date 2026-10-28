@@ -13,6 +13,7 @@ import { createSearch } from './search.js';
 import { createAssistant } from './assistant.js';
 import { createTransforms } from './transforms.js';
 import { createConversationStore } from './conversations.js';
+import { undoChanges } from './tools.js';
 
 export { CATALOG, EFFORT_LEVELS, ANTHROPIC_EFFORTS, EFFORT_LABELS, getProvider, chatProviders, embeddingProviders } from './catalog.js';
 export { listConnections, saveConnection, deleteConnection, testConnection, listModels, getAiSettings, onConnectionsChanged, ensureHostPermission,
@@ -34,6 +35,7 @@ const store = {
   createCollection: (...args) => runtime.store.createCollection(...args),
   saveItem: (...args) => runtime.store.saveItem(...args),
   deleteItem: (...args) => runtime.store.deleteItem(...args),
+  permanentlyDeleteItem: (...args) => runtime.store.permanentlyDeleteItem(...args),
   deleteCollection: (...args) => runtime.store.deleteCollection(...args),
 };
 const aiSettings = () => connections.getAiSettings();
@@ -72,6 +74,13 @@ export const startIndexing = () => engine().indexer.startIndexing();
 export const rebuildIndex = () => engine().indexer.rebuildIndex();
 export const clearIndex = () => engine().indexer.clearIndex();
 export const pauseIndexing = () => engine().indexer.pauseIndexing();
+
+/**
+ * Reverts an applied assistant proposal from its saved undo record (message.proposals[].undo), e.g. after a reload when
+ * the proposal_result event's undo() is gone. Conflict-aware: fields changed since Apply keep the user's value.
+ * -> { reverted, kept }
+ */
+export const undoProposal = undo => undoChanges(store, undo, { getLibrary: currentLibrary });
 
 export const listConversations = () => engine().conversations.listConversations();
 export const getConversation = id => engine().conversations.getConversation(id);

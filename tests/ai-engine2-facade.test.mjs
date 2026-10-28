@@ -13,7 +13,7 @@ test('the facade exposes the SPEC 7.2 API (plus pauseIndexing and the semanticSe
   assert.deepEqual(Object.keys(ai).filter(name => !SPEC_EXPORTS.includes(name)).sort(), ['ANTHROPIC_EFFORTS', 'DEFAULT_AI_SETTINGS', 'EFFORT_LABELS', 'EFFORT_LEVELS',
     'HANDOFF_TARGETS', 'cancelChatGptSignIn', 'chatGptSignInStatus', 'chatProviders', 'cliSignInStatus', 'embeddingProviders', 'ensureHostPermission', 'getBridgeStatus',
     'getProvider', 'handoffPlan', 'hostPermissionOrigins', 'onConnectionsChanged', 'pairBridge', 'pauseIndexing', 'resolveChatTarget', 'semanticSearch',
-    'semanticSearchAvailable', 'startChatGptSignIn']);
+    'semanticSearchAvailable', 'startChatGptSignIn', 'undoProposal']);
   assert.ok(Array.isArray(ai.CATALOG) && ai.CATALOG.length > 5);
   for (const name of SPEC_EXPORTS.filter(name => name !== 'CATALOG')) assert.equal(typeof ai[name], 'function', name);
   const source = await readFile(new URL('../extension/lib/ai/index.js', import.meta.url), 'utf8');

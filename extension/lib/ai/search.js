@@ -51,6 +51,9 @@ export function tokenize(value) {
   return tokens;
 }
 
+export const MAX_QUERY_TERMS = 32;
+const MAX_SEMANTIC_CHARS = 4000;
+
 /** Splits a query into the store.queryItems filters (tags, type, phrases) and free terms. */
 export function parseQuery(query) {
   let rest = text(query).toLowerCase().trim();
@@ -62,9 +65,11 @@ export function parseQuery(query) {
   const words = loose ? loose.split(' ') : [];
   const all = tokenize(loose);
   const meaningful = all.filter(token => !STOP_WORDS.has(token));
-  const terms = [...new Set(meaningful.length ? meaningful : all)];
-  const semanticText = [loose, ...phrases].filter(Boolean).join(' ').trim();
-  return { tags, type, phrases, terms, words: words.filter(word => !STOP_WORDS.has(word)), semanticText };
+  // A pasted page or a long question would otherwise score hundreds of terms against every item and freeze the view:
+  // the first MAX_QUERY_TERMS distinct terms carry the topic.
+  const terms = [...new Set(meaningful.length ? meaningful : all)].slice(0, MAX_QUERY_TERMS);
+  const semanticText = [loose, ...phrases].filter(Boolean).join(' ').trim().slice(0, MAX_SEMANTIC_CHARS);
+  return { tags, type, phrases: phrases.slice(0, MAX_QUERY_TERMS), terms, words: words.filter(word => !STOP_WORDS.has(word)).slice(0, MAX_QUERY_TERMS), semanticText };
 }
 
 /** Light Markdown-to-text for snippets: drops markup but keeps the words. */
@@ -109,20 +114,39 @@ function fieldTexts(item) {
     highlights, content: text(item.content), article: text(item.articleContent), fileName: text(item.fileName) };
 }
 
+// Per-item analysis keeps ONE map of token -> per-field counts packed into a number (7 bits per field, so counts cap at
+// 127, where BM25 has long saturated). One lookup per query term per item instead of one per field keeps typing
+// responsive on large libraries; the short prefix fields (title, tags, url) also keep a small token list for
+// as-you-type prefix matching.
+const FIELD_COUNT = FIELDS.length;
+// The long fields (article, content) take the low bits so most packed values stay small integers (no heap numbers).
+const FIELD_SHIFT = FIELDS.map((_, index) => 128 ** (FIELD_COUNT - 1 - index));
+const PREFIX_INDEXES = FIELDS.map(([field], index) => PREFIX_FIELDS.includes(field) ? index : -1).filter(index => index >= 0);
+const fieldCount = (packed, index) => Math.floor(packed / FIELD_SHIFT[index]) % 128;
+
 function analyze(item) {
   const fields = fieldTexts(item);
-  const tf = {};
-  const len = {};
-  for (const [field] of FIELDS) {
+  const terms = new Map();
+  const len = new Array(FIELD_COUNT).fill(0);
+  const prefix = [];
+  FIELDS.forEach(([field], index) => {
     // Long captured articles are scored on their first 20k characters; quoted phrases still match the full text.
     const source = field === 'title' ? `${fields.title} ${fields.fileName}` : field === 'article' ? fields.article.slice(0, 20000) : fields[field];
-    const tokens = tokenize(source).filter(token => field !== 'url' || !URL_NOISE.has(token));
-    const map = new Map();
-    for (const token of tokens) map.set(token, (map.get(token) || 0) + 1);
-    tf[field] = map;
-    len[field] = tokens.length;
-  }
-  return { tf, len, fields, haystack: null };
+    const counts = new Map();
+    for (const token of tokenize(source)) {
+      if (field === 'url' && URL_NOISE.has(token)) continue;
+      counts.set(token, (counts.get(token) || 0) + 1);
+      len[index]++;
+    }
+    const shift = FIELD_SHIFT[index];
+    const short = PREFIX_INDEXES.includes(index);
+    for (const [token, count] of counts) {
+      const previous = terms.get(token);
+      terms.set(token, previous === undefined ? Math.min(127, count) * shift : previous + Math.min(127, count) * shift);
+      if (short) prefix.push(token, index, count);
+    }
+  });
+  return { terms, len, prefix, fields, haystack: null };
 }
 
 /** Per-item analysis cached by updatedAt so typing a query does not re-tokenize the library. */
@@ -178,6 +202,8 @@ function queryMatcher(parsed, cache) {
 }
 
 const recency = item => text(item.updatedAt) || text(item.createdAt);
+// ISO timestamps order correctly as plain strings; localeCompare is far slower in large sorts.
+const newerFirst = (a, b) => { const x = recency(a), y = recency(b); return x < y ? 1 : x > y ? -1 : 0; };
 
 function snippetFor(analysis, needles) {
   const { fields } = analysis;
@@ -187,6 +213,27 @@ function snippetFor(analysis, needles) {
     if (needles.some(needle => needle && lower.includes(needle))) return makeSnippet(source, needles);
   }
   return makeSnippet(fields.excerpt || plainText(fields.content) || fields.article, needles);
+}
+
+/** Per-field counts of one query term in one item: exact tokens, plus prefixes on short fields for as-you-type queries. */
+function termFrequencies(analysis, term) {
+  const packed = analysis.terms.get(term) || 0;
+  let freq = null;
+  if (packed) {
+    freq = new Array(FIELD_COUNT).fill(0);
+    for (let index = 0; index < FIELD_COUNT; index++) freq[index] = fieldCount(packed, index);
+  }
+  if (term.length >= 2) {
+    const { prefix } = analysis;
+    for (let i = 0; i < prefix.length; i += 3) {
+      const token = prefix[i];
+      const index = prefix[i + 1];
+      if (token.length <= term.length || !token.startsWith(term) || (freq && fieldCount(packed, index))) continue;
+      freq ||= new Array(FIELD_COUNT).fill(0);
+      freq[index] += prefix[i + 2] * 0.6;
+    }
+  }
+  return freq;
 }
 
 /**
@@ -199,58 +246,52 @@ export function lexicalSearch(items, query, { allow = item => !item.deletedAt &&
   const candidates = (Array.isArray(items) ? items : []).filter(item => allow(item) && matches(item));
   const needles = [...new Set([...parsed.words, ...parsed.terms, ...parsed.phrases])].filter(needle => needle.length > 1);
   if (!parsed.terms.length) {
-    return candidates.sort((a, b) => recency(b).localeCompare(recency(a)) || byId(a, b)).slice(0, limit)
+    return candidates.sort((a, b) => newerFirst(a, b) || byId(a, b)).slice(0, limit)
       .map(item => ({ id: item.id, score: 1, snippet: snippetFor(cache.get(item), needles) }));
   }
-  const analyses = candidates.map(item => ({ item, analysis: cache.get(item) }));
-  const avg = {};
-  for (const [field] of FIELDS) avg[field] = Math.max(1, analyses.reduce((sum, entry) => sum + entry.analysis.len[field], 0) / Math.max(1, analyses.length));
-  // Pass 1: field term frequencies per candidate (exact tokens, plus prefixes on short fields for as-you-type queries).
-  const df = new Map(parsed.terms.map(term => [term, 0]));
+  const avg = new Array(FIELD_COUNT).fill(0);
+  // Pass 1: field term frequencies per candidate.
+  const df = new Array(parsed.terms.length).fill(0);
   const rows = [];
-  for (const entry of analyses) {
-    const perTerm = [];
-    let any = false;
-    for (const term of parsed.terms) {
-      const freq = {};
-      let hit = false;
-      for (const [field] of FIELDS) {
-        let count = entry.analysis.tf[field].get(term) || 0;
-        if (!count && term.length >= 2 && PREFIX_FIELDS.includes(field)) {
-          for (const [token, n] of entry.analysis.tf[field]) if (token.length > term.length && token.startsWith(term)) count += n * 0.6;
-        }
-        if (count) { freq[field] = count; hit = true; }
-      }
-      perTerm.push(hit ? freq : null);
-      if (hit) { any = true; df.set(term, df.get(term) + 1); }
+  for (const item of candidates) {
+    const analysis = cache.get(item);
+    for (let index = 0; index < FIELD_COUNT; index++) avg[index] += analysis.len[index];
+    let perTerm = null;
+    for (let t = 0; t < parsed.terms.length; t++) {
+      const freq = termFrequencies(analysis, parsed.terms[t]);
+      if (!freq) continue;
+      perTerm ||= new Array(parsed.terms.length).fill(null);
+      perTerm[t] = freq;
+      df[t]++;
     }
-    if (any) rows.push({ ...entry, perTerm });
+    if (perTerm) rows.push({ item, analysis, perTerm });
   }
+  for (let index = 0; index < FIELD_COUNT; index++) avg[index] = Math.max(1, avg[index] / Math.max(1, candidates.length));
   // Pass 2: BM25F score with a coverage factor so items matching every term outrank partial matches.
-  const total = Math.max(1, analyses.length);
+  const total = Math.max(1, candidates.length);
+  const idf = df.map(n => Math.log(1 + (total - n + 0.5) / (n + 0.5)));
   const wholeQuery = parsed.words.join(' ');
-  const scored = rows.map(({ item, analysis, perTerm }) => {
+  for (const row of rows) {
+    const { analysis, perTerm } = row;
     let score = 0;
     let matched = 0;
-    parsed.terms.forEach((term, index) => {
-      const freq = perTerm[index];
-      if (!freq) return;
+    for (let t = 0; t < perTerm.length; t++) {
+      const freq = perTerm[t];
+      if (!freq) continue;
       let weighted = 0;
-      for (const [field, weight, b] of FIELDS) {
-        if (!freq[field]) continue;
-        weighted += weight * freq[field] / (1 - b + b * analysis.len[field] / avg[field]);
+      for (let index = 0; index < FIELD_COUNT; index++) {
+        if (!freq[index]) continue;
+        const [, weight, b] = FIELDS[index];
+        weighted += weight * freq[index] / (1 - b + b * analysis.len[index] / avg[index]);
       }
-      const n = df.get(term);
-      const idf = Math.log(1 + (total - n + 0.5) / (n + 0.5));
-      score += idf * (weighted * (K1 + 1)) / (weighted + K1);
+      score += idf[t] * (weighted * (K1 + 1)) / (weighted + K1);
       matched++;
-    });
-    const coverage = matched / parsed.terms.length;
-    score *= 0.3 + 0.7 * coverage;
+    }
+    score *= 0.3 + 0.7 * (matched / parsed.terms.length);
     if (parsed.words.length > 1 && analysis.fields.title.toLowerCase().includes(wholeQuery)) score *= 1.5;
-    return { item, analysis, score };
-  });
-  return scored.sort((a, b) => b.score - a.score || recency(b.item).localeCompare(recency(a.item)) || byId(a.item, b.item))
+    row.score = score;
+  }
+  return rows.sort((a, b) => b.score - a.score || newerFirst(a.item, b.item) || byId(a.item, b.item))
     .slice(0, limit).map(({ item, analysis, score }) => ({ id: item.id, score: Math.round(score * 10000) / 10000, snippet: snippetFor(analysis, needles) }));
 }
 
@@ -319,13 +360,23 @@ export function semanticHead(list, { size = 30, relative = 0.7, floor = 0.05 } =
 /**
  * createSearch({ getLibrary, vectorStore, isSemanticReady, embedQuery }) -> { searchLibrary, relatedItems }
  * searchLibrary(query, { limit, mode: 'hybrid'|'semantic'|'lexical', filter, signal }) -> [{ id, score, snippet, source, title, type, url }]
+ * After a query cannot be embedded (provider down, rate limited, offline), searches stay keyword-only for
+ * failureBackoffMs instead of sending (and waiting on) a doomed request for every keystroke.
  */
-export function createSearch({ getLibrary, vectorStore, isSemanticReady = async () => false, embedQuery } = {}) {
+export function createSearch({ getLibrary, vectorStore, isSemanticReady = async () => false, embedQuery, failureBackoffMs = 20000, now = () => Date.now() } = {}) {
   const cache = createAnalysisCache();
   const queryVectors = new Map();
   const centroidCache = new WeakMap();
   let pruneStamp = '';
   let vectorStamp = '';
+  let semanticPausedUntil = 0;
+  // items array -> Map(id -> item). Library snapshots are replaced, not mutated; the length check covers callers that push.
+  const indexes = new WeakMap();
+  const indexOf = items => {
+    let entry = indexes.get(items);
+    if (!entry || entry.length !== items.length) { entry = { length: items.length, map: new Map(items.map(item => [item?.id, item])) }; indexes.set(items, entry); }
+    return entry.map;
+  };
 
   async function vectorFor(query, signal) {
     if (queryVectors.has(query)) return queryVectors.get(query);
@@ -354,12 +405,16 @@ export function createSearch({ getLibrary, vectorStore, isSemanticReady = async 
     const parsed = parseQuery(query);
     const matchesFilter = itemMatcher(library, filter || {});
     const matchesQuery = queryMatcher(parsed, cache);
-    const index = new Map(items.map(item => [item.id, item]));
+    const index = indexOf(items);
     const allowItem = item => matchesFilter(item) && matchesQuery(item);
     let semantic = null;
-    if (mode !== 'lexical') {
+    if (mode !== 'lexical' && now() >= semanticPausedUntil) {
       try { semantic = await semanticCandidates(parsed, id => allowItem(index.get(id)), signal); }
-      catch (error) { if (signal?.aborted) throw error; semantic = null; }
+      catch (error) {
+        if (signal?.aborted) throw error;
+        semanticPausedUntil = now() + failureBackoffMs;
+        semantic = null;
+      }
     }
     const describe = (entry, source, score, snippet) => {
       const item = index.get(entry.id);

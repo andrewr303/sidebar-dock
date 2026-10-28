@@ -6,6 +6,9 @@ const CONFIG_KEY = 'config';
 const REVISION_KEY = 'revision';
 // Shared across views: a pause or clear in one view must stop automatic indexing in every view (and after a reload).
 const CONTROL_KEY = 'control';
+// Changes whenever the index is emptied (clear, or a reset for another model). A run started before that cannot write
+// into the new index: putItems({ generation }) checks it inside the write transaction.
+const GENERATION_KEY = 'generation';
 const ITEM_PREFIX = 'item:';
 
 const token = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -21,12 +24,14 @@ function memoryBackend() {
     putMeta: async records => { for (const record of records) meta.set(record.key, record); },
     allChunks: async () => [...chunks.values()],
     chunksFor: async itemId => [...chunks.values()].filter(chunk => chunk.itemId === itemId).sort((a, b) => a.n - b.n),
-    replaceItems: async (entries, metaRecords) => {
+    replaceItems: async (entries, metaRecords, { expectGeneration } = {}) => {
+      if (expectGeneration !== undefined && (meta.get(GENERATION_KEY)?.value || '') !== expectGeneration) return false;
       for (const { itemId, chunks: next } of entries) {
         for (const [key, chunk] of chunks) if (chunk.itemId === itemId) chunks.delete(key);
         for (const chunk of next) chunks.set(chunk.key, chunk);
       }
       for (const record of metaRecords) meta.set(record.key, record);
+      return true;
     },
     deleteItems: async (itemIds, metaRecords) => {
       const ids = new Set(itemIds);
@@ -87,9 +92,16 @@ function idbBackend(idb, name) {
       const request = tx.objectStore('chunks').index('itemId').getAll(itemId);
       request.onsuccess = () => done(request.result);
     })).sort((a, b) => a.n - b.n),
-    replaceItems: (entries, metaRecords) => transact(['chunks', 'meta'], 'readwrite', tx => {
-      for (const { itemId, chunks } of entries) deleteChunksOf(tx, itemId, () => { for (const chunk of chunks) tx.objectStore('chunks').put(chunk); });
-      for (const record of metaRecords) tx.objectStore('meta').put(record);
+    replaceItems: (entries, metaRecords, { expectGeneration } = {}) => transact(['chunks', 'meta'], 'readwrite', (tx, done) => {
+      const write = () => {
+        for (const { itemId, chunks } of entries) deleteChunksOf(tx, itemId, () => { for (const chunk of chunks) tx.objectStore('chunks').put(chunk); });
+        for (const record of metaRecords) tx.objectStore('meta').put(record);
+        done(true);
+      };
+      if (expectGeneration === undefined) { write(); return; }
+      // Checked in the same readwrite transaction as the writes, so a clear from another view cannot slip in between.
+      const request = tx.objectStore('meta').get(GENERATION_KEY);
+      request.onsuccess = () => { if ((request.result?.value || '') === expectGeneration) write(); else done(false); };
     }),
     deleteItems: (itemIds, metaRecords) => transact(['chunks', 'meta'], 'readwrite', tx => {
       for (const itemId of itemIds) { deleteChunksOf(tx, itemId); tx.objectStore('meta').delete(ITEM_PREFIX + itemId); }
@@ -111,7 +123,9 @@ export function createVectorStore({ indexedDB: idb = globalThis.indexedDB, name 
   const backend = idb ? idbBackend(idb, name) : memoryBackend();
   let cache = null; // { revision, chunks }
   const revisionRecord = () => ({ key: REVISION_KEY, value: token() });
+  const generationRecord = () => ({ key: GENERATION_KEY, value: token() });
   const currentRevision = async () => (await backend.getMeta(REVISION_KEY))?.value || '';
+  const currentGeneration = async () => (await backend.getMeta(GENERATION_KEY))?.value || '';
 
   async function getConfig() {
     const record = await backend.getMeta(CONFIG_KEY);
@@ -126,7 +140,7 @@ export function createVectorStore({ indexedDB: idb = globalThis.indexedDB, name 
       return { reset: false, config: { ...current, connectionId } };
     }
     const config = { providerId, connectionId, model, requestedDims: requestedDims || null, dims: null, createdAt: new Date().toISOString() };
-    await backend.clear([{ key: CONFIG_KEY, ...config }, revisionRecord(), ...await controlRecords()]);
+    await backend.clear([{ key: CONFIG_KEY, ...config }, revisionRecord(), generationRecord(), ...await controlRecords()]);
     cache = null;
     return { reset: !!current, config };
   }
@@ -138,20 +152,25 @@ export function createVectorStore({ indexedDB: idb = globalThis.indexedDB, name 
     }
     return states;
   }
-  /** Replaces the chunks of several items in one transaction. entries: [{ itemId, hash, chunks: [{ n, text, vector }], error }]. */
-  async function putItems(entries) {
-    if (!entries.length) return;
+  /**
+   * Replaces the chunks of several items in one transaction. entries: [{ itemId, hash, chunks: [{ n, text, vector }], error }].
+   * With { generation } the write happens only if the index was not emptied since that generation was read; returns
+   * false when it was refused, true otherwise.
+   */
+  async function putItems(entries, { generation } = {}) {
+    if (!entries.length) return true;
     const now = new Date().toISOString();
     const dims = entries.flatMap(entry => entry.chunks || []).find(chunk => chunk.vector?.length)?.vector.length || null;
     const metaRecords = entries.map(({ itemId, hash, chunks = [], error = '' }) => ({ key: ITEM_PREFIX + itemId, itemId, hash, chunks: chunks.length, indexedAt: now, error }));
     const config = dims ? await getConfig() : null;
     if (config && config.dims !== dims) metaRecords.push({ key: CONFIG_KEY, ...config, dims });
     metaRecords.push(revisionRecord());
-    await backend.replaceItems(entries.map(({ itemId, chunks = [] }) => ({
+    const written = await backend.replaceItems(entries.map(({ itemId, chunks = [] }) => ({
       itemId,
       chunks: chunks.map(chunk => ({ key: chunkKey(itemId, chunk.n), itemId, n: chunk.n, text: chunk.text, vector: chunk.vector instanceof Float32Array ? chunk.vector : Float32Array.from(chunk.vector) })),
-    })), metaRecords);
+    })), metaRecords, typeof generation === 'string' ? { expectGeneration: generation } : {});
     cache = null;
+    return written !== false;
   }
   async function deleteItems(itemIds) {
     const ids = [...new Set(itemIds)].filter(id => typeof id === 'string');
@@ -167,7 +186,7 @@ export function createVectorStore({ indexedDB: idb = globalThis.indexedDB, name 
     return chunks;
   }
   async function clear() {
-    await backend.clear([revisionRecord(), ...await controlRecords()]);
+    await backend.clear([revisionRecord(), generationRecord(), ...await controlRecords()]);
     cache = null;
   }
   const controlRecords = async () => { const record = await backend.getMeta(CONTROL_KEY); return record ? [record] : []; };
@@ -181,5 +200,5 @@ export function createVectorStore({ indexedDB: idb = globalThis.indexedDB, name 
     return { items: [...states.values()].filter(state => !state.error).length, failed: [...states.values()].filter(state => state.error).length, chunks, model: config?.model || '', dims: config?.dims || null };
   }
   return { kind: backend.kind, getConfig, ensureConfig, itemStates, putItems, putItem: (itemId, entry) => putItems([{ itemId, ...entry }]),
-    deleteItems, allChunks, chunksFor: itemId => backend.chunksFor(itemId), revision: currentRevision, clear, stats, isHeld, setHeld };
+    deleteItems, allChunks, chunksFor: itemId => backend.chunksFor(itemId), revision: currentRevision, generation: currentGeneration, clear, stats, isHeld, setHeld };
 }
