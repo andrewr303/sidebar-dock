@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import {
   SETTINGS_SECTIONS, normalizeSection, ACCENTS, MCP_TOOLS, MCP_CLIENTS, CHROME_COMMANDS, connectionStatus, providerGroups, choiceValue, parseChoice,
   modelChoices, findModel, effortFor, embeddingConnections, indexSummary, embeddingNote, bridgeSummary, authText, verificationLink, groupShortcuts,
-  chromeCommandRows, clientStatus, providerConnection, maskedKey, integrationGroups,
+  chromeCommandRows, clientStatus, providerConnection, maskedKey, keyTail, integrationGroups,
 } from '../extension/ui/settings.js';
 import { CATALOG, getProvider } from '../extension/lib/ai/catalog.js';
 import { getMcpSetup, INTEGRATION_CATALOG } from '../extension/lib/integrations.js';
@@ -222,6 +222,13 @@ test('saved keys are masked and never show more than their last four characters'
   assert.equal(maskedKey('a1b2'), '••••••••a1b2');
   assert.equal(maskedKey('sk-ant-api03-secret-value-WXYZ'), '••••••••WXYZ');
   assert.equal(maskedKey(' 9z '), '••••••••9z');
+});
+
+test('only long keys keep a tail for the mask, so a short key is never shown whole', () => {
+  assert.equal(keyTail('sk-ant-api03-secret-value-WXYZ'), 'WXYZ');
+  assert.equal(keyTail('  sk-proj-0123456789abcdef  '), 'cdef');
+  for (const short of ['', undefined, 'abc1', 'test', 'lm-studio', '0123456789abcde']) assert.equal(keyTail(short), '', String(short));
+  assert.equal(maskedKey(keyTail('abc1')), '••••••••');
 });
 
 test('integration groups split catalog apps into Raindrop guides, backups and the rest', () => {

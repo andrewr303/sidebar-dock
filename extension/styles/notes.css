@@ -794,8 +794,9 @@
   padding: var(--space-1) 0 var(--space-1) calc(var(--indent, 0) * var(--space-9));
   font-size: var(--text-sm); line-height: var(--lh-sm);
 }
-.task-check { position: relative; display: inline-grid; place-items: center; flex: none; width: var(--control-h-xs); height: var(--control-h-xs); cursor: pointer; }
-.task-check > input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+/* Scoped to task rows: markdown.js renders a read-only .task-check glyph in previews (styled by editor.css). */
+.task-row > .task-check { position: relative; display: inline-grid; place-items: center; flex: none; width: var(--control-h-xs); height: var(--control-h-xs); cursor: pointer; }
+.task-row > .task-check > input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
 .task-box {
   display: grid; place-items: center;
   width: 16px; height: 16px;

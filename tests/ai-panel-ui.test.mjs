@@ -74,6 +74,16 @@ test('numbered citation chips replace markdown.js source chips and keep markup e
   assert.doesNotMatch(markup, /data-ai-action/);
 });
 
+test('the attached page chip keeps the address it was cited with', () => {
+  const citations = [{ n: 1, id: 'page:current', title: 'Page', url: 'https://p.example/a?x=1&y="2"' }];
+  const markup = numberCitations(renderMarkdown('See [[page:current]].', { citations }), citations);
+  assert.match(markup, /data-id="page:current" data-url="https:\/\/p\.example\/a\?x=1&amp;y=&quot;2&quot;"/, 'escaped');
+  const unsafe = [{ n: 1, id: 'page:current', title: 'Page', url: 'javascript:alert(1)' }];
+  assert.doesNotMatch(numberCitations(renderMarkdown('See [[page:current]].', { citations: unsafe }), unsafe), /data-url/, 'only web addresses');
+  const item = [{ n: 1, id: 'item_1', title: 'Item', url: 'https://i.example/' }];
+  assert.doesNotMatch(numberCitations(renderMarkdown('See [[item_1]].', { citations: item }), item), /data-url/, 'saved items open in Still');
+});
+
 test('answers export with titles: Markdown links for copying, note links for notes', () => {
   const citations = [{ n: 1, id: 'a', title: 'Alpha [draft]', url: 'https://a.example/' }, { n: 2, id: 'page:current', title: 'Page', url: 'https://p.example/' }, { n: 3, id: 'n', title: 'Note', url: '' }];
   const answer = 'Read [[a]] and [[page:current]] plus [[n]] [[missing]].';

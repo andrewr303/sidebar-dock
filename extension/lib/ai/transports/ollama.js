@@ -45,13 +45,21 @@ export function toOllamaMessages(messages, system, capabilities = null) {
   return output;
 }
 
-export function buildRequest({ provider, baseUrl, apiKey, model, system, messages, tools, effort, maxTokens, capabilities = null }) {
+// Ollama's cloud (ollama.com, or a *-cloud model that a local server proxies there) does not support structured outputs.
+export function isOllamaCloud(baseUrl, model) {
+  if (/(?:^|[-:])cloud$/i.test(model || '')) return true;
+  try { return /(?:^|\.)ollama\.com$/i.test(new URL(baseUrl).hostname); } catch { return false; }
+}
+
+export function buildRequest({ provider, baseUrl, apiKey, model, system, messages, tools, responseFormat, effort, maxTokens, capabilities = null }) {
   const body = { model, messages: toOllamaMessages(messages, system, capabilities), stream: true };
   if (capabilities?.includes('thinking')) body.think = /gpt-oss/i.test(model) ? clampEffort(effort || 'medium', ['low', 'medium', 'high']) : effort !== 'none';
   if (tools?.length && (!capabilities || capabilities.includes('tools'))) {
     body.tools = tools.map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description || '', parameters: toolSchema(tool) } }));
   }
   if (Number.isInteger(maxTokens) && maxTokens > 0) body.options = { num_predict: maxTokens };
+  // format takes the JSON schema itself and constrains the reply text with a grammar.
+  if (responseFormat?.schema && !isOllamaCloud(baseUrl, model)) body.format = responseFormat.schema;
   return { url: `${baseUrl}/api/chat`, method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson', ...authHeaders({ provider, apiKey }) }, body };
 }
 

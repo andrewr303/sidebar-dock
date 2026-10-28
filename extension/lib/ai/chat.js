@@ -1,15 +1,19 @@
 // streamChat: one streaming chat call against any connection. Emits normalized events and resolves with the
 // final text, thinking, tool calls, usage and the provider-native assistant message for tool loops.
 
+import { catalogModel } from './catalog.js';
 import { TRANSPORTS, getAiSettings, modelInfo, resolveConnection } from './connections.js';
 import { aiError } from './http.js';
 import { redactError } from './secrets.js';
 import { abortError } from './stream.js';
 import * as bridgeTransport from './transports/bridge.js';
+import { isStrictSchema } from './transports/shared.js';
 
 const ROLES = new Set(['user', 'assistant']);
 const PART_TYPES = new Set(['text', 'image', 'tool_use', 'tool_result']);
 const TOOL_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
+// OpenAI's rule for a response format name; the other providers either take any name or none.
+const FORMAT_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
 const IMAGE_NOTE = '[An image was attached, but this model cannot read images.]';
 
 export function normalizeMessages(messages) {
@@ -40,6 +44,30 @@ export function normalizeTools(tools) {
   });
 }
 
+// responseFormat asks for a reply that is one JSON value matching a schema: { type: 'json_schema', name?, schema }.
+export function normalizeResponseFormat(format) {
+  if (format === undefined || format === null) return null;
+  if (typeof format !== 'object' || format.type !== 'json_schema') throw aiError('The response format must be a JSON schema.', { code: 'bad_request' });
+  if (!format.schema || typeof format.schema !== 'object' || Array.isArray(format.schema)) throw aiError('The response format needs a schema object.', { code: 'bad_request' });
+  const name = format.name ?? 'response';
+  if (typeof name !== 'string' || !FORMAT_NAME.test(name)) throw aiError('The response format name must be letters, numbers, dashes or underscores.', { code: 'bad_request' });
+  return { type: 'json_schema', name, schema: format.schema };
+}
+
+// The format is sent as the provider's native structured-output parameter only where the catalog (or the provider's
+// model list) says the model accepts it, and only for a schema that strict decoding can guarantee, by the same rules
+// as strict tools. Otherwise nothing is sent and the caller parses the free-text reply.
+export function nativeResponseFormat({ provider, via, model, modelInfo: info, format, tools = [] }) {
+  if (!format || via !== 'direct') return null;
+  const mode = provider?.supports?.structuredOutputs;
+  if (mode !== true && mode !== 'per-model') return null;
+  const listed = info?.capabilities?.structuredOutputs;
+  const flag = typeof listed === 'boolean' ? listed : catalogModel(provider.id, model)?.structuredOutputs;
+  if (flag === false || (mode === 'per-model' && flag !== true)) return null;
+  if (tools.length && !provider.supports.structuredOutputsWithTools) return null;
+  return isStrictSchema(format.schema) ? format : null;
+}
+
 // Models without image input get a short note instead of the image, so the rest of the request still works.
 function withoutImages(messages) {
   return messages.map(message => typeof message.content === 'string' || message.native ? message
@@ -62,7 +90,7 @@ function finalizeError(caught, { text, thinking, secrets, signal }) {
   return error;
 }
 
-export function streamChat({ connectionId, model, system, messages, tools, effort, maxTokens, signal, onEvent } = {}) {
+export function streamChat({ connectionId, model, system, messages, tools, responseFormat, effort, maxTokens, signal, onEvent } = {}) {
   const emit = event => {
     if (typeof onEvent !== 'function') return;
     try { onEvent(event); } catch (error) { console.error(error); }
@@ -92,11 +120,12 @@ export function streamChat({ connectionId, model, system, messages, tools, effor
       let list = normalizeMessages(messages);
       if (provider.supports.images === false || info?.capabilities?.images === false) list = withoutImages(list);
       const toolList = provider.supports.tools && info?.capabilities?.tools !== false ? normalizeTools(tools) : [];
+      const format = nativeResponseFormat({ provider, via, model: chosen, modelInfo: info, format: normalizeResponseFormat(responseFormat), tools: toolList });
       const transport = via === 'direct' ? TRANSPORTS[provider.transport] : bridgeTransport;
       if (!transport) throw aiError(`${provider.name} cannot be used for chat here.`, { code: 'bad_request' });
       emit({ type: 'start', connectionId: connection.id, providerId: provider.id, providerName: provider.name, label: connection.label, model: chosen, modelLabel: info?.name || chosen, via });
       const result = await transport.stream({
-        ...resolved, model: chosen, modelInfo: info, system: systemText(system), messages: list, tools: toolList,
+        ...resolved, model: chosen, modelInfo: info, system: systemText(system), messages: list, tools: toolList, responseFormat: format,
         effort: typeof effort === 'string' && effort ? effort : usesDefault ? settings.chat.effort : undefined, maxTokens: Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : undefined,
         signal, emit: relay,
       });

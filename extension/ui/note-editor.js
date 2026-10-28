@@ -522,9 +522,21 @@ function createEditor(host, ctx) {
   async function settleConflict() {
     let latest = null;
     try { latest = (await ctx.store.loadLibrary())?.items?.find(entry => entry.id === id) || null; } catch { latest = item(); }
-    if (latest && reconcile(st.base, latest, { dirty: true, field, title: !inline }) === 'rebase') {
+    // The stored note may already hold exactly this text (an earlier write whose reply was lost, a restored draft
+    // saved by the previous editor): that is this editor's own save, not a change made elsewhere.
+    const mine = { text: currentText(), title: inline ? st.base.title : titleText() };
+    const verdict = latest ? reconcile(st.base, latest, { dirty: true, pending: mine, field, title: !inline }) : 'gone';
+    if (verdict === 'rebase') {
       st.base.updatedAt = latest.updatedAt;
       st.timer = setTimeout(save, 0);
+      return;
+    }
+    if (verdict === 'own') {
+      st.base = snapshot(latest);
+      st.dirty = false;
+      st.savedAt = Date.now();
+      dropDraft(draftKey);
+      setStatus('saved');
       return;
     }
     if (!latest) { setStatus('error', 'This note was deleted.'); return; }
@@ -583,10 +595,14 @@ function createEditor(host, ctx) {
     const record = item();
     if (!record) { setStatus('error', 'This note no longer exists.'); renderBanner(); return; }
     if (!st.saving) {
-      const verdict = reconcile(st.base, record, { dirty: st.dirty, pending: st.pending, field, title: !inline });
+      // A stored copy that already equals the unsaved text (another editor saved the same draft) is not a conflict.
+      const mine = st.dirty ? { text: currentText(), title: inline ? st.base.title : titleText() } : st.pending;
+      const verdict = reconcile(st.base, record, { dirty: st.dirty, pending: mine, field, title: !inline });
       if (verdict === 'rebase') st.base.updatedAt = record.updatedAt;
-      else if (verdict === 'own') st.base = snapshot(record);
-      else if (verdict === 'reload') applyRemote(record);
+      else if (verdict === 'own') {
+        st.base = snapshot(record);
+        if (st.conflict) { st.conflict = null; clearTimeout(st.timer); st.timer = setTimeout(save, 0); }
+      } else if (verdict === 'reload') applyRemote(record);
       else if (verdict === 'conflict' && st.conflict?.latest?.updatedAt !== record.updatedAt) { st.conflict = { latest: record }; clearTimeout(st.timer); setStatus('conflict'); }
     }
     renderRegions(record);
@@ -1003,8 +1019,9 @@ function createEditor(host, ctx) {
     const unchanged = current === sel.markdown;
     let next;
     if (op === 'replace') {
-      if (!sel.hasSelection) next = result;
-      else if (unchanged || current.slice(sel.start, sel.end) === sel.markdown.slice(sel.start, sel.end)) next = applyAiResult(current, sel, result, 'replace');
+      // A result made from older text never overwrites what was typed while it streamed: it goes at the end instead.
+      if (!sel.hasSelection && unchanged) next = result;
+      else if (sel.hasSelection && (unchanged || current.slice(sel.start, sel.end) === sel.markdown.slice(sel.start, sel.end))) next = applyAiResult(current, sel, result, 'replace');
       else { ctx.toast('The note changed, so the result was added at the end.'); next = applyAiResult(current, null, result, 'below'); }
     } else {
       const at = ai.action === 'continue' ? { start: sel.caret, end: sel.caret } : sel.hasSelection ? sel : null;
@@ -1049,12 +1066,15 @@ function renderMeta(ctx, instance, record, surface) {
     : surface === 'side' && /^https?:/i.test(ctx.state.page?.url || '')
       ? button({ label: 'Link this page', icon: 'link', variant: 'ghost', size: 'sm', action: 'editor.link-page', className: 'ne-prop-add' }) : '';
   const reminderText = record.reminderAt ? (typeof pickers.formatReminder === 'function' ? pickers.formatReminder(record.reminderAt) : relativeDate(record.reminderAt)) : '';
+  // This region re-renders with every app render, so the open state comes from the popover rather than the DOM.
+  const anchor = ctx.state.popover?.anchorEl;
+  const reminderOpen = anchor?.dataset?.action === 'editor.reminder' && instanceOf(anchor) === instance ? 'true' : 'false';
   const reminder = record.reminderAt
-    ? html`<button type="button" class="${cx('ne-prop', 'ne-reminder', record.reminderNotifiedAt && 'is-past')}" data-action="editor.reminder" aria-haspopup="menu" aria-label="Reminder: ${reminderText}. Change">
+    ? html`<button type="button" class="${cx('ne-prop', 'ne-reminder', record.reminderNotifiedAt && 'is-past')}" data-action="editor.reminder" aria-haspopup="menu" aria-expanded="${reminderOpen}" aria-label="Reminder: ${reminderText}. Change">
         ${icon(record.reminderNotifiedAt ? 'bell-off' : 'bell-ring', { size: 14 })}<span>${reminderText}</span></button>`
     : surface === 'side'
-      ? iconButton({ icon: 'bell', label: 'Remind me', action: 'editor.reminder', size: 'sm', className: 'ne-prop-add', attrs: { 'aria-haspopup': 'menu' } })
-      : button({ label: 'Remind', icon: 'bell', variant: 'ghost', size: 'sm', action: 'editor.reminder', className: 'ne-prop-add', attrs: { 'aria-haspopup': 'menu' } });
+      ? iconButton({ icon: 'bell', label: 'Remind me', action: 'editor.reminder', size: 'sm', className: 'ne-prop-add', attrs: { 'aria-haspopup': 'menu', 'aria-expanded': reminderOpen } })
+      : button({ label: 'Remind', icon: 'bell', variant: 'ghost', size: 'sm', action: 'editor.reminder', className: 'ne-prop-add', attrs: { 'aria-haspopup': 'menu', 'aria-expanded': reminderOpen } });
   // The side panel keeps Pin in the note menu so the property row stays on one line.
   const pin = surface === 'side' ? '' : iconButton({ icon: 'pin', label: record.pinned ? 'Unpin note' : 'Pin note', pressed: !!record.pinned, action: 'editor.pin', size: 'sm', className: 'ne-pin' });
   const tags = typeof pickers.renderTagInput === 'function'

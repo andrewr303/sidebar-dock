@@ -25,12 +25,18 @@ const embed = (id, label, dims, extra = {}) => ({ id, label, dims, dimsOptions: 
 // max_tokens replace these once a connection lists its models).
 const CLAUDE_LIMITS = { contextWindow: 1000000, maxOutput: 128000 };
 const CLAUDE_MODELS = [
-  model('claude-opus-5-5', 'Claude Opus 5.5', { description: 'Most capable', ...CLAUDE_LIMITS, efforts: [...ANTHROPIC_EFFORTS], defaultEffort: 'medium' }),
-  model('claude-sonnet-5-5', 'Claude Sonnet 5.5', { description: 'Fast and capable', ...CLAUDE_LIMITS, efforts: [...ANTHROPIC_EFFORTS], defaultEffort: 'high' }),
-  model('claude-haiku-5-5', 'Claude Haiku 5.5', { description: 'Fastest, lowest cost', ...CLAUDE_LIMITS, efforts: [...ANTHROPIC_EFFORTS], defaultEffort: 'medium' }),
-  model('claude-fable-5-1', 'Claude Fable 5.1', { ...CLAUDE_LIMITS, efforts: [...ANTHROPIC_EFFORTS], defaultEffort: 'high' }),
+  model('claude-opus-5-5', 'Claude Opus 5.5', { description: 'Most capable', ...CLAUDE_LIMITS, efforts: [...ANTHROPIC_EFFORTS], defaultEffort: 'medium', structuredOutputs: true }),
+  model('claude-sonnet-5-5', 'Claude Sonnet 5.5', { description: 'Fast and capable', ...CLAUDE_LIMITS, efforts: [...ANTHROPIC_EFFORTS], defaultEffort: 'high', structuredOutputs: true }),
+  model('claude-haiku-5-5', 'Claude Haiku 5.5', { description: 'Fastest, lowest cost', ...CLAUDE_LIMITS, efforts: [...ANTHROPIC_EFFORTS], defaultEffort: 'medium', structuredOutputs: true }),
+  model('claude-fable-5-1', 'Claude Fable 5.1', { ...CLAUDE_LIMITS, efforts: [...ANTHROPIC_EFFORTS], defaultEffort: 'high', structuredOutputs: true }),
 ];
 
+// Structured output (a JSON-schema reply format) is opt-in per provider through supports.structuredOutputs:
+//   true         every chat model takes the provider's native parameter, unless a model says structuredOutputs: false;
+//   'per-model'  only models marked structuredOutputs: true here or in the provider's model list;
+//   false        never sent (no such parameter, it cannot stream, or it is unknown, as on custom servers).
+// supports.structuredOutputsWithTools says the provider documents the reply format together with function tools;
+// without it the format is left out of requests that carry tools, and the reply is parsed as free text.
 export const CATALOG = freeze([
   {
     id: 'anthropic', name: 'Anthropic', shortName: 'Claude', kind: 'cloud', via: 'direct', transport: 'anthropic',
@@ -40,7 +46,7 @@ export const CATALOG = freeze([
     keyPlaceholder: 'sk-ant-…', needsKey: true, local: false, modelList: true,
     chat: { defaults: CLAUDE_MODELS, recommended: 'claude-opus-5-5', fast: 'claude-haiku-5-5' },
     embeddings: null, embeddingsHint: 'Claude has no embeddings model. Add Voyage AI for semantic search.',
-    supports: { tools: true, images: true, reasoning: true, embeddings: false },
+    supports: { tools: true, images: true, reasoning: true, embeddings: false, structuredOutputs: 'per-model', structuredOutputsWithTools: true },
   },
   {
     id: 'openai', name: 'OpenAI', shortName: 'ChatGPT models', kind: 'cloud', via: 'direct', transport: 'openai-responses',
@@ -50,10 +56,10 @@ export const CATALOG = freeze([
     keyPlaceholder: 'sk-…', needsKey: true, local: false, modelList: true,
     chat: {
       defaults: [
-        model('gpt-6.1-sol', 'GPT-6.1 Sol', { description: 'Balanced', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' }),
-        model('gpt-6-astra', 'GPT-6 Astra', { description: 'Most capable', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' }),
-        model('gpt-6.1-terra', 'GPT-6.1 Terra', { description: 'Fast and efficient', efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' }),
-        model('gpt-6-luna', 'GPT-6 Luna', { description: 'Fastest, lowest cost', efforts: ['none', 'low', 'medium', 'high'], defaultEffort: 'medium' }),
+        model('gpt-6.1-sol', 'GPT-6.1 Sol', { description: 'Balanced', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium', structuredOutputs: true }),
+        model('gpt-6-astra', 'GPT-6 Astra', { description: 'Most capable', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium', structuredOutputs: true }),
+        model('gpt-6.1-terra', 'GPT-6.1 Terra', { description: 'Fast and efficient', efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium', structuredOutputs: true }),
+        model('gpt-6-luna', 'GPT-6 Luna', { description: 'Fastest, lowest cost', efforts: ['none', 'low', 'medium', 'high'], defaultEffort: 'medium', structuredOutputs: true }),
       ],
       recommended: 'gpt-6.1-sol', fast: 'gpt-6-luna',
     },
@@ -61,7 +67,7 @@ export const CATALOG = freeze([
       embed('text-embedding-3-small', 'Text embedding 3 small', 1536, { dimsOptions: [512, 1024, 1536], maxBatch: 2048 }),
       embed('text-embedding-3-large', 'Text embedding 3 large', 3072, { dimsOptions: [256, 1024, 3072], maxBatch: 2048 }),
     ] },
-    supports: { tools: true, images: true, reasoning: true, embeddings: true },
+    supports: { tools: true, images: true, reasoning: true, embeddings: true, structuredOutputs: 'per-model', structuredOutputsWithTools: true },
   },
   {
     id: 'xai', name: 'xAI', shortName: 'Grok', kind: 'cloud', via: 'direct', transport: 'openai-chat',
@@ -73,14 +79,14 @@ export const CATALOG = freeze([
     chatOptions: { streamUsage: false, effortParam: null, reasoningField: 'reasoning_content' },
     chat: {
       defaults: [
-        model('grok-4.7', 'Grok 4.7', { description: 'Most capable, best for code', contextWindow: 500000 }),
-        model('grok-4.3', 'Grok 4.3', { description: 'Fast, lower cost', contextWindow: 1000000 }),
-        model('grok-4.6', 'Grok 4.6', { contextWindow: 500000 }),
+        model('grok-4.7', 'Grok 4.7', { description: 'Most capable, best for code', contextWindow: 500000, structuredOutputs: true }),
+        model('grok-4.3', 'Grok 4.3', { description: 'Fast, lower cost', contextWindow: 1000000, structuredOutputs: true }),
+        model('grok-4.6', 'Grok 4.6', { contextWindow: 500000, structuredOutputs: true }),
       ],
       recommended: 'grok-4.7', fast: 'grok-4.3',
     },
     embeddings: null,
-    supports: { tools: true, images: true, reasoning: true, embeddings: false },
+    supports: { tools: true, images: true, reasoning: true, embeddings: false, structuredOutputs: 'per-model', structuredOutputsWithTools: true },
   },
   {
     id: 'google', name: 'Google Gemini', shortName: 'Gemini', kind: 'cloud', via: 'direct', transport: 'gemini',
@@ -90,9 +96,9 @@ export const CATALOG = freeze([
     keyPlaceholder: 'AIza…', needsKey: true, local: false, modelList: true,
     chat: {
       defaults: [
-        model('gemini-3.8-flash', 'Gemini 3.8 Flash', { description: 'Fast and capable', efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' }),
-        model('gemini-4-argon', 'Gemini 4 Argon', { description: 'Most capable', contextWindow: 1000000, efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' }),
-        model('gemini-3.5-flash-lite', 'Gemini 3.5 Flash-Lite', { description: 'Fastest, lowest cost', efforts: ['minimal', 'low', 'medium', 'high'], defaultEffort: 'minimal' }),
+        model('gemini-3.8-flash', 'Gemini 3.8 Flash', { description: 'Fast and capable', efforts: ['low', 'medium', 'high'], defaultEffort: 'medium', structuredOutputs: true }),
+        model('gemini-4-argon', 'Gemini 4 Argon', { description: 'Most capable', contextWindow: 1000000, efforts: ['low', 'medium', 'high'], defaultEffort: 'medium', structuredOutputs: true }),
+        model('gemini-3.5-flash-lite', 'Gemini 3.5 Flash-Lite', { description: 'Fastest, lowest cost', efforts: ['minimal', 'low', 'medium', 'high'], defaultEffort: 'minimal', structuredOutputs: true }),
       ],
       recommended: 'gemini-3.8-flash', fast: 'gemini-3.5-flash-lite',
     },
@@ -100,7 +106,7 @@ export const CATALOG = freeze([
       embed('gemini-embedding-001', 'Gemini embedding 001', 768, { dimsOptions: [768, 1536, 3072], maxBatch: 100, taskType: true, normalize: true }),
       embed('gemini-embedding-2', 'Gemini embedding 2', 768, { dimsOptions: [768, 1536, 3072], maxBatch: 100 }),
     ] },
-    supports: { tools: true, images: true, reasoning: true, embeddings: true },
+    supports: { tools: true, images: true, reasoning: true, embeddings: true, structuredOutputs: 'per-model', structuredOutputsWithTools: true },
   },
   {
     id: 'openrouter', name: 'OpenRouter', shortName: 'OpenRouter', kind: 'cloud', via: 'direct', transport: 'openai-chat',
@@ -114,17 +120,18 @@ export const CATALOG = freeze([
       headers: { 'HTTP-Referer': 'https://github.com/AVRCORP/sidebar-dock', 'X-Title': 'Still' } },
     chat: {
       defaults: [
-        model('anthropic/claude-opus-5.5', 'Claude Opus 5.5', { efforts: [...ANTHROPIC_EFFORTS] }),
-        model('anthropic/claude-sonnet-5.5', 'Claude Sonnet 5.5', { efforts: [...ANTHROPIC_EFFORTS] }),
-        model('anthropic/claude-haiku-5.5', 'Claude Haiku 5.5', { efforts: [...ANTHROPIC_EFFORTS] }),
-        model('openai/gpt-6.1-sol', 'GPT-6.1 Sol', { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }),
-        model('x-ai/grok-4.7', 'Grok 4.7'),
-        model('google/gemini-3.8-flash', 'Gemini 3.8 Flash'),
+        model('anthropic/claude-opus-5.5', 'Claude Opus 5.5', { efforts: [...ANTHROPIC_EFFORTS], structuredOutputs: true }),
+        model('anthropic/claude-sonnet-5.5', 'Claude Sonnet 5.5', { efforts: [...ANTHROPIC_EFFORTS], structuredOutputs: true }),
+        model('anthropic/claude-haiku-5.5', 'Claude Haiku 5.5', { efforts: [...ANTHROPIC_EFFORTS], structuredOutputs: true }),
+        model('openai/gpt-6.1-sol', 'GPT-6.1 Sol', { efforts: ['low', 'medium', 'high', 'xhigh', 'max'], structuredOutputs: true }),
+        model('x-ai/grok-4.7', 'Grok 4.7', { structuredOutputs: true }),
+        model('google/gemini-3.8-flash', 'Gemini 3.8 Flash', { structuredOutputs: true }),
       ],
       recommended: 'anthropic/claude-opus-5.5', fast: 'anthropic/claude-haiku-5.5',
     },
     embeddings: null,
-    supports: { tools: true, images: true, reasoning: true, embeddings: false },
+    // Support differs per routed model (supported_parameters lists structured_outputs) and per upstream with tools.
+    supports: { tools: true, images: true, reasoning: true, embeddings: false, structuredOutputs: 'per-model', structuredOutputsWithTools: false },
   },
   {
     id: 'mistral', name: 'Mistral', shortName: 'Mistral', kind: 'cloud', via: 'direct', transport: 'openai-chat',
@@ -135,15 +142,15 @@ export const CATALOG = freeze([
     chatOptions: { streamUsage: false, effortParam: null },
     chat: {
       defaults: [
-        model('mistral-medium-latest', 'Mistral Medium', { description: 'Balanced' }),
-        model('mistral-large-latest', 'Mistral Large', { description: 'Most capable' }),
-        model('mistral-small-latest', 'Mistral Small', { description: 'Fast, lower cost' }),
-        model('codestral-latest', 'Codestral', { description: 'Code', images: false }),
+        model('mistral-medium-latest', 'Mistral Medium', { description: 'Balanced', structuredOutputs: true }),
+        model('mistral-large-latest', 'Mistral Large', { description: 'Most capable', structuredOutputs: true }),
+        model('mistral-small-latest', 'Mistral Small', { description: 'Fast, lower cost', structuredOutputs: true }),
+        model('codestral-latest', 'Codestral', { description: 'Code', images: false, structuredOutputs: true }),
       ],
       recommended: 'mistral-medium-latest', fast: 'mistral-small-latest',
     },
     embeddings: { default: 'mistral-embed', models: [embed('mistral-embed', 'Mistral embed', 1024, { maxBatch: 512 })] },
-    supports: { tools: true, images: true, reasoning: false, embeddings: true },
+    supports: { tools: true, images: true, reasoning: false, embeddings: true, structuredOutputs: 'per-model', structuredOutputsWithTools: false },
   },
   {
     id: 'groq', name: 'Groq', shortName: 'Groq', kind: 'cloud', via: 'direct', transport: 'openai-chat',
@@ -162,7 +169,8 @@ export const CATALOG = freeze([
       recommended: 'openai/gpt-oss-120b', fast: 'llama-3.1-8b-instant',
     },
     embeddings: null,
-    supports: { tools: true, images: false, reasoning: true, embeddings: false },
+    // Groq's json_schema mode does not stream (and not with tools); every request here streams.
+    supports: { tools: true, images: false, reasoning: true, embeddings: false, structuredOutputs: false },
   },
   {
     id: 'deepseek', name: 'DeepSeek', shortName: 'DeepSeek', kind: 'cloud', via: 'direct', transport: 'openai-chat',
@@ -180,7 +188,8 @@ export const CATALOG = freeze([
       recommended: 'deepseek-v4-pro', fast: 'deepseek-flash',
     },
     embeddings: null,
-    supports: { tools: true, images: true, reasoning: true, embeddings: false },
+    // DeepSeek documents only json_object mode, which does not enforce a schema.
+    supports: { tools: true, images: true, reasoning: true, embeddings: false, structuredOutputs: false },
   },
   {
     id: 'perplexity', name: 'Perplexity', shortName: 'Perplexity', kind: 'cloud', via: 'direct', transport: 'openai-responses',
@@ -199,7 +208,7 @@ export const CATALOG = freeze([
       recommended: 'preset:fast', fast: 'preset:fast',
     },
     embeddings: null,
-    supports: { tools: false, images: false, reasoning: true, embeddings: false },
+    supports: { tools: false, images: false, reasoning: true, embeddings: false, structuredOutputs: false },
   },
   {
     id: 'voyage', name: 'Voyage AI', shortName: 'Voyage', kind: 'cloud', via: 'direct', transport: null,
@@ -246,7 +255,8 @@ export const CATALOG = freeze([
       embed('nomic-embed-text', 'Nomic Embed Text', 768),
       embed('qwen3-embedding', 'Qwen3 Embedding', null, { dimsOptions: [] }),
     ] },
-    supports: { tools: true, images: true, reasoning: true, embeddings: true },
+    // format takes a JSON schema on local models; the transport leaves it out for Ollama's cloud.
+    supports: { tools: true, images: true, reasoning: true, embeddings: true, structuredOutputs: true, structuredOutputsWithTools: false },
   },
   {
     id: 'lmstudio', name: 'LM Studio', shortName: 'LM Studio', kind: 'local', via: 'direct', transport: 'openai-chat',
@@ -257,7 +267,7 @@ export const CATALOG = freeze([
     chatOptions: { streamUsage: false, effortParam: null, reasoningField: 'reasoning_content' },
     chat: { defaults: [], recommended: '', fast: '' },
     embeddings: { default: '', models: [] },
-    supports: { tools: true, images: true, reasoning: true, embeddings: true },
+    supports: { tools: true, images: true, reasoning: true, embeddings: true, structuredOutputs: true, structuredOutputsWithTools: false },
   },
   {
     id: 'custom-openai', name: 'OpenAI-compatible server', shortName: 'Custom', kind: 'custom', via: 'direct', transport: 'openai-chat',
@@ -267,7 +277,7 @@ export const CATALOG = freeze([
     chatOptions: { streamUsage: false, effortParam: null, reasoningField: 'reasoning_content' },
     chat: { defaults: [], recommended: '', fast: '' },
     embeddings: { default: '', models: [] },
-    supports: { tools: true, images: true, reasoning: true, embeddings: true },
+    supports: { tools: true, images: true, reasoning: true, embeddings: true, structuredOutputs: false },
   },
   {
     id: 'custom-anthropic', name: 'Anthropic-compatible server', shortName: 'Custom', kind: 'custom', via: 'direct', transport: 'anthropic',
@@ -276,7 +286,7 @@ export const CATALOG = freeze([
     keyUrl: '', docsUrl: '', needsKey: false, local: false, modelList: true,
     chat: { defaults: CLAUDE_MODELS, recommended: 'claude-opus-5-5', fast: 'claude-haiku-5-5' },
     embeddings: null,
-    supports: { tools: true, images: true, reasoning: true, embeddings: false },
+    supports: { tools: true, images: true, reasoning: true, embeddings: false, structuredOutputs: false },
   },
   {
     id: 'bridge', name: 'Local bridge', shortName: 'Bridge', kind: 'bridge', via: 'bridge', transport: 'bridge',

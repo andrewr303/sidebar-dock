@@ -79,6 +79,19 @@ export function groupTasks(notes, filter = 'open') {
   return groups.sort((a, b) => String(b.note.updatedAt || '').localeCompare(String(a.note.updatedAt || '')));
 }
 
+/**
+ * The index in `to` (an editor's newer Markdown) of task `index` drawn from `from` (the stored note): the task with
+ * the same text at the same occurrence, or null when the editor no longer has it.
+ */
+export function remapTaskIndex(from, to, index) {
+  if (from === to) return index;
+  const before = extractTasks(from || ''), after = extractTasks(to || '');
+  const task = before.find(entry => entry.index === index);
+  if (!task) return null;
+  const nth = before.filter(entry => entry.text === task.text && entry.index < index).length;
+  return after.filter(entry => entry.text === task.text)[nth]?.index ?? null;
+}
+
 /** Task totals across notes: { open, done, all }. */
 export function taskTotals(notes) {
   let open = 0, done = 0;
@@ -142,6 +155,12 @@ function derive(key, compute) {
 }
 
 const notesState = ctx => (ctx.state.notes ||= { scope: 'all', collectionId: '', noteId: null, query: '', sort: 'updated' });
+// Whether the open popover belongs to the button with this action (and data-id): renders keep aria-expanded true
+// while its menu is open instead of resetting what overlay.js set on the anchor.
+const menuOpenFor = (ctx, action, id) => {
+  const anchor = ctx.state.popover?.anchorEl;
+  return anchor?.dataset?.action === action && (id === undefined || anchor.dataset.id === id);
+};
 const pageUrl = ctx => (/^https?:/i.test(ctx.state.page?.url || '') ? ctx.state.page.url : '');
 const allNotes = ctx => cached(ctx, 'notes:all', () => ctx.select.live().filter(item => item.type === 'note'));
 const scopeNotes = (ctx, scope) => (scope === 'page' ? (pageUrl(ctx) ? ctx.select.notesForUrl(pageUrl(ctx)) : []) : allNotes(ctx));
@@ -219,9 +238,14 @@ function templateMenu(ctx) {
 }
 
 async function toggleTaskIn(ctx, id, index, done) {
-  const editor = editorFor(id);
-  if (editor && editor.toggleTask(index, done)) return;
   const note = latestItem(ctx, id);
+  const editor = editorFor(id);
+  if (editor) {
+    // Checkboxes outside the editor are drawn from the stored note; unsaved edits may have moved its tasks since.
+    const at = remapTaskIndex(note?.content || '', editor.getMarkdown(), index);
+    if (at === null) { ctx.toast('This task changed in the editor. Check it off there.', { tone: 'warning' }); ctx.render(); return; }
+    if (editor.toggleTask(at, done)) return;
+  }
   if (!note) return;
   const content = toggleTask(note.content || '', index, done);
   if (content === note.content) return;
@@ -251,12 +275,14 @@ function noteCard(ctx, note, { clamp = 8, showPage = true, from = '' } = {}) {
   const collection = note.collectionId ? ctx.select.collection(note.collectionId) : null;
   const name = noteName(note);
   const reminder = note.reminderAt && !note.reminderNotifiedAt;
+  // Cards sit under the side header's h1 in the Notes tab and under the "Notes on this page" h2 in the This page tab.
+  const heading = raw(from === 'page' ? 'h3' : 'h2');
   const body = String(note.content || '').trim()
     ? raw(cardHtml(ctx, note, expanded))
     : html`<p class="note-card-empty">Empty note</p>`;
   return html`<article class="${cx('note-card', expanded && 'is-expanded')}" data-key="nc:${from || 'notes'}:${note.id}" data-id="${note.id}" style="--clamp:${clamp}" aria-labelledby="nc-${from || 'n'}-${note.id}">
     <header class="note-card-head">
-      <h3 class="note-card-title"><button type="button" class="note-card-open" id="nc-${from || 'n'}-${note.id}" data-action="notes.open" data-id="${note.id}" data-from="${from}">${name}</button></h3>
+      <${heading} class="note-card-title"><button type="button" class="note-card-open" id="nc-${from || 'n'}-${note.id}" data-action="notes.open" data-id="${note.id}" data-from="${from}">${name}</button></${heading}>
       ${note.pinned ? html`<span class="note-card-pin" title="Pinned">${icon('pin', { size: 14 })}<span class="sr-only">Pinned</span></span>` : ''}
       ${info.progress.total ? progressMarkup(info.progress) : ''}
     </header>
@@ -268,7 +294,8 @@ function noteCard(ctx, note, { clamp = 8, showPage = true, from = '' } = {}) {
       <span class="note-card-spacer"></span>
       ${reminder ? html`<span class="note-card-bell" title="Reminder set">${icon('bell', { size: 14 })}<span class="sr-only">Reminder set</span></span>` : ''}
       <time class="note-card-time" datetime="${note.updatedAt}">${editedLabel(note.updatedAt)}</time>
-      ${iconButton({ icon: 'ellipsis', label: `Actions for ${name}`, action: 'notes.card-menu', data: { id: note.id, from }, size: 'sm', className: 'note-card-menu' })}
+      ${iconButton({ icon: 'ellipsis', label: `Actions for ${name}`, action: 'notes.card-menu', data: { id: note.id, from }, size: 'sm', className: 'note-card-menu',
+        expanded: menuOpenFor(ctx, 'notes.card-menu', note.id) && (ctx.state.popover.anchorEl.dataset.from || '') === from })}
     </footer>
   </article>`;
 }
@@ -370,14 +397,15 @@ function renderListPane(ctx, { all, counts, list, selectedId }) {
       ${iconButton({ icon: 'calendar-days', label: `Today’s note (${dailyNoteTitle(new Date())})`, action: 'notes.today', size: 'sm', variant: 'ghost' })}
       <div class="split-btn split-btn-primary split-btn-sm notes-new" role="group" aria-label="New note">
         <button type="button" class="btn btn-primary btn-sm split-btn-main" data-action="notes.new" aria-keyshortcuts="N" data-tooltip="New note (N)">${icon('square-pen', { size: 14 })}<span class="btn-label">New note</span></button>
-        <button type="button" class="btn btn-primary btn-sm split-btn-menu" data-action="notes.templates" aria-label="New note from a template" aria-haspopup="menu" aria-expanded="false" data-tooltip="Templates">${icon('chevron-down', { size: 14 })}</button>
+        <button type="button" class="btn btn-primary btn-sm split-btn-menu" data-action="notes.templates" aria-label="New note from a template" aria-haspopup="menu" aria-expanded="${menuOpenFor(ctx, 'notes.templates') ? 'true' : 'false'}" data-tooltip="Templates">${icon('chevron-down', { size: 14 })}</button>
       </div>
     </header>
     <div class="notes-pane-tools">
       ${searchField({ value: s.query, placeholder: 'Search notes', action: 'notes.query', keydown: 'notes.search-key', id: 'notes-search', label: 'Search notes', clearAction: 'notes.clear-query' })}
       ${all.length ? renderChips(ctx, counts) : ''}
       ${all.length ? html`<div class="notes-sortbar"><span class="notes-sortbar-count">${list.length === all.length ? `${list.length.toLocaleString()} ${list.length === 1 ? 'note' : 'notes'}` : `${list.length.toLocaleString()} of ${all.length.toLocaleString()}`}</span>
-        ${button({ label: sortLabel, icon: 'arrow-up-down', variant: 'ghost', size: 'sm', action: 'notes.sort-menu', className: 'notes-sort', attrs: { 'aria-haspopup': 'menu', 'aria-label': `Sort notes: ${sortLabel}` } })}</div>` : ''}
+        ${button({ label: sortLabel, icon: 'arrow-up-down', variant: 'ghost', size: 'sm', action: 'notes.sort-menu', className: 'notes-sort',
+          attrs: { 'aria-haspopup': 'menu', 'aria-expanded': menuOpenFor(ctx, 'notes.sort-menu') ? 'true' : 'false', 'aria-label': `Sort notes: ${sortLabel}` } })}</div>` : ''}
     </div>
     <div class="notes-scroll" data-keydown="notes.list-key">${body}</div>
   </section>`;
@@ -401,7 +429,7 @@ function renderChips(ctx, counts) {
     ${chipButton('', 'All', counts.total, undefined, !s.collectionId)}
     ${visible.filter(Boolean).map(({ collection, count: n }) => chipButton(collection.id, collection.name, n, collection.color, s.collectionId === collection.id))}
     ${noneChip ? chipButton(NO_COLLECTION, 'No collection', counts.none, null, s.collectionId === NO_COLLECTION) : ''}
-    ${hidden > 0 ? html`<button type="button" class="notes-chip is-more" data-action="notes.filter-menu" aria-haspopup="menu" aria-expanded="false">${hidden + (noneChip || !counts.none ? 0 : 1)} more${icon('chevron-down', { size: 12 })}</button>` : ''}
+    ${hidden > 0 ? html`<button type="button" class="notes-chip is-more" data-action="notes.filter-menu" aria-haspopup="menu" aria-expanded="${ctx.state.popover?.name === 'notes.collections' ? 'true' : 'false'}">${hidden + (noneChip || !counts.none ? 0 : 1)} more${icon('chevron-down', { size: 12 })}</button>` : ''}
   </div>`;
 }
 
@@ -605,7 +633,7 @@ function renderSideList(ctx) {
       </div>` : ''}
     </div>
     <div class="side-notes-body">${body}</div>
-    ${!hasNotes ? '' : html`<div class="notes-fab-wrap"><button type="button" class="btn btn-primary notes-fab" data-action="notes.fab" aria-keyshortcuts="N">${icon('plus', { size: 16 })}<span class="btn-label">${scope === 'page' ? 'Note on this page' : 'New note'}</span></button></div>`}
+    ${!hasNotes ? '' : html`<div class="notes-fab-wrap"><button type="button" class="btn btn-primary notes-fab" data-action="notes.fab" ${scope === 'page' ? '' : raw('aria-keyshortcuts="N"')}>${icon('plus', { size: 16 })}<span class="btn-label">${scope === 'page' ? 'Note on this page' : 'New note'}</span></button></div>`}
   </div>`;
 }
 
@@ -747,7 +775,8 @@ registerActions({
   },
   'notes.rail': ({ ctx, el }) => {
     // Below the inline width the rail opens over the editor for a moment instead of changing the saved preference.
-    const narrow = (el?.closest?.('.notes-ws')?.clientWidth || innerWidth) < RAIL_INLINE_MIN;
+    // Same test as the container query (max-width: 1040px), so the toggle never flips a preference the CSS hides.
+    const narrow = (el?.closest?.('.notes-ws')?.getBoundingClientRect().width || innerWidth) <= RAIL_INLINE_MIN;
     if (narrow) setRailPeek(ctx, !railPeek);
     else { setRailPeek(ctx, false); ctx.prefs.set('notesRail', ctx.prefs.get('notesRail', true) === false); ctx.render(); }
     if (narrow && railPeek) ctx.nextFrame(() => document.querySelector('.notes-rail.is-peek .notes-rail-head .icon-btn')?.focus({ preventScroll: true }));

@@ -68,11 +68,20 @@ export function toGeminiContents(messages) {
   return contents;
 }
 
-export function buildRequest({ provider, baseUrl, apiKey, model, modelInfo, system, messages, tools, effort, maxTokens }) {
+// Structured output with function calling needs a Gemini 3 or later model.
+const STRUCTURED_WITH_TOOLS = /^gemini-(?:[3-9]|\d{2})/;
+
+export function buildRequest({ provider, baseUrl, apiKey, model, modelInfo, system, messages, tools, responseFormat, effort, maxTokens }) {
   const generationConfig = {};
   if (Number.isInteger(maxTokens) && maxTokens > 0) generationConfig.maxOutputTokens = maxTokens;
   const thinking = thinkingConfig(model, effort, modelInfo);
   if (thinking) generationConfig.thinkingConfig = thinking;
+  // responseJsonSchema takes standard JSON Schema (additionalProperties included), unlike the OpenAPI subset of
+  // responseSchema, so the caller's schema goes as is. Thought parts stay free text; the answer is the JSON.
+  if (responseFormat?.schema && (!tools?.length || STRUCTURED_WITH_TOOLS.test(model.replace(/^models\//, '')))) {
+    generationConfig.responseMimeType = 'application/json';
+    generationConfig.responseJsonSchema = responseFormat.schema;
+  }
   const body = { contents: toGeminiContents(messages) };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
   if (Object.keys(generationConfig).length) body.generationConfig = generationConfig;
@@ -152,6 +161,8 @@ export async function stream(ctx) {
 }
 
 const NOT_CHAT = /(embedding|imagen|veo|lyria|tts|aqa|native-audio|live|image-generation|-image)/i;
+// Gemini 2.5 and later take responseJsonSchema; 2.0 also needs propertyOrdering, so it is left unknown (not sent).
+const STRUCTURED_MODEL = /^gemini-(?:2\.5|[3-9]|\d{2})/;
 
 export async function listModels({ provider, baseUrl, apiKey, signal }) {
   const models = [];
@@ -169,7 +180,8 @@ export async function listModels({ provider, baseUrl, apiKey, signal }) {
         contextWindow: entry.inputTokenLimit ?? null, maxOutput: entry.outputTokenLimit ?? null,
         efforts: /^gemini-(?:[3-9]|\d{2})/.test(id) ? [...DEFAULT_LEVELS] : [], defaultEffort: null,
         chat: methods.includes('generateContent') && !NOT_CHAT.test(id),
-        capabilities: { tools: !embeddings, images: !embeddings, reasoning: !!entry.thinking, embeddings },
+        capabilities: { tools: !embeddings, images: !embeddings, reasoning: !!entry.thinking, embeddings,
+          ...(!embeddings && STRUCTURED_MODEL.test(id) ? { structuredOutputs: true } : {}) },
       });
     }
     if (!data.nextPageToken || data.nextPageToken === token) break;

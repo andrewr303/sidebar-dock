@@ -174,6 +174,12 @@ export function maskedKey(hint) {
   return `••••••••${tail}`;
 }
 
+/** The tail kept for the mask. Short keys (local servers often use "test" or "lm-studio") keep none: four characters would give most of them away. */
+export function keyTail(key) {
+  const text = String(key || '').trim();
+  return text.length >= 16 ? text.slice(-4) : '';
+}
+
 /** Catalog apps Still reaches through Raindrop.io or a backup file, grouped for Integrations. */
 export function integrationGroups(catalog = []) {
   const others = catalog.filter(entry => !['claude', 'codex', 'raindrop'].includes(entry.id));
@@ -364,7 +370,11 @@ const isOpen = ctx => ctx.state.dialogs.some(entry => entry.name === DIALOG);
 const settingsOf = ctx => ctx.library?.settings || {};
 const version = () => { try { return globalThis.chrome?.runtime?.getManifest?.()?.version || '0.3.0'; } catch { return '0.3.0'; } };
 const topProps = (ctx, name) => ctx.state.dialogs.findLast(entry => entry.name === name)?.props || null;
-const patchConnect = (ctx, patch) => { if (topProps(ctx, CONNECT)) ctx.updateDialog(CONNECT, patch); };
+// Each connect dialog gets a session number, so a save, test or model list that finishes after the dialog was closed
+// (or replaced by another provider's) never patches, clears or closes the dialog that is open now.
+let connectSession = 0;
+const connectProps = (ctx, session) => { const props = topProps(ctx, CONNECT); return props && (session === undefined || props.session === session) ? props : null; };
+const patchConnect = (ctx, patch, session) => { if (connectProps(ctx, session)) ctx.updateDialog(CONNECT, patch); };
 const aiSettings = ctx => data.aiSettings || ctx.ai?.DEFAULT_AI_SETTINGS || {};
 const focusSoon = (ctx, selector) => ctx.nextFrame(() => document.querySelector(selector)?.focus({ preventScroll: false }));
 const since = iso => relativeDate(iso).replace(/^Just now$/, 'just now');
@@ -503,7 +513,8 @@ export function openSettings(ctx, section = 'general', { providerId = '' } = {})
     refresh(ctx, { bridge: true }).catch(error => console.error(error));
   }
   if (!providerId) return;
-  const ready = data.connections ? Promise.resolve() : live.aiLoad || loadAi(ctx);
+  // Wait for the load the open just started (connections may have changed since Settings was last open).
+  const ready = live.aiLoad || (data.connections ? Promise.resolve() : loadAi(ctx));
   ready.then(() => {
     if (!isOpen(ctx) || topProps(ctx, CONNECT)) return;
     const provider = ctx.ai?.getProvider(providerId);
@@ -864,13 +875,13 @@ function renderAiDefaults(ctx) {
   return group({ title: 'Defaults', body: card([
     row({ label: 'Chat model', description: chat.model?.description || 'Used by Ask and by note writing tools unless you pick another model there.',
       control: select({ name: 'chat', value: chatValue, label: 'Chat model', action: 'settings.ai-model', size: 'sm', className: 'settings-select',
-        options: withCurrent(modelSelectOptions(ctx), chatValue, chat.id) }) }),
+        options: withCurrent(modelSelectOptions(ctx), chatValue, chat.id || chat.connection?.label) }) }),
     row({ label: 'Reasoning effort', description: efforts.length ? 'Higher effort thinks longer before answering. It is slower and uses more tokens.' : 'This model does not offer an effort setting.',
       control: select({ name: 'effort', value: efforts.length ? effortFor(chat.model, effort) : '', label: 'Reasoning effort', action: 'settings.ai-effort', size: 'sm', className: 'settings-select is-narrow',
         disabled: !efforts.length, options: efforts.length ? efforts.map(level => ({ value: level, label: ai.EFFORT_LABELS?.[level] || level })) : [{ value: '', label: 'Not adjustable' }] }) }),
     row({ label: 'Fast model', description: 'Used for quick jobs: title and tag suggestions, summaries in the Add dialog and short rewrites.',
       control: select({ name: 'quick', value: quickValue, label: 'Fast model', action: 'settings.ai-quick', size: 'sm', className: 'settings-select',
-        options: withCurrent(modelSelectOptions(ctx, { includeSame: true }), quickValue, quick.id) }) }),
+        options: withCurrent(modelSelectOptions(ctx, { includeSame: true }), quickValue, quick.id || quick.connection?.label) }) }),
     switchRow({ label: 'Suggest a title and tags when saving', description: 'Uses the fast model in the Add dialog. Nothing is sent until you open the dialog for a page.',
       checked: settings.autoSuggestOnSave !== false, action: 'settings.ai-flag', data: { key: 'autoSuggestOnSave' } }),
     switchRow({ label: 'Include page text when asking about a page', description: 'Sends the readable text of the page you are on with your question.',
@@ -1030,11 +1041,12 @@ function indexRow(ctx, status, summary) {
   else if (enabled && (status.paused || status.pending > 0 || status.error)) actions.push(button({ label: status.paused ? 'Resume' : 'Index now', icon: 'refresh-cw', size: 'sm', variant: 'primary', action: 'settings.index-resume', loading: working }));
   if (enabled) actions.push(button({ label: 'Rebuild', size: 'sm', variant: 'secondary', action: 'settings.index-rebuild' }));
   if ((status?.indexed || 0) > 0 || enabled) actions.push(button({ label: 'Clear', size: 'sm', variant: 'ghost', className: 'settings-danger-text', action: 'settings.index-clear' }));
-  return html`<div class="settings-row is-stacked index-status" role="status" aria-live="polite">
+  // Only the summary sentence is a live region: the buttons and the 5-second "Last run" clock are not re-announced.
+  return html`<div class="settings-row is-stacked index-status">
     <div class="index-status-head"><span class="settings-row-label">${status?.model || 'Index'} ${badge({ label: summary.label, tone: summary.tone })}</span>
       ${status?.lastRunAt ? html`<span class="settings-row-desc">Last run ${since(status.lastRunAt)}</span>` : ''}</div>
     ${summary.percent !== null ? progressBar({ percent: summary.state === 'running' && !status.total ? null : summary.percent, label: 'Indexed items', tone: summary.tone }) : ''}
-    <p class="${cx('settings-row-desc', summary.state === 'error' && 'is-error')}">${summary.detail}</p>
+    <p class="${cx('settings-row-desc', summary.state === 'error' && 'is-error')}" role="status">${summary.detail}</p>
     ${actions.length ? html`<div class="settings-actions">${actions}</div>` : ''}
   </div>`;
 }
@@ -1208,17 +1220,18 @@ function openConnect(ctx, { providerId = '', id = '' } = {}) {
   if (!provider) throw new Error('Choose a supported AI provider.');
   connectDraft = { apiKey: '', baseUrl: connection?.baseUrl || provider.baseUrl || '', label: connection && connection.label !== provider.name ? connection.label : '',
     workspaceId: connection?.workspaceId || '', defaultModel: connection?.defaultModel || provider.chat?.recommended || '' };
-  ctx.openDialog(CONNECT, { providerId: provider.id, id: connection?.id || '', showKey: false, saving: false, testing: false, result: null, justConnected: false,
+  const session = ++connectSession;
+  ctx.openDialog(CONNECT, { session, providerId: provider.id, id: connection?.id || '', showKey: false, saving: false, testing: false, result: null, justConnected: false,
     models: null, modelsLoading: false, modelsError: '', advanced: !!connection?.workspaceId });
-  if (connection && provider.chat && provider.modelList) loadModels(ctx, connection.id);
+  if (connection && provider.chat && provider.modelList) loadModels(ctx, connection.id, { session });
 }
 
-async function loadModels(ctx, id, { refresh: fresh = false, access } = {}) {
-  patchConnect(ctx, { modelsLoading: true, modelsError: '' });
+async function loadModels(ctx, id, { refresh: fresh = false, access, session } = {}) {
+  patchConnect(ctx, { modelsLoading: true, modelsError: '' }, session);
   try {
     await access;
-    patchConnect(ctx, { models: await ctx.ai.listModels(id, { refresh: fresh, kind: 'chat' }), modelsLoading: false });
-  } catch (error) { patchConnect(ctx, { modelsLoading: false, modelsError: error.message }); }
+    patchConnect(ctx, { models: await ctx.ai.listModels(id, { refresh: fresh, kind: 'chat' }), modelsLoading: false }, session);
+  } catch (error) { patchConnect(ctx, { modelsLoading: false, modelsError: error.message }, session); }
 }
 
 // access: the hostAccess request started in the click. A refusal reads as a failed test, like any other.
@@ -1242,7 +1255,10 @@ const ERROR_HINTS = {
 function renderConnect(ctx, props) {
   const ai = ctx.ai;
   const provider = ai?.getProvider(props.providerId);
-  if (!provider) return html`<header class="dialog-header"><h2 class="dialog-title" id="dialog-title-settings.connect">Provider unavailable</h2></header>`;
+  if (!provider) {
+    return html`<div class="dialog-header"><h2 class="dialog-title" id="dialog-title-settings.connect">Provider unavailable</h2>
+      ${iconButton({ icon: 'x', label: 'Close', action: 'overlay.dismiss', size: 'sm', className: 'dialog-close' })}</div>`;
+  }
   const connection = props.id ? (data.connections || []).find(entry => entry.id === props.id) : null;
   const d = connectDraft;
   const keyOptional = !provider.needsKey;
@@ -1304,25 +1320,26 @@ function renderConnect(ctx, props) {
   </form>`;
 }
 
-async function finishConnectSave(ctx, pending, { test, closeOnSuccess, keyTail }) {
-  patchConnect(ctx, { saving: true, result: null });
+async function finishConnectSave(ctx, pending, { test, closeOnSuccess, tail, session }) {
+  patchConnect(ctx, { saving: true, result: null }, session);
   let connection;
   try { connection = await pending; } catch (error) {
-    patchConnect(ctx, { saving: false, result: { ok: false, message: error.message || 'The connection could not be saved.', code: error.code || 'error' } });
+    patchConnect(ctx, { saving: false, result: { ok: false, message: error.message || 'The connection could not be saved.', code: error.code || 'error' } }, session);
     return;
   }
-  if (keyTail) keyTails.set(connection.id, keyTail);
-  connectDraft.apiKey = '';
-  clearSecretField('settings-connect-key');
-  patchConnect(ctx, { id: connection.id, saving: false, testing: test, showKey: false });
-  if (!test) { ctx.closeDialog(CONNECT); ctx.toast(`${connection.label} saved`, { tone: 'success' }); await loadAi(ctx); return; }
+  if (tail) keyTails.set(connection.id, tail);
+  // Another provider's dialog may have opened meanwhile: its draft and key field are not this save's to clear.
+  if (!topProps(ctx, CONNECT) || connectProps(ctx, session)) { connectDraft.apiKey = ''; clearSecretField('settings-connect-key'); }
+  const close = () => { if (connectProps(ctx, session)) ctx.closeDialog(CONNECT); };
+  patchConnect(ctx, { id: connection.id, saving: false, testing: test, showKey: false }, session);
+  if (!test) { close(); ctx.toast(`${connection.label} saved`, { tone: 'success' }); await loadAi(ctx); return; }
   let result;
   try { result = await ctx.ai.testConnection(connection.id); } catch (error) { result = { ok: false, message: error.message, code: error.code }; }
   await loadAi(ctx);
-  if (result.ok && closeOnSuccess) { ctx.closeDialog(CONNECT); ctx.toast(`${connection.label} connected`, { tone: 'success' }); return; }
-  patchConnect(ctx, { testing: false, result, justConnected: result.ok });
+  if (result.ok && closeOnSuccess) { close(); ctx.toast(`${connection.label} connected`, { tone: 'success' }); return; }
+  patchConnect(ctx, { testing: false, result, justConnected: result.ok }, session);
   const provider = ctx.ai.getProvider(connection.providerId);
-  if (result.ok && provider?.chat && provider.modelList) loadModels(ctx, connection.id);
+  if (result.ok && provider?.chat && provider.modelList) loadModels(ctx, connection.id, { session });
 }
 
 /* ------------------------------------------------------------------ actions */
@@ -1448,6 +1465,7 @@ registerActions({
   }),
   'settings.import-chrome': ({ ctx }) => {
     if (!ctx.env.isExtension) throw new Error('Bringing in Chrome bookmarks needs Still installed as an extension.');
+    if (busy.has('chrome-bookmarks')) return undefined;
     const granted = requestAccess({ permissions: ['bookmarks'] });
     return withBusy(ctx, 'chrome-bookmarks', async () => {
       if (!(await granted)) throw new Error('Chrome did not allow access to your bookmarks. Try again and choose Allow.');
@@ -1457,12 +1475,14 @@ registerActions({
   },
   'settings.raindrop-field': ({ el }) => { drafts.raindropToken = el.value; },
   'settings.raindrop-connect': ({ ctx }) => {
-    const granted = requestAccess({ origins: [RAINDROP_ORIGIN] });
     const token = drafts.raindropToken.trim();
+    if (busy.has('raindrop-connect')) return undefined;
+    // Nothing to check without a token, so do not ask Chrome for access first.
+    if (!token && !data.integration?.raindropConfigured) throw new Error('Paste your Raindrop API token first.');
+    const granted = requestAccess({ origins: [RAINDROP_ORIGIN] });
     return withBusy(ctx, 'raindrop-connect', async () => {
       if (!(await granted)) throw new Error('Chrome did not allow Still to reach api.raindrop.io. Try again and choose Allow.');
       if (token) await integrations.setRaindropToken(token);
-      else if (!data.integration?.raindropConfigured) throw new Error('Paste your Raindrop API token first.');
       if (token) { drafts.raindropToken = ''; clearSecretField('settings-raindrop-token'); }
       let result;
       try { result = await integrations.testRaindropConnection(); } finally { await loadIntegration(ctx); }
@@ -1470,8 +1490,8 @@ registerActions({
     });
   },
   'settings.raindrop-import': ({ ctx }) => {
-    const granted = requestAccess({ origins: [RAINDROP_ORIGIN] });
     if (data.raindrop?.running) return undefined;
+    const granted = requestAccess({ origins: [RAINDROP_ORIGIN] });
     data.raindrop = { running: true, items: 0 };
     ctx.render();
     return (async () => {
@@ -1514,7 +1534,7 @@ registerActions({
     const props = topProps(ctx, CONNECT);
     if (!props?.id || props.modelsLoading) return undefined;
     const access = hostAccess(ctx, findConnection(props.id));
-    return loadModels(ctx, props.id, { refresh: true, access });
+    return loadModels(ctx, props.id, { refresh: true, access, session: props.session });
   },
   'settings.connect-save': ({ ctx }) => {
     const props = topProps(ctx, CONNECT);
@@ -1533,18 +1553,19 @@ registerActions({
       || (provider.transport === 'anthropic' && input.workspaceId !== (connection?.workspaceId || '')) || connection?.status === 'error';
     // saveConnection asks Chrome for host access before its first await, so it must run inside this handler's gesture.
     const pending = ai.saveConnection(input);
-    return finishConnectSave(ctx, pending, { test: credentialsChanged, closeOnSuccess: !!props.id && !props.justConnected, keyTail: input.apiKey?.slice(-4) });
+    return finishConnectSave(ctx, pending, { test: credentialsChanged, closeOnSuccess: !!props.id && !props.justConnected, tail: keyTail(input.apiKey), session: props.session });
   },
   'settings.connect-test': ({ ctx }) => {
     const props = topProps(ctx, CONNECT);
     if (!props?.id || props.saving || props.testing) return undefined;
+    const { session } = props;
     const access = hostAccess(ctx, findConnection(props.id));
-    patchConnect(ctx, { testing: true, result: null });
+    patchConnect(ctx, { testing: true, result: null }, session);
     return (async () => {
       const result = await testWithAccess(ctx, props.id, access);
-      patchConnect(ctx, { testing: false, result });
+      patchConnect(ctx, { testing: false, result }, session);
       await loadAi(ctx);
-      if (result.ok && ctx.ai.getProvider(props.providerId)?.modelList) loadModels(ctx, props.id);
+      if (result.ok && ctx.ai.getProvider(props.providerId)?.modelList) loadModels(ctx, props.id, { session });
     })();
   },
   'settings.connect-remove': async ({ ctx }) => {
@@ -1566,6 +1587,7 @@ registerActions({
     return undefined;
   },
   'settings.connection-test': ({ ctx, data: payload }) => {
+    if (busy.has(`test:${payload.id}`)) return undefined;
     const access = hostAccess(ctx, findConnection(payload.id));
     return withBusy(ctx, `test:${payload.id}`, async () => {
       const result = await testWithAccess(ctx, payload.id, access);
@@ -1696,6 +1718,7 @@ registerActions({
   },
   'settings.search-dims': ({ ctx, el }) => setAi(ctx, { embeddings: { dims: Number(el.value) || null } }),
   'settings.search-refresh-models': ({ ctx, data: payload }) => {
+    if (busy.has('embedding-models')) return undefined;
     const access = hostAccess(ctx, findConnection(payload.id));
     return withBusy(ctx, 'embedding-models', async () => {
       await access;

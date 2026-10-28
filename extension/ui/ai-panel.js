@@ -1,7 +1,7 @@
 // Assistant panel (SPEC §7.3) on the lib/ai facade: conversation header with history, a transcript painted by the
 // 'ai.transcript' mount (streamed tokens repaint only that mount, never the app), proposal cards that gate every library
 // change, context chips, the model picker, the composer, and a no-provider setup with keyless hand-off.
-import { html, raw, cx, plural } from './html.js';
+import { html, raw, cx, plural, esc } from './html.js';
 import { icon } from './icons.js';
 import { button, iconButton, collectionIcon, favicon, domainOf, relativeDate, emptyState, spinner, badge, avatarTile, TYPE_ICONS } from './components.js';
 import { registerActions, registerMount, registerShortcuts } from './runtime.js';
@@ -121,6 +121,8 @@ export function streamingCitations(answer, resolve) {
  */
 export function numberCitations(markup, citations = []) {
   const numbers = new Map(citations.map((source, index) => [String(source.id), source.n || index + 1]));
+  // The attached page is opened by the address it had when this answer was written, not the conversation's latest page.
+  const pageUrl = text(citations.find(source => source.id === 'page:current')?.url);
   const run = (word, space, chip, punct) => `<span class="ai-cite-run">${word}${space}${chip}${punct}</span>`;
   return String(markup).replace(/([^\s<>&;]{0,24})( ?)<button([^>]*)class="ai-citation"([^>]*)>[\s\S]*?<\/button>([.,;:!?)]*)/g, (match, word, space, before, after, punct) => {
     const attributes = `${before} ${after}`;
@@ -128,7 +130,8 @@ export function numberCitations(markup, citations = []) {
     if (!id || !numbers.has(id)) return match;
     const title = attributes.match(/title="([^"]*)"/)?.[1] || 'Source';
     const n = numbers.get(id);
-    return run(word, space, `<span class="ai-cite" data-tooltip="${title}"><button type="button" class="ai-citation is-numbered" data-action="ai.cite" data-id="${id}" aria-label="Source ${n}: ${title}">${n}</button></span>`, punct);
+    const url = id === 'page:current' && isWebUrl(pageUrl) ? ` data-url="${esc(pageUrl)}"` : '';
+    return run(word, space, `<span class="ai-cite" data-tooltip="${title}"><button type="button" class="ai-citation is-numbered" data-action="ai.cite" data-id="${id}"${url} aria-label="Source ${n}: ${title}">${n}</button></span>`, punct);
   }).replace(/([^\s<>&;]{0,24})( ?)<span class="ai-citation-unavailable">\[source unavailable\]<\/span>([.,;:!?)]*)/g,
     (match, word, space, punct) => run(word, space, '<span class="ai-citation-unavailable" data-tooltip="The assistant cited something it did not read">source unavailable</span>', punct));
 }
@@ -250,8 +253,32 @@ export function formatDuration(ms) {
 
 // Live per-proposal UI state (resolver, Review exclusions, receipt, undo); proposal ids are unique across conversations.
 const proposalUi = new Map();
+// What only this session knows about finished answers, by message id: each step's result (the item ids behind
+// "Searched library · N matches") and the notes sent while answering. The engine saves neither, so they are put back
+// on every copy of a conversation this view reads from storage.
+const sessionExtras = new Map();
+const SESSION_EXTRAS_MAX = 500;
+// Chats deleted or renamed from the history while their answer was still running: the engine saves the copy it read
+// when the answer started, so the deletion or the latest name is applied again when the answer ends.
+const deletedConversations = new Set();
+const renamedConversations = new Map();
 let transcript = null;
 let runSeq = 0;
+
+const newConversationId = () => `conversation_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
+
+function withSessionExtras(conversation) {
+  if (!conversation?.messages?.length || !sessionExtras.size) return conversation;
+  return { ...conversation, messages: conversation.messages.map(message => {
+    const extra = sessionExtras.get(message.id);
+    if (!extra) return message;
+    const tools = (message.tools || []).map((tool, index) => {
+      const live = extra.tools[index];
+      return live?.name === tool.name && live.result && !tool.result ? { ...tool, result: live.result } : tool;
+    });
+    return { ...message, tools, notes: extra.notes };
+  }) };
+}
 
 function st(ctx) {
   const s = ctx.state.ai ||= {};
@@ -270,6 +297,8 @@ function bump(ctx, { render = false } = {}) {
 }
 
 const announce = (ctx, message) => { st(ctx).announce = message; };
+// The conversation on screen; a first question's run already knows the id its new conversation is saved under.
+const activeConversationId = s => s.conversation?.id || s.run?.conversationId || '';
 const popoverOpen = (ctx, name) => ctx.state.popover?.name === name;
 const threadMessages = s => [...(s.conversation?.messages || []), ...(s.run ? [s.run.user, s.run.message] : [])];
 const findMessage = (s, id) => threadMessages(s).find(message => message.id === id) || null;
@@ -400,6 +429,7 @@ async function startRun(ctx, { question, scope, replaceFrom, access, fromDraft }
   const s = st(ctx);
   const id = `run-${++runSeq}`;
   const run = { id, controller: new AbortController(), question, scope, lastEvent: '', thinkingStartedAt: 0, thinkingMs: 0, notes: [], startedAt: Date.now(),
+    conversationId: s.conversation?.id || newConversationId(),
     user: { id: `${id}-q`, role: 'user', text: question, context: { scope: scope.scope, ids: scope.ids || [], collectionId: scope.collectionId || '', ...(scope.page ? { page: { url: scope.page.url, title: scope.page.title } } : {}) }, live: true },
     message: { id: `${id}-a`, role: 'assistant', text: '', thinking: '', tools: [], proposals: [], citations: [], error: '', status: '', live: true } };
   const before = s.conversation;
@@ -425,14 +455,25 @@ async function startRun(ctx, { question, scope, replaceFrom, access, fromDraft }
     }
     if (prepared.note) run.notes.push(prepared.note);
     run.started = true;
-    if (replaceFrom && s.conversation?.id) s.conversation = await ctx.ai.saveConversation(s.conversation);
+    if (replaceFrom && s.conversation?.id) s.conversation = withSessionExtras(await ctx.ai.saveConversation(s.conversation));
     const t = s.target || {};
     const result = await ctx.ai.runAssistant({
-      conversationId: s.conversation?.id, input: question, context: prepared.context, signal: run.controller.signal,
+      conversationId: s.conversation?.id || run.conversationId, input: question, context: prepared.context, signal: run.controller.signal,
       connectionId: t.connectionId, model: t.model, effort: t.efforts?.length ? t.effort : undefined,
       onEvent: event => onEvent(ctx, run, event), onProposal: proposal => onProposal(ctx, run, proposal),
     });
     for (const proposal of result?.message?.proposals || []) { const ui = proposalUi.get(proposal.id); if (ui) ui.resolve = null; }
+    const savedId = result?.conversation?.id;
+    if (savedId && deletedConversations.has(savedId)) {
+      // Deleted from the history while it was answering: the engine saved it again when the answer ended.
+      await Promise.resolve().then(() => ctx.ai.deleteConversation(savedId)).catch(error => console.error(error));
+      refreshHistory(ctx, { quiet: true });
+      return;
+    }
+    const title = renamedConversations.get(savedId);
+    if (title !== undefined && result.conversation.title !== title) {
+      try { result.conversation = await ctx.ai.saveConversation({ ...result.conversation, title }); } catch (error) { console.error(error); }
+    }
     if (s.run !== run) return;
     s.conversation = await finalize(ctx, run, result);
     announce(ctx, result.message?.error ? (result.message.error === 'Stopped' ? 'Stopped' : result.message.error) : 'Answer ready');
@@ -451,7 +492,7 @@ async function startRun(ctx, { question, scope, replaceFrom, access, fromDraft }
 }
 
 // Keeps what only this view knows on the saved message: where each card sat in the answer, Review exclusions and
-// undo. The item ids each read step found and the run's notes stay in memory only (the engine saves neither).
+// undo. The item ids each read step found and the run's notes stay in memory only (sessionExtras; the engine saves neither).
 async function finalize(ctx, run, result) {
   const { conversation, message } = result || {};
   if (!conversation || !message) return conversation || null;
@@ -470,11 +511,9 @@ async function finalize(ctx, run, result) {
     const next = { ...conversation, messages: conversation.messages.map(entry => entry.id === message.id ? { ...entry, proposals } : entry) };
     try { saved = await ctx.ai.saveConversation(next); } catch (error) { console.error(error); saved = next; }
   }
-  const withResults = tools => (tools || []).map((tool, index) => {
-    const live = run.message.tools[index];
-    return live?.name === tool.name && live.result && !tool.result ? { ...tool, result: live.result } : tool;
-  });
-  return { ...saved, messages: saved.messages.map(entry => entry.id === message.id ? { ...entry, tools: withResults(entry.tools), notes: [...run.notes] } : entry) };
+  sessionExtras.set(message.id, { tools: run.message.tools.map(({ name, result }) => ({ name, result })), notes: [...run.notes] });
+  if (sessionExtras.size > SESSION_EXTRAS_MAX) sessionExtras.delete(sessionExtras.keys().next().value);
+  return withSessionExtras(saved);
 }
 
 function onEvent(ctx, run, event) {
@@ -584,8 +623,9 @@ function newChat(ctx, { focus = true } = {}) {
 async function openConversation(ctx, id) {
   const s = st(ctx);
   ctx.closePopover?.({ restore: false });
-  if (s.conversation?.id === id && !s.run) return;
-  const conversation = await ctx.ai.getConversation(id);
+  // The chat on screen stays as it is, including an answer that is still coming in.
+  if (activeConversationId(s) === id) return;
+  const conversation = withSessionExtras(await ctx.ai.getConversation(id));
   if (!conversation) { ctx.toast('That conversation is no longer on this device.'); refreshHistory(ctx); return; }
   if (s.run) { stopRun(ctx); s.run = null; }
   const scope = conversation.scope;
@@ -634,7 +674,9 @@ export function askAi(ctx, { prompt = '', scope, ids, collectionId, send = false
     const kind = scope === 'item' && unique(ids).length > 1 ? 'items' : scope;
     const explicit = { scope: kind, ids: unique(ids).slice(0, 200), collectionId: text(collectionId) };
     const current = s.conversation?.scope;
-    const same = current && current.scope === kind && (current.collectionId || '') === explicit.collectionId && unique(current.ids).join() === explicit.ids.join();
+    const pageKey = url => text(url).replace(/#.*$/, '');
+    const same = current && current.scope === kind && (current.collectionId || '') === explicit.collectionId && unique(current.ids).join() === explicit.ids.join()
+      && (kind !== 'page' || pageKey(current.page?.url) === pageKey(ctx.state.page?.url));
     if (!s.run && s.conversation?.messages?.length && !same) newChat(ctx, { focus: false });
     s.explicit = explicit;
     s.added = [];
@@ -870,8 +912,10 @@ function renderQuestion(ctx, message, { last }) {
   </div>`;
 }
 
+// A finished answer's citations are the engine's: only material the assistant actually read. Any other [[id]] stays
+// "source unavailable" even when that id is in the library. Only a streaming answer numbers ids as they arrive.
 function citationsFor(ctx, message) {
-  if (message.citations?.length) return message.citations;
+  if (message.citations?.length || !message.live) return message.citations || [];
   const page = st(ctx).run?.scope?.page;
   return streamingCitations(message.text, id => id === 'page:current' ? page || null : liveItem(ctx, id));
 }
@@ -1180,7 +1224,7 @@ function renderHistoryPopover(ctx) {
   const query = s.historyQuery.trim().toLowerCase();
   const list = (s.history || []).filter(entry => !query || `${entry.title} ${entry.preview || ''}`.toLowerCase().includes(query));
   const row = entry => {
-    const current = entry.id === s.conversation?.id;
+    const current = entry.id === activeConversationId(s);
     return html`<li class="${cx('ai-history-row', current && 'is-current')}" data-key="h:${entry.id}">
       <button type="button" class="ai-history-main" data-action="ai.history-open" data-id="${entry.id}" ${current ? raw('aria-current="true"') : ''}>
         <span class="ai-history-title">${entry.title || 'New conversation'}</span>
@@ -1600,6 +1644,7 @@ registerActions({
     const conversation = await ctx.ai.getConversation(data.id);
     if (!conversation) return;
     const saved = await ctx.ai.saveConversation({ ...conversation, title: name.trim().slice(0, 200) });
+    renamedConversations.set(data.id, saved.title);
     if (s.conversation?.id === data.id) s.conversation = { ...s.conversation, title: saved.title };
     await refreshHistory(ctx, { quiet: true });
     ctx.render();
@@ -1609,8 +1654,9 @@ registerActions({
     const entry = (s.history || []).find(item => item.id === data.id);
     const ok = await ctx.confirm({ title: 'Delete this chat?', body: `“${entry?.title || 'This chat'}” is removed from this device. Saved notes and items stay.`, confirmLabel: 'Delete', tone: 'danger' });
     if (!ok) return;
+    deletedConversations.add(data.id);
     await ctx.ai.deleteConversation(data.id);
-    if (s.conversation?.id === data.id) newChat(ctx, { focus: false });
+    if (activeConversationId(s) === data.id) newChat(ctx, { focus: false });
     await refreshHistory(ctx, { quiet: true });
     ctx.toast('Chat deleted');
   },
@@ -1785,7 +1831,7 @@ async function persistProposal(ctx, proposalId, patch) {
   const next = { ...conversation, messages: conversation.messages.map(message => (message.proposals || []).some(entry => entry.id === proposalId)
     ? { ...message, proposals: message.proposals.map(entry => entry.id === proposalId ? { ...entry, ...patch } : entry) } : message) };
   s.conversation = next;
-  try { s.conversation = await ctx.ai.saveConversation(next); } catch (error) { console.error(error); }
+  try { s.conversation = withSessionExtras(await ctx.ai.saveConversation(next)); } catch (error) { console.error(error); }
 }
 
 // Esc stops an answer from anywhere in the app; inside the composer the composer's own key handler takes it first.

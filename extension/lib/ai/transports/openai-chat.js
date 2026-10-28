@@ -42,7 +42,7 @@ export function toChatTools(tools = []) {
   });
 }
 
-export function buildRequest({ provider, baseUrl, apiKey, model, modelInfo, system, messages, tools, effort, maxTokens }) {
+export function buildRequest({ provider, baseUrl, apiKey, model, modelInfo, system, messages, tools, responseFormat, effort, maxTokens }) {
   const options = provider?.chatOptions || {};
   const headers = { 'content-type': 'application/json', accept: 'text/event-stream', ...authHeaders({ provider, apiKey }), ...(options.headers || {}) };
   const body = { model, messages: toChatMessages(messages, system), stream: true };
@@ -61,6 +61,9 @@ export function buildRequest({ provider, baseUrl, apiKey, model, modelInfo, syst
     }
   }
   if (tools?.length) { body.tools = toChatTools(tools); body.tool_choice = 'auto'; }
+  // OpenAI-style json_schema response format (xAI, OpenRouter, Mistral and LM Studio use the same shape). The catalog
+  // decides which providers and models get it; chat.js only passes strict-compatible schemas.
+  if (responseFormat?.schema) body.response_format = { type: 'json_schema', json_schema: { name: responseFormat.name || 'response', schema: responseFormat.schema, strict: true } };
   return { url: `${baseUrl}/chat/completions`, method: 'POST', headers, body };
 }
 
@@ -162,6 +165,8 @@ function mapListed(entry) {
       images: inputs.length ? inputs.includes('image') : entry.capabilities?.vision ?? null,
       reasoning: params.length ? params.includes('reasoning') || params.includes('reasoning_effort') : null,
       embeddings,
+      // OpenRouter lists structured_outputs for models that take a json_schema response format.
+      ...(params.length ? { structuredOutputs: params.includes('structured_outputs') } : {}),
     },
   };
 }

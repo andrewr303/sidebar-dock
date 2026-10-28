@@ -59,7 +59,7 @@ export function toAnthropicTools(tools = []) {
   });
 }
 
-export function buildRequest({ baseUrl, apiKey, connection, model, modelInfo, system, messages, tools, effort, maxTokens }) {
+export function buildRequest({ baseUrl, apiKey, connection, model, modelInfo, system, messages, tools, responseFormat, effort, maxTokens }) {
   const official = isOfficialHost(baseUrl);
   const limit = Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : DEFAULT_MAX_TOKENS;
   const ceiling = Number.isInteger(modelInfo?.maxOutput) && modelInfo.maxOutput > 0 ? modelInfo.maxOutput : Infinity;
@@ -68,6 +68,12 @@ export function buildRequest({ baseUrl, apiKey, connection, model, modelInfo, sy
   // (an older model such as claude-haiku-4-5) leaves them out, since it rejects both with a 400.
   const adaptive = modelInfo?.capabilities?.reasoning !== false;
   const effortSupported = modelInfo?.capabilities?.effort !== false;
+  // JSON outputs: format constrains Claude's reply text (not thinking or tool calls) to the schema. It sits beside effort,
+  // works with streaming, adaptive thinking, strict tools and server-side fallback, and takes no name or strict field.
+  const outputConfig = {
+    ...(effortSupported ? { effort: clampEffort(effort || 'medium', supported.length ? supported : ANTHROPIC_EFFORTS) } : {}),
+    ...(responseFormat?.schema ? { format: { type: 'json_schema', schema: responseFormat.schema } } : {}),
+  };
   const body = {
     model,
     max_tokens: Math.min(limit, ceiling),
@@ -75,7 +81,7 @@ export function buildRequest({ baseUrl, apiKey, connection, model, modelInfo, sy
     ...(system ? { system } : {}),
     messages: toAnthropicMessages(messages),
     ...(adaptive ? { thinking: { type: 'adaptive', display: 'summarized' } } : {}),
-    ...(effortSupported ? { output_config: { effort: clampEffort(effort || 'medium', supported.length ? supported : ANTHROPIC_EFFORTS) } } : {}),
+    ...(Object.keys(outputConfig).length ? { output_config: outputConfig } : {}),
     cache_control: { type: 'ephemeral' },
   };
   if (tools?.length) { body.tools = toAnthropicTools(tools); body.tool_choice = { type: 'auto' }; }
@@ -218,7 +224,8 @@ function mapModel(entry) {
     // reasoning means adaptive thinking here. effort: false marks a model whose listing says it takes no effort at
     // all, which is different from a listing that says nothing (efforts [] then means unknown).
     capabilities: { tools: true, images: entry.capabilities?.image_input?.supported ?? true, reasoning: entry.capabilities?.thinking?.types?.adaptive?.supported ?? true, embeddings: false,
-      ...(listedEffort && !efforts.length ? { effort: false } : {}) },
+      ...(listedEffort && !efforts.length ? { effort: false } : {}),
+      ...(typeof entry.capabilities?.structured_outputs?.supported === 'boolean' ? { structuredOutputs: entry.capabilities.structured_outputs.supported } : {}) },
   };
 }
 

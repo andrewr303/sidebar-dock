@@ -6,6 +6,7 @@ import {
 } from '../extension/ui/note-editor.js';
 import {
   NO_COLLECTION, inCollection, filterNotes, collectionCounts, previewSource, groupTasks, taskTotals, shortAgo, editedLabel, pageNoteDraft,
+  remapTaskIndex,
 } from '../extension/ui/notes.js';
 
 const note = (id, patch = {}) => ({ id, type: 'note', title: id, content: '', collectionId: '', tags: [], pinned: false,
@@ -126,6 +127,23 @@ test('tasks group by note with open, done and all filters', () => {
   assert.deepEqual(done.map(g => g.note.id), ['new', 'old']);
   assert.deepEqual(groupTasks(notes, 'all').map(g => g.tasks.length), [1, 2]);
   assert.deepEqual(taskTotals(notes), { open: 1, done: 2, all: 3 });
+});
+
+test('a task checked outside the editor maps onto the editor\'s unsaved text', () => {
+  const stored = '- [ ] Alpha\n- [ ] Beta\n- [ ] Gamma';
+  // Same text: same index.
+  assert.equal(remapTaskIndex(stored, stored, 1), 1);
+  // Unrelated edits keep the index.
+  assert.equal(remapTaskIndex(stored, 'Intro\n\n- [ ] Alpha\n- [ ] Beta\n- [ ] Gamma', 2), 2);
+  // A task added above moves Beta down one.
+  assert.equal(remapTaskIndex(stored, '- [ ] New\n- [ ] Alpha\n- [ ] Beta\n- [ ] Gamma', 1), 2);
+  // Repeated texts match by occurrence.
+  assert.equal(remapTaskIndex('- [ ] Call\n- [ ] Call', '- [ ] Other\n- [ ] Call\n- [ ] Call', 1), 2);
+  // A task deleted or reworded in the editor has no match.
+  assert.equal(remapTaskIndex(stored, '- [ ] Alpha\n- [ ] Gamma', 1), null);
+  assert.equal(remapTaskIndex(stored, stored.replace('Beta', 'Bravo'), 1), null);
+  assert.equal(remapTaskIndex(stored, stored, 7), 7);
+  assert.equal(remapTaskIndex(stored, `${stored}\n`, 7), null);
 });
 
 test('list ages and card labels stay short', () => {

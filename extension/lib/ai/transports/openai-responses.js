@@ -43,7 +43,7 @@ export function toResponsesTools(tools = []) {
   });
 }
 
-export function buildRequest({ provider, baseUrl, apiKey, model, modelInfo, system, messages, tools, effort, maxTokens }) {
+export function buildRequest({ provider, baseUrl, apiKey, model, modelInfo, system, messages, tools, responseFormat, effort, maxTokens }) {
   const headers = { 'content-type': 'application/json', accept: 'text/event-stream', ...authHeaders({ provider, apiKey }) };
   const input = toResponsesInput(messages);
   if (provider?.responsesOptions?.presets && model.startsWith('preset:')) {
@@ -60,6 +60,9 @@ export function buildRequest({ provider, baseUrl, apiKey, model, modelInfo, syst
   if (Number.isInteger(maxTokens) && maxTokens > 0) body.max_output_tokens = Math.min(maxTokens, ceiling);
   else if (reasoningModel) body.max_output_tokens = Math.min(DEFAULT_MAX_TOKENS, ceiling);
   if (tools?.length) { body.tools = toResponsesTools(tools); body.tool_choice = 'auto'; }
+  // Structured Outputs: the reply text follows the schema (function calls keep their own schemas). chat.js only passes
+  // strict-compatible schemas, so strict is always on.
+  if (responseFormat?.schema) body.text = { format: { type: 'json_schema', name: responseFormat.name || 'response', schema: responseFormat.schema, strict: true } };
   return { url: `${baseUrl}/responses`, method: 'POST', headers, body };
 }
 
@@ -170,6 +173,9 @@ export async function stream(ctx) {
 }
 
 const NOT_CHAT = /(embedding|tts|whisper|dall-e|image|audio|realtime|transcribe|moderation|search|computer-use|davinci|babbage|sora)/i;
+// GPT-5 and later and o3/o4 take text.format json_schema. Older and chat-latest/codex ids are left unknown (not sent).
+const STRUCTURED_MODEL = /^(?:gpt-(?:[5-9]|\d{2})|o[34])(?:[.-]|$)/;
+const NOT_STRUCTURED = /(chat-latest|codex)/i;
 
 export async function listModels({ provider, baseUrl, apiKey, signal }) {
   const response = await providerFetch(`${baseUrl}/models`, { headers: authHeaders({ provider, apiKey }), signal, provider, secrets: [apiKey], timeoutMs: 20000 });
@@ -181,7 +187,8 @@ export async function listModels({ provider, baseUrl, apiKey, signal }) {
       id: entry.id, name: entry.id, description: '', contextWindow: null, maxOutput: null, efforts: [], defaultEffort: null,
       created: entry.created || null,
       chat: !embeddings && /^(?:gpt-|o\d|chatgpt-)/i.test(entry.id) && !NOT_CHAT.test(entry.id),
-      capabilities: { tools: !embeddings, images: !embeddings, reasoning: REASONING_MODEL.test(entry.id), embeddings },
+      capabilities: { tools: !embeddings, images: !embeddings, reasoning: REASONING_MODEL.test(entry.id), embeddings,
+        ...(STRUCTURED_MODEL.test(entry.id) && !NOT_STRUCTURED.test(entry.id) ? { structuredOutputs: true } : {}) },
     };
   });
 }
