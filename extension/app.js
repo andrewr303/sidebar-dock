@@ -110,6 +110,11 @@ function applyAppearance() {
   const s = library?.settings || {};
   const theme = ['light', 'dark'].includes(s.theme) ? s.theme : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   const html = document.documentElement;
+  if (html.dataset.theme && html.dataset.theme !== theme) {
+    // Swap every color at once instead of animating each surface's transition.
+    html.classList.add('theme-switching');
+    requestAnimationFrame(() => requestAnimationFrame(() => html.classList.remove('theme-switching')));
+  }
   html.dataset.theme = theme;
   html.dataset.accent = s.accent || 'blue';
   html.dataset.density = s.density || 'comfortable';
