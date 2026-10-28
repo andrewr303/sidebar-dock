@@ -2,7 +2,7 @@
 // with a deterministic force pass, scoped to all items, the Inbox or a collection, filtered by text and type, and
 // optionally joined by dashed "similar" edges from the semantic index.
 import { html, cx, plural } from './html.js';
-import { icon } from './icons.js';
+import { icon, hasIcon } from './icons.js';
 import { button, iconButton, segmented, searchField, switchToggle, emptyState, collectionIcon, colorVar, TYPE_LABELS } from './components.js';
 import { registerActions, registerMount } from './runtime.js';
 import { searchRows } from './selectors.js';
@@ -149,7 +149,9 @@ const clip = (text, max) => text.length > max ? `${text.slice(0, max - 1).trimEn
 // ---------------------------------------------------------------------------------------------------------------
 // State, data and caching
 
-const mapState = ctx => ctx.state.mapView ||= { scope: '', query: '', type: 'all', similar: false, similarFor: '', similarEdges: [], similarStatus: 'idle' };
+/** The legacy ?mapSpace= link parameter ('inbox' or 'space:<collectionId>') seeds the first scope. */
+const bootScope = () => { try { return String(new URLSearchParams(globalThis.location?.search || '').get('mapSpace') || '').replace(/^space:/, ''); } catch { return ''; } };
+const mapState = ctx => ctx.state.mapView ||= { scope: bootScope(), query: '', type: 'all', similar: false, similarFor: '', similarEdges: [], similarStatus: 'idle' };
 /** Scope for the next map render: '' (all items), 'inbox' or a collection id. */
 export function setMapScope(ctx, scope = '') { mapState(ctx).scope = scope; }
 
@@ -199,7 +201,11 @@ async function loadSimilar(ctx, entry) {
   m.similarStatus = 'loading';
   m.similarEdges = [];
   try {
-    const results = await Promise.all(entry.graph.nodes.map(async node => [node.id, await ctx.ai.relatedItems(node.id, { limit: 4 }).catch(() => [])]));
+    // One call first: it loads and caches the vectors, so the rest reuse them instead of each reading the whole index.
+    const ask = async node => [node.id, await Promise.resolve().then(() => ctx.ai.relatedItems(node.id, { limit: 4 })).catch(() => [])];
+    const nodes = entry.graph.nodes;
+    const results = nodes.length ? [await ask(nodes[0])] : [];
+    for (let i = 1; i < nodes.length && m.similarFor === entry.key; i += 6) results.push(...await Promise.all(nodes.slice(i, i + 6).map(ask)));
     if (m.similarFor !== entry.key) return;
     m.similarEdges = similarEdges(results, entry.graph);
     m.similarStatus = 'done';
@@ -216,7 +222,8 @@ function scopeButton(ctx, scope) {
   const collection = scope && scope !== 'inbox' ? ctx.select.collection(scope) : null;
   const name = collection ? ctx.select.path(collection.id).map(c => c.name).join(' / ') : scope === 'inbox' ? 'Inbox' : 'All items';
   const glyph = collection ? collectionIcon(collection, { size: 16 }) : icon(scope === 'inbox' ? 'inbox' : 'library', { size: 14 });
-  return html`<button type="button" class="btn btn-secondary btn-sm map-scope" data-action="map.scope-menu" aria-haspopup="menu" aria-expanded="false" aria-label="Scope: ${name}">
+  const open = ctx.state.popover?.anchorEl?.dataset?.action === 'map.scope-menu';
+  return html`<button type="button" class="btn btn-secondary btn-sm map-scope" data-action="map.scope-menu" aria-haspopup="menu" aria-expanded="${open ? 'true' : 'false'}" aria-label="Scope: ${name}">
     ${glyph}<span class="btn-label">${name}</span>${icon('chevron-down', { size: 14, className: 'btn-icon-right' })}</button>`;
 }
 
@@ -390,7 +397,8 @@ function pickScope(ctx, anchor) {
     { label: 'All items', icon: 'library', checked: !m.scope, run: () => choose('') },
     { label: 'Inbox', icon: 'inbox', checked: m.scope === 'inbox', run: () => choose('inbox') },
     ...(recent.length ? [{ separator: true }, { heading: 'Recent collections' }] : []),
-    ...recent.map(c => ({ label: c.name, icon: c.icon || 'folder', checked: m.scope === c.id, run: () => choose(c.id) })),
+    // Menus take icon names only; an emoji collection icon would log and fall back to a blank circle.
+    ...recent.map(c => ({ label: c.name, icon: hasIcon(c.icon) ? c.icon : 'folder', checked: m.scope === c.id, run: () => choose(c.id) })),
     { separator: true },
     { label: 'Choose collection…', icon: 'folder-tree', run: () => {
       try { ctx.openPopover('pick.collection', anchor, { value: m.scope && m.scope !== 'inbox' ? m.scope : undefined, onPick: id => choose(id || 'inbox'), allowInbox: true, title: 'Map a collection' }); }

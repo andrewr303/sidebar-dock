@@ -241,9 +241,13 @@ export function viewMeta(ctx, view = ctx.state.view) {
 // ---------------------------------------------------------------------------------------------------------------
 // Rendering
 
+/** True while the popover anchored to the trigger with this action is open (keeps aria-expanded right across renders). */
+export const menuOpenFor = (ctx, action) => ctx.state.popover?.anchorEl?.dataset?.action === action;
+
 function renderSortButton(ctx) {
   return button({ label: SORT_SHORT[ctx.state.sort] || 'Newest', icon: 'arrow-down-wide-narrow', iconRight: 'chevron-down', variant: 'ghost', size: 'sm',
-    action: 'library.sort-menu', className: 'lib-sort', attrs: { 'aria-haspopup': 'menu', 'aria-label': `Sort: ${SORT_OPTIONS.find(o => o.value === ctx.state.sort)?.label || 'Newest first'}` } });
+    action: 'library.sort-menu', className: 'lib-sort', attrs: { 'aria-haspopup': 'menu', 'aria-expanded': menuOpenFor(ctx, 'library.sort-menu') ? 'true' : 'false',
+      'aria-label': `Sort: ${SORT_OPTIONS.find(o => o.value === ctx.state.sort)?.label || 'Newest first'}` } });
 }
 
 function renderLayoutSwitch(layout, side) {
@@ -263,7 +267,7 @@ function renderFullHead(ctx, meta, count, layout) {
       ${state.view === 'trash' && count ? button({ label: 'Empty trash', icon: 'trash-2', variant: 'ghost', size: 'sm', action: 'library.empty-trash', className: 'lib-danger' }) : ''}
       ${state.view !== 'duplicates' ? html`${renderSortButton(ctx)}${renderLayoutSwitch(layout, false)}` : ''}
       ${button({ label: 'Select', icon: 'square-check', variant: 'ghost', size: 'sm', action: 'library.select-mode', pressed: state.selectMode })}
-      ${iconButton({ icon: 'ellipsis', label: 'More view options', action: 'library.view-menu', size: 'sm', expanded: false })}
+      ${iconButton({ icon: 'ellipsis', label: 'More view options', action: 'library.view-menu', size: 'sm', expanded: menuOpenFor(ctx, 'library.view-menu') })}
     </div>
   </header>`;
 }
@@ -275,7 +279,7 @@ function renderSideHead(ctx, meta, count, layout) {
     <h1 class="lib-side-title" id="lib-title" tabindex="-1">${meta.collection ? collectionIcon(meta.collection, { size: 20, className: 'lib-head-tile' }) : meta.tile}<span class="lib-side-name">${meta.title}</span><span class="lib-count">${count.toLocaleString()}<span class="sr-only"> ${count === 1 ? 'item' : 'items'}</span></span></h1>
     ${ctx.state.view !== 'duplicates' ? renderLayoutSwitch(layout, true) : ''}
     ${iconButton({ icon: 'search', label: `Search ${meta.title}`, action: 'library.side-search', size: 'sm', pressed: u.sideSearch })}
-    ${iconButton({ icon: 'ellipsis', label: 'More options', action: 'library.view-menu', size: 'sm', expanded: false })}
+    ${iconButton({ icon: 'ellipsis', label: 'More options', action: 'library.view-menu', size: 'sm', expanded: menuOpenFor(ctx, 'library.view-menu') })}
   </header>
   ${u.sideSearch ? html`<div class="lib-side-search">${searchField({ value: ctx.state.query, placeholder: `Search ${meta.title}`, action: 'library.search', id: 'lib-side-search', clearAction: 'library.clear-search', label: `Search ${meta.title}` })}</div>` : ''}`;
 }
@@ -598,7 +602,11 @@ function exportItems(ctx, ids, kind) {
   if (kind === 'html') {
     if (!items.some(item => item.url)) { ctx.toast('None of these items has a link to export.'); return; }
     download(exportBookmarkHtml(library), `${base}.html`, 'text/html');
-  } else download(exportNotesMarkdown(library), `${base}.md`, 'text/markdown');
+  } else {
+    // Same rule as exportNotesMarkdown: only notes, items with a note and items with highlights make it into the file.
+    if (!items.some(item => item.type === 'note' || item.content || item.highlights?.length)) { ctx.toast('None of these items has notes or highlights to export.'); return; }
+    download(exportNotesMarkdown(library), `${base}.md`, 'text/markdown');
+  }
   ctx.toast(`Exported ${label(items.length)}`);
 }
 
@@ -686,11 +694,11 @@ function openSelectionMenu(ctx, ids, anchor) {
   const archived = items.every(item => item.archived);
   ctx.openMenu(anchor, [
     { heading: `${n} selected` },
-    { label: 'Move to…', icon: 'folder-input', run: () => moveItems(ctx, ids, anchor) },
+    { label: 'Move to…', icon: 'folder-input', run: () => moveItems(ctx, ids, follow) },
     { label: 'Add tags…', icon: 'tag', run: () => ctx.run(() => tagItems(ctx, ids)) },
     { label: allFavorite ? 'Remove from favorites' : 'Add to favorites', icon: 'star', run: () => ctx.run(() => setFavorite(ctx, ids, !allFavorite)) },
     { label: 'Ask AI about these', icon: 'sparkles', run: () => askAi(ctx, { scope: 'items', ids }) },
-    { label: 'Export…', icon: 'download', run: () => exportMenu(ctx, anchor, ids) },
+    { label: 'Export…', icon: 'download', run: () => exportMenu(ctx, follow, ids) },
     { separator: true },
     { label: archived ? 'Unarchive' : 'Archive', icon: archived ? 'archive-restore' : 'archive', run: () => ctx.run(() => setArchived(ctx, ids, !archived)) },
     { label: 'Delete', icon: 'trash-2', danger: true, hint: 'Moves to Trash', run: () => ctx.run(() => trashItems(ctx, ids)) },
@@ -913,8 +921,8 @@ registerActions({
     if (key === 'Delete' || (key === 'Backspace' && (event.metaKey || event.ctrlKey))) {
       event.preventDefault();
       const ids = ctx.state.selection.size ? [...ctx.state.selection] : [id];
-      if (ctx.state.view === 'trash') deleteForever(ctx, ids); else trashItems(ctx, ids);
-      return;
+      // Returned so the runtime's ctx.run reports a failed write instead of leaving an unhandled rejection.
+      return ctx.state.view === 'trash' ? deleteForever(ctx, ids) : trashItems(ctx, ids);
     }
     if (key === 'ContextMenu' || (key === 'F10' && event.shiftKey)) { event.preventDefault(); openItemMenu(ctx, id, card); }
   },
@@ -927,12 +935,16 @@ registerShortcuts([
 
 registerMount('library.more', (el, ctx) => {
   if (typeof IntersectionObserver !== 'function') return null;
+  // Observe against the list's own scroller: with the viewport as root, the scroller clips the sentinel and the
+  // 800px look-ahead never applies, so the next page would only load once the very end is on screen.
+  const scroller = el.closest('.lib-scroll');
+  const root = scroller && scroller.scrollHeight > scroller.clientHeight ? scroller : null;
   const observer = new IntersectionObserver(entries => {
     if (!entries.some(entry => entry.isIntersecting)) return;
     observer.disconnect();
     ui(ctx).limit += PAGE;
     ctx.render();
-  }, { rootMargin: '0px 0px 800px 0px' });
+  }, { root, rootMargin: '0px 0px 800px 0px' });
   observer.observe(el);
   return { destroy: () => observer.disconnect() };
 });

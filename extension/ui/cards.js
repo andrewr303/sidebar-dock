@@ -6,6 +6,7 @@ import { icon } from './icons.js';
 import { favicon, relativeDate, shortDate, domainOf, colorName, colorVar, collectionIcon, TYPE_LABELS, TYPE_ICONS } from './components.js';
 import { renderMarkdown } from '../lib/markdown.js';
 import { taskProgress, linkResolver } from '../lib/notes.js';
+import { canonicalUrl } from '../lib/store.js';
 
 const TILE_HUES = ['red', 'orange', 'amber', 'green', 'teal', 'cyan', 'blue', 'indigo', 'violet', 'pink'];
 const TYPE_HUES = { note: 'yellow', image: 'violet', video: 'pink', file: 'gray' };
@@ -60,6 +61,30 @@ export function noteLinkResolver(ctx) {
   return resolver;
 }
 const progressOf = item => item.type === 'note' && item.content ? remember(`tasks:${item.id}:${item.updatedAt}`, () => taskProgress(item.content)) : { done: 0, total: 0 };
+
+/**
+ * Notes about a page, counted once per library version. ctx.select.notesForUrl scans (and URL-parses) the whole
+ * library for every distinct URL, which costs close to a second per render for 150 rows of a 2,000-item library.
+ * Same rule as notesForUrl: live, unarchived notes whose canonical URL matches.
+ */
+const canonicalKey = url => { try { return url ? canonicalUrl(url) : ''; } catch { return ''; } };
+let noteCountStamp = Symbol('unset');
+let noteCounts = new Map();
+export function notesOnPage(ctx, item) {
+  if (item.type === 'note' || !item.url) return 0;
+  const library = ctx.library;
+  if (!library) return 0;
+  if (library.updatedAt !== noteCountStamp) {
+    noteCountStamp = library.updatedAt;
+    noteCounts = new Map();
+    for (const other of library.items || []) {
+      if (other.type !== 'note' || other.deletedAt || other.archived || !other.url) continue;
+      const key = canonicalKey(other.url);
+      if (key) noteCounts.set(key, (noteCounts.get(key) || 0) + 1);
+    }
+  }
+  return noteCounts.get(canonicalKey(item.url)) || 0;
+}
 const previewOf = (ctx, item, compact = true) => remember(`md:${item.id}:${item.updatedAt}:${compact}`,
   () => raw(renderMarkdown(notePreviewSource(item.content || item.excerpt, item.title), { compact, resolveLink: noteLinkResolver(ctx) })));
 
@@ -137,7 +162,7 @@ function itemDate(item, view) {
 /** Small status icons on the end of a row: favorite, highlights, notes, tasks, reminder, file. */
 export function indicators(ctx, item, { compact = false } = {}) {
   const parts = [];
-  const notes = item.type !== 'note' && item.url ? ctx.select.notesForUrl(item.url).length : 0;
+  const notes = notesOnPage(ctx, item);
   const tasks = progressOf(item);
   const highlights = item.highlights?.length || 0;
   if (item.reminderAt && !item.reminderNotifiedAt) parts.push(html`<span class="item-ind" title="Reminder ${shortDate(item.reminderAt)}">${icon('bell', { size: 14 })}<span class="sr-only">Reminder set</span></span>`);
@@ -259,7 +284,7 @@ function masonryTile(ctx, item, opts) {
 }
 
 function sideMetaLine(ctx, item, opts) {
-  const notes = item.type !== 'note' && item.url ? ctx.select.notesForUrl(item.url).length : 0;
+  const notes = notesOnPage(ctx, item);
   const highlights = item.highlights?.length || 0;
   return html`<span class="item-media-meta"><span>${itemDate(item, opts.view)}</span>${notes ? html`<span class="item-ind" title="${notes} ${notes === 1 ? 'note' : 'notes'}">${icon('sticky-note', { size: 13 })}${notes}</span>` : ''}${highlights ? html`<span class="item-ind" title="${highlights} ${highlights === 1 ? 'highlight' : 'highlights'}">${icon('highlighter', { size: 13 })}${highlights}</span>` : ''}${item.favorite ? html`<span class="item-ind is-favorite" title="Favorite">${icon('star', { size: 13 })}<span class="sr-only">Favorite</span></span>` : ''}</span>`;
 }

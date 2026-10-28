@@ -7,7 +7,7 @@ import { icon } from './icons.js';
 import { button, iconButton, collectionIcon, favicon, relativeDate, shortDate, fileSize, emptyState, TYPE_LABELS, TYPE_ICONS } from './components.js';
 import { registerActions, registerMount } from './runtime.js';
 import { renderItem, renderItemLink, generatedArt, coverOf, readingMinutes, itemSource } from './cards.js';
-import { pickCollection, parseTags, trashItems, setArchived, moveItems, addNoteFor } from './library.js';
+import { pickCollection, parseTags, trashItems, setArchived, moveItems, addNoteFor, menuOpenFor } from './library.js';
 import { renderInlineEditor } from './note-editor.js';
 import { renderTagInput } from './pickers.js';
 import { createNote } from './notes.js';
@@ -354,7 +354,7 @@ function renderFooter(ctx, item) {
     <span class="detail-foot-spacer"></span>
     ${iconButton({ icon: 'star', label: item.favorite ? 'Remove from favorites' : 'Add to favorites', action: 'library.favorite', data: { id: item.id }, pressed: !!item.favorite, size: 'sm', className: 'detail-fav' })}
     ${item.url ? button({ label: 'Open', icon: 'external-link', variant: 'secondary', size: 'sm', action: 'app.open-url', data: { url: item.url } }) : ''}
-    ${iconButton({ icon: 'ellipsis', label: 'More actions', action: 'detail.menu', data: { id: item.id }, size: 'sm', expanded: false })}
+    ${iconButton({ icon: 'ellipsis', label: 'More actions', action: 'detail.menu', data: { id: item.id }, size: 'sm', expanded: menuOpenFor(ctx, 'detail.menu') })}
   </footer>`;
 }
 
@@ -504,6 +504,11 @@ registerMount('detail.preview', (el, ctx) => {
 // Actions
 
 const itemOf = (ctx, id) => ctx.select.byId(id);
+/**
+ * Inline fields remember the stored value when editing starts. The morph refreshes data-rev while a field has focus,
+ * so the attribute alone cannot tell that the same field was changed in another view in the meantime.
+ */
+const editBase = new WeakMap();
 
 async function patch(ctx, id, changes, message, undo) {
   const item = itemOf(ctx, id);
@@ -566,11 +571,23 @@ registerActions({
   'detail.save-field': async ({ ctx, el }) => {
     const { id, field, rev } = el.dataset;
     const item = itemOf(ctx, id);
+    const base = editBase.get(el);
+    editBase.delete(el);
     if (!item || !['title', 'excerpt'].includes(field)) return;
     const value = field === 'title' ? el.value.replace(/\s+/g, ' ').trim() : el.value.trim();
     if (field === 'title' && !value) { el.value = item.title; return; }
-    if ((item[field] || '') === value) return;
-    await ctx.store.updateItem(id, { [field]: value }, { expectedUpdatedAt: rev });
+    const current = item[field] || '';
+    if (current === value) return;
+    if (base && current !== base.value) {
+      // Someone changed this same field elsewhere while it was being edited here: show theirs, offer to keep ours.
+      el.value = current;
+      const name = field === 'title' ? 'title' : 'description';
+      ctx.toast(`The ${name} changed in another view while you were editing.`, { tone: 'warning', duration: 10000,
+        action: { label: 'Use mine', run: () => ctx.store.updateItem(id, { [field]: value }) } });
+      return;
+    }
+    // Other fields may have changed since editing began (tags, a highlight); this patch only touches its own field.
+    await ctx.store.updateItem(id, { [field]: value }, { expectedUpdatedAt: base ? item.updatedAt : rev });
   },
   'detail.field-key': ({ ctx, el, event }) => {
     if (event.key === 'Escape') {
@@ -669,6 +686,9 @@ registerActions({
   'detail.capture': async ({ ctx, data }) => {
     const item = itemOf(ctx, data.id);
     if (!item) return;
+    // captureCurrent reads whatever tab is active now; the tab may have changed since the button was drawn.
+    const page = ctx.state.page?.url;
+    if (!page || !item.url || canonical(page) !== canonical(item.url)) throw new Error('Open this page in the current tab, then try again.');
     await ctx.chrome('captureCurrent', { collectionId: item.collectionId || '' });
     ctx.toast('Saved the page text', { tone: 'success' });
   },
@@ -734,6 +754,15 @@ registerActions({
 
 /** Leaves tag editing on Escape (after any suggestion popover has closed) or when focus moves elsewhere. */
 export function init(ctx) {
+  document.addEventListener('focusin', event => {
+    const el = event.target;
+    if (!el?.matches?.('.detail textarea[data-field][data-id]')) return;
+    const item = itemOf(ctx, el.dataset.id);
+    if (!item) return;
+    const stored = item[el.dataset.field] || '';
+    // Refocusing with unsaved text (e.g. back from another window) keeps the original starting point.
+    if (!editBase.has(el) || el.value === stored) editBase.set(el, { value: stored });
+  });
   document.addEventListener('keydown', event => {
     if (event.key !== 'Escape' || event.defaultPrevented || !detailState(ctx).addingTag) return;
     if (!event.target.closest?.('.detail-tags.is-editing')) return;
