@@ -22,11 +22,14 @@ import * as notes from './ui/notes.js';
 import * as noteEditor from './ui/note-editor.js';
 import * as aiPanel from './ui/ai-panel.js';
 import * as settings from './ui/settings.js';
+import * as dashboard from './ui/dashboard/index.js';
+import * as stickies from './ui/stickies.js';
 
 const params = new URLSearchParams(location.search);
 const isExtension = !!globalThis.chrome?.runtime?.id;
 const isSidepanel = params.get('view') === 'sidepanel';
-const MAIN_VIEWS = /^(all|inbox|favorites|notes|tasks|highlights|map|archive|trash|duplicates|untagged|reminders|type:[a-z]+|collection:.+|tag:.+)$/;
+const isNewtab = document.documentElement.dataset.entry === 'newtab';
+const MAIN_VIEWS = /^(dashboard|assistant|stickies|settings(?::[a-z-]+)?|all|inbox|favorites|notes|tasks|highlights|map|archive|trash|duplicates|untagged|reminders|type:[a-z]+|collection:.+|tag:.+)$/;
 
 let library = null;
 const state = {
@@ -43,7 +46,7 @@ const ctx = {
   get library() { return library; },
   store,
   integrations,
-  env: { isExtension, isSidepanel, isMac: modKey === '⌘', modKey },
+  env: { isExtension, isSidepanel, isNewtab, isMac: modKey === '⌘', modKey },
   prefs,
   ai: undefined,
   dispatch: (name, args = {}) => dispatch(name, { ctx, el: document.body, data: {}, ...args }),
@@ -163,7 +166,7 @@ function applyBootParams() {
   if (item && library.items.some(i => i.id === item)) state.panel = { kind: 'item', id: item, tab: 'details' };
 }
 
-const modules = [sidebar, command, collections, libraryView, detail, map, quickAdd, pickers, page, notes, noteEditor, aiPanel, settings];
+const modules = [sidebar, command, collections, libraryView, detail, map, quickAdd, pickers, page, notes, noteEditor, aiPanel, settings, dashboard, stickies];
 
 async function boot() {
   try {

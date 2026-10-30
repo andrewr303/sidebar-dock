@@ -234,6 +234,20 @@ export function favicon(url, { size = 16, className } = {}) {
 }
 
 /**
+ * Real site icon (Chrome's favicon cache through the "favicon" permission) on a letter-tile fallback. The letter tile
+ * shows until the image loads and stays when Chrome has no icon, so a missing favicon never leaves an empty box.
+ * Outside the extension it is the letter tile alone.
+ */
+export function siteIcon(url, { size = 16, className, rounded = true } = {}) {
+  const tile = favicon(url, { size, className: cx('site-icon-fallback', rounded && 'is-rounded') });
+  const domain = domainOf(url);
+  const runtime = globalThis.chrome?.runtime;
+  if (!domain || !runtime?.id || typeof runtime.getURL !== 'function') return html`<span class="${cx('site-icon', className)}" style="--size:${size}px">${tile}</span>`;
+  const src = `${runtime.getURL('/_favicon/')}?pageUrl=${encodeURIComponent(url)}&size=${size > 32 ? 64 : 32}`;
+  return html`<span class="${cx('site-icon', className)}" style="--size:${size}px">${tile}<img class="site-icon-img" src="${src}" alt="" width="${size}" height="${size}" loading="lazy" decoding="async" draggable="false"></span>`;
+}
+
+/**
  * Cover image with a graceful fallback: without art it renders a tile tinted with `color` (a collection color name or
  * hex) showing `fallback` markup, else `icon` (e.g. TYPE_ICONS[item.type]), else `letter`. Never a dark empty slab.
  */

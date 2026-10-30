@@ -1,0 +1,16 @@
+/* Dashboard widget styles, one file per widget type (classes prefixed .w-<type>-). */
+@import url('widgets/links-folder.css');
+@import url('widgets/quick-links.css');
+@import url('widgets/notes.css');
+@import url('widgets/checklist.css');
+@import url('widgets/sticky-notes.css');
+@import url('widgets/kanban.css');
+@import url('widgets/clock.css');
+@import url('widgets/weather.css');
+@import url('widgets/calendar.css');
+@import url('widgets/embed.css');
+@import url('widgets/most-visited.css');
+@import url('widgets/bookmarks.css');
+@import url('widgets/product-hunt.css');
+@import url('widgets/github.css');
+@import url('widgets/linear.css');

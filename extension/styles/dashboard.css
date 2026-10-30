@@ -1,0 +1,12 @@
+/* Dashboard: header, board grid, widget frames, edit mode, gallery and widget settings (ui/dashboard/). */
+.dashboard { min-block-size: 100%; padding: var(--space-8) var(--gutter); }
+.dash-header { display: flex; align-items: center; gap: var(--space-6); margin-block-end: var(--space-7); }
+.dash-title { font-size: var(--text-xl); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-title); }
+.dash-grid { --dash-row: 72px; --dash-gap: 16px; display: grid; grid-template-columns: repeat(var(--cols, 12), minmax(0, 1fr)); grid-auto-rows: var(--dash-row); gap: var(--dash-gap); }
+.widget { display: flex; flex-direction: column; min-inline-size: 0; min-block-size: 0; background: var(--bg-surface, var(--bg-raised)); border: 1px solid var(--border-subtle); border-radius: var(--radius-xl); overflow: hidden; }
+.widget.is-bare { background: none; border: 0; }
+.widget-head { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-5) var(--space-6) 0; color: var(--fg-muted); }
+.widget-title { flex: 1; min-inline-size: 0; font-size: var(--text-sm); font-weight: var(--weight-semibold); color: var(--fg-default); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.widget-head-actions { display: inline-flex; gap: var(--space-1); }
+.widget-body { flex: 1; min-block-size: 0; overflow: auto; padding: var(--space-5) var(--space-6); container-type: size; container-name: widget; }
+.widget-placeholder { color: var(--fg-muted); font-size: var(--text-sm); }

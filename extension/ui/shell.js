@@ -18,6 +18,9 @@ import { openSettings } from './settings.js';
 import { openCollectionEditor } from './collections.js';
 import { SORT_OPTIONS } from './selectors.js';
 import { dailyNoteTitle } from '../lib/notes.js';
+import { renderDashboard } from './dashboard/index.js';
+import { renderAssistantPage } from './assistant-page.js';
+import { renderStickiesView } from './stickies.js';
 
 const SIDE_TABS = [
   { id: 'library', label: 'Library', icon: 'library' },
@@ -35,7 +38,7 @@ const SEARCH_TOKENS = [
   { token: 'site:', label: 'site:example.com', hint: 'Website' },
   { token: '"', label: '"exact phrase"', hint: 'Phrase' },
 ];
-const NON_ITEM_VIEWS = ['notes', 'tasks', 'map'];
+const NON_ITEM_VIEWS = ['notes', 'tasks', 'map', 'dashboard', 'assistant', 'stickies'];
 const PANEL = { min: 340, max: 640, fallback: 400, step: 16 };
 const WIDE = '(min-width: 1100px)';
 
@@ -106,6 +109,9 @@ function renderTopbar(ctx, docked) {
 
 function renderMain(ctx) {
   const view = ctx.state.view;
+  if (view === 'dashboard') return renderDashboard(ctx);
+  if (view === 'assistant') return renderAssistantPage(ctx);
+  if (view === 'stickies') return renderStickiesView(ctx);
   if (view === 'notes') return renderNotesWorkspace(ctx);
   if (view === 'tasks') return renderTasks(ctx);
   if (view === 'map') return renderMap(ctx);

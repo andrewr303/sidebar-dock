@@ -1647,3 +1647,8 @@ export function init(ctx) {
     ctx.run(() => runImport(ctx, file));
   });
 }
+
+/** Full-page settings for the 'settings' / 'settings:<section>' view and the side panel's settings screen (scaffold). */
+export function renderSettingsPage(ctx, { surface = ctx.env?.isSidepanel ? 'side' : 'full' } = {}) {
+  return html`<div class="settings-page" data-key="settings-page" data-surface="${surface}"></div>`;
+}
