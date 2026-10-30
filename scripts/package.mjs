@@ -25,7 +25,7 @@ with zipfile.ZipFile(temporary, 'w', compression=zipfile.ZIP_DEFLATED, compressl
         archive.write(path, path.relative_to(source).as_posix())
 with zipfile.ZipFile(temporary) as archive:
     names = archive.namelist()
-    required = ['manifest.json', 'index.html', 'background.js', 'app.js', 'lib/store.js', 'lib/integrations.js', 'icons/icon128.png']
+    required = ['manifest.json', 'index.html', 'newtab.html', 'theme-boot.js', 'background.js', 'app.js', 'lib/store.js', 'lib/integrations.js', 'icons/icon128.png']
     if any(name not in names for name in required):
         raise ValueError('Package is missing an extension entrypoint')
     if any(name.startswith('/') or '..' in pathlib.PurePosixPath(name).parts for name in names):
@@ -33,6 +33,8 @@ with zipfile.ZipFile(temporary) as archive:
     manifest = json.loads(archive.read('manifest.json'))
     if manifest.get('manifest_version') != 3:
         raise ValueError('Package manifest is not MV3')
+    if manifest.get('chrome_url_overrides', {}).get('newtab') not in names:
+        raise ValueError('Package manifest new tab page is missing')
     if archive.testzip() is not None:
         raise ValueError('ZIP integrity check failed')
 temporary.replace(target)
