@@ -507,3 +507,14 @@ export function init(ctx) {
     row.focus({ preventScroll: true });
   });
 }
+
+/**
+ * The "Show sidebar" button for views that draw their own header instead of the top bar (dashboard, assistant,
+ * settings). Empty while the sidebar is docked or in the side panel.
+ */
+export function navToggle(ctx) {
+  if (ctx.env.isSidepanel || ctx.state.shell?.docked !== false) return '';
+  const open = !!ctx.state.shell?.navOpen;
+  return iconButton({ icon: 'panel-left', label: 'Show sidebar', action: 'shell.toggle-nav', controls: 'sidebar', className: 'topbar-nav-toggle', id: 'nav-toggle',
+    attrs: { 'aria-expanded': open ? 'true' : 'false', 'aria-keyshortcuts': ctx.env.isMac ? 'Meta+\\' : 'Control+\\' } });
+}
