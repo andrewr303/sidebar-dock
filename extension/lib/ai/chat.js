@@ -8,9 +8,10 @@ import { abortError } from './stream.js';
 import * as bridgeTransport from './transports/bridge.js';
 
 const ROLES = new Set(['user', 'assistant']);
-const PART_TYPES = new Set(['text', 'image', 'tool_use', 'tool_result']);
+const PART_TYPES = new Set(['text', 'image', 'document', 'tool_use', 'tool_result']);
 const TOOL_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
 const IMAGE_NOTE = '[An image was attached, but this model cannot read images.]';
+const DOCUMENT_NOTE = '[A file was attached, but this connection cannot read files.]';
 
 export function normalizeMessages(messages) {
   if (!Array.isArray(messages) || !messages.length) throw aiError('Write a message first.', { code: 'bad_request' });
@@ -44,6 +45,12 @@ export function normalizeTools(tools) {
 function withoutImages(messages) {
   return messages.map(message => typeof message.content === 'string' || message.native ? message
     : { ...message, content: message.content.map(part => part.type === 'image' ? { type: 'text', text: IMAGE_NOTE } : part) });
+}
+
+// File parts (PDFs) reach only the direct APIs that read them; anything else gets a note instead.
+function withoutDocuments(messages) {
+  return messages.map(message => typeof message.content === 'string' || message.native ? message
+    : { ...message, content: message.content.map(part => part.type === 'document' ? { type: 'text', text: DOCUMENT_NOTE } : part) });
 }
 
 const systemText = system => Array.isArray(system) ? system.filter(entry => typeof entry === 'string' && entry).join('\n\n') : typeof system === 'string' ? system : '';
@@ -91,6 +98,7 @@ export function streamChat({ connectionId, model, system, messages, tools, effor
       const info = await modelInfo(resolved, chosen);
       let list = normalizeMessages(messages);
       if (provider.supports.images === false || info?.capabilities?.images === false) list = withoutImages(list);
+      if (!provider.supports.documents || via !== 'direct') list = withoutDocuments(list);
       const toolList = provider.supports.tools && info?.capabilities?.tools !== false ? normalizeTools(tools) : [];
       const transport = via === 'direct' ? TRANSPORTS[provider.transport] : bridgeTransport;
       if (!transport) throw aiError(`${provider.name} cannot be used for chat here.`, { code: 'bad_request' });

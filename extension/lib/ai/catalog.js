@@ -40,7 +40,7 @@ export const CATALOG = freeze([
     keyPlaceholder: 'sk-ant-…', needsKey: true, local: false, modelList: true,
     chat: { defaults: CLAUDE_MODELS, recommended: 'claude-opus-5-5', fast: 'claude-haiku-5-5' },
     embeddings: null, embeddingsHint: 'Claude has no embeddings model. Add Voyage AI for semantic search.',
-    supports: { tools: true, images: true, reasoning: true, embeddings: false },
+    supports: { tools: true, images: true, reasoning: true, embeddings: false, documents: true },
   },
   {
     id: 'openai', name: 'OpenAI', shortName: 'ChatGPT models', kind: 'cloud', via: 'direct', transport: 'openai-responses',
@@ -61,7 +61,7 @@ export const CATALOG = freeze([
       embed('text-embedding-3-small', 'Text embedding 3 small', 1536, { dimsOptions: [512, 1024, 1536], maxBatch: 2048 }),
       embed('text-embedding-3-large', 'Text embedding 3 large', 3072, { dimsOptions: [256, 1024, 3072], maxBatch: 2048 }),
     ] },
-    supports: { tools: true, images: true, reasoning: true, embeddings: true },
+    supports: { tools: true, images: true, reasoning: true, embeddings: true, documents: true },
   },
   {
     id: 'xai', name: 'xAI', shortName: 'Grok', kind: 'cloud', via: 'direct', transport: 'openai-chat',
@@ -100,7 +100,7 @@ export const CATALOG = freeze([
       embed('gemini-embedding-001', 'Gemini embedding 001', 768, { dimsOptions: [768, 1536, 3072], maxBatch: 100, taskType: true, normalize: true }),
       embed('gemini-embedding-2', 'Gemini embedding 2', 768, { dimsOptions: [768, 1536, 3072], maxBatch: 100 }),
     ] },
-    supports: { tools: true, images: true, reasoning: true, embeddings: true },
+    supports: { tools: true, images: true, reasoning: true, embeddings: true, documents: true },
   },
   {
     id: 'openrouter', name: 'OpenRouter', shortName: 'OpenRouter', kind: 'cloud', via: 'direct', transport: 'openai-chat',
@@ -124,7 +124,7 @@ export const CATALOG = freeze([
       recommended: 'anthropic/claude-opus-5.5', fast: 'anthropic/claude-haiku-5.5',
     },
     embeddings: null,
-    supports: { tools: true, images: true, reasoning: true, embeddings: false },
+    supports: { tools: true, images: true, reasoning: true, embeddings: false, documents: true },
   },
   {
     id: 'mistral', name: 'Mistral', shortName: 'Mistral', kind: 'cloud', via: 'direct', transport: 'openai-chat',

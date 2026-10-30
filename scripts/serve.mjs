@@ -9,7 +9,7 @@ const server=http.createServer(async(req,res)=>{
   const file=resolve(root, '.'+(path==='/'?'/index.html':path));
   if(file!==root&&!file.startsWith(root+sep)){res.writeHead(403).end();return;}
   if(!(await stat(file)).isFile()){res.writeHead(404).end();return;}
-  res.writeHead(200,{'Content-Type':types[extname(file)]||'application/octet-stream','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' http://127.0.0.1:* http://localhost:* https:; font-src 'self'; object-src 'none'; frame-ancestors 'self'"});
+  res.writeHead(200,{'Content-Type':types[extname(file)]||'application/octet-stream','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' http://127.0.0.1:* http://localhost:* https:; font-src 'self'; frame-src 'self' blob: https:; media-src 'self' blob:; object-src 'none'; frame-ancestors 'self'"});
   res.end(await readFile(file));
  }catch(e){res.writeHead(e.code==='ENOENT'?404:500).end('Unable to serve this file');}
 });
