@@ -279,6 +279,8 @@ const onSettingsSave = (_ctx, _widget, draft) => mostVisitedConfig({ ...draft, c
 
 registerLinkGrid('most-visited', {
   menu: (ctx, grid, key, anchor) => siteMenu(ctx, grid.dataset.widget, key, anchor),
+  // Chrome keeps this list from your browsing, so a dropped link has nowhere to go: say where it can.
+  dropLinks: ctx => ctx.toast('Chrome fills this list from your browsing. Drop links on a links folder or a bookmarks widget instead.'),
 });
 
 registerActions({
