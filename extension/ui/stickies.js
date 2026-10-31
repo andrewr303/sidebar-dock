@@ -18,7 +18,7 @@ import { icon } from './icons.js';
 import { registerActions, registerMount } from './runtime.js';
 import { registerPopover } from './overlay.js';
 import { button, iconButton, searchField, segmented, emptyState } from './components.js';
-import { latestItem, rememberItem, openNote, titleValue } from './note-editor.js';
+import { latestItem, rememberItem, openNote, titleValue, confirmTrash } from './note-editor.js';
 import { STICKY_COLORS, STICKY_DEFAULTS, STICKY_LIMITS } from '../lib/store.js';
 import { noteExcerpt, noteTitleFromContent, toggleTask } from '../lib/notes.js';
 import { renderMarkdown, inlineText } from '../lib/markdown.js';
@@ -691,7 +691,7 @@ async function hideSticky(ctx, id) {
 
 async function trashSticky(ctx, id) {
   const note = latestItem(ctx, id);
-  if (!note) return;
+  if (!note || !(await confirmTrash(ctx, [note]))) return;
   rememberItem(await ctx.store.deleteItem(id));
   ctx.toast('Sticky note moved to Trash.', { action: { label: 'Undo', run: async () => rememberItem(await ctx.store.restoreItem(id)) } });
 }

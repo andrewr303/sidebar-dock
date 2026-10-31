@@ -4,7 +4,7 @@
 // app. Saves are debounced, serialized per editor and revision-checked: a change made elsewhere reloads an editor
 // without unsaved edits and raises a non-destructive conflict bar over unsaved ones. Unsaved text is mirrored to
 // localStorage so a closed side panel never loses it.
-import { html, raw, cx } from './html.js';
+import { html, raw, cx, plural } from './html.js';
 import { morph } from './morph.js';
 import { icon } from './icons.js';
 import { registerMount, registerActions, registerShortcuts, hasAction } from './runtime.js';
@@ -136,6 +136,13 @@ export function rememberItem(item) {
   return item;
 }
 /** The newest copy of an item: the library's, or a just-written one the library has not delivered yet. */
+/** Asks before items move to Trash when Settings > General > "Confirm before moving items to Trash" is on. */
+export async function confirmTrash(ctx, items) {
+  if (ctx.library?.settings?.confirmDelete !== true || !items.length) return true;
+  const title = items.length > 1 ? `Move ${plural(items.length, 'item')} to Trash?` : items[0].title ? `Move “${items[0].title}” to Trash?` : 'Move this item to Trash?';
+  return ctx.confirm({ title, body: 'You can restore items from Trash until you empty it.', confirmLabel: 'Move to Trash' });
+}
+
 export function latestItem(ctx, id) {
   const known = ctx.select.byId(id);
   const mine = fresh.get(id);
@@ -791,6 +798,7 @@ function createEditor(host, ctx) {
   }
 
   async function trash(record) {
+    if (!(await confirmTrash(ctx, [latestItem(ctx, id) || record].filter(Boolean)))) return record;
     await save();
     await enqueue(async () => rememberItem(await ctx.store.deleteItem(id)));
     closeNote(ctx, id);

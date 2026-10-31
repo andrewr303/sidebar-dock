@@ -5,7 +5,7 @@ import { html, raw, cx, esc, safeSrc } from './html.js';
 import { icon } from './icons.js';
 import { favicon, relativeDate, shortDate, domainOf, colorName, colorVar, collectionIcon, TYPE_LABELS, TYPE_ICONS } from './components.js';
 import { renderMarkdown } from '../lib/markdown.js';
-import { taskProgress, linkResolver } from '../lib/notes.js';
+import { taskProgress, linkResolver, noteTitleFromContent } from '../lib/notes.js';
 import { canonicalUrl } from '../lib/store.js';
 
 const TILE_HUES = ['red', 'orange', 'amber', 'green', 'teal', 'cyan', 'blue', 'indigo', 'violet', 'pink'];
@@ -31,11 +31,18 @@ export function tileHue(item, collection) {
   return { name: hueForDomain(domainOf(item.url || item.sourceUrl)) };
 }
 
-/** Drops a leading "# Title" heading that only repeats the note title, so previews start with the body. */
+/**
+ * Drops a leading line that only repeats the note title, so previews start with the body: a heading, or the plain first
+ * line a title was taken from (sticky notes). Tasks, list items, quotes and lines too long for a whole title stay.
+ */
 export function notePreviewSource(content, title) {
   const text = String(content || '');
+  const name = String(title || '').trim().toLowerCase();
   const match = /^\s*#{1,3}[ \t]+(.+?)[ \t]*#*[ \t]*(?:\r?\n|$)/.exec(text);
-  if (match && match[1].trim().toLowerCase() === String(title || '').trim().toLowerCase()) return text.slice(match[0].length).replace(/^\s*\n/, '');
+  if (match && match[1].trim().toLowerCase() === name) return text.slice(match[0].length).replace(/^\s*\n/, '');
+  const line = /^\s*([^\r\n]*)(?:\r?\n|$)/.exec(text);
+  const plain = name && line[1].trim().length <= 80 && !/^(?:[-*+][ \t]|\d+[.)][ \t]|[>|#:]|!\[|```|~~~)/.test(line[1]);
+  if (plain && noteTitleFromContent(line[1]).toLowerCase() === name) return text.slice(line[0].length).replace(/^\s*\n/, '');
   return text;
 }
 

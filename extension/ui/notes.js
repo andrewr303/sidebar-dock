@@ -10,6 +10,7 @@ import { searchRows } from './selectors.js';
 import * as pickers from './pickers.js';
 import { renderNoteEditor, openNote, closeNote, createNoteItem, editorFor, latestItem, rememberItem, displayTitle, titleValue, noteResolver, openInFullTab } from './note-editor.js';
 import { renderMarkdown, renderInline } from '../lib/markdown.js';
+import { notePreviewSource as previewSource } from './cards.js';
 import { extractTasks, toggleTask, taskProgress, noteExcerpt, noteTitleFromContent, outline, wordCount, dailyNoteTitle, noteTemplates } from '../lib/notes.js';
 
 export const NO_COLLECTION = '__none';
@@ -51,20 +52,7 @@ export function collectionCounts(notes) {
   return { total: (notes || []).length, none, byId };
 }
 
-/**
- * Drops a leading line that only repeats the note title, so previews start with the body: a heading, or the plain first
- * line a title was taken from (sticky notes). Tasks, list items, quotes and lines too long for a whole title stay.
- */
-export function previewSource(content, title) {
-  const text = String(content || '');
-  const name = String(title || '').trim().toLowerCase();
-  const match = /^\s*#{1,3}[ \t]+(.+?)[ \t]*#*[ \t]*(?:\r?\n|$)/.exec(text);
-  if (match && match[1].trim().toLowerCase() === name) return text.slice(match[0].length).replace(/^\s*\n/, '');
-  const line = /^\s*([^\r\n]*)(?:\r?\n|$)/.exec(text);
-  const plain = name && line[1].trim().length <= 80 && !/^(?:[-*+][ \t]|\d+[.)][ \t]|[>|#:]|!\[|```|~~~)/.test(line[1]);
-  if (plain && noteTitleFromContent(line[1]).toLowerCase() === name) return text.slice(line[0].length).replace(/^\s*\n/, '');
-  return text;
-}
+export { previewSource };
 
 const TASK_HINT = /\[[ xX]\]/;
 /** Tasks grouped by note for the Tasks view, newest edited note first. filter: 'open' | 'done' | 'all'. */

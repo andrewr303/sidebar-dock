@@ -10,6 +10,7 @@ import { renderItem, watchBrokenCovers } from './cards.js';
 import { renderMap, setMapScope } from './map.js';
 import { openAdd } from './quick-add.js';
 import { createNote } from './notes.js';
+import { confirmTrash } from './note-editor.js';
 import { askAi } from './ai-panel.js';
 import { openCollectionEditor } from './collections.js';
 import { exportBookmarkHtml, exportNotesMarkdown } from '../lib/portability.js';
@@ -543,11 +544,7 @@ export async function setArchived(ctx, ids, archived) {
 }
 
 /** With "Confirm before moving items to Trash" on (Settings > General), asks first; resolves true to go ahead. */
-export async function confirmTrash(ctx, items) {
-  if (ctx.library?.settings?.confirmDelete !== true || !items.length) return true;
-  const title = items.length > 1 ? `Move ${label(items.length)} to Trash?` : items[0].title ? `Move “${items[0].title}” to Trash?` : 'Move this item to Trash?';
-  return ctx.confirm({ title, body: 'You can restore items from Trash until you empty it.', confirmLabel: 'Move to Trash' });
-}
+export { confirmTrash };
 
 export async function trashItems(ctx, ids) {
   const items = ids.map(byId(ctx)).filter(item => item && !item.deletedAt);
