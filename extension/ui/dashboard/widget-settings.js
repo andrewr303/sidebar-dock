@@ -7,6 +7,8 @@ import { dialogFrame, button, iconButton, input, textarea, select, segmented, sw
 import { registerActions } from '../runtime.js';
 import { registerDialog } from '../overlay.js';
 import { renderCollectionPickerTrigger } from '../pickers.js';
+import { displayTitle } from '../note-editor.js';
+import { noteTitleFromContent } from '../../lib/notes.js';
 import { getWidget, bindSettingsDraft, getSettingsDraft, readPath, writePath } from './registry.js';
 import * as dashboardStore from '../../lib/dashboard-store.js';
 import { envFor, widgetTitle, removeWidget, bindWidgetSettings } from './frame.js';
@@ -78,7 +80,7 @@ function notePicker(ctx, f, value, props, describedBy) {
         const checked = note.id === value;
         return html`<button type="button" role="radio" class="${cx('dash-note-option', checked && 'is-selected')}" aria-checked="${checked ? 'true' : 'false'}"
           tabindex="${checked || (!value && note === shown[0]) ? '0' : '-1'}" data-action="dashboard.draft-set" data-name="${f.name}" data-value="${note.id}">
-          ${collectionIcon(collection, { size: 18 })}<span class="dash-note-option-title">${note.title || 'Untitled note'}</span>
+          ${collectionIcon(collection, { size: 18 })}<span class="dash-note-option-title">${displayTitle(note, noteTitleFromContent(note.content || ''))}</span>
           <span class="dash-note-option-meta">${relativeDate(note.updatedAt)}</span>${checked ? icon('check', { size: 14, className: 'dash-note-option-check' }) : ''}
         </button>`;
       }) : html`<p class="dash-note-empty">${query ? 'No notes match that search.' : 'You have no notes yet. Create one in Notes first.'}</p>`}
@@ -180,8 +182,8 @@ function renderDialog(ctx, props) {
     <section class="dash-settings-section" aria-labelledby="wset-appearance">
       <h3 class="dash-settings-heading" id="wset-appearance">${icon('palette', { size: 14 })}Appearance</h3>
       <div class="dash-settings-fields">
-        ${fieldRow({ label: 'Title', id: 'wset-title', hint: def?.title ? `Leave empty to use “${widgetTitle({ ...widget, title: '' }, def)}”.` : '',
-          control: input({ id: 'wset-title', value: props.title, placeholder: widgetTitle({ ...widget, title: '' }, def), action: 'dashboard.settings-title' }) })}
+        ${fieldRow({ label: 'Title', id: 'wset-title', hint: def?.title ? `Leave empty to use “${widgetTitle({ ...widget, title: '' }, def, ctx)}”.` : '',
+          control: input({ id: 'wset-title', value: props.title, placeholder: widgetTitle({ ...widget, title: '' }, def, ctx), action: 'dashboard.settings-title' }) })}
         ${bareDef ? '' : html`<div class="dash-settings-toggle">${switchToggle({ checked: !props.hideTitle, label: 'Show the title bar', description: 'Hidden titles stay available to screen readers.',
           action: 'dashboard.settings-hide-title' })}</div>`}
         ${fieldRow({ label: 'Background', control: segmented({ name: 'frame', value: props.frame, options: FRAMES, action: 'dashboard.settings-frame', ariaLabel: 'Background' }),
@@ -193,7 +195,7 @@ function renderDialog(ctx, props) {
     <span class="spacer"></span>
     ${button({ label: 'Cancel', action: 'overlay.dismiss' })}
     ${button({ label: 'Save', variant: 'primary', type: 'submit', loading: props.saving })}`;
-  return html`<form class="dialog-form" data-submit="dashboard.settings-save" novalidate>${dialogFrame({ name: DIALOG, title: `${widgetTitle(widget, def)} settings`, body, footer })}</form>`;
+  return html`<form class="dialog-form" data-submit="dashboard.settings-save" novalidate>${dialogFrame({ name: DIALOG, title: `${widgetTitle(widget, def, ctx)} settings`, body, footer })}</form>`;
 }
 
 export function openWidgetSettings(ctx, widgetId) {
@@ -201,7 +203,8 @@ export function openWidgetSettings(ctx, widgetId) {
   if (!found) { ctx.toast('That widget is no longer on your dashboard.', { tone: 'danger' }); return; }
   const { widget } = found;
   const def = getWidget(widget.type);
-  const draft = structuredClone(widget.config || {});
+  // Starts from the definition's defaults so widgets saved by older versions show every control's current value.
+  const draft = { ...(def?.defaults?.() || {}), ...structuredClone(widget.config || {}) };
   const holder = {
     widget,
     draft,
@@ -246,8 +249,10 @@ async function save(ctx) {
     const patch = def?.onSettingsSave ? await def.onSettingsSave(ctx, found.widget, props.draft) : undefined;
     const config = patch && typeof patch === 'object' ? patch : props.draft;
     const title = String(props.title || '').trim();
+    // The default title, or the one the widget names itself (e.g. its collection), keeps following the widget.
+    const fallback = widgetTitle({ ...found.widget, title: '' }, def, ctx);
     await dashboardStore.updateWidget(props.widgetId, {
-      title: title === (def?.title || '') ? '' : title,
+      title: [def?.title || '', fallback].includes(title) ? '' : title,
       style: { frame: props.frame, hideTitle: !!props.hideTitle },
       config,
     });

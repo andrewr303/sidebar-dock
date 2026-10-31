@@ -132,6 +132,15 @@ export const noteSnippet = note => memo(`snippet:${rev(note)}:${note.title || ''
 /** Shown title: the stored title, else the note's first line. */
 export const noteLabel = note => memo(`label:${rev(note)}:${note.title || ''}`, () => displayTitle(note, noteTitleFromContent(note?.content || '')));
 
+/** The widget's one note while it is still a live note in the library, else null. */
+export function shownNote(ctx, noteId) {
+  const note = noteId ? latestItem(ctx, noteId) : null;
+  return note && !note.deletedAt && note.type === 'note' ? note : null;
+}
+/** True when the frame header already shows this name: the instance's own title, or the note name it falls back to (displayTitle). */
+export const frameShowsName = (widget, name) => widget.style?.frame !== 'none' && !widget.style?.hideTitle
+  && (widget.title || name).trim().toLowerCase() === String(name).trim().toLowerCase();
+
 /** Opens a note in this surface's notes editor (full tab: the Notes view; side panel: the Notes tab). */
 export function openNoteFromWidget(ctx, id, { focus } = {}) {
   if (!id) return;

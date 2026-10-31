@@ -159,13 +159,14 @@ function itemDate(item, view) {
   return relativeDate(item.createdAt);
 }
 
-/** Small status icons on the end of a row: favorite, highlights, notes, tasks, reminder, file. */
+/** Small status icons on the end of a row: favorite, highlights, notes, tasks, reminder, sticky note, file. */
 export function indicators(ctx, item, { compact = false } = {}) {
   const parts = [];
   const notes = notesOnPage(ctx, item);
   const tasks = progressOf(item);
   const highlights = item.highlights?.length || 0;
   if (item.reminderAt && !item.reminderNotifiedAt) parts.push(html`<span class="item-ind" title="Reminder ${shortDate(item.reminderAt)}">${icon('bell', { size: 14 })}<span class="sr-only">Reminder set</span></span>`);
+  if (item.type === 'note' && item.sticky) parts.push(html`<span class="item-ind" title="Sticky note">${icon('sticker', { size: 14 })}<span class="sr-only">Sticky note</span></span>`);
   if (tasks.total) parts.push(html`<span class="${cx('item-ind', tasks.done === tasks.total && 'is-done')}" title="${tasks.done} of ${tasks.total} tasks done">${icon('list-checks', { size: 14 })}${tasks.done}/${tasks.total}</span>`);
   if (highlights) parts.push(html`<span class="item-ind" title="${highlights} ${highlights === 1 ? 'highlight' : 'highlights'}">${icon('highlighter', { size: 14 })}${highlights}</span>`);
   if (notes) parts.push(html`<span class="item-ind" title="${notes} ${notes === 1 ? 'note' : 'notes'} on this page">${icon('sticky-note', { size: 14 })}${notes}</span>`);

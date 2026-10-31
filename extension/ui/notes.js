@@ -386,6 +386,7 @@ function noteRow(ctx, note, selectedId) {
     note.url ? html`<span class="notes-meta-item">${favicon(note.url, { size: 12 })}<span class="notes-meta-text">${domainOf(note.url)}</span></span>` : '',
     info.progress.total ? html`<span class="${cx('notes-meta-item', 'notes-meta-tasks', info.progress.done === info.progress.total && 'is-complete')}" title="${info.progress.done} of ${info.progress.total} tasks done">${icon('list-checks', { size: 12 })}${info.progress.done}/${info.progress.total}</span>` : '',
     reminder ? html`<span class="notes-meta-item" title="Reminder set">${icon('bell', { size: 12 })}<span class="sr-only">Reminder set</span></span>` : '',
+    note.sticky ? html`<span class="notes-meta-item" title="Sticky note">${icon('sticker', { size: 12 })}<span class="sr-only">Sticky note</span></span>` : '',
   ].filter(part => String(part));
   return html`<li data-key="nr:${note.id}"><button type="button" class="${cx('notes-row', selected && 'is-selected')}" data-action="notes.open" data-id="${note.id}" aria-current="${selected ? 'true' : 'false'}">
     <span class="notes-row-top">${note.pinned ? icon('pin', { size: 12, className: 'notes-row-pin' }) : ''}<span class="notes-row-title">${noteName(note)}</span><time class="notes-row-time" datetime="${note.updatedAt}" title="${shortDate(note.updatedAt)}">${shortAgo(note.updatedAt)}</time></span>
@@ -553,6 +554,7 @@ function renderSideList(ctx) {
         <button type="button" class="side-notes-filter" data-action="notes.filter-menu" aria-haspopup="menu" aria-expanded="${popOpen ? 'true' : 'false'}" aria-label="Collection: ${filterName}. Change">
           ${s.collectionId === NO_COLLECTION ? icon('inbox', { size: 14 }) : s.collectionId ? dot(filterColor) : icon('layers', { size: 14 })}<span class="side-notes-filter-label">${filterName}</span>${icon('chevron-down', { size: 14, className: 'side-notes-filter-chevron' })}</button>
         ${searchField({ value: s.query, placeholder: 'Search', action: 'notes.query', keydown: 'notes.search-key', id: 'notes-search', label: 'Search notes', clearAction: 'notes.clear-query', className: 'side-notes-search' })}
+        ${iconButton({ icon: 'sticker', label: 'Sticky notes', action: 'app.open-view', data: { view: 'stickies' }, tooltipPlacement: 'bottom end' })}
       </div>
     </div>
     <div class="side-notes-body">${body}</div>

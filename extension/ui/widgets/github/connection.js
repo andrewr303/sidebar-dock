@@ -98,25 +98,30 @@ async function bridgeSettings() {
   try { return JSON.parse(globalThis.localStorage?.getItem(INTEGRATION_STORAGE_KEY) || '{}') || {}; } catch { return {}; }
 }
 
+const BRIDGE_DOWN = 'The local bridge is not running. Start it with npm run bridge in the Still folder, then try again.';
 /**
  * GET a bridge route. Prefers integrations.requestBridge; builds that only allow /ai and /connections routes are reached
  * directly with the same pairing token and loopback rules.
  */
 async function bridgeRequest(path) {
-  const integrations = appCtx?.integrations;
-  if (integrations?.requestBridge) {
-    try { return await integrations.requestBridge(path); }
-    catch (error) { if (!/Unsupported bridge route/i.test(error?.message || '')) throw error; }
-  }
   const settings = await bridgeSettings();
   if (!settings.bridgeToken) throw new GitHubError('Pair the local bridge first. It is in Settings under AI models.', { kind: 'auth' });
+  const integrations = appCtx?.integrations;
+  if (integrations?.requestBridge) {
+    try { return await integrations.requestBridge(path, { signal: AbortSignal.timeout(15000) }); }
+    catch (error) {
+      // A failed or timed-out fetch means nothing answered at the bridge address (requestBridge passes those through raw).
+      if (error instanceof TypeError || error?.name === 'TimeoutError') throw new GitHubError(BRIDGE_DOWN, { kind: 'network' });
+      if (!/Unsupported bridge route/i.test(error?.message || '')) throw error;
+    }
+  }
   let url;
   try { url = new URL(settings.bridgeUrl || 'http://127.0.0.1:43123'); } catch { throw new GitHubError('The paired bridge address is not valid. Pair the bridge again.', { kind: 'invalid' }); }
   if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) throw new GitHubError('The bridge must run on this computer (a loopback address).', { kind: 'invalid' });
   let response;
   try {
     response = await fetch(`${url.origin}${path}`, { cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(15000), headers: { Authorization: `Bearer ${settings.bridgeToken}` } });
-  } catch { throw new GitHubError('The local bridge is not running. Start it with npm run bridge in the Still folder, then try again.', { kind: 'network' }); }
+  } catch { throw new GitHubError(BRIDGE_DOWN, { kind: 'network' }); }
   let data = null;
   try { data = await response.json(); } catch { data = null; }
   if (!response.ok) {

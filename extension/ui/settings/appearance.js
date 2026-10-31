@@ -23,6 +23,8 @@ const CHOICES = {
   fontSize: FONT_SIZES.map(f => f.value), radius: RADII.map(r => r.value), sidebarWidth: SIDEBAR_WIDTHS.map(w => w.value),
 };
 const prefersDark = () => !!globalThis.matchMedia?.('(prefers-color-scheme: dark)').matches;
+// In other skins the default accent ("blue") is the skin's own (Ice blue, Frost, Sienna…), so it takes that name.
+const accentName = (entry, skin) => (entry.id === 'blue' && skin.id !== 'still' ? skin.accentLabel : entry.label);
 const capitalize = text => text.charAt(0).toUpperCase() + text.slice(1);
 
 /** Appearance values with defaults, plus the accent normalized the way tokens.css reads it. */
@@ -52,8 +54,8 @@ export function renderAppearance(ctx) {
         : a.theme === 'system' ? `Follows your system setting. Now ${mode}.` : `Always ${a.theme}.`,
         control: skin.modes.length === 1 ? badge({ label: `${capitalize(skin.modes[0])} only`, icon: skin.modes[0] === 'dark' ? 'moon' : 'sun' })
           : segmented({ name: 'theme', value: a.theme, options: MODES, action: 'settings.appearance', ariaLabel: 'Mode' }) }),
-      row({ label: 'Accent color', keywords: 'highlight tint', description: `${ACCENTS.find(entry => entry.id === a.accent)?.label || 'Blue'}. Used for buttons, selection and links.`,
-        control: accentSwatches(a.accent, mode) }),
+      row({ label: 'Accent color', keywords: 'highlight tint', description: `${accentName(ACCENTS.find(entry => entry.id === a.accent) || ACCENTS[0], skin)}. Used for buttons, selection and links.`,
+        control: accentSwatches(a.accent, mode, skin) }),
     ]) })}
     ${group({ title: 'Text and layout', body: () => card([
       blockRow({ label: 'Text size', keywords: 'font zoom bigger smaller', description: 'Scales text across Still. Chrome’s zoom still works on top of this.',
@@ -96,10 +98,14 @@ function themeGallery(a, currentMode) {
   return html`<div class="theme-gallery" role="radiogroup" aria-label="Theme">${cards}</div>`;
 }
 
-function accentSwatches(accent, mode) {
+function accentSwatches(accent, mode, skin) {
+  // The skin's own accent is painted from the catalogue; without the preset attributes its check and ring take the page's
+  // tokens, which are that accent's whenever it is the selected one.
+  const own = skin.id !== 'still' ? skin.swatches[mode]?.[2] : '';
   return html`<div class="accent-swatches" role="radiogroup" aria-label="Accent color">${ACCENTS.map(entry => html`<button type="button" role="radio"
-    class="accent-swatch" data-accent="${entry.id}" data-theme="${mode}" aria-checked="${entry.id === accent ? 'true' : 'false'}" tabindex="${entry.id === accent ? '0' : '-1'}"
-    aria-label="${entry.label}" data-tooltip="${entry.label}" data-action="settings.appearance" data-name="accent" data-value="${entry.id}">${icon('check', { size: 14, className: 'accent-swatch-check' })}</button>`)}</div>`;
+    class="accent-swatch" ${entry.id === 'blue' && own ? html`style="background:${own}"` : html`data-accent="${entry.id}" data-theme="${mode}"`}
+    aria-checked="${entry.id === accent ? 'true' : 'false'}" tabindex="${entry.id === accent ? '0' : '-1'}" aria-label="${accentName(entry, skin)}"
+    data-tooltip="${accentName(entry, skin)}" data-action="settings.appearance" data-name="accent" data-value="${entry.id}">${icon('check', { size: 14, className: 'accent-swatch-check' })}</button>`)}</div>`;
 }
 
 function fontSizePicker(value) {

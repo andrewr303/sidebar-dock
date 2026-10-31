@@ -6,6 +6,7 @@ import { button, iconButton } from '../components.js';
 import { registerActions } from '../runtime.js';
 import { navToggle } from '../sidebar.js';
 import { askAi } from '../ai-panel.js';
+import { stickiesShown, setStickiesShown } from '../stickies.js';
 import * as weather from '../widgets/weather.js';
 import { WALLPAPER_PRESETS } from '../themes.js';
 import { patchGroup, settingsGroup } from '../../lib/settings-schema.js';
@@ -166,7 +167,7 @@ function customizeMenu(ctx) {
     { label: 'Greeting', checked: !!tab.greeting, run: () => setTab({ greeting: !tab.greeting }) },
     { label: 'Search bar', checked: !!tab.search, run: () => setTab({ search: !tab.search }) },
     { label: 'Weather in header', checked: !!dash.weatherChip, run: () => setDash({ weatherChip: !dash.weatherChip }) },
-    { label: 'Sticky notes', checked: !!dash.stickies, run: () => setDash({ stickies: !dash.stickies }) },
+    { label: 'Sticky notes', checked: stickiesShown(ctx), run: () => setStickiesShown(ctx, !stickiesShown(ctx)) },
     { separator: true },
     { label: 'More in Settings', icon: 'settings', run: () => ctx.navigate('settings:newtab') },
   ];

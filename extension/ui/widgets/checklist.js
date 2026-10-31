@@ -14,7 +14,7 @@ import { extractTasks } from '../../lib/notes.js';
 import { appendTask, editTask, removeTask, removeTasks, setAllTasks, scopeNotes } from './notes-kit/model.js';
 import {
   editNoteContent, editWithUndo, setTaskDone, shownDone, isLingering, liveNotes, noteLabel, noteTile, noteTasks, noteProgress,
-  openNoteFromWidget, createWidgetNote, saveConfig, collectionName, progressBar, anchorFor,
+  openNoteFromWidget, createWidgetNote, saveConfig, collectionName, progressBar, anchorFor, shownNote, frameShowsName,
 } from './notes-kit/shared.js';
 import { openNotePicker } from './notes-kit/picker.js';
 
@@ -97,8 +97,8 @@ function renderNote(ctx, widget, config) {
   const edited = editing.get(widget.id);
   if (edited && !visible.some(task => edited === `${note.id}:${task.index}`)) editing.delete(widget.id);
   const label = noteLabel(note);
-  const frameTitle = (widget.title || 'Checklist').trim().toLowerCase();
-  const showName = label.trim().toLowerCase() !== frameTitle;
+  // The frame header names the note (displayTitle) unless the widget was renamed or its title is hidden.
+  const showName = !frameShowsName(widget, label);
   return html`<div class="w-checklist" data-source="note" data-widget="${widget.id}">
     ${showName || (config.showProgress && tasks.length) ? html`<div class="w-checklist-top">
       ${showName ? html`<button type="button" class="w-checklist-note" data-action="w.checklist.open" data-note="${note.id}" title="Open in Notes">
@@ -223,6 +223,12 @@ defineWidget({
   size: { w: 3, h: 4, minW: 2, minH: 2, maxW: 8, maxH: 12 },
   presets: { S: { w: 3, h: 3 }, M: { w: 3, h: 4 }, L: { w: 4, h: 6 }, XL: { w: 6, h: 7 } },
   defaults,
+  // Showing one note, an untitled widget is named after it.
+  displayTitle: (ctx, widget) => {
+    const config = configOf(widget);
+    const note = config.source === 'note' ? shownNote(ctx, config.noteId) : null;
+    return note ? noteLabel(note) : '';
+  },
   render,
   menu,
   fields,

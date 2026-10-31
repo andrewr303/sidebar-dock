@@ -117,7 +117,7 @@ export function renderSearch(ctx) {
       <input class="dash-search-input" id="search" data-focus-key="search" type="text" role="combobox" value="${query}" autocomplete="off" spellcheck="false"
         placeholder="Search the web or your library, or ask AI" aria-label="Search the web or your library, or ask AI" aria-autocomplete="list"
         aria-expanded="${expanded ? 'true' : 'false'}" aria-controls="dash-search-list" aria-keyshortcuts="/"
-        ${expanded ? html`aria-activedescendant="dash-sugg-${active}"` : ''} data-input="dashboard.search-input" data-keydown="dashboard.search-key">
+        ${expanded ? html`aria-activedescendant="dash-sugg-${active}"` : ''} data-input="dashboard.search-input" data-keydown="dashboard.search-key" data-view-search>
       ${query ? iconButton({ icon: 'x', label: 'Clear search', action: 'dashboard.search-clear', size: 'sm', className: 'dash-search-clear' }) : kbd('/')}
     </div>
     ${expanded ? html`<div class="dash-search-pop">

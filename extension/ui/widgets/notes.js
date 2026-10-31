@@ -15,7 +15,7 @@ import { taskProgress } from '../../lib/notes.js';
 import { recentNotes, captureDraft, quickAppend } from './notes-kit/model.js';
 import {
   editNoteContent, setTaskDone, withPending, liveNotes, noteLabel, noteTile, noteProgress, noteSnippet, openNoteFromWidget, createWidgetNote,
-  saveConfig, collectionOptions, collectionName, targetCollection, progressBar, anchorFor,
+  saveConfig, collectionOptions, collectionName, targetCollection, progressBar, anchorFor, shownNote, frameShowsName,
 } from './notes-kit/shared.js';
 import { openNotePicker } from './notes-kit/picker.js';
 
@@ -149,12 +149,14 @@ function renderPinned(ctx, widget, config, env) {
   }
   const progress = taskProgress(withPending(note));
   const label = noteLabel(note);
+  // The frame header names the note (displayTitle) unless the widget was renamed or its title is hidden.
+  const showName = !frameShowsName(widget, label);
   return html`<div class="w-notes" data-mode="note" data-widget="${widget.id}">
-    <header class="w-notes-note-head">
-      <h3 class="w-notes-note-title"><button type="button" class="w-notes-note-open" data-action="w.notes.open" data-widget="${widget.id}" data-id="${note.id}"
-        title="Open in Notes">${label}</button></h3>
-      ${progress.total ? progressBar(progress, { compact: true }) : ''}
-    </header>
+    ${showName || progress.total ? html`<header class="w-notes-note-head">
+      ${showName ? html`<h3 class="w-notes-note-title"><button type="button" class="w-notes-note-open" data-action="w.notes.open" data-widget="${widget.id}" data-id="${note.id}"
+        title="Open in Notes">${label}</button></h3>` : ''}
+      ${progress.total ? progressBar(progress, { compact: showName }) : ''}
+    </header>` : ''}
     ${noteMeta(ctx, note)}
     ${noteBody(ctx, note, 'w-notes-note-body')}
     ${env.h >= 3 ? html`<form class="w-notes-append" data-submit="w.notes.append" data-widget="${widget.id}" data-id="${note.id}" autocomplete="off">
@@ -249,6 +251,12 @@ defineWidget({
   size: { w: 4, h: 4, minW: 2, minH: 2, maxW: 12, maxH: 12 },
   presets: { S: { w: 3, h: 3 }, M: { w: 4, h: 4 }, L: { w: 6, h: 5 }, XL: { w: 8, h: 6 } },
   defaults,
+  // In one-note mode an untitled widget is named after its note.
+  displayTitle: (ctx, widget) => {
+    const config = configOf(widget);
+    const note = config.mode === 'note' ? shownNote(ctx, config.noteId) : null;
+    return note ? noteLabel(note) : '';
+  },
   render,
   headerActions,
   menu,

@@ -1350,7 +1350,7 @@ async function runImport(ctx, file) {
   try {
     const result = await importPortableFile(file, ctx.store);
     data.importJob = { name: file.name || 'the file', result };
-    ctx.toast(`Added ${plural(result.items, 'item')}${result.files ? ` and ${plural(result.files, 'file')}` : ''}`, { tone: 'success' });
+    ctx.toast(`Added ${plural(result.items, 'item')}${result.files ? ` and ${plural(result.files, 'file')}` : ''}${result.boards ? `. Restored ${plural(result.boards, 'dashboard')}` : ''}`, { tone: 'success' });
   } catch (error) {
     data.importJob = { name: file.name || 'the file', error: error.message || 'The file could not be read.' };
   }

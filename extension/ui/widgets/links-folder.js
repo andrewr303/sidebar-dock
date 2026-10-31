@@ -511,8 +511,8 @@ defineWidget({
   preview: 'Folder of link tiles',
   defaults: () => folderConfig({}),
   needsSetup: config => !folderConfig(config).collectionId,
-  // The name to show when the instance has no title of its own (the collection's), for frames that ask for it.
-  titleFor: (ctx, widget) => folderState(ctx, widget).collection?.name || '',
+  // The frame menu, settings and announcements name an untitled folder after its collection.
+  displayTitle: (ctx, widget) => ctx.select.collection(folderConfig(widget.config).collectionId)?.name || '',
   render,
   menu: (ctx, widget) => folderMenuItems(ctx, widget),
   renderSettings,

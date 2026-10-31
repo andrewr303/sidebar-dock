@@ -269,6 +269,7 @@ html[data-motion="reduced"] .w-progress-fill { transition: none; }
 /* Pinned note: title, meta, scrolling body and a quick-append line that stays at the bottom. */
 .w-notes[data-mode="note"] { gap: var(--space-2); }
 .w-notes-note-head { align-items: center; }
+.w-notes-note-head > .w-progress:only-child { flex: 1; } /* the frame header shows the note name */
 .w-notes-note-open {
   display: block;
   max-inline-size: 100%;
