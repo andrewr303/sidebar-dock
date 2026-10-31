@@ -148,7 +148,8 @@ async function quickAdd(ctx, type) {
   const size = clampSize(def, def.size);
   let config = {};
   try { config = def.defaults?.() || {}; } catch (error) { console.error(error); }
-  const widget = await dashboardStore.addWidget(board.id, { type, ...size, ...findFreeSpot(board.widgets, size.w, size.h, GRID_COLS), config });
+  const widget = await dashboardStore.addWidget(board.id, { type, ...size, ...findFreeSpot(board.widgets, size.w, size.h, GRID_COLS), config,
+    ...(def.style ? { style: { ...def.style } } : {}) });
   highlight(ctx, widget.id);
   let setup = false;
   try { setup = !!def.needsSetup?.(config); } catch (error) { console.error(error); }

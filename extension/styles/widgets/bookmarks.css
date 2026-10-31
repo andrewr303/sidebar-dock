@@ -163,7 +163,6 @@ button.w-bookmarks-crumb:active { background: var(--bg-active); }
 @media (hover: hover) {
   .w-bookmarks-row.is-folder:hover .w-bookmarks-row-chevron { visibility: hidden; }
 }
-.w-bookmarks-row.is-folder:focus-within .w-bookmarks-row-more:focus-visible ~ * { visibility: visible; }
 .w-bookmarks-row-more {
   position: absolute;
   inset-inline-end: var(--space-3);

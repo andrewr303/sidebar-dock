@@ -68,7 +68,7 @@ export function buildSeedDashboard({ library = null, getDef = () => null } = {})
     const h = Math.max(size.minH || 1, Math.min(size.maxH || 40, slot.h));
     let defaults = {};
     try { defaults = def.defaults?.() || {}; } catch (error) { console.warn(`[still] ${slot.type} defaults failed`, error); }
-    widgets.push({ id: seedId('w'), type: slot.type, x: slot.x, y: slot.y, w, h, title: '', style: { frame: 'default', hideTitle: false },
+    widgets.push({ id: seedId('w'), type: slot.type, x: slot.x, y: slot.y, w, h, title: '', style: { frame: 'default', hideTitle: def.style?.hideTitle === true },
       config: { ...defaults, ...(slot.config || {}) } });
   }
   // Clamped sizes can collide with a neighbor's slot; settle moves those down and compact closes any gaps left behind.

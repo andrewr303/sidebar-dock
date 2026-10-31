@@ -112,7 +112,7 @@ async function addFromGallery(ctx, type) {
   let config = {};
   try { config = def.defaults?.() || {}; } catch (error) { console.error(error); }
   const spot = placementFor(board.widgets, size, props.at);
-  const widget = await dashboardStore.addWidget(board.id, { type, ...size, ...spot, config });
+  const widget = await dashboardStore.addWidget(board.id, { type, ...size, ...spot, config, ...(def.style ? { style: { ...def.style } } : {}) });
   ctx.closeDialog(DIALOG);
   highlight(ctx, widget.id);
   let setup = false;
