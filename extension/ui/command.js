@@ -25,7 +25,7 @@ export const COMMANDS = [
   { id: 'save-tabs', label: 'Save all tabs', icon: 'layers', keywords: 'window session collection', action: 'add.save-tabs', when: ctx => ext(ctx) && hasAction('add.save-tabs') },
   { id: 'upload', label: 'Upload files', icon: 'upload', keywords: 'pdf image attach', action: 'add.upload', when: () => hasAction('add.upload') },
   { id: 'new-collection', label: 'New collection', icon: 'folder-plus', keywords: 'folder create group', action: 'collections.new', pinned: true },
-  { id: 'go-all', label: 'Go to All items', icon: 'library', keywords: 'everything library', view: 'all' },
+  { id: 'go-all', label: 'Go to All items', icon: 'book-open-text', keywords: 'everything library', view: 'all' },
   { id: 'go-inbox', label: 'Go to Inbox', icon: 'inbox', keywords: 'unsorted', view: 'inbox' },
   { id: 'go-favorites', label: 'Go to Favorites', icon: 'star', keywords: 'starred', view: 'favorites' },
   { id: 'go-notes', label: 'Go to Notes', icon: 'sticky-note', keywords: 'writing', view: 'notes' },

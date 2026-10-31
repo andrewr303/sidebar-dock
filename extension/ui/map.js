@@ -221,7 +221,7 @@ async function loadSimilar(ctx, entry) {
 function scopeButton(ctx, scope) {
   const collection = scope && scope !== 'inbox' ? ctx.select.collection(scope) : null;
   const name = collection ? ctx.select.path(collection.id).map(c => c.name).join(' / ') : scope === 'inbox' ? 'Inbox' : 'All items';
-  const glyph = collection ? collectionIcon(collection, { size: 16 }) : icon(scope === 'inbox' ? 'inbox' : 'library', { size: 14 });
+  const glyph = collection ? collectionIcon(collection, { size: 16 }) : icon(scope === 'inbox' ? 'inbox' : 'book-open-text', { size: 14 });
   const open = ctx.state.popover?.anchorEl?.dataset?.action === 'map.scope-menu';
   return html`<button type="button" class="btn btn-secondary btn-sm map-scope" data-action="map.scope-menu" aria-haspopup="menu" aria-expanded="${open ? 'true' : 'false'}" aria-label="Scope: ${name}">
     ${glyph}<span class="btn-label">${name}</span>${icon('chevron-down', { size: 14, className: 'btn-icon-right' })}</button>`;
@@ -394,7 +394,7 @@ function pickScope(ctx, anchor) {
   const choose = scope => { m.scope = scope; ctx.render(); };
   const recent = ctx.select.recentCollections(6);
   ctx.openMenu(anchor, [
-    { label: 'All items', icon: 'library', checked: !m.scope, run: () => choose('') },
+    { label: 'All items', icon: 'book-open-text', checked: !m.scope, run: () => choose('') },
     { label: 'Inbox', icon: 'inbox', checked: m.scope === 'inbox', run: () => choose('inbox') },
     ...(recent.length ? [{ separator: true }, { heading: 'Recent collections' }] : []),
     // Menus take icon names only; an emoji collection icon would log and fall back to a blank circle.

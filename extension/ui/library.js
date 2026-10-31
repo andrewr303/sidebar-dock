@@ -34,7 +34,7 @@ const TYPE_CHIPS = [
   { value: 'image', label: 'Images' }, { value: 'video', label: 'Videos' }, { value: 'file', label: 'Files' },
 ];
 const VIEW_META = {
-  all: { icon: 'library', title: 'All items' },
+  all: { icon: 'book-open-text', title: 'All items' },
   inbox: { icon: 'inbox', title: 'Inbox' },
   favorites: { icon: 'star', title: 'Favorites' },
   notes: { icon: 'sticky-note', title: 'Notes' },

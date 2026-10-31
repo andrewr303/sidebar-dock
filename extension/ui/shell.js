@@ -20,8 +20,8 @@ import { SORT_OPTIONS } from './selectors.js';
 import { dailyNoteTitle } from '../lib/notes.js';
 
 const SIDE_TABS = [
-  { id: 'library', label: 'Library', icon: 'library' },
-  { id: 'page', label: 'This page', icon: 'globe' },
+  { id: 'library', label: 'Library', icon: 'book-open-text' },
+  { id: 'page', label: 'This page', icon: 'app-window' },
   { id: 'notes', label: 'Notes', icon: 'sticky-note' },
   { id: 'ask', label: 'Ask', icon: 'sparkles' },
 ];
