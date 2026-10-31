@@ -1,8 +1,10 @@
 // Lucide icons (ISC License, see assets/licenses/lucide.txt), inlined so the extension needs no network or build step.
+// The AnimateIcons pack (icon-pack.js, MIT) adds several hundred more for collections and replaces same-named shapes.
 // icon(name, { size, className, label, strokeWidth }) returns an html fragment; decorative unless a label is given.
 import { raw, esc } from './html.js';
+import { PACK_PATHS, PACK_KEYWORDS, PACK_GROUPS } from './icon-pack.js';
 
-const PATHS = {
+const BASE_PATHS = {
   "activity": "<path d=\"M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2\"/>",
   "alarm-clock": "<circle cx=\"12\" cy=\"13\" r=\"8\"/><path d=\"M12 9v4l2 2\"/><path d=\"M5 3 2 6\"/><path d=\"m22 6-3-3\"/><path d=\"M6.38 18.7 4 21\"/><path d=\"M17.64 18.67 20 21\"/>",
   "anchor": "<path d=\"M12 22V8\"/><path d=\"M5 12H2a10 10 0 0 0 20 0h-3\"/><circle cx=\"12\" cy=\"5\" r=\"3\"/>",
@@ -327,6 +329,7 @@ const PATHS = {
   "zap": "<path d=\"M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z\"/>",
   "blank": "",
 };
+const PATHS = { ...BASE_PATHS, ...PACK_PATHS };
 const ALIASES = {"close": "x", "chevron": "chevron-right", "down": "chevron-down", "up": "chevron-up", "back": "arrow-left", "arrow": "arrow-right", "more": "ellipsis", "more-vertical": "ellipsis-vertical", "external": "external-link", "restore": "rotate-ccw", "highlight": "highlighter", "edit": "pencil", "trash": "trash-2", "delete": "trash-2", "note": "sticky-note", "article": "newspaper", "grid": "layout-grid", "cards": "layout-grid", "masonry": "layout-dashboard", "headlines": "rows-3", "panel": "panel-right", "menu": "panel-left", "sort": "arrow-down-wide-narrow", "help": "circle-help", "alert-circle": "circle-alert", "check-circle": "circle-check", "alert-triangle": "triangle-alert", "x-circle": "circle-x", "plug": "plug", "bolt": "zap", "select": "square-check", "home": "house", "unlock": "lock-open", "filter": "filter", "funnel": "filter", "agent": "bot", "ai": "sparkles", "tasks": "list-checks", "todo": "list-todo", "reminder": "bell", "screenshot": "scan", "capture": "bookmark-plus", "map": "waypoints", "knowledge-map": "waypoints", "code-2": "code-xml", "divider": "separator-horizontal", "callout": "message-square", "toggle": "list-collapse", "h1": "heading-1", "h2": "heading-2", "h3": "heading-3", "bullet": "list", "number": "list-ordered", "strike": "strikethrough", "blank": "blank", "globe-2": "earth", "duplicate": "copy", "duplicates": "files", "untagged": "tag", "media": "image", "link-item": "link-2", "send-up": "arrow-up", "stop": "circle-stop", "bookmark-filled": "bookmark", "sparkle": "sparkle", "book-2": "book-open", "fonts": "type", "bar-chart": "chart-bar", "emoji": "smile"};
 const warned = new Set();
 
@@ -354,6 +357,76 @@ export const COLLECTION_ICONS = [
   'coffee', 'utensils', 'pizza', 'apple', 'dumbbell', 'bike', 'gamepad-2', 'trophy', 'medal', 'users', 'user', 'baby',
   'dog', 'cat', 'leaf', 'sun', 'moon', 'cloud', 'snowflake', 'umbrella', 'calendar', 'clock', 'bell', 'mail',
 ];
+/** Search words for icons the pack does not describe, so the suggested set is findable by meaning too. */
+const EXTRA_KEYWORDS = {
+  folder: 'directory collection files', type: 'font typography text letter', brush: 'paint art draw', book: 'read library novel',
+  newspaper: 'news article press', blocks: 'build modules lego', scale: 'law justice balance legal', microscope: 'science lab biology research',
+  'train-front': 'rail transit travel commute', 'tree-pine': 'forest nature christmas outdoors', earth: 'world planet global',
+  pizza: 'food meal italian', apple: 'fruit food health', 'gamepad-2': 'games gaming controller play', baby: 'child kid family parenting',
+};
+const KEYWORDS = { ...EXTRA_KEYWORDS, ...PACK_KEYWORDS };
+
+/** Browse groups for collection icon pickers: [label, names]; each icon appears once, suggestions first. */
+export const COLLECTION_ICON_GROUPS = (() => {
+  const seen = new Set(COLLECTION_ICONS);
+  const groups = [['Suggested', COLLECTION_ICONS]];
+  for (const [label, names] of PACK_GROUPS) {
+    const fresh = names.filter(name => !seen.has(name));
+    fresh.forEach(name => seen.add(name));
+    if (fresh.length) groups.push([label, fresh]);
+  }
+  return groups;
+})();
+const BROWSE_ORDER = new Map(COLLECTION_ICON_GROUPS.flatMap(([, names]) => names).map((name, index) => [name, index]));
+
+function termScore(name, words, keywords, term) {
+  if (name === term) return 100;
+  if (words.includes(term)) return 60;
+  if (words.some(word => word.startsWith(term))) return 45;
+  if (term.length >= 3 && name.includes(term)) return 30;
+  if (keywords.includes(term)) return 20;
+  if (term.length >= 3 && keywords.some(word => word.startsWith(term))) return 10;
+  return 0;
+}
+
+/**
+ * Icons matching every word of `query` by name or meaning ("money" finds wallet, coins, piggy bank), best first:
+ * whole-word name matches, then name prefixes, then keywords; ties keep the browse order. Plurals match ("books").
+ */
+export function searchIcons(query, limit = 160) {
+  const terms = String(query ?? '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (!terms.length) return [];
+  const results = [];
+  for (const name of iconNames()) {
+    const words = name.split('-');
+    const keywords = KEYWORDS[name] ? KEYWORDS[name].split(' ') : [];
+    let score = 0;
+    for (const term of terms) {
+      const s = termScore(name, words, keywords, term) || (term.length > 3 && term.endsWith('s') ? termScore(name, words, keywords, term.slice(0, -1)) : 0);
+      if (!s) { score = 0; break; }
+      score += s;
+    }
+    if (score) results.push({ name, score, order: BROWSE_ORDER.get(name) ?? Infinity });
+  }
+  return results.sort((a, b) => b.score - a.score || a.order - b.order || a.name.length - b.name.length || a.name.localeCompare(b.name))
+    .slice(0, limit).map(result => result.name);
+}
+
+/**
+ * [label, names] sections for the icon grid: every group when browsing, one unlabeled section of matches when searching.
+ * A current icon that no group offers (an older pick) leads the suggestions so it stays visible and checked.
+ */
+export function iconChoices(query, current = '') {
+  if (!String(query ?? '').trim()) {
+    const listed = COLLECTION_ICON_GROUPS.some(([, names]) => names.includes(current));
+    if (!current || listed || !hasIcon(current)) return COLLECTION_ICON_GROUPS;
+    const [[label, names], ...rest] = COLLECTION_ICON_GROUPS;
+    return [[label, [current, ...names]], ...rest];
+  }
+  const matches = searchIcons(query);
+  return matches.length ? [['', matches]] : [];
+}
+
 /** Collection colors map to --c-<name> tokens; hex values are only for storage compatibility. */
 export const COLLECTION_COLORS = [
   { name: 'red', hex: '#e5484d' }, { name: 'orange', hex: '#f76b15' }, { name: 'amber', hex: '#e08a1e' }, { name: 'yellow', hex: '#d6a90b' },

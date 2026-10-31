@@ -1,6 +1,6 @@
 // Collection editor dialog, delete flow and the pure tree helpers shared by the sidebar, the side panel and the palette.
 import { html, cx, plural, safeSrc } from './html.js';
-import { icon, COLLECTION_ICONS, COLLECTION_COLORS } from './icons.js';
+import { icon, iconChoices, COLLECTION_COLORS } from './icons.js';
 import { button, dialogFrame, field, select, switchToggle, collectionIcon, colorName, colorVar } from './components.js';
 import { registerDialog } from './overlay.js';
 import { registerActions } from './runtime.js';
@@ -90,9 +90,9 @@ export function openCollectionEditor(ctx, { id = '', parentId = '', onSaved } = 
 function renderEditor(ctx, props) {
   const { id, draft, iconQuery, error, nameError, coverError, saving } = props;
   const tree = ctx.select.tree();
-  const query = iconQuery.trim().toLowerCase();
-  const custom = draft.icon && !COLLECTION_ICONS.includes(draft.icon) ? [draft.icon] : [];
-  const icons = [...custom, ...COLLECTION_ICONS].filter(name => !query || EMOJI.test(name) || iconLabel(name).includes(query));
+  // An emoji pick has no place in the groups, so it leads the grid while browsing; searching shows matches only.
+  const emoji = EMOJI.test(draft.icon) && !iconQuery.trim() ? [['', [draft.icon]]] : [];
+  const sections = [...emoji, ...iconChoices(iconQuery, EMOJI.test(draft.icon) ? '' : draft.icon)];
   const knownColor = COLLECTION_COLORS.some(c => c.hex.toLowerCase() === String(draft.color).toLowerCase());
   const colors = knownColor ? COLLECTION_COLORS : [...COLLECTION_COLORS, { name: '', hex: draft.color }];
   const parentOptions = [{ value: '', label: 'None (top level)' },
@@ -117,9 +117,9 @@ function renderEditor(ctx, props) {
       <span class="input-wrap icon-search">${icon('search', { size: 14, className: 'input-icon' })}<input class="input input-sm has-icon" name="iconQuery"
         value="${iconQuery}" placeholder="Search icons" aria-label="Search icons" autocomplete="off" spellcheck="false" data-icon-search></span>
       <div class="icon-grid" role="radiogroup" aria-label="Icon" data-color="${colorName(draft.color) || ''}" style="--tile:${colorVar(draft.color)}">
-        ${icons.length ? icons.map(name => html`<label class="icon-choice" title="${iconLabel(name)}">
+        ${sections.length ? sections.map(([label, names]) => html`${label ? html`<div class="icon-grid-heading">${label}</div>` : ''}${names.map(name => html`<label class="icon-choice" title="${iconLabel(name)}">
           <input type="radio" name="icon" value="${name}" aria-label="${iconLabel(name)}" ${name === draft.icon ? 'checked' : ''}>
-          <span class="icon-choice-box">${EMOJI.test(name) ? html`<span class="collection-emoji">${name}</span>` : icon(name, { size: 16 })}</span></label>`)
+          <span class="icon-choice-box">${EMOJI.test(name) ? html`<span class="collection-emoji">${name}</span>` : icon(name, { size: 16 })}</span></label>`)}`)
           : html`<p class="icon-grid-empty">No icons match “${iconQuery}”</p>`}
       </div>
     </div>

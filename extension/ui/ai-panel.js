@@ -282,7 +282,7 @@ function contextFor(ctx) {
 const collectionName = (ctx, id) => id ? ctx.select?.collection?.(id)?.name || 'this collection' : 'Inbox';
 
 function chipView(ctx, chip) {
-  if (chip.kind === 'page') return { label: 'This page', title: chip.page.title || chip.page.url, glyph: icon('globe', { size: 12 }) };
+  if (chip.kind === 'page') return { label: 'This page', title: chip.page.title || chip.page.url, glyph: icon('app-window', { size: 12 }) };
   if (chip.kind === 'collection') {
     const collection = chip.collectionId ? ctx.select?.collection?.(chip.collectionId) : null;
     return { label: collectionName(ctx, chip.collectionId), glyph: collectionIcon(collection, { size: 14 }) };
@@ -294,7 +294,7 @@ function chipView(ctx, chip) {
     }
     return { label: chip.selection ? `${chip.ids.length} selected` : plural(chip.ids.length, 'item'), glyph: icon('layers', { size: 12 }) };
   }
-  return { label: 'Library', title: 'Your whole library', glyph: icon('library', { size: 12 }) };
+  return { label: 'Library', title: 'Your whole library', glyph: icon('book-open-text', { size: 12 }) };
 }
 
 function placeholderFor(ctx, resolved) {
@@ -804,7 +804,7 @@ function skipBlock(view, key, className, render) {
 
 function scopeLabel(ctx, record) {
   if (!record || record.scope === 'library') return null;
-  if (record.scope === 'page') return { glyph: icon('globe', { size: 12 }), label: record.page?.title || domainOf(record.page?.url) || 'This page' };
+  if (record.scope === 'page') return { glyph: icon('app-window', { size: 12 }), label: record.page?.title || domainOf(record.page?.url) || 'This page' };
   if (record.scope === 'collection') return { glyph: icon('folder', { size: 12 }), label: collectionName(ctx, record.collectionId) };
   const ids = record.ids || [];
   if (ids.length === 1) return { glyph: icon('file-text', { size: 12 }), label: liveItem(ctx, ids[0])?.title || 'One item' };
@@ -1193,13 +1193,13 @@ function contextOptions(ctx) {
   const options = [];
   if (!query) {
     const page = ctx.env.isSidepanel && isWebUrl(ctx.state.page?.url) ? ctx.state.page : null;
-    if (page && resolved.kind !== 'page') options.push({ kind: 'scope', scope: 'page', label: 'This page', hint: domainOf(page.url), glyph: icon('globe', { size: 16 }) });
+    if (page && resolved.kind !== 'page') options.push({ kind: 'scope', scope: 'page', label: 'This page', hint: domainOf(page.url), glyph: icon('app-window', { size: 16 }) });
     const view = String(ctx.state.view || '');
     const viewCollection = !ctx.env.isSidepanel && view.startsWith('collection:') ? ctx.select?.collection?.(view.slice(11)) : null;
     if (viewCollection && !(resolved.kind === 'collection' && resolved.scope.collectionId === viewCollection.id)) {
       options.push({ kind: 'scope', scope: 'collection', collectionId: viewCollection.id, label: viewCollection.name, hint: 'Collection', glyph: collectionIcon(viewCollection, { size: 16 }) });
     }
-    if (resolved.kind !== 'library') options.push({ kind: 'scope', scope: 'library', label: 'Whole library', hint: 'Search everything', glyph: icon('library', { size: 16 }) });
+    if (resolved.kind !== 'library') options.push({ kind: 'scope', scope: 'library', label: 'Whole library', hint: 'Search everything', glyph: icon('book-open-text', { size: 16 }) });
   }
   for (const item of itemMatches(ctx, query, 8)) options.push({ kind: 'item', id: item.id, item });
   return options;
