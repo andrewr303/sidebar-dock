@@ -46,6 +46,71 @@ export function collectionMove(tree, dragId, targetId, placement, expanded = new
   return move;
 }
 
+// A click with a little hand movement must stay a click. Chrome starts a native drag after about 4px of movement, which
+// swallows the click on every draggable row and card, and on the buttons inside them. initClickSlop adds two guards:
+// a drag never starts from a control inside a draggable element, and a drag that never strays further than CLICK_SLOP
+// from where the press began, ends quickly and drops nowhere (or back onto itself) is replayed as the click it was
+// meant to be.
+export const CLICK_SLOP = 10;
+export const CLICK_MS = 1500;
+const CONTROL = 'button, a[href], input, select, textarea, label, summary, [role="button"], [role="checkbox"], [role="menuitem"], [role="tab"], [contenteditable=""], [contenteditable="true"], [data-action]';
+
+/** The control the press landed on when it sits inside the drag source (the source itself does not count), else null. */
+export function controlInside(pressed, source) {
+  const control = pressed?.closest?.(CONTROL);
+  return control && control !== source && source?.contains?.(control) ? control : null;
+}
+
+/**
+ * Whether a drag was really a click: it strayed at most maxDistance px, lasted ms, and either dropped nowhere
+ * (dropEffect 'none') or back onto its own source (a link tile's grid accepts that as a no-op reorder).
+ */
+export function isClickSlop({ maxDistance, ms, dropEffect, droppedOnSource = false }, { slop = CLICK_SLOP, limit = CLICK_MS } = {}) {
+  return maxDistance <= slop && ms <= limit && (!dropEffect || dropEffect === 'none' || droppedOnSource);
+}
+
+let slopReady = false;
+export function initClickSlop() {
+  if (slopReady || typeof document === 'undefined') return;
+  slopReady = true;
+  let press = null;
+  document.addEventListener('pointerdown', event => {
+    press = event.button === 0 && event.isPrimary !== false && event.target instanceof Element
+      ? { target: event.target, x: event.clientX, y: event.clientY, t: performance.now(), max: 0,
+          mods: { ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey, altKey: event.altKey } }
+      : null;
+  }, true);
+  const track = event => {
+    if (!press || (!event.clientX && !event.clientY)) return; // the last drag event of a gesture reports 0, 0
+    press.max = Math.max(press.max, Math.hypot(event.clientX - press.x, event.clientY - press.y));
+  };
+  let dropTarget = null;
+  document.addEventListener('drag', track, true);
+  document.addEventListener('dragover', track, true);
+  document.addEventListener('drop', event => { dropTarget = event.target instanceof Element ? event.target : null; }, true);
+  document.addEventListener('dragstart', event => {
+    const source = event.target instanceof Element ? event.target : null;
+    if (!press || !source) return;
+    if (controlInside(press.target, source)) {
+      // Pressing a row's + or … (or a card's buttons) and moving a hair must not pick the whole row up.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+    const gesture = press;
+    dropTarget = null;
+    // On the source itself: dragend still reaches it when a re-render has taken it out of the document.
+    source.addEventListener('dragend', end => {
+      track(end);
+      if (!gesture.target.isConnected) return;
+      const droppedOnSource = !!dropTarget && source.contains(dropTarget);
+      if (!isClickSlop({ maxDistance: gesture.max, ms: performance.now() - gesture.t, dropEffect: end.dataTransfer?.dropEffect, droppedOnSource })) return;
+      gesture.target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true, view: window, detail: 1,
+        button: 0, clientX: gesture.x, clientY: gesture.y, ...gesture.mods }));
+    }, { once: true });
+  }, true);
+}
+
 const decodeEntities = text => text.replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (_, name) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", nbsp: ' ' }[name]));
 
 /** Links carried by a drag from a web page or another app: [{ url, title }] (http and https only, deduped). */
@@ -87,6 +152,7 @@ function stopExpandTimer() { clearTimeout(expandTimer); expandTimer = 0; expandT
 export function initDnd(ctx, { openAdd } = {}) {
   if (initialized || typeof document === 'undefined') return;
   initialized = true;
+  initClickSlop();
   const expanded = () => new Set(ctx.prefs.get('expandedCollections', []));
   // The collection on screen ('' = Inbox). In the side panel only the Library tab's drill-down shows one; a view left
   // open there must not capture drops on This page or Notes.

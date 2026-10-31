@@ -141,7 +141,7 @@
 .heading-toggle[aria-expanded="false"] .heading-chev { opacity: 1; }
 .heading-toggle[aria-expanded="false"] .heading-chev { rotate: -90deg; }
 .nav-heading-count { padding-inline-end: var(--space-2); }
-.nav-heading .nav-heading-action { --ib-h: 22px; color: var(--fg-subtle); }
+.nav-heading .nav-heading-action { --ib-h: 26px; color: var(--fg-subtle); }
 .nav-heading .nav-heading-action:hover { color: var(--fg-default); }
 .nav-empty { padding: var(--space-2) var(--space-4) var(--space-2) 32px; color: var(--fg-subtle); font-size: var(--text-xs); line-height: var(--lh-xs); }
 
