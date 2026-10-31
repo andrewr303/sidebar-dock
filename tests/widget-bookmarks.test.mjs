@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   indexTree, folderChildren, folderPath, folderOptions, filterFolderOptions, searchBookmarks, treeRows, importPlan, isWithin, nodeTitle,
-  allFolderIds, bookmarkConfig, bookmarkDefaults,
+  allFolderIds, bookmarkConfig, bookmarkDefaults, moveIndex, dropMove, dropCreate, folderUrls, compactTree, expandTree,
 } from '../extension/ui/widgets/bookmarks/tree.js';
 
 const link = (id, title, url, dateAdded = 0) => ({ id, title, url, dateAdded });
@@ -102,4 +102,58 @@ test('config defaults and limits', () => {
   assert.deepEqual(bookmarkConfig(), bookmarkDefaults());
   assert.deepEqual(bookmarkConfig({ folderId: '', view: 'grid', sort: 'x', openIn: 'window', showFolders: false }),
     { folderId: '1', view: 'list', sort: 'manual', showFolders: false, openIn: 'current', showSearch: true });
+});
+
+test('Chrome\'s top folders and managed bookmarks are locked', () => {
+  const index = indexTree([folder('0', '', [folder('1', 'Bookmarks bar', [link('10', 'A', 'https://a.example/')]),
+    { id: '9', title: 'Managed', unmodifiable: 'managed', children: [{ id: '90', title: 'Intranet', url: 'https://intranet.example/', unmodifiable: 'managed' }] }])]);
+  assert.equal(index.nodes.get('1').locked, true);
+  assert.equal(index.nodes.get('1').managed, false);
+  assert.equal(index.nodes.get('10').locked, false);
+  assert.equal(index.nodes.get('9').managed, true);
+  assert.equal(index.nodes.get('90').locked, true);
+});
+
+test('move indexes count Chrome\'s own children and skip moves onto the same place', () => {
+  const index = indexTree(TREE);
+  // Bar children (Chrome order): 10 Zeta, 11 Work, 12 alpha, 13 Bookmarklet, 14 untitled.
+  assert.equal(moveIndex(index, '1', '10', { beforeId: '12' }), 2);
+  assert.equal(moveIndex(index, '1', '12', { beforeId: '10' }), 0);
+  assert.equal(moveIndex(index, '1', '12', { beforeId: '' }), 5);
+  assert.equal(moveIndex(index, '1', '10', { beforeId: '11' }), -1, 'just after itself is no move');
+  assert.equal(moveIndex(index, '1', '10', { delta: 1 }), 2);
+  assert.equal(moveIndex(index, '1', '10', { delta: -1 }), -1, 'already first');
+  // A grid row down (+3): from Zeta past Work and alpha to after the untitled link (the bookmarklet is not shown).
+  assert.equal(moveIndex(index, '1', '10', { delta: 3 }), 5);
+  assert.equal(moveIndex(index, '1', '14', { delta: -2 }), 1);
+  assert.equal(moveIndex(index, '1', '110', { delta: 1 }), -1, 'not in that folder');
+});
+
+test('drops: moving between folders, never into itself; new bookmarks land at the drop point', () => {
+  const index = indexTree(TREE);
+  assert.deepEqual(dropMove(index, '20', { beforeId: '110', folderId: '1' }), { parentId: '11', index: 0 });
+  assert.deepEqual(dropMove(index, '10', { beforeId: '', folderId: '11' }), { parentId: '11', index: 4 });
+  assert.equal(dropMove(index, '11', { beforeId: '1120', folderId: '1' }), null, 'a folder into its own subfolder');
+  assert.equal(dropMove(index, '1', { beforeId: '20', folderId: '2' }), null, 'Chrome\'s top folders stay put');
+  assert.equal(dropMove(index, '10', { beforeId: '11', folderId: '1' }), null, 'onto its own place');
+  assert.deepEqual(dropCreate(index, '1', '12'), { parentId: '1', index: 2 });
+  assert.deepEqual(dropCreate(index, '1', '110'), { parentId: '11', index: 0 });
+  assert.deepEqual(dropCreate(index, '1', ''), { parentId: '1', index: undefined });
+  assert.deepEqual(folderUrls(index, '1'), ['https://zeta.example/', 'https://alpha.example/', 'https://www.untitled.example/page']);
+});
+
+test('the cached copy round-trips and can be cut short', () => {
+  const index = indexTree(TREE);
+  const rows = compactTree(index);
+  assert.equal(rows.length, index.nodes.size);
+  assert.deepEqual(rows[0], ['0', '', '', '', 0, 0]);
+  const back = expandTree(JSON.parse(JSON.stringify(rows)));
+  assert.equal(back.links, index.links);
+  assert.deepEqual(folderChildren(back, '1').map(n => n.id), folderChildren(index, '1').map(n => n.id));
+  assert.deepEqual(folderOptions(back), folderOptions(index));
+  assert.equal(back.nodes.get('1').locked, true);
+  const cut = expandTree(compactTree(index, { limit: 4 }));
+  assert.deepEqual([...cut.nodes.keys()].sort(), ['0', '1', '10', '2']);
+  assert.equal(cut.nodes.get('1').total, 1, 'counts follow what was kept');
+  assert.deepEqual(expandTree(null).nodes.size, 0);
 });

@@ -90,6 +90,13 @@ export function topicSlug(value) {
   return text.replace(/&/g, ' ').replace(/[^a-z\d]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
 }
 
+/** Topic select value that reveals a free-text topic field in the widget settings. */
+export const OTHER_TOPIC = '__other';
+/** The topic a settings draft asks for: a listed slug, or the typed one when "Another topic…" is chosen. */
+export function draftTopic(draft = {}) {
+  return draft?.topic === OTHER_TOPIC ? topicSlug(draft.topicOther) : topicSlug(draft?.topic);
+}
+
 /** Config with every key valid (select fields arrive as strings; older widgets miss newer keys). */
 export function normalizeConfig(config = {}) {
   const c = { ...DEFAULT_CONFIG, ...(config && typeof config === 'object' ? config : {}) };
@@ -636,6 +643,16 @@ export function layoutFor(env = {}, config = {}) {
   if (chosen === 'list') return fitsList ? 'list' : 'top';
   if (w <= 2 || h <= 3) return 'top';
   return size === 'xl' && w >= 7 ? 'cards' : 'list';
+}
+
+/**
+ * The product's own site for a favicon when it has no image, or ''. Product Hunt usually sends its redirect link
+ * (www.producthunt.com/r/…) as the website, and that would show Product Hunt's icon on every row, so those are skipped.
+ */
+export function siteIconUrl(post) {
+  const url = cleanUrl(post?.website);
+  if (!url) return '';
+  try { return /(^|\.)producthunt\.com$/i.test(new URL(url).hostname) ? '' : url; } catch { return ''; }
 }
 
 /** The link a row opens: the product page on Product Hunt, or the product's own site when chosen and known. */

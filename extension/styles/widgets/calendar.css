@@ -30,6 +30,7 @@
   grid-template-rows: minmax(0, 1fr) auto;
   grid-template-areas: "month" "alert";
   gap: var(--space-6);
+  position: relative;
   block-size: 100%;
   min-block-size: 0;
   font-variant-numeric: tabular-nums;
@@ -294,18 +295,42 @@
 }
 .w-calendar-alert > .icon { flex: none; }
 .w-calendar-alert-text { flex: 1 1 120px; min-inline-size: 0; color: var(--fg-default); }
+/* Small cards: the same action as a corner button (warning color, label and tooltip carry the message). */
+.w-calendar-alert-mini {
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline-end: 0;
+  display: none;
+  place-items: center;
+  inline-size: 28px;
+  block-size: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--warning-soft);
+  color: var(--warning);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+@media (hover: hover) { .w-calendar-alert-mini:hover { background: color-mix(in oklab, var(--warning) 22%, transparent); } }
+.w-calendar-alert-mini:active { scale: var(--press-scale); }
+.w-calendar-alert-mini:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 
 /* ---------- Layouts ---------- */
 @container widget (max-height: 190px) or (max-width: 210px) {
   .w-calendar-small { display: block; }
   .w-calendar-month { display: none; }
-  .w-calendar { gap: var(--space-3); }
-  .w-calendar-alert { padding: var(--space-2) var(--space-3); }
-  .w-calendar-alert-text, .w-calendar-alert .btn-label { display: none; }
+  .w-calendar-alert { display: none; }
+  .w-calendar-alert-mini { display: grid; }
 }
 @container widget (max-width: 180px) {
   .w-calendar-tile { grid-template-columns: minmax(0, 1fr); justify-items: center; text-align: center; }
   .w-calendar-tile-next { display: none; }
+}
+/* Narrow but tall cards: what is next goes under the date instead of beside it. */
+@container widget (max-width: 210px) and (min-height: 200px) {
+  .w-calendar-tile { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; align-content: center; justify-items: center; gap: var(--space-7); text-align: center; }
+  .w-calendar-tile-next { display: flex; align-items: center; inline-size: 100%; padding-inline-start: 0; padding-block-start: var(--space-6); border-inline-start: 0; border-block-start: 1px solid var(--border-subtle); }
 }
 @container widget (min-width: 470px) and (min-height: 191px) {
   .w-calendar { grid-template-columns: minmax(240px, 1fr) minmax(200px, 1fr); grid-template-rows: minmax(0, 1fr) auto; grid-template-areas: "month agenda" "alert alert"; column-gap: var(--space-9); }
@@ -352,5 +377,7 @@
 @media (forced-colors: active) {
   .w-calendar-day.is-today { forced-color-adjust: none; background: CanvasText; color: Canvas; }
   .w-calendar-day.is-selected { outline: 2px solid Highlight; }
-  .w-calendar-dot, .w-calendar-entry-mark::before, .w-calendar-feed-swatch { forced-color-adjust: none; background: CanvasText; }
+  .w-calendar-dot, .w-calendar-dot[data-color], .w-calendar-entry[data-kind] .w-calendar-entry-mark::before, .w-calendar-feed-swatch { forced-color-adjust: none; background: CanvasText; }
+  .w-calendar-day.is-today .w-calendar-dot { background: Canvas; box-shadow: none; }
+  .w-calendar-alert, .w-calendar-alert-mini { border: 1px solid CanvasText; }
 }

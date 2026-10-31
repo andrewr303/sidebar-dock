@@ -208,7 +208,7 @@ function entryRow(entry, day, widget) {
     return html`<li class="${cx('w-calendar-entry', entry.done && 'is-done')}" data-key="${entry.key}" data-kind="reminder">
       <button type="button" class="w-calendar-entry-main" data-action="w.calendar.open-item" data-id="${entry.id}" data-type="${entry.type}">
         <span class="w-calendar-entry-mark" data-color="amber" aria-hidden="true">${icon(entry.done ? 'bell-off' : 'bell', { size: 12 })}</span>
-        <span class="w-calendar-entry-when">${when}</span>
+        <span class="w-calendar-entry-when" dir="auto">${when}</span>
         <span class="w-calendar-entry-title">${entry.title}</span>
         <span class="sr-only">, reminder${entry.done ? ', already sent' : ''}</span>
       </button>
@@ -216,7 +216,7 @@ function entryRow(entry, day, widget) {
   }
   const link = entry.url || '';
   const main = html`<span class="w-calendar-entry-mark" data-color="${entry.color}" aria-hidden="true"></span>
-    <span class="w-calendar-entry-when">${when}</span>
+    <span class="w-calendar-entry-when" dir="auto">${when}</span>
     <span class="w-calendar-entry-title">${entry.title}</span>
     ${entry.location && !/^https?:\/\//.test(entry.location) ? html`<span class="w-calendar-entry-place">${entry.location}</span>` : ''}
     <span class="sr-only">, ${entry.feedName}</span>`;
@@ -233,7 +233,7 @@ function noteRow(note) {
     <button type="button" class="w-calendar-entry-main" data-action="w.calendar.open-note" data-id="${note.id}" title="Open ${note.title}">
       <span class="w-calendar-entry-mark" data-color="note" aria-hidden="true">${icon('notebook-pen', { size: 12 })}</span>
       <span class="w-calendar-entry-title">Daily note</span>
-      <span class="w-calendar-entry-when">${excerpt || 'Open the note for this day'}</span>
+      <span class="w-calendar-entry-when" dir="auto">${excerpt || 'Open the note for this day'}</span>
     </button>
   </li>`;
 }
@@ -284,8 +284,8 @@ function renderTodayTile(widget, today, data) {
       <span class="w-calendar-tile-month">${fmt({ month: 'long' }).format(today)}</span>
     </span>
     <span class="w-calendar-tile-next">${next
-      ? html`<span class="w-calendar-tile-next-when">${nextDay ? `${nextDay} · ` : ''}${whenLabel(next, dayKey(new Date(Math.max(next.start, now))))}</span><span class="w-calendar-tile-next-title">${next.title}</span>`
-      : html`<span class="w-calendar-tile-next-when">${count ? plural(count, 'event') : 'Nothing planned'}</span>`}</span>
+      ? html`<span class="w-calendar-tile-next-when" dir="auto">${nextDay ? `${nextDay} · ` : ''}${whenLabel(next, dayKey(new Date(Math.max(next.start, now))))}</span><span class="w-calendar-tile-next-title">${next.title}</span>`
+      : html`<span class="w-calendar-tile-next-when" dir="auto">${count ? 'Nothing else today' : 'Nothing planned'}</span>`}</span>
   </button>`;
 }
 
@@ -294,13 +294,19 @@ function renderAlerts(widget, config) {
   if (!failing.length) return '';
   const { feed, state } = failing[0];
   const access = state.kind === 'access';
+  const others = failing.length > 1 ? ` (and ${plural(failing.length - 1, 'other')})` : '';
+  const what = `${feed.name} ${access ? 'needs access' : 'could not be loaded'}${others}`;
+  const label = access ? `Allow access to ${feed.host || 'the calendar'}` : 'Try again';
+  const action = access ? 'w.calendar.allow' : 'w.calendar.refresh';
+  const data = { widget: widget.id, feed: feed.id };
+  // Small cards keep only a corner button (its label carries the message); larger ones show the full line.
   return html`<div class="w-calendar-alert" role="status">
     ${icon(access ? 'lock' : 'triangle-alert', { size: 14 })}
-    <span class="w-calendar-alert-text" title="${state.error}"><strong>${feed.name}</strong> ${access ? 'needs access' : 'could not be loaded'}${failing.length > 1 ? ` (and ${plural(failing.length - 1, 'other')})` : ''}</span>
-    ${access
-      ? button({ label: `Allow access to ${feed.host || 'the calendar'}`, size: 'sm', variant: 'secondary', action: 'w.calendar.allow', data: { widget: widget.id, feed: feed.id } })
-      : button({ label: 'Try again', size: 'sm', variant: 'ghost', action: 'w.calendar.refresh', data: { widget: widget.id } })}
-  </div>`;
+    <span class="w-calendar-alert-text" title="${state.error}"><strong>${feed.name}</strong> ${access ? 'needs access' : 'could not be loaded'}${others}</span>
+    ${button({ label, icon: access ? 'lock-open' : 'refresh-cw', size: 'sm', variant: access ? 'secondary' : 'ghost', action, data })}
+  </div>
+  <button type="button" class="w-calendar-alert-mini" data-action="${action}" data-widget="${widget.id}" data-feed="${feed.id}"
+    aria-label="${what}. ${label}" data-tooltip="${what}. ${label}" data-tooltip-pos="top end">${icon(access ? 'lock' : 'triangle-alert', { size: 14 })}</button>`;
 }
 
 function render(ctx, widget, env) {

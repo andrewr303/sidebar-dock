@@ -3,7 +3,7 @@
 
    The time scales with the widget body (container "widget"): cqw/cqh
    keep a digital clock as large as its card allows. World clocks show
-   beside the time from 440px wide, under it from 230px tall, and stay
+   beside the time from 440px wide, under it from 180px tall, and stay
    hidden in smaller cards. Data colors: day/night tiles use the amber and
    indigo palette tokens; the analog second hand uses orange.
 
@@ -165,8 +165,16 @@
 .w-clock-zone-time { font-size: var(--text-lg); font-weight: var(--weight-medium); line-height: var(--lh-lg); letter-spacing: var(--tracking-tight); white-space: nowrap; }
 .w-clock-zone-period { margin-inline-start: 0.25em; color: var(--fg-muted); font-size: var(--text-xs); font-weight: var(--weight-medium); }
 
-/* Under the time once the card is tall enough. */
-@container widget (min-height: 230px) {
+/* Narrow cards give the names more room. */
+@container widget (max-width: 230px) {
+  .w-clock-zone { grid-template-columns: 20px minmax(0, 1fr) auto; gap: var(--space-4); }
+  .w-clock-zone-sky { inline-size: 20px; block-size: 20px; }
+  .w-clock-zone-sky .icon { inline-size: 12px; block-size: 12px; }
+  .w-clock-zone-time { font-size: var(--text-md); }
+}
+
+/* Under the time once the card is tall enough (three rows). */
+@container widget (min-height: 180px) {
   .w-clock.has-zones { grid-template-rows: auto minmax(0, auto); align-content: center; }
   .w-clock.has-zones .w-clock-zones { display: flex; }
   .w-clock.has-zones .w-clock-time { font-size: clamp(28px, min(22cqw, 26cqh), 120px); }
@@ -239,6 +247,6 @@
 @media (forced-colors: active) {
   .w-clock-hand, .w-clock-tick.is-hour { stroke: CanvasText; }
   .w-clock-hand.is-second { stroke: Highlight; }
-  .w-clock-pin { fill: CanvasText; }
+  .w-clock-pin, .w-clock-hand.is-second ~ .w-clock-pin { fill: CanvasText; }
   .w-clock-zone-sky { border: 1px solid CanvasText; }
 }

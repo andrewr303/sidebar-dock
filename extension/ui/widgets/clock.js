@@ -73,7 +73,7 @@ function zoneRow(zone, now, config) {
       <span class="w-clock-zone-name">${zone.label}</span>
       <span class="w-clock-zone-meta" data-clock="zone-meta">${meta}</span>
     </span>
-    <span class="w-clock-zone-time" data-clock="zone-time">${parts.hm}${parts.period ? html`<span class="w-clock-zone-period">${parts.period}</span>` : ''}</span>
+    <span class="w-clock-zone-time" data-clock="zone-time" dir="auto">${parts.hm}${parts.period ? html`<span class="w-clock-zone-period">${parts.period}</span>` : ''}</span>
     <span class="sr-only" data-clock="zone-label">${zone.label}: ${parts.label}, ${day ? 'daytime' : 'night'}, ${relation ? `${relationLabel(relation).toLowerCase()}, ` : ''}${offsetSentence(offset)}</span>
   </li>`;
 }
@@ -92,7 +92,7 @@ function render(ctx, widget, env) {
       ${greeting ? html`<p class="w-clock-greeting" data-clock="greeting">${greeting}</p>` : ''}
       ${config.style === 'analog'
         ? html`<div class="w-clock-analog" role="img" aria-label="${parts.label}" data-clock="analog">${faceMarkup(now, seconds)}</div>`
-        : html`<p class="w-clock-time"><time data-clock="time" datetime="${now.toISOString()}">${timeMarkup(parts, { seconds })}</time></p>`}
+        : html`<p class="w-clock-time"><time data-clock="time" datetime="${now.toISOString()}" dir="auto">${timeMarkup(parts, { seconds })}</time></p>`}
       ${showDate ? html`<p class="w-clock-date" data-clock="date">${dateLine(now, { locale: locale() })}</p>` : ''}
     </div>
     ${zones.length ? html`<ul class="w-clock-zones" aria-label="World clocks">${zones.map(zone => zoneRow(zone, now, config))}</ul>` : ''}
@@ -263,7 +263,7 @@ function renderSettings(ctx, widget, draft) {
       action: 'dashboard.draft', data: { name: 'showDate', type: 'boolean' } })}</div>
     <div class="dash-settings-toggle">${switchToggle({ checked: config.greeting !== false, label: 'Show a greeting',
       description: 'Shown when the dashboard header is not greeting you already.', action: 'dashboard.draft', data: { name: 'greeting', type: 'boolean' } })}</div>
-    ${field({ label: 'World clocks', hint: 'They appear when the widget is at least four columns wide or three rows tall.', control: renderZoneEditor(ctx, widget, zones) })}
+    ${field({ label: 'World clocks', hint: 'They appear when the widget is at least three rows tall or five columns wide.', control: renderZoneEditor(ctx, widget, zones) })}
   </div>`;
 }
 

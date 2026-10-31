@@ -1,9 +1,10 @@
-// Product Hunt glyphs and image tiles: the brand mark, the upvote triangle and product thumbnails that fall back to a
-// letter tile (the public feed has no images, and a thumbnail that fails to load is replaced by the tile).
+// Product Hunt glyphs and image tiles: the brand mark, the upvote triangle and product thumbnails that fall back to the
+// product site's icon when its own site is known, else a letter tile (the public feed has no images, and a thumbnail that
+// fails to load is replaced the same way).
 import { html, cx } from '../../html.js';
 import { icon, registerIcons } from '../../icons.js';
-import { avatarTile } from '../../components.js';
-import { thumbnailUrl } from '../../../lib/producthunt.js';
+import { avatarTile, siteIcon } from '../../components.js';
+import { thumbnailUrl, siteIconUrl } from '../../../lib/producthunt.js';
 import { rerender } from './session.js';
 
 registerIcons({
@@ -39,13 +40,17 @@ function watchBroken() {
   }, true);
 }
 
-/** Product thumbnail: the product's image, or a letter tile without one. Decorative (the name is always next to it). */
+/** Product thumbnail: the product's image, else its site's icon, else a letter tile. Decorative (the name is always next to it). */
 export function thumb(post, size = 40, { className } = {}) {
   watchBroken();
   const src = thumbnailUrl(post?.thumbnail, size);
   if (src && !broken.has(src)) {
     return html`<span class="${cx('w-ph-thumb', 'has-image', className)}" style="--size:${size}px" aria-hidden="true"><img class="w-ph-thumb-img" src="${src}" alt="" width="${size}" height="${size}"
       loading="lazy" decoding="async" referrerpolicy="no-referrer" draggable="false"></span>`;
+  }
+  const site = siteIconUrl(post);
+  if (site) {
+    return html`<span class="${cx('w-ph-thumb', 'has-site', className)}" style="--size:${size}px" aria-hidden="true">${siteIcon(site, { size: Math.round(size * 0.6), className: 'w-ph-thumb-site' })}</span>`;
   }
   const letter = [...String(post?.name || '?').trim()][0] || '?';
   return html`<span class="${cx('w-ph-thumb', className)}" style="--size:${size}px" aria-hidden="true">${avatarTile({ label: letter, color: hueFor(post?.name), size, className: 'w-ph-thumb-tile' })}</span>`;

@@ -11,7 +11,7 @@ import { findWidget, updateWidgetConfig } from '../../lib/dashboard-store.js';
 import { requestOrigins } from '../../lib/permissions.js';
 import {
   RANGES, SORTS, TOPICS, LAYOUTS, SOURCES, OPEN_TARGETS, REFRESH_OPTIONS, LIMITS, DEFAULT_CONFIG, FEED_ORIGIN, PH_SITE,
-  rangeOf, sortOf, topicLabel, normalizeConfig, visiblePosts, layoutFor, leaderboardUrl, openUrl, hideId, thumbnailUrl,
+  OTHER_TOPIC, rangeOf, sortOf, topicLabel, draftTopic, normalizeConfig, visiblePosts, layoutFor, leaderboardUrl, openUrl, hideId, thumbnailUrl,
 } from '../../lib/producthunt.js';
 import { session, bindCtx, ensureAccount, connected, checkAccess, feedFor, syncFeed, refreshMounted, findPost, mounted, rerender } from './product-hunt/session.js';
 import { openConnect } from './product-hunt/account.js';
@@ -121,14 +121,15 @@ function emptyList(widget, feed, { compact = false, allHidden = false } = {}) {
   const body = range.id === 'today' && !config.topic ? 'Product Hunt’s day starts at midnight Pacific time. Yesterday’s top launches are one click away.'
     : config.topic ? 'Try all topics or another day.' : config.featured ? 'Turn off “Featured launches only” to include every launch.' : 'Try another day.';
   const action = config.topic ? button({ label: 'Show all topics', size: 'sm', variant: 'secondary', action: 'w.product-hunt.set-topic', data: { ...data, topic: '' } })
-    : range.id === 'today' ? button({ label: 'Show yesterday', size: 'sm', variant: 'secondary', action: 'w.product-hunt.set-range', data: { ...data, value: 'yesterday' } }) : '';
+    : range.id === 'today' ? button({ label: 'Show yesterday', size: 'sm', variant: 'secondary', action: 'w.product-hunt.set-range', data: { ...data, value: 'yesterday' } })
+    : config.featured ? button({ label: 'Include every launch', size: 'sm', variant: 'secondary', action: 'w.product-hunt.include-all', data }) : '';
   return emptyState({ icon: 'calendar', compact: true, className: 'w-ph-empty', title, body: compact ? '' : body, actions: action });
 }
 
 /** What keeps fresh data from this widget, if anything: { kind, text, label, title, action }. */
 function problem(feed) {
   if (connected() && session.authFailed && feed.config.source !== 'feed') {
-    return { kind: 'auth', text: 'Product Hunt rejected your token, so this shows the public feed.', label: 'Reconnect', title: 'Reconnect Product Hunt', action: 'w.product-hunt.open-connect' };
+    return { kind: 'auth', text: 'Product Hunt rejected your token. Showing the public feed.', label: 'Reconnect', title: 'Reconnect Product Hunt', action: 'w.product-hunt.open-connect' };
   }
   if (feed.mode === 'feed' && session.access === false) {
     return { kind: 'access', text: 'Still can’t refresh this without access to producthunt.com.', label: 'Allow access', title: 'Allow access to producthunt.com', action: 'w.product-hunt.allow-access' };
@@ -140,7 +141,9 @@ function problem(feed) {
 function notice(widget, feed) {
   const issue = problem(feed);
   if (!issue) return '';
-  return html`<div class="w-ph-notice" role="${issue.kind === 'rate' ? 'status' : 'alert'}">${icon('triangle-alert', { size: 14 })}<span class="w-ph-notice-text" title="${issue.text}">${issue.text}</span>
+  // Narrow widgets show the first sentence (what happened); the advice after it joins in when there is room.
+  const [first, ...rest] = issue.text.split(/(?<=[.!?])\s+/);
+  return html`<div class="w-ph-notice" role="${issue.kind === 'rate' ? 'status' : 'alert'}">${icon('triangle-alert', { size: 14 })}<span class="w-ph-notice-text" title="${issue.text}">${first}${rest.length ? html`<span class="w-ph-notice-more"> ${rest.join(' ')}</span>` : ''}</span>
     <button type="button" class="w-ph-notice-action" data-action="${issue.action}" data-widget="${widget.id}" aria-label="${issue.title}">${issue.label}</button></div>`;
 }
 
@@ -186,8 +189,9 @@ const linkAttrs = (post, { config, tabId }) => html`href="${safeHref(openUrl(pos
   aria-keyshortcuts="S H Shift+F10"`;
 
 /** Screen-reader details that the visual row shows as numbers and icons. */
-function srDetails(post) {
-  const parts = [post.votes != null && plural(post.votes, 'upvote'), post.comments != null && plural(post.comments, 'comment')].filter(Boolean);
+function srDetails(post, { byline = false } = {}) {
+  const parts = [post.votes != null && plural(post.votes, 'upvote'), post.comments != null && plural(post.comments, 'comment'),
+    byline && poster(post) && `posted by ${poster(post)}`].filter(Boolean);
   return parts.length ? html`<span class="sr-only">, ${parts.join(', ')}</span>` : '';
 }
 
@@ -213,9 +217,13 @@ function actions(widget, post, { saved, config, compact = false }) {
 
 const votes = post => (post.votes == null ? '' : html`<span class="w-ph-votes" aria-hidden="true">${icon('ph-upvote', { size: 12, strokeWidth: 2 })}<span class="w-ph-votes-n">${countText(post.votes)}</span></span>`);
 
-function meta(post, { config, mode }) {
+/** The person who posted a feed launch (the feed has no counts or topics, so cards show who shared it instead). */
+const poster = post => (post.source === 'feed' ? post.makers?.[0]?.name || '' : '');
+
+function meta(post, { config, mode, byline = false }) {
   const parts = [];
-  if (mode === 'api' && config.showTopics && post.topics.length) parts.push(html`<span class="w-ph-topics">${post.topics.slice(0, 2).map(t => t.name).join(', ')}</span>`);
+  if (byline && poster(post)) parts.push(html`<span class="w-ph-by" dir="auto">Posted by ${poster(post)}</span>`);
+  if (mode === 'api' && config.showTopics && post.topics.length) parts.push(html`<span class="w-ph-topics" dir="auto">${post.topics.slice(0, 2).map(t => t.name).join(', ')}</span>`);
   if (post.comments) parts.push(html`<span class="w-ph-meta-item">${icon('message-circle', { size: 12 })}${countText(post.comments)}</span>`);
   const when = mode === 'api' ? relativeDate(post.featuredAt || post.createdAt) : '';
   if (when) parts.push(html`<span class="w-ph-meta-item w-ph-when">${when}</span>`);
@@ -228,8 +236,8 @@ function renderList(widget, posts, opts) {
     <span class="w-ph-rank" aria-hidden="true">${post.position}</span>
     ${config.showThumbs ? thumb(post, 40) : ''}
     <a class="w-ph-link" ${linkAttrs(post, opts)} title="${post.tagline ? `${post.name}: ${post.tagline}` : post.name}">
-      <span class="sr-only">${post.position}. </span><span class="w-ph-name">${post.name}</span>
-      ${config.showTaglines && post.tagline ? html`<span class="w-ph-tagline"><span class="sr-only">: </span>${post.tagline}</span>` : ''}
+      <span class="sr-only">${post.position}. </span><span class="w-ph-name" dir="auto">${post.name}</span>
+      ${config.showTaglines && post.tagline ? html`<span class="w-ph-tagline" dir="auto"><span class="sr-only">: </span>${post.tagline}</span>` : ''}
       ${meta(post, opts)}${srDetails(post)}
     </a>
     ${actions(widget, post, opts)}
@@ -243,8 +251,8 @@ function renderTop(widget, posts, opts) {
     <span class="w-ph-top-rank" aria-hidden="true">${post.position}</span>
     ${config.showThumbs ? thumb(post, 28, { className: 'w-ph-top-thumb' }) : ''}
     <a class="w-ph-link" ${linkAttrs(post, opts)} title="${post.tagline ? `${post.name}: ${post.tagline}` : post.name}">
-      <span class="sr-only">${post.position}. </span><span class="w-ph-name">${post.name}</span>
-      ${config.showTaglines && post.tagline ? html`<span class="w-ph-tagline"><span class="sr-only">: </span>${post.tagline}</span>` : ''}${srDetails(post)}
+      <span class="sr-only">${post.position}. </span><span class="w-ph-name" dir="auto">${post.name}</span>
+      ${config.showTaglines && post.tagline ? html`<span class="w-ph-tagline" dir="auto"><span class="sr-only">: </span>${post.tagline}</span>` : ''}${srDetails(post)}
     </a>
     ${post.votes != null ? html`<span class="w-ph-top-votes" aria-hidden="true">${icon('ph-upvote', { size: 10, strokeWidth: 2.25 })}${countText(post.votes)}</span>` : ''}
     ${actions(widget, post, { ...opts, compact: true })}
@@ -259,10 +267,10 @@ function renderCards(widget, posts, opts) {
       <span class="w-ph-card-rank" aria-hidden="true">${post.position}</span>
       ${votes(post)}
     </div>
-    <a class="w-ph-link w-ph-card-link" ${linkAttrs(post, opts)} title="${post.name}"><span class="sr-only">${post.position}. </span><span class="w-ph-name">${post.name}</span>
-      ${config.showTaglines && post.tagline ? html`<span class="w-ph-tagline"><span class="sr-only">: </span>${post.tagline}</span>` : ''}${srDetails(post)}</a>
-    ${mode === 'api' && config.showTopics && post.topics.length ? html`<ul class="w-ph-chips" role="list" aria-label="Topics">${post.topics.map(t => html`<li class="w-ph-chip">${t.name}</li>`)}</ul>` : ''}
-    <div class="w-ph-card-foot">${meta(post, { ...opts, config: { ...config, showTopics: false } })}${actions(widget, post, opts)}</div>
+    <a class="w-ph-link w-ph-card-link" ${linkAttrs(post, opts)} title="${post.name}"><span class="sr-only">${post.position}. </span><span class="w-ph-name" dir="auto">${post.name}</span>
+      ${config.showTaglines && post.tagline ? html`<span class="w-ph-tagline" dir="auto"><span class="sr-only">: </span>${post.tagline}</span>` : ''}${srDetails(post, { byline: true })}</a>
+    ${mode === 'api' && config.showTopics && post.topics.length ? html`<ul class="w-ph-chips" role="list" aria-label="Topics">${post.topics.map(t => html`<li class="w-ph-chip" dir="auto">${t.name}</li>`)}</ul>` : ''}
+    <div class="w-ph-card-foot">${meta(post, { ...opts, config: { ...config, showTopics: false }, byline: true })}${actions(widget, post, opts)}</div>
   </li>`)}</ol>`;
 }
 
@@ -443,6 +451,7 @@ registerActions({
     if (id && RANGES.some(r => r.id === data.value)) return setConfig(id, { range: data.value });
   },
   'w.product-hunt.set-topic': ({ el, data }) => { const id = widgetIdOf(el, data); if (id) return setConfig(id, { topic: data.topic || '' }); },
+  'w.product-hunt.include-all': ({ el, data }) => { const id = widgetIdOf(el, data); if (id) return setConfig(id, { featured: false }); },
   'w.product-hunt.range-menu': ({ ctx, el, data }) => rangeMenu(ctx, el, widgetIdOf(el, data)),
   'w.product-hunt.topic-menu': ({ ctx, el, data }) => topicMenu(ctx, el, widgetIdOf(el, data)),
   'w.product-hunt.options-menu': ({ ctx, el, data }) => optionsMenu(ctx, el, widgetIdOf(el, data)),
@@ -502,21 +511,25 @@ defineWidget({
     const layout = layoutFor(env, config);
     const data = { widget: widget.id };
     const issue = layout === 'top' && feed.value ? problem(feed) : null;
+    // The narrowest widgets keep the header for their title; Refresh and the leaderboard stay in the ⋯ menu.
     const canLoad = feed.mode === 'api' || session.access === true;
     const board = leaderboardUrl(feed.mode === 'api' ? config.range : 'latest');
     return html`${issue ? html`<span class="w-ph-alert" role="${issue.kind === 'rate' ? 'status' : 'alert'}">${iconButton({ icon: 'triangle-alert', label: `${issue.text} ${issue.title}`, action: issue.action, data, size: 'sm', className: 'w-ph-alert-btn' })}</span>` : ''}
       ${layout === 'top' && feed.mode === 'api' && env.w >= 3 ? button({ label: RANGE_SHORT[config.range], iconRight: 'chevron-down', variant: 'ghost', size: 'sm', action: 'w.product-hunt.range-menu', data, expanded: false,
         className: 'w-ph-head-range', attrs: { 'aria-label': `Showing ${rangeOf(config.range).label.toLowerCase()}. Change launch day` } }) : ''}
-      ${env.w >= 3 ? html`<a class="icon-btn icon-btn-sm" href="${board}" target="_blank" rel="noopener noreferrer" aria-label="${feed.mode === 'api' ? 'Open this leaderboard on Product Hunt' : 'Open Product Hunt'}"
+      ${env.w >= 4 ? html`<a class="icon-btn icon-btn-sm" href="${board}" target="_blank" rel="noopener noreferrer" aria-label="${feed.mode === 'api' ? 'Open this leaderboard on Product Hunt' : 'Open Product Hunt'}"
         data-tooltip="${feed.mode === 'api' ? 'Open leaderboard' : 'Open Product Hunt'}">${icon('external-link', { size: 14 })}</a>` : ''}
-      ${canLoad ? iconButton({ icon: 'refresh-cw', label: feed.loading ? 'Refreshing' : 'Refresh', action: 'w.product-hunt.refresh', data, size: 'sm', className: cx('w-ph-refresh', feed.loading && 'is-spinning') }) : ''}`;
+      ${canLoad && env.w >= 3 ? iconButton({ icon: 'refresh-cw', label: feed.loading ? 'Refreshing' : 'Refresh', action: 'w.product-hunt.refresh', data, size: 'sm', className: cx('w-ph-refresh', feed.loading && 'is-spinning') }) : ''}`;
   },
   menu(ctx, widget) {
     const config = normalizeConfig(widget.config);
     const feed = feedFor(config);
     const hiddenHere = (feed.value?.posts || []).filter(post => config.hidden.includes(post.id)).length;
+    const anchor = () => document.querySelector(`[data-widget-id="${CSS.escape(widget.id)}"] .widget-menu-btn`);
     return [
       { label: 'Refresh now', icon: 'refresh-cw', run: () => manualRefresh(ctx, widget.id) },
+      ...(feed.mode === 'api' ? [{ label: 'Launch day…', icon: 'calendar', hint: rangeOf(config.range).label, keepFocus: true,
+        run: () => { const el = anchor(); if (el) rangeMenu(ctx, el, widget.id); } }] : []),
       { label: feed.mode === 'api' ? 'Open leaderboard' : 'Open Product Hunt', icon: 'external-link', run: () => openExternal(feed.mode === 'api' ? leaderboardUrl(config.range) : `${PH_SITE}/`) },
       ...(hiddenHere ? [{ label: `Show ${plural(hiddenHere, 'hidden launch', 'hidden launches')}`, icon: 'eye', run: () => unhideAll(ctx, widget.id) }] : []),
       connected() ? { label: 'Product Hunt account…', icon: 'key-round', run: () => ctx.navigate('settings:accounts') }
@@ -531,7 +544,7 @@ defineWidget({
     const feedOnly = draft => !api(draft);
     const current = normalizeConfig(widget?.config).topic;
     const topics = [{ value: '', label: 'All topics' }, ...(current && !TOPICS.some(t => t.slug === current) ? [{ value: current, label: topicLabel(current) }] : []),
-      ...TOPICS.map(t => ({ value: t.slug, label: t.label }))];
+      ...TOPICS.map(t => ({ value: t.slug, label: t.label })), { value: OTHER_TOPIC, label: 'Another topic…' }];
     return [
       { name: 'source', label: 'Launches from', type: 'select', options: SOURCES.map(s => ({ value: s.value, label: s.label })),
         hint: isConnected ? 'Rankings use your Product Hunt token. The public feed needs no account and shows the latest launches.'
@@ -541,6 +554,8 @@ defineWidget({
       { name: 'sort', label: 'Sort by', type: 'select', options: SORTS.map(s => ({ value: s.value, label: s.label })), when: api },
       { name: 'sort', label: 'Sort by', type: 'select', options: SORTS.filter(s => s.feed).map(s => ({ value: s.value, label: s.feedLabel })), when: feedOnly },
       { name: 'topic', label: 'Topic', type: 'select', options: topics, when: api },
+      { name: 'topicOther', label: 'Topic name or link', type: 'text', placeholder: 'Space tech, or producthunt.com/topics/space', when: draft => api(draft) && draft.topic === OTHER_TOPIC,
+        hint: html`Any topic listed on <a class="link-inline" href="https://www.producthunt.com/topics" target="_blank" rel="noopener noreferrer">producthunt.com/topics</a> works.` },
       { name: 'featured', label: 'Featured launches only', type: 'toggle', hint: 'Matches the Product Hunt home page. Turn off to include every launch.', when: api },
       { name: 'layout', label: 'Layout', type: 'segmented', options: LAYOUTS.map(l => ({ value: l.value, label: l.label })),
         hint: 'Automatic shows the top three on small widgets, a list on medium and large ones and cards on extra large ones.' },
@@ -554,5 +569,10 @@ defineWidget({
     // Widgets saved before a setting existed show its default instead of an empty control.
     ].map(f => ({ default: typeof DEFAULT_CONFIG[f.name] === 'number' ? String(DEFAULT_CONFIG[f.name]) : DEFAULT_CONFIG[f.name], ...f }));
   },
-  onSettingsSave: (ctx, widget, draft) => ({ ...normalizeConfig(draft), hidden: normalizeConfig(widget.config).hidden }),
+  validateSettings(draft) {
+    if (draft?.topic !== OTHER_TOPIC || !connected() || draft.source === 'feed' || draftTopic(draft)) return null;
+    return { topicOther: String(draft.topicOther || '').trim() ? 'Use the topic’s name or its link, like “Space tech”.' : 'Enter a topic, or choose one from the list.' };
+  },
+  // The typed topic replaces "Another topic…"; hidden launches are managed in the widget, so a stale draft never restores them.
+  onSettingsSave: (ctx, widget, draft) => ({ ...normalizeConfig({ ...draft, topic: draftTopic(draft) }), hidden: normalizeConfig(widget.config).hidden }),
 });

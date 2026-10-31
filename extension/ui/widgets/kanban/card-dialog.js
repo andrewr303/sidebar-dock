@@ -11,6 +11,7 @@ import { createNote } from '../../notes.js';
 import { openNote } from '../../note-editor.js';
 import * as M from './model.js';
 import { save, cardIn, ui, ids, announce, focusAfterRender } from './store.js';
+import './escape.js';
 
 const DIALOG = 'w.kanban.card';
 const RESULTS = 6;
@@ -25,10 +26,22 @@ export const colorOptions = () => M.COLORS.map(value => ({ value, label: M.COLOR
 export function openCardDialog(ctx, widgetId, cardId) {
   if (!cardIn(widgetId, cardId)) { ctx.toast('That card is no longer on the board.', { tone: 'danger' }); return; }
   const draft = {};
+  const openerId = document.activeElement?.id || ids.card(widgetId, cardId);
   ctx.openDialog(DIALOG, {
     widgetId, cardId, draft, linkQuery: '', linkActive: 0, labelForm: null, titleError: '', busy: '',
-    onClose: () => { flushDraft(ctx, widgetId, cardId, draft); },
+    onClose: () => { flushDraft(ctx, widgetId, cardId, draft); returnFocus(ctx, openerId); },
   });
+}
+
+// The overlay hands focus back to the element that opened the dialog; when edits redrew that card (or the dialog was
+// opened from the summary), focus goes to the same control found by id instead of falling back to the page.
+function returnFocus(ctx, openerId) {
+  ctx.nextFrame(() => ctx.nextFrame(() => {
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected && !active.closest('.overlay-root')) return;
+    if (ctx.state.dialogs.length) return;
+    document.getElementById(openerId)?.focus({ preventScroll: true });
+  }));
 }
 
 // Saves typed text that has not been committed yet (the dialog closed while a field still had focus).
@@ -66,10 +79,10 @@ function labelsSection(board, card, props) {
       ${form ? '' : button({ label: board.labels.length ? 'New label' : 'Create a label', icon: 'plus', size: 'sm', variant: 'ghost', action: 'w.kanban.dlg-label-new',
         disabled: board.labels.length >= M.LIMITS.labels, className: 'w-kanban-dlg-label-new' })}
     </div>
-    ${form ? html`<form class="w-kanban-dlg-label-form" data-submit="w.kanban.dlg-label-create" autocomplete="off" novalidate>
+    ${form ? html`<form class="w-kanban-dlg-label-form" data-submit="w.kanban.dlg-label-create" autocomplete="off" novalidate data-mount="w.kanban.escape" data-escape="w.kanban.dlg-label-close">
       ${field({ label: 'Label name', id: fieldId('label-name'), error: form.error,
         control: html`<input class="input input-sm" id="${fieldId('label-name')}" name="name" value="${form.name}" maxlength="${M.LIMITS.label}" placeholder="Design, Waiting…"
-          data-input="w.kanban.dlg-label-name" data-keydown="w.kanban.dlg-label-key" ${form.error ? html`aria-invalid="true" aria-describedby="${fieldId('label-name')}-error"` : ''} data-autofocus>` })}
+          data-input="w.kanban.dlg-label-name" ${form.error ? html`aria-invalid="true" aria-describedby="${fieldId('label-name')}-error"` : ''} data-autofocus>` })}
       ${swatches('labelColor', form.color, 'w.kanban.dlg-label-color')}
       <div class="w-kanban-dlg-inline-actions">
         ${button({ label: 'Add label', type: 'submit', variant: 'secondary', size: 'sm' })}
@@ -90,7 +103,7 @@ function checklistSection(card) {
     </div>
     ${card.checklist.length ? html`<ul class="w-kanban-dlg-checks" role="list">${card.checklist.map(item => html`<li class="${cx('w-kanban-dlg-check', item.done && 'is-done')}" data-key="${item.id}">
       ${checkbox({ checked: item.done, label: `Done: ${item.text}`, hideLabel: true, action: 'w.kanban.dlg-check', data: { item: item.id } })}
-      <input class="w-kanban-dlg-check-text" id="wkd-ci-${item.id}" value="${item.text}" maxlength="${M.LIMITS.item}" aria-label="Checklist item" autocomplete="off"
+      <input class="w-kanban-dlg-check-text" id="wkd-ci-${item.id}" value="${item.text}" maxlength="${M.LIMITS.item}" aria-label="Checklist item" autocomplete="off" dir="auto"
         data-change="w.kanban.dlg-check-text" data-keydown="w.kanban.dlg-check-key" data-item="${item.id}">
       ${iconButton({ icon: 'x', label: `Remove “${item.text}”`, size: 'sm', action: 'w.kanban.dlg-check-remove', data: { item: item.id }, className: 'w-kanban-dlg-check-remove' })}
     </li>`)}</ul>` : ''}
@@ -132,7 +145,7 @@ function linkSection(ctx, card, props) {
     const results = linkResults(ctx, props.linkQuery);
     const active = Math.min(props.linkActive || 0, Math.max(0, results.length - 1));
     const open = !!String(props.linkQuery || '').trim();
-    body = html`<div class="w-kanban-dlg-link">
+    body = html`<div class="w-kanban-dlg-link" data-mount="w.kanban.escape" data-escape="w.kanban.dlg-link-clear" data-escape-when="value">
       <span class="w-kanban-dlg-link-search">${icon('search', { size: 14, className: 'w-kanban-dlg-link-icon' })}
         <input class="input input-sm" id="${fieldId('link')}" type="text" role="combobox" aria-autocomplete="list" aria-expanded="${open ? 'true' : 'false'}" aria-controls="wkd-link-list"
           ${open && results.length ? html`aria-activedescendant="${optionId(active)}"` : ''} aria-label="Search your library for an item to link" placeholder="Search your library"
@@ -165,7 +178,7 @@ function renderDialog(ctx, props) {
   const body = html`<div class="w-kanban-dlg" data-keydown="w.kanban.dlg-key">
     ${field({ label: 'Title', id: fieldId('title'), error: props.titleError,
       control: html`<textarea class="textarea w-kanban-dlg-title" id="${fieldId('title')}" rows="2" maxlength="${M.LIMITS.title}" data-input="w.kanban.dlg-draft" data-name="title"
-        data-change="w.kanban.dlg-commit" data-keydown="w.kanban.dlg-title-key" spellcheck="true" ${props.titleError ? html`aria-invalid="true" aria-describedby="${fieldId('title')}-error"` : ''}>${title}</textarea>` })}
+        data-change="w.kanban.dlg-commit" data-keydown="w.kanban.dlg-title-key" spellcheck="true" dir="auto" ${props.titleError ? html`aria-invalid="true" aria-describedby="${fieldId('title')}-error"` : ''}>${title}</textarea>` })}
     <div class="w-kanban-dlg-grid">
       ${field({ label: 'Column', id: fieldId('column'), control: select({ id: fieldId('column'), value: card.columnId, action: 'w.kanban.dlg-column', className: 'is-block',
         options: board.columns.map(c => ({ value: c.id, label: c.title })) }) })}
@@ -181,7 +194,7 @@ function renderDialog(ctx, props) {
     <section class="w-kanban-dlg-section" aria-labelledby="${fieldId('description')}-label">
       <label class="w-kanban-dlg-heading" id="${fieldId('description')}-label" for="${fieldId('description')}">${icon('text', { size: 14 })}Description</label>
       <textarea class="textarea w-kanban-dlg-desc" id="${fieldId('description')}" rows="4" maxlength="${M.LIMITS.description}" placeholder="Add notes, links or next steps. Markdown works."
-        data-input="w.kanban.dlg-draft" data-name="description" data-change="w.kanban.dlg-commit" spellcheck="true">${description}</textarea>
+        data-input="w.kanban.dlg-draft" data-name="description" data-change="w.kanban.dlg-commit" spellcheck="true" dir="auto">${description}</textarea>
     </section>
     ${checklistSection(card)}
     ${linkSection(ctx, card, props)}
@@ -310,13 +323,15 @@ registerActions({
     ctx.updateDialog(DIALOG, { labelForm: null });
     ctx.nextFrame(() => document.querySelector('.w-kanban-dialog .w-kanban-dlg-label-new')?.focus());
   },
-  'w.kanban.dlg-label-key': ({ ctx, event }) => {
-    if (event.key !== 'Escape') return;
-    // Escape closes the small label form first, not the whole dialog.
-    event.preventDefault();
-    event.stopPropagation();
+  // Escape in the new-label form closes that form, not the whole dialog (see escape.js).
+  'w.kanban.dlg-label-close': ({ ctx }) => {
     ctx.updateDialog(DIALOG, { labelForm: null });
     ctx.nextFrame(() => document.querySelector('.w-kanban-dialog .w-kanban-dlg-label-new')?.focus());
+  },
+  // Escape in a library search that has text clears the search first.
+  'w.kanban.dlg-link-clear': ({ ctx }) => {
+    ctx.updateDialog(DIALOG, { linkQuery: '', linkActive: 0 });
+    focusAfterRender(ctx, fieldId('link'));
   },
   'w.kanban.dlg-label-create': async ({ ctx, el }) => {
     const open = current(ctx);
@@ -395,6 +410,9 @@ registerActions({
     const open = current(ctx);
     const id = open?.found?.card.itemId;
     if (!id) return;
+    // The item opens next, so focus stays with it rather than going back to the card.
+    const { widgetId, cardId, draft } = open.props;
+    open.props.onClose = () => flushDraft(ctx, widgetId, cardId, draft);
     ctx.closeDialog(DIALOG);
     ctx.openItem(id);
   },
@@ -405,11 +423,17 @@ registerActions({
     const { widgetId, cardId } = open.props;
     const { board, card } = open.found;
     const beforeId = M.nextInColumn(board, cardId);
+    // Focus goes to the card that takes its place (or the column's "Add card" button).
+    const siblings = M.columnCards(board, card.columnId).map(c => c.id);
+    const neighbour = beforeId || siblings[siblings.indexOf(cardId) - 1];
     open.props.draft = {}; // nothing to flush for a deleted card
     open.props.onClose = null;
     ctx.closeDialog(DIALOG);
     await save(ctx, widgetId, b => M.deleteCard(b, cardId));
-    focusAfterRender(ctx, ids.addCard(widgetId, card.columnId));
+    if (neighbour) ui.roving.set(widgetId, neighbour);
+    const target = [neighbour && ids.card(widgetId, neighbour), neighbour && ids.summaryCard(widgetId, neighbour), ids.addCard(widgetId, card.columnId), ids.quick(widgetId)]
+      .find(id => id && document.getElementById(id));
+    if (target) focusAfterRender(ctx, target);
     ctx.toast(`Deleted “${card.title}”`, { action: { label: 'Undo', run: () => save(ctx, widgetId, b => M.insertCard(b, card, { beforeId })) } });
   },
 });

@@ -9,6 +9,8 @@ import { parseIcs, trimEvents, normalizeFeedUrl, MAX_ICS_BYTES } from '../../../
 
 export const FEED_ACCOUNT = 'calendar-feeds';
 export const FEED_MAX_AGE = 30 * 60_000;
+/** A feed that has not arrived after this long gives up (large calendars on slow links still fit). */
+export const FEED_TIMEOUT = 30_000;
 export const FEED_COLORS = Object.freeze(['blue', 'green', 'orange', 'violet', 'pink', 'teal', 'red', 'amber', 'indigo', 'gray']);
 export const feedCacheKey = id => `calendar:ics:${id}`;
 export const hostOf = url => { try { return new URL(url).host; } catch { return ''; } };
@@ -37,16 +39,24 @@ export const forgetFeedUrls = () => { urls = null; };
 // ------------------------------------------------------------------ fetching
 
 function feedError(kind, message) { return Object.assign(new Error(message), { kind }); }
+/** A timeout signal and whether it fired (AbortSignal.timeout is missing in old test runtimes: then no limit). */
+function withTimeout(ms) {
+  const signal = ms > 0 && typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(ms) : undefined;
+  return { signal, timedOut: () => !!signal?.aborted };
+}
 
 /** Fetches and parses one feed address: { name, events }. Errors carry kind: access | network | http | invalid. */
-export async function fetchFeed(url, { fetch: fetchImpl = globalThis.fetch, now = Date.now() } = {}) {
+export async function fetchFeed(url, { fetch: fetchImpl = globalThis.fetch, now = Date.now(), timeout = FEED_TIMEOUT } = {}) {
   const address = normalizeFeedUrl(url);
   const host = hostOf(address) || 'the calendar';
   if (!address) throw feedError('invalid', 'This calendar address is not a web link. Copy the iCal (.ics) address again.');
+  const limit = withTimeout(timeout);
+  const slow = () => feedError('network', `${host} took too long to send this calendar. Still will try again in a few minutes.`);
   let response;
   try {
-    response = await fetchImpl(address, { credentials: 'omit', cache: 'no-store', redirect: 'follow', headers: { accept: 'text/calendar, text/plain;q=0.9, */*;q=0.5' } });
+    response = await fetchImpl(address, { credentials: 'omit', cache: 'no-store', redirect: 'follow', signal: limit.signal, headers: { accept: 'text/calendar, text/plain;q=0.9, */*;q=0.5' } });
   } catch {
+    if (limit.timedOut()) throw slow();
     throw feedError('network', `Unable to reach ${host}. Check your connection and the calendar address.`);
   }
   if (response.status === 401 || response.status === 403) throw feedError('http', `${host} refused this calendar. Check that the address is the current secret or public iCal link.`);
@@ -54,7 +64,8 @@ export async function fetchFeed(url, { fetch: fetchImpl = globalThis.fetch, now 
   if (!response.ok) throw feedError('http', `${host} could not send this calendar (error ${response.status}). Still will try again later.`);
   const length = Number(response.headers?.get?.('content-length') || 0);
   if (length > MAX_ICS_BYTES) throw feedError('invalid', 'This calendar is too large to show (over 8 MB).');
-  const text = await response.text();
+  let text;
+  try { text = await response.text(); } catch { throw limit.timedOut() ? slow() : feedError('network', `The connection to ${host} dropped. Still will try again in a few minutes.`); }
   let parsed;
   try { parsed = parseIcs(text); } catch (error) { throw feedError('invalid', error.message); }
   return { name: parsed.name, events: trimEvents(parsed.events, now) };

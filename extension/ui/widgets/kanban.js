@@ -11,24 +11,27 @@ import { button, iconButton, emptyState, select, siteIcon, colorVar, TYPE_ICONS 
 import * as M from './kanban/model.js';
 import { boardFor, boardById, save, ui, ids, announce, focusAfterRender, cardIn } from './kanban/store.js';
 import { dragFor } from './kanban/drag.js';
-import { openCardDialog, colorOptions } from './kanban/card-dialog.js';
+import { openCardDialog } from './kanban/card-dialog.js';
+import { LAYOUT_OPTIONS, renderSettings, validateSettings, onSettingsSave } from './kanban/settings.js';
 
-// Lucide glyphs (ISC) this widget uses that ui/icons.js does not inline.
+// Lucide glyphs (ISC) this widget uses that ui/icons.js does not inline, plus color dots for the column color menu
+// (a filled dot per palette color; the chosen one carries a check so the choice never rests on color alone).
 registerIcons({
   eraser: '<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>',
+  'kanban-color-none': '<circle cx="12" cy="12" r="6.5" stroke-dasharray="2.6 2.4"/>',
+  'kanban-color-none-on': '<circle cx="12" cy="12" r="8" stroke-dasharray="2.6 2.4"/><path d="m8.6 12.2 2.3 2.3 4.6-4.8"/>',
+  ...Object.fromEntries(M.COLORS.flatMap(color => [
+    [`kanban-color-${color}`, `<circle cx="12" cy="12" r="6.5" style="fill:var(--c-${color});stroke:none"/>`],
+    [`kanban-color-${color}-on`, `<circle cx="12" cy="12" r="9" style="fill:var(--c-${color});stroke:none"/><path d="m8.4 12.2 2.4 2.4 4.8-5" style="stroke:var(--fg-on-tile)" stroke-width="2.4"/>`],
+  ])),
 });
 
-const LAYOUT_OPTIONS = [
-  { value: 'auto', label: 'Automatic' },
-  { value: 'board', label: 'Board' },
-  { value: 'summary', label: 'Summary' },
-];
 const COLUMN_COLORS = [{ value: '', label: 'No color' }, ...M.COLORS.map(value => ({ value, label: M.COLOR_LABELS[value] }))];
 const MAX_LABELS_SHOWN = 3;
 
 const configOf = widget => boardFor(widget);
-// Automatic: the board needs room for about two columns and a few cards; anything smaller shows the summary.
-const layoutOf = (board, env) => (board.layout !== 'auto' ? board.layout : (env.w ?? 6) >= 5 && (env.h ?? 4) >= 3 ? 'board' : 'summary');
+// Automatic: the full board from 5 × 4 cells; smaller sizes show the summary (counts, cards due next, quick add).
+const layoutOf = (board, env) => M.layoutFor(board, { w: env.w ?? 6, h: env.h ?? 4 });
 const liveFilter = (widgetId, board) => (ui.query.has(widgetId) ? { ...board.filter, query: ui.query.get(widgetId) } : board.filter);
 const filterShown = (widgetId, board, env) => M.isFiltered(liveFilter(widgetId, board)) || (ui.filterBar.get(widgetId) ?? (env.size === 'l' || env.size === 'xl'));
 const tint = color => (color ? `--tint:${colorVar(color)}` : '');
@@ -65,7 +68,7 @@ function labelChips(board, card, labels) {
   const shown = chips.slice(0, MAX_LABELS_SHOWN);
   const more = chips.length - shown.length;
   return html`<span class="w-kanban-labels"><span class="sr-only">Labels: ${chips.map(l => l.name).join(', ')}.</span>
-    ${shown.map(label => html`<span class="w-kanban-label" style="--label:${colorVar(label.color)}" aria-hidden="true"><span class="w-kanban-label-dot"></span><span class="w-kanban-label-name">${label.name}</span></span>`)}
+    ${shown.map(label => html`<span class="w-kanban-label" style="--label:${colorVar(label.color)}" aria-hidden="true" title="${label.name}"><span class="w-kanban-label-dot"></span><span class="w-kanban-label-name" dir="auto">${label.name}</span></span>`)}
     ${more ? html`<span class="w-kanban-label is-more" aria-hidden="true" title="${chips.slice(MAX_LABELS_SHOWN).map(l => l.name).join(', ')}">+${more}</span>` : ''}</span>`;
 }
 
@@ -99,9 +102,9 @@ function renderCard(ctx, widget, board, card, { labels, done, tabbable, source }
   return html`<li class="${cx('w-kanban-card', done && 'is-done', source && 'is-drag-source', card.priority === 'urgent' && !done && 'is-urgent')}" data-key="${card.id}" data-card="${card.id}">
     <button type="button" class="w-kanban-card-open" id="${ids.card(widget.id, card.id)}" tabindex="${tabbable ? '0' : '-1'}"
       data-action="w.kanban.card-open" data-keydown="w.kanban.card-key" data-widget="${widget.id}" data-card="${card.id}"
-      aria-describedby="${metaId} wk-${widget.id}-help" aria-keyshortcuts="] [ Alt+ArrowUp Alt+ArrowDown Shift+F10 Delete"><span class="w-kanban-card-title">${card.title}</span></button>
+      aria-describedby="${metaId} wk-${widget.id}-help" aria-keyshortcuts="] [ Alt+ArrowUp Alt+ArrowDown Shift+F10 Delete"><span class="w-kanban-card-title" dir="auto">${card.title}</span></button>
     <span class="w-kanban-card-details" id="${metaId}">
-      ${description ? html`<span class="w-kanban-card-desc">${description}</span>` : ''}
+      ${description ? html`<span class="w-kanban-card-desc" dir="auto">${description}</span>` : ''}
       ${labelChips(board, card, labels)}
       ${cardMeta(ctx, board, card, done)}
     </span>
@@ -123,7 +126,7 @@ function composerForm(widget, column) {
     <label class="sr-only" for="${ids.composer(widget.id)}">New card in ${column.title}</label>
     <textarea class="w-kanban-composer-input" id="${ids.composer(widget.id)}" name="title" rows="2" maxlength="${M.LIMITS.title}" placeholder="Card title"
       data-mount="w.kanban.composer" data-key="composer-input" data-input="w.kanban.composer-input" data-widget="${widget.id}" data-column="${column.id}"
-      enterkeyhint="done" spellcheck="true">${draft?.text || ''}</textarea>
+      enterkeyhint="done" spellcheck="true" dir="auto">${draft?.text || ''}</textarea>
     <div class="w-kanban-composer-actions">
       ${button({ label: 'Add card', type: 'submit', variant: 'primary', size: 'sm' })}
       ${iconButton({ icon: 'x', label: 'Close', size: 'sm', action: 'w.kanban.composer-close', data: { widget: widget.id, column: column.id } })}
@@ -151,7 +154,7 @@ function renderColumn(ctx, widget, board, column, { visible, labels, drag, rovin
     data-key="col-${column.id}" data-column="${column.id}" id="${ids.column(widget.id, column.id)}" style="${tint(column.color)}">
     <div class="w-kanban-col-head" title="Drag to reorder columns">
       <span class="${cx('w-kanban-col-dot', done && 'is-done')}" aria-hidden="true">${done ? icon('check', { size: 10, strokeWidth: 3 }) : ''}</span>
-      <h3 class="w-kanban-col-title" id="${titleId}">${column.title}</h3>
+      <h3 class="w-kanban-col-title" id="${titleId}" dir="auto" title="${column.title}">${column.title}</h3>
       ${columnCount(column, all.length, filtered ? shown.length : all.length)}
       <button type="button" class="icon-btn icon-btn-sm w-kanban-col-menu" id="${ids.columnMenu(widget.id, column.id)}" aria-label="${column.title} column options"
         data-tooltip="Column options" data-tooltip-pos="bottom end" aria-haspopup="true" aria-expanded="false" data-action="w.kanban.column-menu" data-widget="${widget.id}" data-column="${column.id}">${icon('ellipsis', { size: 14 })}</button>
@@ -219,7 +222,11 @@ function renderBoard(ctx, widget, board, env) {
   const showFilter = filterShown(widget.id, board, env);
   return html`<div class="${cx('w-kanban', drag && 'is-dragging')}" data-layout="board" data-widget="${widget.id}" data-mount="w.kanban.board" data-key="kanban-board">
     ${showFilter ? filterBar(widget, board, visibleCards.length) : ''}
-    <ol class="w-kanban-strip" aria-label="Columns" data-key="strip" data-mount="w.kanban.strip">${columns}${addColumnTile(widget, board)}</ol>
+    <div class="w-kanban-strip-wrap" data-key="strip-wrap">
+      <ol class="w-kanban-strip" aria-label="Columns" data-key="strip" data-mount="w.kanban.strip">${columns}${addColumnTile(widget, board)}</ol>
+      <button type="button" class="w-kanban-edge is-start" tabindex="-1" aria-label="Show earlier columns" data-action="w.kanban.scroll" data-dir="-1" data-key="edge-start">${icon('chevron-left', { size: 16 })}</button>
+      <button type="button" class="w-kanban-edge is-end" tabindex="-1" aria-label="Show later columns" data-action="w.kanban.scroll" data-dir="1" data-key="edge-end">${icon('chevron-right', { size: 16 })}</button>
+    </div>
     <p class="sr-only" id="wk-${widget.id}-help">Enter opens the card. ] moves it to the next column and [ to the previous one. Alt with the up or down arrow changes its place. Shift+F10 shows more options.</p>
     <p class="sr-only" role="status" aria-live="polite" data-key="announce">${ui.announce.get(widget.id) || ''}</p>
   </div>`;
@@ -236,28 +243,28 @@ function renderSummary(ctx, widget, board, env) {
   const total = board.cards.length;
   return html`<div class="w-kanban is-summary" data-layout="summary" data-widget="${widget.id}" data-key="kanban-summary">
     <div class="w-kanban-sum-top">
-      ${total ? html`<p class="w-kanban-sum-total"><span class="w-kanban-sum-num">${open.toLocaleString()}</span> open<span class="w-kanban-sum-sep" aria-hidden="true">·</span>${doneCount.toLocaleString()} done</p>`
+      ${total ? html`<p class="w-kanban-sum-total"><span class="w-kanban-sum-num">${open.toLocaleString()}</span> open<span class="w-kanban-sum-done"><span class="w-kanban-sum-sep" aria-hidden="true">·</span>${doneCount.toLocaleString()} done</span></p>`
         : html`<p class="w-kanban-sum-total is-empty">${icon('square-kanban', { size: 16 })}No cards yet</p>`}
-      ${total ? html`<span class="w-kanban-sum-bar" role="img" aria-label="${stats.map(s => `${s.column.title}: ${s.count}`).join(', ')}">
+      ${total ? html`<span class="w-kanban-sum-bar" role="img" aria-label="${stats.map(s => `${s.column.title}: ${s.count}`).join(', ')}" title="${stats.map(s => `${s.column.title}: ${s.count}`).join(' · ')}">
         ${stats.filter(s => s.count).map(s => html`<span class="w-kanban-sum-seg" style="flex-grow:${s.count};${tint(s.column.color || (s.column.done ? 'green' : 'gray'))}"></span>`)}</span>` : ''}
     </div>
     <div class="w-kanban-sum-scroll w-kanban-fade-y">
-      <ul class="w-kanban-sum-cols" role="list">${stats.map(s => html`<li class="${cx('w-kanban-sum-col', s.wip === 'over' && 'is-over')}" style="${tint(s.column.color)}">
+      ${total ? html`<ul class="w-kanban-sum-cols" role="list">${stats.map(s => html`<li class="${cx('w-kanban-sum-col', s.wip === 'over' && 'is-over')}" style="${tint(s.column.color)}">
         <span class="${cx('w-kanban-col-dot', s.column.done && 'is-done')}" aria-hidden="true">${s.column.done ? icon('check', { size: 10, strokeWidth: 3 }) : ''}</span>
-        <span class="w-kanban-sum-col-name">${s.column.title}</span>${columnCount(s.column, s.count, s.count)}</li>`)}</ul>
+        <span class="w-kanban-sum-col-name" dir="auto">${s.column.title}</span>${columnCount(s.column, s.count, s.count)}</li>`)}</ul>` : ''}
       ${next.length ? html`<section class="w-kanban-sum-next" aria-labelledby="wk-${widget.id}-next">
         <h3 class="w-kanban-sum-heading" id="wk-${widget.id}-next">Up next</h3>
         <ul class="w-kanban-sum-list" role="list">${next.map(card => html`<li data-key="${card.id}">
-          <button type="button" class="w-kanban-sum-card" data-action="w.kanban.card-open" data-widget="${widget.id}" data-card="${card.id}">
+          <button type="button" class="w-kanban-sum-card" id="${ids.summaryCard(widget.id, card.id)}" data-action="w.kanban.card-open" data-widget="${widget.id}" data-card="${card.id}">
             <span class="w-kanban-sum-prio">${priorityGlyph(card.priority, { size: 12 })}<span class="sr-only">${card.priority !== 'none' ? `${M.priorityOf(card.priority).label} priority. ` : ''}</span></span>
-            <span class="w-kanban-sum-card-title">${card.title}</span>${dueBadge(card, false)}</button></li>`)}</ul>
+            <span class="w-kanban-sum-card-title" dir="auto" title="${card.title}">${card.title}</span>${dueBadge(card, false)}</button></li>`)}</ul>
       </section>` : total ? html`<p class="w-kanban-sum-empty">${open ? 'Nothing is due. Add due dates or priorities to see cards here.' : 'Everything on this board is done.'}</p>`
-        : html`<p class="w-kanban-sum-empty">No cards yet. Add one below, or make the widget larger to see the board.</p>`}
+        : html`<p class="w-kanban-sum-empty">Add your first card below. Make the widget larger to see the whole board.</p>`}
     </div>
     <form class="w-kanban-quick" data-submit="w.kanban.quick-add" data-widget="${widget.id}" data-column="${first.id}" autocomplete="off">
       ${icon('plus', { size: 14, className: 'w-kanban-quick-icon' })}
       <label class="sr-only" for="${ids.quick(widget.id)}">New card in ${first.title}</label>
-      <input class="w-kanban-quick-input" id="${ids.quick(widget.id)}" name="title" maxlength="${M.LIMITS.title}" placeholder="Add a card" enterkeyhint="done" spellcheck="true">
+      <input class="w-kanban-quick-input" id="${ids.quick(widget.id)}" name="title" maxlength="${M.LIMITS.title}" placeholder="Add a card" enterkeyhint="done" spellcheck="true" dir="auto">
     </form>
     <p class="sr-only" role="status" aria-live="polite" data-key="announce">${ui.announce.get(widget.id) || ''}</p>
   </div>`;
@@ -298,56 +305,6 @@ function menu(ctx, widget, env) {
   return items;
 }
 
-function fields() {
-  return [
-    { name: 'layout', label: 'Layout', type: 'segmented', options: LAYOUT_OPTIONS, default: 'auto',
-      hint: 'Automatic shows the summary on small sizes and the full board on larger ones.' },
-    { name: 'columns', label: 'Columns', type: 'list', itemLabel: 'column', addLabel: 'Add column', maxItems: M.LIMITS.columns, required: true,
-      hint: 'Cards in a removed column move to the first column. A limit of 0 means no work-in-progress limit.',
-      itemFields: [
-        { name: 'title', label: 'Column name', type: 'text', required: true, placeholder: 'Column name' },
-        { name: 'color', label: 'Color', type: 'select', options: COLUMN_COLORS, default: '' },
-        { name: 'limit', label: 'Limit', type: 'number', placeholder: 'Limit', default: 0 },
-      ] },
-    { name: 'labels', label: 'Labels', type: 'list', itemLabel: 'label', addLabel: 'Add label', maxItems: M.LIMITS.labels,
-      hint: 'Removing a label takes it off every card.',
-      itemFields: [
-        { name: 'name', label: 'Label name', type: 'text', required: true, placeholder: 'Label name' },
-        { name: 'color', label: 'Color', type: 'select', options: colorOptions(), default: 'gray' },
-      ] },
-    { name: 'showDescriptions', label: 'Show descriptions on cards', type: 'toggle', default: false },
-  ];
-}
-
-function validateSettings(draft) {
-  const errors = {};
-  (draft.columns || []).forEach((column, index) => {
-    const limit = Number(column?.limit ?? 0);
-    if (column?.limit !== '' && column?.limit != null && (!Number.isInteger(limit) || limit < 0 || limit > M.LIMITS.wip)) errors[`columns.${index}.limit`] = `Enter a whole number from 0 to ${M.LIMITS.wip}.`;
-  });
-  const names = new Set();
-  (draft.labels || []).forEach((label, index) => {
-    const name = String(label?.name || '').trim().toLowerCase();
-    if (name && names.has(name)) errors[`labels.${index}.name`] = 'Each label needs a different name.';
-    names.add(name);
-  });
-  return Object.keys(errors).length ? errors : null;
-}
-
-// Settings edit columns and labels as lists; the rest of the board (cards, done flags, filter) is kept and repaired.
-function onSettingsSave(ctx, widget, draft) {
-  const current = boardFor(findWidget(widget.id)?.widget || widget);
-  const columns = (draft.columns || []).map(column => {
-    const previous = current.columns.find(c => c.id === column.id);
-    return { ...previous, ...column, id: column.id, limit: Number(column.limit) || 0, done: previous ? previous.done : false };
-  });
-  const firstId = columns[0]?.id;
-  const kept = new Set(columns.map(c => c.id));
-  const cards = current.cards.map(card => (kept.has(card.columnId) ? card : { ...card, columnId: firstId }));
-  const next = M.normalizeBoard({ ...current, layout: draft.layout, showDescriptions: draft.showDescriptions === true, columns, labels: draft.labels || [], cards });
-  return M.toConfig(next);
-}
-
 defineWidget({
   type: 'kanban',
   title: 'Kanban board',
@@ -362,7 +319,7 @@ defineWidget({
   render,
   headerActions,
   menu,
-  fields,
+  renderSettings,
   validateSettings,
   onSettingsSave,
   preview: 'Columns of cards you drag along',
@@ -420,8 +377,12 @@ async function addFromComposer(ctx, widgetId, columnId, input) {
   const id = M.uid('card');
   input.value = '';
   ui.composer.set(widgetId, { columnId, text: '' });
-  const next = await save(ctx, widgetId, b => M.addCard(b, columnId, { id, title }));
-  if (!next) { input.value = title; return; }
+  let next = null;
+  try { next = await save(ctx, widgetId, b => M.addCard(b, columnId, { id, title })); } finally {
+    // A card that did not make it onto the board keeps its title in the field so nothing typed is lost.
+    if (!next && !cardIn(widgetId, id) && input.isConnected && !input.value) { input.value = title; ui.composer.set(widgetId, { columnId, text: title }); }
+  }
+  if (!next) return;
   const column = M.findColumn(next, columnId);
   announce(ctx, widgetId, `Added “${title}” to ${column?.title || 'the column'}.`);
   ctx.nextFrame(() => {
@@ -562,6 +523,7 @@ async function promptLimit(ctx, widgetId, column) {
 
 function colorMenu(ctx, anchor, widgetId, column) {
   ctx.openMenu(anchor, COLUMN_COLORS.map(option => ({ label: option.label, checked: column.color === option.value,
+    icon: `kanban-color-${option.value || 'none'}${column.color === option.value ? '-on' : ''}`,
     run: () => ctx.run(() => save(ctx, widgetId, b => M.setColumnColor(b, column.id, option.value))) })), { placement: 'bottom-end', label: `Color for ${column.title}` });
 }
 
@@ -674,8 +636,22 @@ registerMount('w.kanban.composer', (el, ctx) => {
   return { destroy() { el.removeEventListener('blur', onBlur); el.removeEventListener('keydown', onKey); } };
 });
 
-// Tracks the card that keeps Tab focus, and keeps the strip's scroll position over re-renders that rebuild it.
+// Tracks the card that keeps Tab focus, opens the card menu on right-click, and marks the board when columns wait past
+// either edge (data-more-start / data-more-end) so the edge buttons can show. Keyboard users move between columns with
+// the arrow keys instead; the buttons are for mice without a horizontal wheel.
 registerMount('w.kanban.strip', (el, ctx) => {
+  const sync = () => {
+    const root = el.closest('.w-kanban');
+    if (!root) return;
+    const max = el.scrollWidth - el.clientWidth;
+    const at = Math.abs(el.scrollLeft);
+    root.toggleAttribute('data-more-start', max > 1 && at > 1);
+    root.toggleAttribute('data-more-end', max > 1 && max - at > 1);
+  };
+  const resize = typeof ResizeObserver === 'function' ? new ResizeObserver(sync) : null;
+  resize?.observe(el);
+  el.addEventListener('scroll', sync, { passive: true });
+  sync();
   const onFocus = event => {
     const card = event.target.closest?.('.w-kanban-card-open');
     if (!card) return;
@@ -693,10 +669,27 @@ registerMount('w.kanban.strip', (el, ctx) => {
   };
   el.addEventListener('focusin', onFocus);
   el.addEventListener('contextmenu', onContext);
-  return { destroy() { el.removeEventListener('focusin', onFocus); el.removeEventListener('contextmenu', onContext); } };
+  return {
+    update: sync, // a render resets the board's attributes and may add or remove columns
+    destroy() {
+      resize?.disconnect();
+      el.removeEventListener('scroll', sync);
+      el.removeEventListener('focusin', onFocus);
+      el.removeEventListener('contextmenu', onContext);
+    },
+  };
 });
 
 registerActions({
+  'w.kanban.scroll': ({ el, data }) => {
+    const strip = el.closest('.w-kanban-strip-wrap')?.querySelector('.w-kanban-strip');
+    const column = strip?.querySelector(':scope > .w-kanban-col');
+    if (!strip) return;
+    const rtl = getComputedStyle(strip).direction === 'rtl';
+    const step = (column?.getBoundingClientRect().width || strip.clientWidth / 2) + parseFloat(getComputedStyle(strip).columnGap || '0');
+    const reduced = document.documentElement.dataset.motion === 'reduced' || matchMedia('(prefers-reduced-motion: reduce)').matches;
+    strip.scrollBy({ left: Number(data.dir) * (rtl ? -1 : 1) * step, behavior: reduced ? 'auto' : 'smooth' });
+  },
   'w.kanban.card-open': ({ ctx, data }) => openCardDialog(ctx, data.widget, data.card),
   'w.kanban.card-menu': ({ ctx, el, data }) => cardMenu(ctx, el, data.widget, data.card),
   'w.kanban.card-key': ({ ctx, el, event, data }) => {
@@ -720,7 +713,11 @@ registerActions({
     }
     if ((key === 'F10' && shiftKey) || key === 'ContextMenu') {
       event.preventDefault();
-      cardMenu(ctx, el.closest('.w-kanban-card')?.querySelector('.w-kanban-card-menu') || el, data.widget, data.card);
+      // Anchored at a point under the card's ⋯ button (not the button itself) so closing the menu returns focus to
+      // the card, where the arrow keys and shortcuts work, rather than to the hidden button.
+      const rect = (el.closest('.w-kanban-card')?.querySelector('.w-kanban-card-menu') || el).getBoundingClientRect();
+      const rtl = getComputedStyle(el).direction === 'rtl';
+      cardMenu(ctx, { x: rtl ? rect.left : rect.right, y: rect.bottom }, data.widget, data.card);
       return undefined;
     }
     if (key === 'Delete' || key === 'Backspace') { event.preventDefault(); return deleteCardWithUndo(ctx, data.widget, data.card); }
@@ -736,8 +733,12 @@ registerActions({
     const title = input?.value.replace(/\s+/g, ' ').trim();
     if (!title) { input?.focus(); return; }
     input.value = '';
-    const next = await save(ctx, data.widget, b => M.addCard(b, data.column, { title }));
-    if (!next) { input.value = title; return; }
+    const id = M.uid('card');
+    let next = null;
+    try { next = await save(ctx, data.widget, b => M.addCard(b, data.column, { id, title })); } finally {
+      if (!next && !cardIn(data.widget, id) && input.isConnected && !input.value) input.value = title;
+    }
+    if (!next) return;
     announce(ctx, data.widget, `Added “${title}” to ${M.findColumn(next, data.column)?.title || 'the board'}.`);
   },
   'w.kanban.add-column-open': ({ ctx, data }) => newColumn(ctx, data.widget),

@@ -2,7 +2,7 @@
 // Open-Meteo for one place. Forecasts are cached in lib/widget-cache.js for 20 minutes, so a new tab paints the last
 // forecast at once and refreshes it in the background. Sections appear as the widget grows (container queries in
 // styles/widgets/weather.css). Also exports renderWeatherChip(ctx) for the dashboard header.
-import { html, cx } from '../html.js';
+import { html, cx, raw } from '../html.js';
 import { icon } from '../icons.js';
 import { button, iconButton, segmented, switchToggle, field, emptyState } from '../components.js';
 import { registerActions, registerMount } from '../runtime.js';
@@ -12,7 +12,7 @@ import { readCache, writeCache, isStale } from '../../lib/widget-cache.js';
 import { hasOrigins, requestOrigins } from '../../lib/permissions.js';
 import {
   weatherCondition, resolveUnit, unitLabel, weatherCacheKey, normalizePlace, placeLabel, fetchForecast, upcomingHours, upcomingDays,
-  currentConditions, formatTemp, formatWind, formatHour, formatClock, formatDay, updatedLabel, weatherError, WEATHER_MAX_AGE, WEATHER_ORIGINS, ATTRIBUTION,
+  currentConditions, formatTemp, formatWind, formatHour, formatClock, formatDay, updatedLabel, WEATHER_MAX_AGE, WEATHER_ORIGINS, ATTRIBUTION,
 } from '../../lib/weather.js';
 import './weather/icons.js';
 import { renderPlacePicker, resetSearch } from './weather/location.js';
@@ -25,7 +25,7 @@ const configOf = widget => {
   return config;
 };
 const locale = () => globalThis.navigator?.language || undefined;
-const RETRY_MS = { rate: 15 * 60_000, access: 60 * 60_000, location: 60 * 60_000 };
+const RETRY_MS = { rate: 15 * 60_000, location: 60 * 60_000 };
 
 // Background refreshes per cache key: { promise, error, kind, failedAt }. Shared by every widget showing that place.
 const sync = new Map();
@@ -41,12 +41,10 @@ function refresh(ctx, place, unit, { force = false } = {}) {
       writeCache(key, await fetchForecast(place, unit));
       sync.set(key, {});
     } catch (error) {
-      let failure = error;
-      // A failed request without host access is most likely the missing grant.
-      if (error?.kind === 'network' && !(await hasOrigins(WEATHER_ORIGINS))) {
-        failure = weatherError('access', 'Still needs access to open-meteo.com to load the weather.');
-      }
-      sync.set(key, { error: failure?.message || 'Unable to load the weather. Try again in a few minutes.', kind: failure?.kind || 'http', failedAt: Date.now() });
+      // Open-Meteo answers cross-origin requests, so host access is not required; but when a request fails outright and
+      // access was declined, offering it is one more way forward.
+      const noAccess = error?.kind === 'network' && globalThis.navigator?.onLine !== false && !(await hasOrigins(WEATHER_ORIGINS).catch(() => true));
+      sync.set(key, { error: error?.message || 'Unable to load the weather. Try again in a few minutes.', kind: error?.kind || 'http', failedAt: Date.now(), noAccess });
     }
     ctx.render();
   })();
@@ -61,7 +59,7 @@ const glyph = (condition, size, className) => html`<span class="${cx('w-weather-
 
 function tempMarkup(value, unit, className = 'w-weather-temp') {
   const text = formatTemp(value);
-  return html`<span class="${className}"><span aria-hidden="true">${text}</span><span class="${className}-unit" aria-hidden="true">${unitLabel(unit)}</span><span class="sr-only">${text.replace('°', '')} degrees ${unit === 'f' ? 'Fahrenheit' : 'Celsius'}</span></span>`;
+  return html`<span class="${className}" dir="auto"><span aria-hidden="true">${text}</span><span class="${className}-unit" aria-hidden="true">${unitLabel(unit)}</span><span class="sr-only">${text.replace('°', '')} degrees ${unit === 'f' ? 'Fahrenheit' : 'Celsius'}</span></span>`;
 }
 
 function renderSetup(ctx, widget) {
@@ -81,28 +79,31 @@ function renderSetup(ctx, widget) {
   </div>`;
 }
 
-function renderLoading(widget, place) {
-  return html`<div class="w-weather is-loading" data-widget="${widget.id}" aria-busy="true">
+function renderLoading(widget, place, show) {
+  // Bones in the final geometry: the same sections appear at the same sizes as the forecast will.
+  const bones = (count, className) => Array.from({ length: count }, () => html`<span class="${cx('skeleton-bone', className)}"></span>`);
+  return html`<div class="${cx('w-weather', 'is-loading', show.hourly && 'has-hours', show.daily && 'has-days', show.details && 'has-details')}" data-widget="${widget.id}" aria-busy="true">
     <div class="w-weather-now">
       <span class="w-weather-glyph is-bone skeleton-bone"></span>
       <div class="w-weather-reading"><span class="skeleton-bone w-weather-bone-temp"></span><span class="skeleton-bone w-weather-bone-line"></span></div>
     </div>
+    ${show.hourly ? html`<div class="w-weather-section is-hours" aria-hidden="true"><span class="skeleton-bone w-weather-bone-hours"></span></div>` : ''}
+    ${show.daily ? html`<div class="w-weather-section is-days" aria-hidden="true"><span class="w-weather-bone-days">${bones(7, 'w-weather-bone-day')}</span></div>` : ''}
+    ${show.details ? html`<div class="w-weather-section is-details" aria-hidden="true"><span class="w-weather-details">${bones(4, 'w-weather-bone-detail')}</span></div>` : ''}
     <p class="sr-only" role="status">Loading the weather for ${placeLabel(place)}</p>
   </div>`;
 }
 
 function renderError(widget, place, state) {
-  const access = state.kind === 'access';
   // A busy service or a dropped connection fixes itself; only replies Still cannot use are shown as failures.
-  const temporary = state.kind === 'rate' || state.kind === 'network';
-  const actions = access
-    ? button({ label: 'Allow access to open-meteo.com', icon: 'lock-open', size: 'sm', variant: 'primary', action: 'w.weather.allow', data: { widget: widget.id } })
-    : state.kind === 'location'
-      ? button({ label: 'Choose the place again', icon: 'map-pin', size: 'sm', action: 'dashboard.widget-settings', data: { widget: widget.id } })
-      : button({ label: 'Try again', icon: 'refresh-cw', size: 'sm', action: 'w.weather.refresh', data: { widget: widget.id } });
-  return html`<div class="w-weather is-error" data-widget="${widget.id}">${emptyState({
-    icon: access ? 'lock' : 'cloud-off', compact: true, tone: access || temporary ? undefined : 'danger',
-    title: access ? 'Allow access to load the weather' : `Unable to load the weather for ${placeLabel(place)}`,
+  const temporary = ['rate', 'network', 'timeout'].includes(state.kind);
+  const actions = state.kind === 'location'
+    ? button({ label: 'Choose the place again', icon: 'map-pin', size: 'sm', action: 'dashboard.widget-settings', data: { widget: widget.id } })
+    : html`${button({ label: 'Try again', icon: 'refresh-cw', size: 'sm', action: 'w.weather.refresh', data: { widget: widget.id } })}
+      ${state.noAccess ? button({ label: 'Allow access to open-meteo.com', icon: 'lock-open', size: 'sm', variant: 'ghost', action: 'w.weather.allow', data: { widget: widget.id } }) : ''}`;
+  return html`<div class="w-weather is-error" data-widget="${widget.id}" ${temporary ? raw('role="status"') : ''}>${emptyState({
+    icon: 'cloud-off', compact: true, tone: temporary ? undefined : 'danger',
+    title: `Unable to load the weather for ${placeLabel(place)}`,
     body: state.error,
     actions,
   })}</div>`;
@@ -118,7 +119,7 @@ function renderHours(data, current) {
     const condition = weatherCondition(hour.code, hour.isDay);
     const wet = Number(hour.pop) >= 30;
     return html`<li class="w-weather-hour" data-key="h${hour.time}">
-      <span class="w-weather-hour-time">${index ? formatHour(hour.time, data.tz, locale()) : 'Now'}</span>
+      <span class="w-weather-hour-time" dir="auto">${index ? formatHour(hour.time, data.tz, locale()) : 'Now'}</span>
       ${glyph(condition, 20)}
       <span class="w-weather-hour-temp">${formatTemp(hour.temp)}</span>
       <span class="${cx('w-weather-pop', !wet && 'is-dry')}" aria-hidden="${wet ? 'false' : 'true'}">${wet ? `${Math.round(hour.pop)}%` : '0%'}</span>
@@ -176,7 +177,7 @@ function render(ctx, widget, env) {
   const data = entry?.value?.current ? entry.value : null;
   const mount = html`data-mount="w.weather.sync" data-key="wx-${widget.id}" data-widget="${widget.id}"`;
   if (!data) {
-    const body = state.error && !state.promise ? renderError(widget, place, state) : renderLoading(widget, place);
+    const body = state.error && !state.promise ? renderError(widget, place, state) : renderLoading(widget, place, config.show);
     return html`<div class="w-weather-root" ${mount}>${body}</div>`;
   }
   const current = currentConditions(data);
@@ -323,7 +324,7 @@ export function renderWeatherChip(ctx) {
   const condition = weatherCondition(current.code, current.isDay);
   const temp = formatTemp(current.temp);
   return html`<span class="w-weather-chip" data-tint="${condition.tint}" title="${placeLabel(config.location, { detail: true })} · ${updatedLabel(entry.at)}">
-    ${glyph(condition, 16, 'is-chip')}<span class="w-weather-chip-temp">${temp}${unitLabel(unit)}</span>
+    ${glyph(condition, 16, 'is-chip')}<span class="w-weather-chip-temp" dir="auto">${temp}${unitLabel(unit)}</span>
     <span class="w-weather-chip-text">${placeLabel(config.location)} · ${condition.label}</span></span>`;
 }
 

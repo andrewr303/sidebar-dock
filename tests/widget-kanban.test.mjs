@@ -7,6 +7,7 @@ import {
   createLabel, updateLabel, deleteLabel, toggleLabel, labelByName,
   addColumn, updateColumn, renameColumn, setLimit, setColumnColor, moveColumn, moveColumnBefore, deleteColumn, restoreColumn, clearDone, restoreCards,
   setFilter, clearFilter, isFiltered, filterCards, dueInfo, dueLabel, wipState, columnStats, upNext, cardToMarkdown, columnCards, findCard, toConfig, isDoneColumn,
+  settingsErrors, applySettings, settingsNotes, layoutFor,
 } from '../extension/ui/widgets/kanban/model.js';
 
 const NOW = '2026-10-30T09:00:00.000Z';
@@ -313,4 +314,57 @@ test('toConfig keeps only the stored keys', () => {
   const config = toConfig(sample());
   assert.deepEqual(Object.keys(config).sort(), ['cards', 'columns', 'filter', 'labels', 'layout', 'showDescriptions']);
   assert.deepEqual(normalizeBoard(config, { now: NOW }), normalizeBoard(sample(), { now: NOW }));
+});
+
+test('layoutFor: automatic shows the board from 5 × 4 cells, explicit layouts win', () => {
+  const board = sample();
+  assert.equal(layoutFor(board, { w: 6, h: 4 }), 'board');
+  assert.equal(layoutFor(board, { w: 5, h: 4 }), 'board');
+  assert.equal(layoutFor(board, { w: 12, h: 3 }), 'summary');
+  assert.equal(layoutFor(board, { w: 4, h: 8 }), 'summary');
+  assert.equal(layoutFor({ ...board, layout: 'board' }, { w: 2, h: 2 }), 'board');
+  assert.equal(layoutFor({ ...board, layout: 'summary' }, { w: 12, h: 8 }), 'summary');
+  assert.equal(layoutFor({ ...board, layout: 'weird' }, { w: 3, h: 3 }), 'summary');
+});
+
+test('settingsErrors flags unnamed columns, bad limits and duplicate or empty labels', () => {
+  assert.equal(settingsErrors({ columns: [{ id: 'a', title: 'To do', limit: null }, { id: 'b', title: 'Doing', limit: 3 }], labels: [{ id: 'x', name: 'Bug' }] }), null);
+  assert.deepEqual(settingsErrors({ columns: [], labels: [] }), { columns: 'Add at least one column.' });
+  const errors = settingsErrors({
+    columns: [{ id: 'a', title: '  ' }, { id: 'b', title: 'Doing', limit: 2.5 }, { id: 'c', title: 'Done', limit: -1 }, { id: 'd', title: 'Later', limit: 1000 }, { id: 'e', title: 'Ok', limit: '' }],
+    labels: [{ id: 'x', name: 'Bug' }, { id: 'y', name: ' bug ' }, { id: 'z', name: '' }],
+  });
+  assert.deepEqual(Object.keys(errors).sort(), ['columns.0.title', 'columns.1.limit', 'columns.2.limit', 'columns.3.limit', 'labels.1.name', 'labels.2.name']);
+  assert.match(errors['labels.1.name'], /already has this name/);
+});
+
+test('applySettings keeps cards, moves cards out of removed columns and drops removed labels', () => {
+  const board = sample();
+  const next = applySettings(board, {
+    layout: 'summary',
+    showDescriptions: true,
+    columns: [{ id: 'b', title: 'Doing now', color: 'violet', limit: null, done: false }, { id: 'new', title: 'Review', color: 'nope', limit: 4 }, { id: 'c', title: 'Done', done: true }],
+    labels: [{ id: 'blue', name: 'Feature', color: 'teal' }],
+  });
+  assert.equal(next.layout, 'summary');
+  assert.equal(next.showDescriptions, true);
+  assert.deepEqual(next.columns.map(c => [c.id, c.title, c.color, c.limit, c.done]),
+    [['b', 'Doing now', 'violet', 0, false], ['new', 'Review', '', 4, false], ['c', 'Done', '', 0, true]]);
+  assert.equal(next.cards.length, board.cards.length);
+  assert.deepEqual(columnCards(next, 'b').map(c => c.id), ['1', '2', '3', '4']); // column a's cards move to the first column
+  assert.deepEqual(findCard(next, '1').labels, []);
+  assert.deepEqual(findCard(next, '3').labels, ['blue']);
+  assert.deepEqual(next.labels, [{ id: 'blue', name: 'Feature', color: 'teal' }]);
+  // Nothing in the draft: the board stays as it was.
+  assert.deepEqual(applySettings(board, {}), board);
+});
+
+test('settingsNotes says what saving does to cards in removed columns and with removed labels', () => {
+  const board = sample();
+  assert.deepEqual(settingsNotes(board, { columns: board.columns, labels: board.labels }), { columns: '', labels: '' });
+  assert.deepEqual(settingsNotes(board, { columns: [{ id: 'b', title: 'Doing' }, { id: 'c', title: 'Done' }], labels: [{ id: 'blue' }] }), {
+    columns: '3 cards from removed columns will move to “Doing”.',
+    labels: 'Removed labels will come off 1 card.',
+  });
+  assert.equal(settingsNotes(board, { columns: [{ id: 'x', title: '' }], labels: board.labels }).columns, '5 cards from removed columns will move to “the first column”.');
 });

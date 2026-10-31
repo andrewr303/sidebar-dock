@@ -14,6 +14,8 @@
 //   showDescriptions: false
 // }
 
+import { plural } from '../../html.js';
+
 export const COLORS = Object.freeze(['red', 'orange', 'amber', 'yellow', 'lime', 'green', 'teal', 'cyan', 'blue', 'indigo', 'violet', 'pink', 'gray']);
 export const COLOR_LABELS = Object.freeze({
   red: 'Red', orange: 'Orange', amber: 'Amber', yellow: 'Yellow', lime: 'Lime', green: 'Green', teal: 'Teal', cyan: 'Cyan',
@@ -555,6 +557,15 @@ export function restoreCards(board, cards = []) {
 
 /* ------------------------------------------------------------------ view settings */
 
+/**
+ * The layout a widget shows: the board's own choice, or with 'auto' the full board from 5 × 4 cells (about two
+ * columns of two or three cards) and the summary below that.
+ */
+export function layoutFor(board, { w = 6, h = 4 } = {}) {
+  if (board?.layout === 'board' || board?.layout === 'summary') return board.layout;
+  return w >= 5 && h >= 4 ? 'board' : 'summary';
+}
+
 export function setFilter(board, patch = {}) {
   const filter = {
     label: 'label' in patch ? (board.labels.some(l => l.id === patch.label) ? patch.label : '') : board.filter.label,
@@ -609,6 +620,24 @@ export function applySettings(board, draft = {}) {
     columns,
     labels: Array.isArray(draft.labels) ? draft.labels : board.labels,
   });
+}
+
+/**
+ * What saving the settings draft will do to cards: { columns, labels } sentences ('' when nothing happens) for cards
+ * sitting in removed columns (they move to the first column) and cards carrying removed labels.
+ */
+export function settingsNotes(board, draft = {}) {
+  const columns = Array.isArray(draft.columns) ? draft.columns : [];
+  const labels = Array.isArray(draft.labels) ? draft.labels : [];
+  const keptColumns = new Set(columns.map(c => c?.id));
+  const keptLabels = new Set(labels.map(l => l?.id));
+  const moving = board.cards.filter(card => !keptColumns.has(card.columnId)).length;
+  const unlabeled = board.cards.filter(card => card.labels.some(id => !keptLabels.has(id))).length;
+  const first = text(columns[0]?.title, LIMITS.column) || 'the first column';
+  return {
+    columns: moving && columns.length ? `${plural(moving, 'card')} from removed columns will move to “${first}”.` : '',
+    labels: unlabeled ? `Removed labels will come off ${plural(unlabeled, 'card')}.` : '',
+  };
 }
 
 /** The stored config for a board (what env.update receives). */

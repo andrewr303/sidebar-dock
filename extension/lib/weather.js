@@ -301,23 +301,36 @@ export function updatedLabel(at, now = Date.now()) {
 
 // ------------------------------------------------------------------ network
 
-/** Errors carry a kind: 'rate' (busy / limit), 'network', 'location', 'invalid' or 'http'. Messages say what to do. */
+/** Errors carry a kind: 'rate' (busy / limit), 'network', 'timeout', 'location', 'invalid' or 'http'. Messages say what to do. */
 export function weatherError(kind, message) {
   const error = new Error(message);
   error.kind = kind;
   return error;
 }
 
-async function getJson(url, { fetch: fetchImpl = globalThis.fetch, signal, service = 'Open-Meteo' } = {}) {
+/** Requests that take longer than this give up (a stalled connection would otherwise keep the widget loading). */
+export const REQUEST_TIMEOUT = 15_000;
+
+/** The caller's signal joined with a timeout: { signal, timedOut() }. */
+export function withTimeout(signal, ms = REQUEST_TIMEOUT) {
+  const timer = ms > 0 && typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(ms) : null;
+  const joined = signal && timer && typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, timer]) : signal || timer || undefined;
+  return { signal: joined, timedOut: () => !!timer?.aborted && !signal?.aborted };
+}
+
+async function getJson(url, { fetch: fetchImpl = globalThis.fetch, signal, timeout = REQUEST_TIMEOUT, service = 'Open-Meteo' } = {}) {
+  const limit = withTimeout(signal, timeout);
+  const slow = () => weatherError('timeout', `${service} took too long to answer. Still will try again in a few minutes.`);
   let response;
   try {
-    response = await fetchImpl(url, { signal, credentials: 'omit', headers: { accept: 'application/json' } });
+    response = await fetchImpl(url, { signal: limit.signal, credentials: 'omit', headers: { accept: 'application/json' } });
   } catch (error) {
+    if (limit.timedOut()) throw slow();
     if (error?.name === 'AbortError') throw error;
     throw weatherError('network', `Unable to reach ${service}. Check your connection and try again.`);
   }
   let body = null;
-  try { body = await response.json(); } catch { body = null; }
+  try { body = await response.json(); } catch { if (limit.timedOut()) throw slow(); body = null; }
   if (response.status === 429 || /limit exceeded/i.test(String(body?.reason || ''))) {
     throw weatherError('rate', `${service} is busy right now. Still will try again in a few minutes.`);
   }
@@ -342,7 +355,7 @@ export async function reversePlace(lat, lon, { language, ...options } = {}) {
   try {
     return parseReverse(await getJson(reverseUrl(lat, lon, { language }), { ...options, service: 'The place lookup' }), lat, lon);
   } catch (error) {
-    if (error?.name === 'AbortError') throw error;
+    if (error?.name === 'AbortError' && options.signal?.aborted) throw error;
     // The forecast only needs the coordinates; the place name is a nicety.
     return normalizePlace({ name: 'Current location', lat, lon, source: 'device' });
   }

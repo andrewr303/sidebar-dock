@@ -208,6 +208,10 @@ test('feed fetching explains failures and parses calendars', async () => {
   await assert.rejects(fetchFeed('https://example.com/x.ics', { fetch: reply(200, '<html></html>') }), e => e.kind === 'invalid');
   await assert.rejects(fetchFeed('https://example.com/x.ics', { fetch: async () => { throw new TypeError('Failed to fetch'); } }), e => e.kind === 'network');
   await assert.rejects(fetchFeed('ftp://example.com/x.ics'), e => e.kind === 'invalid');
+  const hang = (url, { signal }) => new Promise((resolve, reject) => signal?.addEventListener('abort', () => reject(signal.reason), { once: true }));
+  const keepAlive = setTimeout(() => {}, 1000); // AbortSignal.timeout does not hold Node's event loop open
+  await assert.rejects(fetchFeed('https://example.com/x.ics', { fetch: hang, timeout: 20 }), e => e.kind === 'network' && /took too long/.test(e.message));
+  clearTimeout(keepAlive);
 });
 
 test('month grids have six weeks starting on the chosen weekday', () => {

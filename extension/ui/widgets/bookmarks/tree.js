@@ -28,8 +28,9 @@ const isWeb = url => /^https?:\/\//i.test(String(url || ''));
 
 /**
  * Flattens chrome.bookmarks.getTree() output into { nodes: Map(id -> node), links (count of web links) } where each
- * node is { id, parentId, title, url, dateAdded, index, children: [ids] | undefined, links, total }. `links` counts a
- * folder's direct web links and `total` every web link under it.
+ * node is { id, parentId, title, url, dateAdded, index, children: [ids] | undefined, links, total, locked, managed }.
+ * `links` counts a folder's direct web links and `total` every web link under it. `locked` nodes can't be edited, moved
+ * or deleted: Chrome's own top folders (which still take new bookmarks) and `managed` ones set by an organization.
  */
 export function indexTree(roots = []) {
   const nodes = new Map();
@@ -39,6 +40,7 @@ export function indexTree(roots = []) {
     const entry = {
       id, parentId: node.parentId != null ? String(node.parentId) : parentId, title: String(node.title || ''), url: node.url ? String(node.url) : '',
       dateAdded: Number(node.dateAdded) || 0, index: Number.isInteger(node.index) ? node.index : position, children: undefined, links: 0, total: 0,
+      locked: !!node.unmodifiable || (parentId === ROOT_ID && !node.url), managed: !!node.unmodifiable,
     };
     nodes.set(id, entry);
     if (!node.url) {
@@ -235,8 +237,8 @@ export function importPlan(index, folderId, { existing = new Set(), makeId, pare
 /**
  * The index for chrome.bookmarks.move() that puts nodeId where a drag or a keyboard move wants it inside folderId, or
  * -1 when it would not move. Chrome counts the index in the folder as it is before the move (every child, including
- * bookmarklets and folders the widget hides). Either `beforeId` ('' = after the last child) or `delta` (+1 / -1 steps
- * through the children the widget shows, in Chrome's order).
+ * bookmarklets and folders the widget hides). Either `beforeId` ('' = after the last child) or `delta` (steps through
+ * the children the widget shows, in Chrome's order: ±1 in a list, ±columns for up and down in a grid).
  */
 export function moveIndex(index, folderId, nodeId, { beforeId, delta, showFolders = true } = {}) {
   const folder = index?.nodes.get(String(folderId));
@@ -248,7 +250,7 @@ export function moveIndex(index, folderId, nodeId, { beforeId, delta, showFolder
     if (!same) return -1;
     const shown = folderChildren(index, folder.id, { showFolders });
     const from = shown.findIndex(n => n.id === node.id);
-    const to = Math.max(0, Math.min(shown.length - 1, from + Math.sign(delta)));
+    const to = Math.max(0, Math.min(shown.length - 1, from + Math.trunc(delta)));
     if (from < 0 || to === from) return -1;
     target = delta > 0 ? shown[to].index + 1 : shown[to].index;
   } else {
@@ -258,4 +260,65 @@ export function moveIndex(index, folderId, nodeId, { beforeId, delta, showFolder
   // Dropping a node onto its own place (just before itself or just after itself) is not a move.
   if (same && (target === node.index || target === node.index + 1)) return -1;
   return target;
+}
+
+/**
+ * Where a bookmark dragged onto a grid lands: { parentId, index } for chrome.bookmarks.move(), or null when it stays
+ * put. It joins the folder of the node it was dropped before (the tree view shows several folders at once), else
+ * `folderId` at the end. A folder never moves into itself or one of its subfolders, and locked bookmarks or managed
+ * folders never change.
+ */
+export function dropMove(index, nodeId, { beforeId = '', folderId } = {}) {
+  const node = index?.nodes.get(String(nodeId));
+  const before = beforeId ? index.nodes.get(String(beforeId)) : null;
+  const parentId = before ? before.parentId : String(folderId ?? '');
+  if (!node || !isFolder(index.nodes.get(parentId)) || before?.id === node.id) return null;
+  if (node.locked || index.nodes.get(parentId).managed || (isFolder(node) && isWithin(index, parentId, node.id))) return null;
+  const at = moveIndex(index, parentId, node.id, { beforeId: before ? before.id : '' });
+  return at < 0 ? null : { parentId, index: at };
+}
+
+/** Where new bookmarks dropped before `beforeId` ('' = at the end) go: { parentId, index } (index undefined = last). */
+export function dropCreate(index, folderId, beforeId = '') {
+  const before = beforeId ? index?.nodes.get(String(beforeId)) : null;
+  if (before && isFolder(index.nodes.get(before.parentId))) return { parentId: before.parentId, index: before.index };
+  return { parentId: String(folderId), index: undefined };
+}
+
+/** A folder's own web links (not those in subfolders), in Chrome's order: for "Open all". */
+export const folderUrls = (index, folderId) => folderChildren(index, folderId, { showFolders: false }).map(node => node.url);
+
+/**
+ * A compact copy of the tree for the widget cache, so a new tab draws bookmarks before Chrome answers: flat rows
+ * [id, parentId, title, url, dateAdded, managed] in breadth-first order (top folders first), at most `limit` rows. A larger
+ * tree is cut short; the live tree replaces it a moment later.
+ */
+export function compactTree(index, { limit = 1500 } = {}) {
+  const out = [];
+  if (!index?.nodes.size) return out;
+  const queue = index.nodes.has(ROOT_ID) ? [ROOT_ID] : [...index.nodes.values()].filter(n => !index.nodes.has(n.parentId)).map(n => n.id);
+  while (queue.length && out.length < limit) {
+    const node = index.nodes.get(queue.shift());
+    if (!node) continue;
+    out.push([node.id, node.parentId, node.title.slice(0, 200), node.url.slice(0, 2000), node.dateAdded, node.managed ? 1 : 0]);
+    if (node.children) queue.push(...node.children);
+  }
+  return out;
+}
+
+/** Rebuilds an index (as indexTree returns) from compactTree rows. Rows whose parent was cut off are left out. */
+export function expandTree(rows = []) {
+  const byId = new Map();
+  const roots = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!Array.isArray(row) || row[0] == null) continue;
+    const [id, parentId, title, url, dateAdded, managed] = row;
+    const node = { id: String(id), parentId: String(parentId ?? ''), title: String(title || ''), dateAdded: Number(dateAdded) || 0, ...(managed ? { unmodifiable: 'managed' } : {}) };
+    if (url) node.url = String(url); else node.children = [];
+    byId.set(node.id, node);
+    const parent = byId.get(node.parentId);
+    if (parent?.children) parent.children.push(node);
+    else if (!node.parentId || !roots.length) roots.push(node);
+  }
+  return indexTree(roots);
 }

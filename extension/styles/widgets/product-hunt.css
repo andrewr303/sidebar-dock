@@ -62,6 +62,9 @@
   outline: 1px solid var(--w-ph-image-ring);
   outline-offset: -1px;
 }
+/* Without an image, the product site's icon sits centred on the same plate. */
+.w-ph-thumb.has-site { place-items: center; background: var(--w-ph-plate); box-shadow: inset 0 0 0 1px var(--w-ph-image-ring); }
+.w-ph-thumb-site { border-radius: var(--radius-xs); }
 .w-ph-thumb-tile { --size: inherit; inline-size: 100%; block-size: 100%; border-radius: inherit; font-size: calc(var(--size) * 0.42); font-weight: var(--weight-semibold); }
 
 /* ---------- toolbar ---------- */
@@ -119,10 +122,9 @@
 .w-ph-list { display: flex; flex-direction: column; gap: var(--space-1); }
 .w-ph-row {
   position: relative;
-  display: grid;
-  grid-template-columns: 2ch auto minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
-  column-gap: var(--space-5);
+  gap: var(--space-5);
   min-block-size: 56px;
   padding: var(--space-3) var(--w-ph-inset);
   margin-inline: calc(var(--w-ph-inset) * -1);
@@ -130,13 +132,14 @@
   color: var(--fg-default);
   transition: background-color var(--dur-fast) var(--ease-out);
 }
-.w-ph[data-thumbs="off"] .w-ph-list .w-ph-row { grid-template-columns: 2ch minmax(0, 1fr) auto; }
-.w-ph-row:has(.w-ph-link:focus-visible),
+.w-ph-row:has(.w-ph-link:focus-visible, .w-ph-act:focus-visible),
 .w-ph-row:has([aria-expanded="true"]) { background: var(--bg-hover); }
 @media (hover: hover) { .w-ph-row:hover { background: var(--bg-hover); } }
 
 .w-ph-rank {
-  justify-self: end;
+  flex: none;
+  inline-size: 2ch;
+  text-align: end;
   color: var(--fg-subtle);
   font-size: var(--text-xs);
   font-weight: var(--weight-medium);
@@ -155,8 +158,11 @@
 }
 .w-ph-link::after { content: ''; position: absolute; inset: 0; z-index: 0; border-radius: inherit; }
 .w-ph-row .w-ph-link::after { border-radius: var(--w-ph-inner-radius); }
+.w-ph-list .w-ph-link { flex: 1 1 auto; }
 .w-ph-link:hover { text-decoration: none; }
 .w-ph-link:focus-visible::after { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+/* Names and taglines take their own direction (dir="auto") but keep the widget's alignment. */
+.w-ph-link:dir(rtl) > :is(.w-ph-name, .w-ph-tagline) { text-align: right; }
 .w-ph-name {
   overflow: hidden;
   color: var(--fg-default);
@@ -185,16 +191,18 @@
   line-height: var(--lh-xs);
   white-space: nowrap;
 }
-.w-ph-topics { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; }
+.w-ph-topics, .w-ph-by { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; }
 .w-ph-meta-item { display: inline-flex; align-items: center; gap: var(--space-2); flex: none; font-variant-numeric: tabular-nums; }
 @container widget (max-width: 300px) { .w-ph-when { display: none; } }
 /* Narrow lists give the name more room: a smaller image and a slimmer upvote box. */
 @container widget (max-width: 319px) {
-  .w-ph-list .w-ph-row { column-gap: var(--space-4); }
+  .w-ph-list .w-ph-row { gap: var(--space-4); }
   .w-ph-list .w-ph-thumb { inline-size: 32px; block-size: 32px; }
   .w-ph-list .w-ph-votes { min-inline-size: 38px; block-size: 40px; }
   .w-ph-list .w-ph-row:has(.w-ph-votes) > .w-ph-actions { inset-inline-end: calc(var(--w-ph-inset) + 38px + var(--space-4)); }
 }
+/* The narrowest lists drop the image so names keep their room (the rank and upvotes stay). */
+@container widget (max-width: 259px) { .w-ph-list .w-ph-thumb { display: none; } }
 /* Roomy lists let taglines wrap to two lines. */
 @container widget (min-width: 520px) {
   .w-ph-list .w-ph-tagline { display: -webkit-box; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; text-wrap: pretty; }
@@ -247,8 +255,9 @@
 .w-ph-row:focus-within > .w-ph-actions,
 .w-ph-row:has([aria-expanded="true"]) > .w-ph-actions { opacity: 1; pointer-events: auto; }
 @media (hover: hover) { .w-ph-row:hover > .w-ph-actions { opacity: 1; pointer-events: auto; } }
+/* Touch screens: list rows show ⋯ in line (it opens every action); the glanceable top three opens launches only. */
 @media (hover: none) {
-  .w-ph-list .w-ph-row, .w-ph-top .w-ph-row { grid-template-columns: 2ch auto minmax(0, 1fr) auto auto; }
+  .w-ph-top-item > .w-ph-actions { display: none; }
   .w-ph-row > .w-ph-actions { position: static; padding: 0; background: none; box-shadow: none; opacity: 1; pointer-events: auto; transform: none; }
   .w-ph-row > .w-ph-actions > .w-ph-act:not(.w-ph-more) { display: none; }
 }
@@ -276,6 +285,7 @@ a.w-ph-act:hover { text-decoration: none; }
 /* ---------- top three (small widgets) ---------- */
 .w-ph-top { display: flex; flex-direction: column; justify-content: space-evenly; gap: var(--space-1); block-size: 100%; min-block-size: 0; }
 .w-ph-top-item {
+  display: grid;
   grid-template-columns: auto auto minmax(0, 1fr) auto;
   grid-template-areas: "rank thumb text votes";
   column-gap: var(--space-5);
@@ -394,6 +404,12 @@ a.w-ph-act:hover { text-decoration: none; }
 .w-ph-card .w-ph-actions { position: relative; inset: auto; margin-inline-start: auto; padding: 0; background: none; box-shadow: none; opacity: 1; pointer-events: auto; transform: none; }
 .w-ph-card .w-ph-link::after { border-radius: var(--w-ph-inner-radius); }
 .w-ph-card:has(.w-ph-link:focus-visible) { background: var(--bg-hover); }
+/* A grid of cards keeps only ⋯ in view; the other actions fade in with hover or focus (their space stays reserved, so
+   nothing shifts). Touch screens always show them. */
+@media (hover: hover) {
+  .w-ph-card .w-ph-act:not(.w-ph-more) { opacity: 0; transition: opacity var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
+  .w-ph-card:is(:hover, :focus-within, :has([aria-expanded="true"])) .w-ph-act { opacity: 1; }
+}
 
 /* ---------- footer and notices ---------- */
 .w-ph-foot {
@@ -425,6 +441,7 @@ a.w-ph-act:hover { text-decoration: none; }
   background: var(--warning-soft); color: var(--fg-default); font-size: var(--text-xs);
 }
 .w-ph-notice > .icon { flex: none; color: var(--warning); }
+@container widget (max-width: 439px) { .w-ph-notice-more { display: none; } }
 .w-ph-notice-text { display: -webkit-box; flex: 1 1 auto; min-inline-size: 0; overflow: hidden; line-height: var(--lh-xs); -webkit-box-orient: vertical; -webkit-line-clamp: 2; text-wrap: pretty; }
 .w-ph-notice-action {
   flex: none; min-block-size: 24px; padding-inline: var(--space-3); border-radius: var(--radius-xs); color: var(--fg-default);
@@ -466,6 +483,11 @@ a.w-ph-act:hover { text-decoration: none; }
 
 /* ---------- header controls ---------- */
 .w-ph-head-range { padding-inline: var(--space-3); }
+/* The frame header sits outside the widget's size container, so the day button reads the dashboard's width instead: a
+   three-column widget on a narrow 12-column (or 6-column) grid keeps its header for the title. The day stays in the
+   widget's ⋯ menu ("Launch day…"). */
+@container dashboard (max-width: 1119px) { .dashboard[data-cols="12"] .widget[data-w="3"] .w-ph-head-range { display: none; } }
+@container dashboard (max-width: 639px) { .dashboard[data-cols="6"] .widget[data-w="3"] .w-ph-head-range { display: none; } }
 .w-ph-refresh.is-spinning .icon { opacity: 0.7; }
 .w-ph-alert { display: inline-flex; }
 .w-ph-alert > .icon-btn.w-ph-alert-btn { color: var(--warning); }
@@ -516,7 +538,7 @@ a.w-ph-act:hover { text-decoration: none; }
 @media (forced-colors: active) {
   .w-ph-mark { border: 1px solid CanvasText; }
   .w-ph-votes, .w-ph-card { border-color: CanvasText; }
-  .w-ph-actions { border: 1px solid CanvasText; }
+  :is(.w-ph-list, .w-ph-top) .w-ph-actions { border: 1px solid CanvasText; }
   .w-ph-link:focus-visible::after { outline-color: Highlight; }
   .w-ph-notice, .w-ph-account-alert { border: 1px solid CanvasText; }
 }

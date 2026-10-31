@@ -34,6 +34,7 @@ const TYPE = 'embed';
 const URL_HINT = 'Enter a web address, like example.com or youtube.com/watch?v=…';
 const MAYBE_BLOCKED_AFTER_LOAD = 2500;  // ms after load before offering help with a blank page
 const MAYBE_BLOCKED_NO_LOAD = 8000;     // ms without any load event
+const HINT_RECEDES_AFTER = 9000;        // ms the "Page not showing?" pill stays in view over a page that did load
 const HINTS_KEY = 'still.embed.hints.v1';
 const parent = () => globalThis.chrome?.runtime?.id || globalThis.location?.hostname || '';
 const canFrameRules = () => !!globalThis.chrome?.declarativeNetRequest?.updateSessionRules;
@@ -82,14 +83,15 @@ class EmbedFrame {
     this.token = 0;
     this.frame = null;
     this.loaded = false;
-    this.notice = '';      // '' | 'maybe' | 'maybe-open' | 'blocked' | 'access'
+    this.notice = '';      // '' | 'maybe' | 'maybe-open' | 'blocked' | 'access' | 'player'
+    this.quiet = false;    // the pill has receded: it shows on hover and focus only
     this.probe = '';       // '' | 'allowed' | 'blocked' (from the site's headers, when Still may read them)
     this.size = { w: el.clientWidth, h: el.clientHeight };
     this.geometry = '';
     this.layerMarkup = null;
     this.refreshEvery = 0;
     this.refreshDue = false;
-    this.timers = { hint: 0, refresh: 0 };
+    this.timers = { hint: 0, refresh: 0, quiet: 0 };
     el.innerHTML = '<div class="w-embed-viewport"></div><div class="w-embed-layer"></div>';
     this.viewport = el.firstElementChild;
     this.layer = el.lastElementChild;
@@ -150,9 +152,11 @@ class EmbedFrame {
     this.signature = signature;
     this.loaded = false;
     this.notice = '';
+    this.quiet = false;
     this.probe = '';
     this.geometry = '';
     clearTimeout(this.timers.hint);
+    clearTimeout(this.timers.quiet);
     this.viewport.replaceChildren();
     this.frame = null;
     const framing = config.allowFraming && !target.known;
@@ -207,7 +211,17 @@ class EmbedFrame {
   offerHelp(token) {
     if (token !== this.token || this.notice || this.probe === 'allowed' || hintDismissed(this.widgetId, this.target.embedUrl)) return;
     this.notice = 'maybe';
+    this.quiet = false;
     this.paint();
+    // Over a page that loaded (most likely fine), the offer steps back after a while instead of nagging.
+    clearTimeout(this.timers.quiet);
+    if (this.loaded) {
+      this.timers.quiet = setTimeout(() => {
+        if (token !== this.token || this.notice !== 'maybe') return;
+        this.quiet = true;
+        this.paint();
+      }, HINT_RECEDES_AFTER);
+    }
   }
 
   /** With host access already granted, the site's own headers say for sure whether it can be framed. */
@@ -299,7 +313,7 @@ class EmbedFrame {
       return html`<div class="w-embed-blocked" role="status">
         <span class="w-embed-blocked-icon" aria-hidden="true">${icon('globe-lock', { size: 22 })}</span>
         <p class="w-embed-blocked-title">${host} doesn’t allow embedding</p>
-        <p class="w-embed-blocked-body">Still can remove that protection for this site, only inside your dashboard. Do this only for sites you trust.</p>
+        <p class="w-embed-blocked-body">Still can lift that protection on your dashboard only, so do it just for sites you trust.</p>
         <div class="w-embed-actions">
           ${canFrameRules() ? button({ label: 'Allow embedding', icon: 'lock-open', size: 'sm', action: 'w.embed.allow', data: { widget: widgetId, focusKey: `embed-allow-${widgetId}` } }) : ''}
           ${open}
@@ -309,7 +323,7 @@ class EmbedFrame {
     const loading = this.frame && !this.loaded ? html`<div class="w-embed-loading" aria-hidden="true">${siteIcon(target.url, { size: 24 })}<span class="w-embed-loading-text">Loading ${host}…</span></div>` : '';
     let notice = '';
     if (this.notice === 'maybe') {
-      notice = html`<button type="button" class="w-embed-pill" data-action="w.embed.hint-open" data-widget="${widgetId}" data-focus-key="embed-pill-${widgetId}" aria-expanded="false">
+      notice = html`<button type="button" class="${cx('w-embed-pill', this.quiet && 'is-quiet')}" data-action="w.embed.hint-open" data-widget="${widgetId}" data-focus-key="embed-pill-${widgetId}" aria-expanded="false">
         ${icon('circle-help', { size: 14 })}<span>Page not showing?</span></button>`;
     } else if (this.notice === 'maybe-open') {
       notice = html`<div class="w-embed-bar" role="status" data-keydown="w.embed.bar-key" data-widget="${widgetId}">
@@ -335,6 +349,7 @@ class EmbedFrame {
     this.token++;
     this.observer?.disconnect();
     clearTimeout(this.timers.hint);
+    clearTimeout(this.timers.quiet);
     clearInterval(this.timers.refresh);
     document.removeEventListener('visibilitychange', this.onVisibility);
     if (controllers.get(this.widgetId) === this) controllers.delete(this.widgetId);
@@ -555,12 +570,14 @@ const VIEWPORT_OPTIONS = [
 ];
 const SANDBOX_OPTIONS = [{ value: 'relaxed', label: 'Standard' }, { value: 'strict', label: 'Strict' }];
 
-function rangeRow({ id, name, label, value, min, max, step, unit, icon: glyph, valueText }) {
+/** A labelled slider; every row keeps a column for its Reset button so the sliders line up. */
+function rangeRow({ id, name, label, value, min, max, step, unit, icon: glyph, valueText, reset = '' }) {
   return html`<div class="w-embed-range">
     <label class="w-embed-range-label" for="${id}">${glyph ? icon(glyph, { size: 14 }) : ''}<span>${label}</span></label>
     <input type="range" class="dash-range w-embed-range-input" id="${id}" min="${min}" max="${max}" step="${step}" value="${value}"
       data-input="dashboard.draft" data-name="${name}" data-type="number" data-render="true" aria-valuetext="${valueText || `${value}${unit}`}">
     <output class="w-embed-range-value" for="${id}">${value}${unit}</output>
+    <span class="w-embed-range-reset">${reset}</span>
   </div>`;
 }
 
@@ -594,10 +611,8 @@ function renderSettings(_ctx, widget, draft, env) {
       ${field({ label: 'Page width', control: segmented({ name: 'viewport', value: viewport, options: VIEWPORT_OPTIONS, action: 'w.embed.draft-viewport', ariaLabel: 'Page width' }),
         hint: viewport === 'phone' ? 'Lays the page out like a phone, 390 pixels wide, scaled to the widget.' : viewport === 'desktop'
           ? 'Lays the page out like a laptop, 1280 pixels wide, scaled to the widget.' : 'Lays the page out at the widget’s own width.' })}
-      <div class="w-embed-range-head">
-        ${rangeRow({ id: `${id}-zoom`, name: 'zoom', label: 'Zoom', value: d.zoom, min: ZOOM_MIN, max: ZOOM_MAX, step: 5, unit: '%', icon: 'zoom-in' })}
-        ${d.zoom !== 100 ? button({ label: 'Reset', size: 'sm', variant: 'ghost', action: 'w.embed.draft-reset', data: { name: 'zoom' } }) : ''}
-      </div>
+      ${rangeRow({ id: `${id}-zoom`, name: 'zoom', label: 'Zoom', value: d.zoom, min: ZOOM_MIN, max: ZOOM_MAX, step: 5, unit: '%', icon: 'zoom-in',
+        reset: d.zoom !== 100 ? button({ label: 'Reset', size: 'sm', variant: 'ghost', action: 'w.embed.draft-reset', data: { name: 'zoom' }, attrs: { 'aria-label': 'Reset zoom to 100%' } }) : '' })}
       <div class="w-embed-region" role="group" aria-labelledby="${id}-region">
         <div class="w-embed-region-head">
           <span class="w-embed-region-title" id="${id}-region">Frame a region</span>
@@ -627,7 +642,7 @@ function renderSettings(_ctx, widget, draft, env) {
         hint: d.sandbox === 'strict' ? 'The page can’t open pop-ups, downloads or dialogs.' : 'The page can open links in new tabs, play full screen and download files.' })}
       ${target && !target.known ? html`<div class="w-embed-framing">
         ${switchToggle({ checked: d.allowFraming, label: `Allow ${hostLabel(target)} to be embedded`, disabled: !canFrameRules(),
-          description: canFrameRules() ? 'For sites that refuse to appear inside other pages. Still removes that protection for this site, only inside your dashboard. Turn it on only for sites you trust.'
+          description: canFrameRules() ? 'Still lifts this site’s protection against being shown inside other pages, on your dashboard only, so turn it on just for sites you trust.'
             : 'Needs Still installed as a Chrome extension.', action: 'w.embed.draft-framing', id: `${id}-framing` })}
         ${framingError ? html`<p class="field-error" role="alert">${icon('circle-alert', { size: 14 })}<span>${framingError}</span></p>` : ''}
       </div>` : ''}

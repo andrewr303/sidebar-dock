@@ -4,7 +4,7 @@ import {
   parseXml, parseFeed, decodeEntities, htmlToText, htmlLinks, firstImage, taglineFrom, cleanUrl, thumbnailUrl, textOf, findElement,
   dateWindow, zonedMidnight, isoWeek, leaderboardUrl, buildPostsQuery, normalizePost, normalizePosts, normalizeViewer, normalizeConfig,
   classifyError, redact, createProductHuntClient, fetchFeed, sortPosts, visiblePosts, layoutFor, feedKey, modeFor, hideId, topicSlug, topicLabel,
-  openUrl, ProductHuntError, POSTS_QUERY, API_URL, FEED_URL, MAX_HIDDEN, DEFAULT_CONFIG,
+  openUrl, siteIconUrl, draftTopic, OTHER_TOPIC, ProductHuntError, POSTS_QUERY, API_URL, FEED_URL, MAX_HIDDEN, DEFAULT_CONFIG,
 } from '../extension/lib/producthunt.js';
 
 const TOKEN = 'ph_dev_0123456789abcdefghijklmnopqrstuvwxyzABCDEF';
@@ -315,6 +315,17 @@ test('topic helpers turn labels and URLs into slugs and back', () => {
   assert.equal(topicLabel(''), '');
 });
 
+test('draftTopic reads the typed topic only when "Another topic…" is chosen', () => {
+  assert.equal(draftTopic({ topic: 'developer-tools', topicOther: 'ignored' }), 'developer-tools');
+  assert.equal(draftTopic({ topic: OTHER_TOPIC, topicOther: 'Space Tech' }), 'space-tech');
+  assert.equal(draftTopic({ topic: OTHER_TOPIC, topicOther: 'https://www.producthunt.com/topics/web3?ref=x' }), 'web3');
+  assert.equal(draftTopic({ topic: OTHER_TOPIC, topicOther: '  !! ' }), '');
+  assert.equal(draftTopic({ topic: '' }), '');
+  assert.equal(draftTopic(), '');
+  assert.equal(normalizeConfig({ topic: draftTopic({ topic: OTHER_TOPIC, topicOther: 'Climate tech' }), topicOther: 'x' }).topic, 'climate-tech');
+  assert.equal('topicOther' in normalizeConfig({ topicOther: 'x' }), false, 'the free-text field never reaches the stored config');
+});
+
 test('hideId appends once and caps the list', () => {
   assert.deepEqual(hideId(['a', 'b'], 'a'), ['b', 'a']);
   const many = hideId(Array.from({ length: MAX_HIDDEN }, (_, i) => `p${i}`), 'new');
@@ -365,6 +376,15 @@ test('modeFor, feedKey and layoutFor', () => {
   assert.equal(layoutFor({ w: 3, h: 4, size: 's' }, { layout: 'list' }), 'list');
   assert.equal(layoutFor({ w: 2, h: 2, size: 'xs' }, { layout: 'list' }), 'top');
   assert.equal(layoutFor({ w: 10, h: 8, size: 'xl' }, { layout: 'top' }), 'top');
+});
+
+test('siteIconUrl skips Product Hunt redirect links and keeps real product sites', () => {
+  assert.equal(siteIconUrl({ website: 'https://www.producthunt.com/r/p/1297499?app_id=339' }), '');
+  assert.equal(siteIconUrl({ website: 'https://producthunt.com/r/abc' }), '');
+  assert.equal(siteIconUrl({ website: 'https://linear.app/?utm_source=producthunt&ref=ph' }), 'https://linear.app/?ref=ph');
+  assert.equal(siteIconUrl({ website: 'javascript:alert(1)' }), '');
+  assert.equal(siteIconUrl({}), '');
+  assert.equal(siteIconUrl(null), '');
 });
 
 test('openUrl prefers the product site only when chosen and known', () => {

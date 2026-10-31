@@ -79,6 +79,11 @@
 @media (hover: hover) { .w-embed-pill:hover { color: var(--fg-default); } }
 .w-embed-pill:active { scale: var(--press-scale); }
 .w-embed-pill:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+/* After a while over a page that loaded, the pill recedes: it comes back on hover and while the widget has focus. */
+.w-embed-pill.is-quiet { opacity: 0; transition: opacity var(--dur-base) var(--ease-out), color var(--dur-fast) var(--ease-out); }
+.widget:focus-within .w-embed-pill.is-quiet { opacity: 1; }
+@media (hover: hover) { .widget:hover .w-embed-pill.is-quiet { opacity: 1; } }
+@media (hover: none) { .w-embed-pill.is-quiet { opacity: 1; } }
 
 .w-embed-bar {
   position: absolute;
@@ -302,11 +307,9 @@
 .w-embed-detect-title { color: var(--fg-default); font-size: var(--text-sm); font-weight: var(--weight-medium); line-height: var(--lh-sm); overflow-wrap: anywhere; }
 .w-embed-detect-meta { color: var(--fg-subtle); font-size: var(--text-xs); line-height: var(--lh-xs); overflow-wrap: anywhere; }
 
-.w-embed-range-head { display: flex; align-items: center; gap: var(--space-4); }
-.w-embed-range-head > .w-embed-range { flex: 1; }
 .w-embed-range {
   display: grid;
-  grid-template-columns: minmax(7.5em, auto) minmax(0, 1fr) 4.5em;
+  grid-template-columns: minmax(7.5em, auto) minmax(0, 1fr) 4.5em 4.5em;
   align-items: center;
   gap: var(--space-5);
   min-block-size: var(--control-h-md);
@@ -316,6 +319,7 @@
 .w-embed-range-input { inline-size: 100%; min-inline-size: 0; margin: 0; accent-color: var(--accent); }
 .w-embed-range-input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--radius-xs); }
 .w-embed-range-value { color: var(--fg-muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; text-align: end; white-space: nowrap; }
+.w-embed-range-reset { display: flex; justify-content: flex-end; }
 .w-embed-region { display: flex; flex-direction: column; gap: var(--space-3); }
 .w-embed-region-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); min-block-size: var(--control-h-sm); }
 .w-embed-region-title { color: var(--fg-default); font-size: var(--text-sm); font-weight: var(--weight-medium); }
@@ -325,8 +329,9 @@
 
 /* Narrow dialogs (side-by-side windows, 320px): stack each slider under its label. */
 @media (max-width: 480px) {
-  .w-embed-range { grid-template-columns: minmax(0, 1fr) auto; }
+  .w-embed-range { grid-template-columns: minmax(0, 1fr) auto auto; }
   .w-embed-range-label { grid-column: 1 / -1; }
+  .w-embed-range-reset:empty { display: none; }
 }
 
 @media (forced-colors: active) {

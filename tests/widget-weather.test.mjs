@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   weatherCondition, resolveUnit, regionOf, forecastUrl, geocodeUrl, reverseUrl, weatherCacheKey, normalizePlace, placeLabel, parsePlaces, parseReverse,
   parseForecast, upcomingHours, today, formatTemp, formatWind, updatedLabel, fetchForecast, searchPlaces, reversePlace, geolocationMessage,
-  WEATHER_ORIGINS, LOCATE_ORIGINS,
+  upcomingDays, currentConditions, withTimeout, WEATHER_ORIGINS, LOCATE_ORIGINS,
 } from '../extension/lib/weather.js';
 
 const aurora = { name: 'Aurora', admin: 'Colorado', country: 'United States', lat: 39.7294, lon: -104.8319 };
@@ -170,4 +170,49 @@ test('fetches map service errors to calm, actionable messages', async () => {
   const fallback = await reversePlace(39.7, -104.8, { fetch: async () => { throw new TypeError('offline'); } });
   assert.equal(fallback.name, 'Current location');
   assert.equal(fallback.source, 'device');
+});
+
+test('days start with today even when the forecast was cached yesterday', () => {
+  const data = parseForecast(forecastJson(), NOW);
+  assert.equal(upcomingDays(data, NOW).length, 7);
+  assert.equal(upcomingDays(data, NOW)[0].max, 70);
+  const nextDay = upcomingDays(data, Date.UTC(2026, 9, 31, 15));
+  assert.equal(nextDay.length, 6);
+  assert.equal(nextDay[0].max, 69);
+  assert.equal(upcomingDays(data, NOW, 1).length, 1);
+  // A forecast whose last day has ended has nothing left to show.
+  assert.deepEqual(upcomingDays(data, Date.UTC(2026, 10, 7, 12)), []);
+  assert.deepEqual(upcomingDays(null, NOW), []);
+});
+
+test('an old reading gives way to the forecast for the current hour', () => {
+  const data = parseForecast(forecastJson(), NOW);
+  assert.equal(currentConditions(data, NOW), data.current);
+  assert.equal(currentConditions(data, NOW + 60 * 60_000), data.current);
+  const later = NOW + 3 * 3_600_000;
+  const estimate = currentConditions(data, later);
+  const hour = data.hourly.findLast(h => h.time <= later / 1000);
+  assert.equal(estimate.estimated, true);
+  assert.equal(estimate.temp, hour.temp);
+  assert.equal(estimate.code, hour.code);
+  assert.ok(Math.abs(estimate.feels - (hour.temp + (63.2 - 66.4))) < 1e-9);
+  // Past the cached hours the last reading is still better than nothing.
+  assert.equal(currentConditions(data, NOW + 5 * 86_400_000), data.current);
+  assert.equal(currentConditions(null, NOW), null);
+});
+
+test('stalled requests time out with a calm message; cancelled ones stay cancelled', async () => {
+  const hang = (url, { signal }) => new Promise((resolve, reject) => {
+    signal?.addEventListener('abort', () => reject(signal.reason?.name === 'TimeoutError' ? signal.reason : new DOMException('Aborted', 'AbortError')), { once: true });
+  });
+  const keepAlive = setTimeout(() => {}, 1000); // AbortSignal.timeout does not hold Node's event loop open
+  await assert.rejects(fetchForecast(aurora, 'f', { fetch: hang, timeout: 20 }), e => e.kind === 'timeout' && /took too long/.test(e.message));
+  clearTimeout(keepAlive);
+  const controller = new AbortController();
+  const pending = fetchForecast(aurora, 'f', { fetch: hang, signal: controller.signal, timeout: 5000 });
+  controller.abort();
+  await assert.rejects(pending, e => e.name === 'AbortError');
+  const limit = withTimeout(undefined, 0);
+  assert.equal(limit.signal, undefined);
+  assert.equal(limit.timedOut(), false);
 });

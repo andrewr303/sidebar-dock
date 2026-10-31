@@ -22,7 +22,7 @@ export const boardById = widgetId => boardFor(findWidget(widgetId)?.widget);
 
 /**
  * Applies change(board) -> nextBoard to a widget's board and saves it. Returns the saved board, or null when the
- * reducer changed nothing. Throws a readable error when the widget is gone (ctx.run shows it).
+ * reducer changed nothing. Throws a readable error when the widget is gone or the write fails (ctx.run shows it).
  */
 export async function save(ctx, widgetId, change) {
   const found = findWidget(widgetId);
@@ -34,6 +34,11 @@ export async function save(ctx, widgetId, change) {
   ctx.render();
   try {
     await updateWidgetConfig(widgetId, toConfig(next));
+  } catch (error) {
+    // The dashboard keeps the change in memory and writes it again with the next change; the caller's ctx.run
+    // shows this message so the person knows to try again.
+    console.error('[still] kanban save failed', error);
+    throw new Error('This change to the board could not be saved. Try again.');
   } finally {
     if (pending.get(widgetId) === next) pending.delete(widgetId);
     ctx.render();
@@ -70,6 +75,7 @@ export function announce(ctx, widgetId, message) {
 /** DOM ids, shared so actions can move focus to what a render just drew. */
 export const ids = {
   card: (widgetId, cardId) => `wk-${widgetId}-card-${cardId}`,
+  summaryCard: (widgetId, cardId) => `wk-${widgetId}-sum-${cardId}`,
   column: (widgetId, columnId) => `wk-${widgetId}-col-${columnId}`,
   columnTitle: (widgetId, columnId) => `wk-${widgetId}-colt-${columnId}`,
   columnMenu: (widgetId, columnId) => `wk-${widgetId}-colm-${columnId}`,
