@@ -53,3 +53,9 @@ test('choices browse every group, search into one section, and keep an unlisted 
   assert.equal(iconChoices('', unlisted)[0][1][0], unlisted);
   assert.equal(iconChoices('', 'not-an-icon'), COLLECTION_ICON_GROUPS);
 });
+
+test('pack shapes never take over an alias the app relies on', () => {
+  assert.equal(String(icon('bolt')), String(icon('zap')), "'bolt' still means the zap glyph");
+  assert.equal(String(icon('trash')), String(icon('trash-2')));
+  assert.ok(!browse.includes('bolt') && !browse.includes('trash'), 'aliased names are not offered as their own icons');
+});

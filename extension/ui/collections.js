@@ -85,6 +85,15 @@ export function openCollectionEditor(ctx, { id = '', parentId = '', onSaved } = 
     : { name: '', parentId: parentId && ctx.select.collection(parentId) ? parentId : '', icon: 'folder',
       color: fresh[(ctx.library?.collections?.length || 0) % fresh.length].hex, description: '', cover: '', pinned: false };
   ctx.openDialog(DIALOG, { id, updatedAt: existing?.updatedAt, draft, iconQuery: '', error: '', nameError: '', coverError: '', saving: false, onSaved });
+  ctx.nextFrame(() => revealInGrid(document.querySelector('.icon-grid input:checked')?.closest('.icon-choice')));
+}
+
+/** Scrolls an icon grid (and only the grid, never the page) so `cell` sits in its middle; icons can be hundreds of cells deep. */
+export function revealInGrid(cell) {
+  const grid = cell?.parentElement;
+  if (!grid) return;
+  const offset = cell.getBoundingClientRect().top - grid.getBoundingClientRect().top;
+  grid.scrollTop += offset - (grid.clientHeight - cell.offsetHeight) / 2;
 }
 
 function renderEditor(ctx, props) {

@@ -329,8 +329,10 @@ const BASE_PATHS = {
   "zap": "<path d=\"M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z\"/>",
   "blank": "",
 };
-const PATHS = { ...BASE_PATHS, ...PACK_PATHS };
 const ALIASES = {"close": "x", "chevron": "chevron-right", "down": "chevron-down", "up": "chevron-up", "back": "arrow-left", "arrow": "arrow-right", "more": "ellipsis", "more-vertical": "ellipsis-vertical", "external": "external-link", "restore": "rotate-ccw", "highlight": "highlighter", "edit": "pencil", "trash": "trash-2", "delete": "trash-2", "note": "sticky-note", "article": "newspaper", "grid": "layout-grid", "cards": "layout-grid", "masonry": "layout-dashboard", "headlines": "rows-3", "panel": "panel-right", "menu": "panel-left", "sort": "arrow-down-wide-narrow", "help": "circle-help", "alert-circle": "circle-alert", "check-circle": "circle-check", "alert-triangle": "triangle-alert", "x-circle": "circle-x", "plug": "plug", "bolt": "zap", "select": "square-check", "home": "house", "unlock": "lock-open", "filter": "filter", "funnel": "filter", "agent": "bot", "ai": "sparkles", "tasks": "list-checks", "todo": "list-todo", "reminder": "bell", "screenshot": "scan", "capture": "bookmark-plus", "map": "waypoints", "knowledge-map": "waypoints", "code-2": "code-xml", "divider": "separator-horizontal", "callout": "message-square", "toggle": "list-collapse", "h1": "heading-1", "h2": "heading-2", "h3": "heading-3", "bullet": "list", "number": "list-ordered", "strike": "strikethrough", "blank": "blank", "globe-2": "earth", "duplicate": "copy", "duplicates": "files", "untagged": "tag", "media": "image", "link-item": "link-2", "send-up": "arrow-up", "stop": "circle-stop", "bookmark-filled": "bookmark", "sparkle": "sparkle", "book-2": "book-open", "fonts": "type", "bar-chart": "chart-bar", "emoji": "smile"};
+// Pack shapes replace same-named base shapes, but never an alias the app already relies on ('bolt' means zap here, while
+// the pack's 'bolt' is a hex nut).
+const PATHS = { ...BASE_PATHS, ...Object.fromEntries(Object.entries(PACK_PATHS).filter(([name]) => name in BASE_PATHS || !(name in ALIASES))) };
 const warned = new Set();
 
 export const iconNames = () => Object.keys(PATHS).filter(name => name !== 'blank');
@@ -371,7 +373,7 @@ export const COLLECTION_ICON_GROUPS = (() => {
   const seen = new Set(COLLECTION_ICONS);
   const groups = [['Suggested', COLLECTION_ICONS]];
   for (const [label, names] of PACK_GROUPS) {
-    const fresh = names.filter(name => !seen.has(name));
+    const fresh = names.filter(name => name in PATHS && !seen.has(name));
     fresh.forEach(name => seen.add(name));
     if (fresh.length) groups.push([label, fresh]);
   }

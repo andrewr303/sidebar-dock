@@ -8,7 +8,7 @@ import { registerActions } from './runtime.js';
 import { openAdd } from './quick-add.js';
 import { askAi } from './ai-panel.js';
 import { openSettings } from './settings.js';
-import { openCollectionEditor, visibleTree, deleteCollectionFlow, collectionSubset } from './collections.js';
+import { openCollectionEditor, visibleTree, deleteCollectionFlow, collectionSubset, revealInGrid } from './collections.js';
 import { initDnd } from './dnd.js';
 import { exportBookmarkHtml } from '../lib/portability.js';
 
@@ -285,7 +285,7 @@ function changeLook(ctx, id) {
   }));
   try {
     ctx.openPopover('pick.icon', anchor || { x: 260, y: 120 }, { icon: collection.icon, color: collection.color, onPick }, { placement: anchor ? 'right-start' : 'bottom-start' });
-    ctx.nextFrame(() => document.querySelector('#still-popover .pick-icon-cell[aria-checked="true"]')?.scrollIntoView({ block: 'nearest' }));
+    ctx.nextFrame(() => revealInGrid(document.querySelector('#still-popover .pick-icon-cell[aria-checked="true"]')));
   } catch {
     // The icon picker popover belongs to pickers.js; the editor dialog has the same choices.
     openCollectionEditor(ctx, { id });
