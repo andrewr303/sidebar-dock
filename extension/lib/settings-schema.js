@@ -1,6 +1,8 @@
 // Defaults and helpers for library.settings keys added with the dashboard, themes and new tab. Top-level appearance keys
 // sit beside the existing theme/accent/density; grouped keys (newTab, wallpaper, dashboard) are objects that
-// store.updateSettings replaces whole, so always write them through patchGroup.
+// store.updateSettings replaces whole, so always write them through patchGroup. Readers get values that are always
+// usable: a stored value of the wrong type, outside its choices or out of range reads as the default.
+import { THEME_IDS, FONT_SIZES, RADII, SIDEBAR_WIDTHS, WIDGET_STYLES, WALLPAPER_PRESETS } from '../ui/themes.js';
 
 export const APPEARANCE_DEFAULTS = Object.freeze({
   skin: 'still',          // ui/themes.js THEMES ids
@@ -43,26 +45,71 @@ export const DASHBOARD_DEFAULTS = Object.freeze({
   stickies: true,         // floating sticky notes layer
 });
 
+/** Allowed values per key: an array of choices, or [min, max] for numbers. Keys without a rule only need the type. */
+export const SETTINGS_CHOICES = Object.freeze({
+  appearance: {
+    skin: THEME_IDS,
+    theme: ['system', 'light', 'dark'],
+    density: ['comfortable', 'compact'],
+    fontSize: FONT_SIZES.map(size => size.value),
+    radius: RADII.map(radius => radius.value),
+    motion: ['system', 'reduced'],
+    transparency: ['full', 'reduced'],
+    sidebarWidth: SIDEBAR_WIDTHS.map(width => width.value),
+  },
+  newTab: {
+    engine: ['default', 'google', 'duckduckgo', 'bing', 'kagi', 'perplexity', 'brave'],
+  },
+  wallpaper: {
+    kind: ['none', 'preset', 'color', 'image', 'url'],
+    preset: WALLPAPER_PRESETS.map(preset => preset.id),
+    scope: ['dashboard', 'app'],
+    dim: [0, 80],
+    blur: [0, 40],
+  },
+  dashboard: {
+    widgetStyle: WIDGET_STYLES.map(style => style.value),
+    gap: ['sm', 'md', 'lg'],
+  },
+});
+
 const GROUP_DEFAULTS = { newTab: NEWTAB_DEFAULTS, wallpaper: WALLPAPER_DEFAULTS, dashboard: DASHBOARD_DEFAULTS };
 
 const isObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
 
-/** Appearance values with defaults filled in (unknown values fall back to the default). */
-export function appearanceOf(settings = {}) {
-  const out = {};
-  for (const [key, fallback] of Object.entries(APPEARANCE_DEFAULTS)) {
-    const value = settings?.[key];
-    out[key] = value === undefined || value === null || value === '' || typeof value !== typeof fallback ? fallback : value;
+// One value read against its default and rule: wrong type, a choice that is not offered or a non-finite number falls
+// back to the default; numbers with a range are clamped into it.
+function readValue(value, fallback, rule) {
+  if (value === undefined || value === null || typeof value !== typeof fallback) return fallback;
+  if (typeof fallback === 'string' && value === '' && fallback !== '') return fallback;
+  if (typeof fallback === 'number') {
+    if (!Number.isFinite(value)) return fallback;
+    return Array.isArray(rule) && rule.length === 2 && typeof rule[0] === 'number' ? Math.min(rule[1], Math.max(rule[0], value)) : value;
   }
+  if (Array.isArray(rule) && typeof rule[0] === 'string' && !rule.includes(value)) return fallback;
+  return value;
+}
+
+function readAll(stored, defaults, rules = {}) {
+  const out = {};
+  for (const [key, fallback] of Object.entries(defaults)) out[key] = readValue(stored?.[key], fallback, rules[key]);
   return out;
 }
 
-/** A grouped settings object (newTab, wallpaper, dashboard) merged over its defaults. */
+/** Appearance values with defaults filled in (unknown values fall back to the default). */
+export function appearanceOf(settings = {}) {
+  return readAll(settings, APPEARANCE_DEFAULTS, SETTINGS_CHOICES.appearance);
+}
+
+/**
+ * A grouped settings object (newTab, wallpaper, dashboard) merged over its defaults. Keys the group does not define are
+ * kept as stored, so a newer build's settings survive a round trip through an older reader.
+ */
 export function settingsGroup(settings = {}, key) {
   const defaults = GROUP_DEFAULTS[key];
   if (!defaults) throw new Error(`Unknown settings group: ${key}`);
   const stored = isObject(settings?.[key]) ? settings[key] : {};
-  return { ...defaults, ...stored };
+  return { ...stored, ...readAll(stored, defaults, SETTINGS_CHOICES[key]) };
 }
 
 /** Writes a patch into a grouped settings object without dropping its other keys. Returns the store promise. */

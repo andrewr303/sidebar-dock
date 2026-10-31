@@ -1,6 +1,8 @@
 /* =====================================================================
-   ai.css: the assistant panel (ui/ai-panel.js). Side panel Ask tab and the
-   full-tab right panel (400 to 640px). Header, empty and setup states,
+   ai.css: the assistant panel (ui/ai-panel.js). Side panel Ask tab, the
+   full-tab right panel (400 to 640px) and the conversation column of the
+   full-screen assistant (data-surface="page", layout in assistant.css).
+   Header, empty and setup states,
    transcript (questions, answers, thinking, tool steps, proposal cards and
    receipts, sources), composer with context chips and model picker, and the
    history / model / context popovers. Tokens only.
@@ -597,6 +599,44 @@ button.ai-thought-toggle:hover:not(:disabled), button.ai-tool-row:hover { backgr
 .ai-ctx-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-ctx-hint { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-subtle); font-size: var(--text-xs); }
 .ai-ctx-check { color: var(--accent-soft-fg); }
+
+/* ---------- Unanswered question (answered in another window, or never finished) ---------- */
+.ai-unanswered { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) var(--space-6); }
+.ai-unanswered .ai-note { flex: 1 1 24ch; margin: 0; }
+
+/* ---------- Full-screen page (assistant-page.js) ----------
+   A wide transcript and a docked composer centered on one reading column:
+   answers keep a 72ch measure at reading size, questions sit at its end. */
+.ai-panel[data-surface="page"] {
+  --ai-gutter: var(--space-9);
+  --ai-text: var(--text-md);
+  background: transparent;
+}
+.ai-panel[data-surface="page"] :is(.ai-scroll, .ai-dock) > * { width: min(100%, var(--asst-measure, 800px)); margin-inline: auto; }
+.ai-panel[data-surface="page"] .ai-scroll { gap: var(--space-9); padding: var(--space-6) var(--ai-gutter) var(--space-10); }
+.ai-panel[data-surface="page"] .ai-a { gap: var(--space-6); font-size: var(--text-lg); }
+.ai-panel[data-surface="page"] .ai-md.markdown-body { --be-text: var(--text-lg); max-width: 72ch; font-size: var(--text-lg); }
+.ai-panel[data-surface="page"] .ai-md.markdown-body p { margin-block-end: var(--space-6); }
+.ai-panel[data-surface="page"] .ai-md.markdown-body :is(h1, h2, h3) { font-size: calc(var(--text-lg) + 1px); }
+.ai-panel[data-surface="page"] .ai-bubble { max-width: 76%; padding: var(--space-5) var(--space-7); border-radius: var(--radius-2xl); font-size: var(--text-lg); line-height: var(--lh-lg); }
+.ai-panel[data-surface="page"] .ai-q-about { max-width: 76%; }
+.ai-panel[data-surface="page"] :is(.ai-proposal, .ai-receipt, .ai-error) { max-width: 72ch; font-size: var(--text-sm); }
+.ai-panel[data-surface="page"] .ai-dock { gap: var(--space-4); padding: var(--space-2) var(--ai-gutter) var(--space-7); }
+.ai-panel[data-surface="page"] .ai-composer { gap: var(--space-4); padding: var(--space-5) var(--space-5) var(--space-4); border-radius: var(--radius-2xl); }
+.ai-panel[data-surface="page"] .ai-input {
+  min-height: 52px;
+  max-height: min(40dvh, calc(var(--text-md) * var(--lh-prose) * 12));
+  padding-inline: var(--space-3);
+  font-size: var(--text-md); line-height: var(--lh-prose);
+}
+.ai-panel[data-surface="page"] .ai-composer-foot .icon-btn { --ib-h: 32px; }
+.ai-panel[data-surface="page"] .ai-send { width: 32px; height: 32px; border-radius: var(--radius-md); }
+.ai-panel[data-surface="page"] .ai-model-btn { height: 32px; }
+.ai-panel[data-surface="page"] .ai-setup { width: min(100%, 560px); align-self: center; }
+.ai-panel[data-surface="page"] .ai-scroll > .ai-empty.ai-setup { margin-inline: auto; }
+/* Narrow page: the side panel's gutters. */
+.assistant-page[data-layout="narrow"] .ai-panel[data-surface="page"] { --ai-gutter: var(--space-6); }
+.assistant-page[data-layout="narrow"] .ai-panel[data-surface="page"] .ai-bubble { max-width: 88%; }
 
 /* ---------- Motion, contrast ---------- */
 @media (prefers-reduced-motion: reduce) {

@@ -1,1 +1,431 @@
-/* stickies.css */
+/* stickies.css: sticky notes (ui/stickies.js). Paper tokens, the sticky note itself (.sticky: a corkboard card, a
+   floating note on the dashboard, a card in the narrow-dashboard strip), the dashboard layer (.stickies-layer), the
+   color popover (.sticky-colors) and the Sticky notes view (.stickies-*). The widget lives in widgets/sticky-notes.css.
+
+   Paper colors are data colors (the note's own color), so they are tokens here with dark-mode values; everything
+   else uses the semantic tokens from tokens.css. Ink on paper: 4.5:1 or better for text on paper and bar in both
+   modes; the focus ring switches to ink in dark mode, where blue on dark paper falls under 3:1. */
+
+/* ------------------------------------------------------------------ paper tokens */
+
+:root, [data-theme="light"] {
+  --sticky-yellow: #fff4b3;  --sticky-yellow-bar: #fde98a;  --sticky-yellow-dot: #e8c11c;
+  --sticky-orange: #ffe4c7;  --sticky-orange-bar: #fdd3a6;  --sticky-orange-dot: #ef8a2e;
+  --sticky-pink: #ffdfe9;    --sticky-pink-bar: #fcc8da;    --sticky-pink-dot: #e5578f;
+  --sticky-purple: #ece2ff;  --sticky-purple-bar: #dccdfb;  --sticky-purple-dot: #8b62e8;
+  --sticky-blue: #dbeaff;    --sticky-blue-bar: #c3dbfc;    --sticky-blue-dot: #3d82e6;
+  --sticky-green: #daf3d6;   --sticky-green-bar: #c2e9bc;   --sticky-green-dot: #3ba652;
+  --sticky-gray: #eeece7;    --sticky-gray-bar: #e0ddd6;    --sticky-gray-dot: #8f8a82;
+  --sticky-ink: #2e2a1f;          /* 13+ on every light paper */
+  --sticky-ink-muted: #5e5847;    /* 4.7+ on every light bar, 5.6+ on paper */
+  --sticky-hover: rgb(46 42 31 / 0.08);
+  --sticky-active: rgb(46 42 31 / 0.14);
+  --sticky-edge: rgb(46 42 31 / 0.08);
+  --sticky-focus: var(--focus-ring);
+  --sticky-swatch-ring: rgb(46 42 31 / 0.28);
+  --sticky-dot-ink: #2e2a1f;      /* a check on a color dot: 3:1 or better on every dot in both modes */
+  --sticky-shadow: 0 0 0 1px rgb(46 42 31 / 0.05), 0 1px 2px rgb(46 42 31 / 0.12), 0 4px 12px -2px rgb(46 42 31 / 0.14);
+  --sticky-shadow-lift: 0 0 0 1px rgb(46 42 31 / 0.06), 0 6px 14px -2px rgb(46 42 31 / 0.18), 0 18px 36px -10px rgb(46 42 31 / 0.28);
+}
+[data-theme="dark"] {
+  --sticky-yellow: #4b4322;  --sticky-yellow-bar: #5d532a;  --sticky-yellow-dot: #e6c64a;
+  --sticky-orange: #4e3622;  --sticky-orange-bar: #61432a;  --sticky-orange-dot: #f0a05e;
+  --sticky-pink: #4d2c39;    --sticky-pink-bar: #5f3647;    --sticky-pink-dot: #ef86b0;
+  --sticky-purple: #3a3052;  --sticky-purple-bar: #483c66;  --sticky-purple-dot: #b294f5;
+  --sticky-blue: #233a52;    --sticky-blue-bar: #2c4866;    --sticky-blue-dot: #73a9f5;
+  --sticky-green: #283f2b;   --sticky-green-bar: #314f35;   --sticky-green-dot: #6cc77e;
+  --sticky-gray: #393835;    --sticky-gray-bar: #46453f;    --sticky-gray-dot: #b0aba2;
+  --sticky-ink: #f1ecdf;          /* 9+ on every dark paper */
+  --sticky-ink-muted: #d6d0bf;    /* 5.0+ on every dark bar */
+  --sticky-hover: rgb(255 250 235 / 0.1);
+  --sticky-active: rgb(255 250 235 / 0.16);
+  --sticky-edge: rgb(255 250 235 / 0.07);
+  --sticky-focus: #f1ecdf;
+  --sticky-swatch-ring: rgb(255 250 235 / 0.34);
+  --sticky-shadow: 0 0 0 1px rgb(255 255 255 / 0.05), 0 1px 2px rgb(0 0 0 / 0.4), 0 6px 16px -4px rgb(0 0 0 / 0.5);
+  --sticky-shadow-lift: 0 0 0 1px rgb(255 255 255 / 0.07), 0 8px 18px -4px rgb(0 0 0 / 0.55), 0 22px 44px -12px rgb(0 0 0 / 0.7);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --sticky-yellow: #4b4322; --sticky-yellow-bar: #5d532a; --sticky-yellow-dot: #e6c64a;
+    --sticky-orange: #4e3622; --sticky-orange-bar: #61432a; --sticky-orange-dot: #f0a05e;
+    --sticky-pink: #4d2c39; --sticky-pink-bar: #5f3647; --sticky-pink-dot: #ef86b0;
+    --sticky-purple: #3a3052; --sticky-purple-bar: #483c66; --sticky-purple-dot: #b294f5;
+    --sticky-blue: #233a52; --sticky-blue-bar: #2c4866; --sticky-blue-dot: #73a9f5;
+    --sticky-green: #283f2b; --sticky-green-bar: #314f35; --sticky-green-dot: #6cc77e;
+    --sticky-gray: #393835; --sticky-gray-bar: #46453f; --sticky-gray-dot: #b0aba2;
+    --sticky-ink: #f1ecdf; --sticky-ink-muted: #d6d0bf; --sticky-hover: rgb(255 250 235 / 0.1); --sticky-active: rgb(255 250 235 / 0.16);
+    --sticky-edge: rgb(255 250 235 / 0.07); --sticky-focus: #f1ecdf; --sticky-swatch-ring: rgb(255 250 235 / 0.34);
+    --sticky-shadow: 0 0 0 1px rgb(255 255 255 / 0.05), 0 1px 2px rgb(0 0 0 / 0.4), 0 6px 16px -4px rgb(0 0 0 / 0.5);
+    --sticky-shadow-lift: 0 0 0 1px rgb(255 255 255 / 0.07), 0 8px 18px -4px rgb(0 0 0 / 0.55), 0 22px 44px -12px rgb(0 0 0 / 0.7);
+  }
+}
+
+/* Each paper color, for every element that carries one. */
+:is(.sticky, .sticky-swatch, .w-sticky-notes, .w-sticky-notes-glyph, .w-sticky-notes-note) {
+  --paper: var(--sticky-yellow); --paper-bar: var(--sticky-yellow-bar); --paper-dot: var(--sticky-yellow-dot);
+}
+:is(.sticky, .sticky-swatch, .w-sticky-notes, .w-sticky-notes-glyph, .w-sticky-notes-note)[data-color="orange"] { --paper: var(--sticky-orange); --paper-bar: var(--sticky-orange-bar); --paper-dot: var(--sticky-orange-dot); }
+:is(.sticky, .sticky-swatch, .w-sticky-notes, .w-sticky-notes-glyph, .w-sticky-notes-note)[data-color="pink"] { --paper: var(--sticky-pink); --paper-bar: var(--sticky-pink-bar); --paper-dot: var(--sticky-pink-dot); }
+:is(.sticky, .sticky-swatch, .w-sticky-notes, .w-sticky-notes-glyph, .w-sticky-notes-note)[data-color="purple"] { --paper: var(--sticky-purple); --paper-bar: var(--sticky-purple-bar); --paper-dot: var(--sticky-purple-dot); }
+:is(.sticky, .sticky-swatch, .w-sticky-notes, .w-sticky-notes-glyph, .w-sticky-notes-note)[data-color="blue"] { --paper: var(--sticky-blue); --paper-bar: var(--sticky-blue-bar); --paper-dot: var(--sticky-blue-dot); }
+:is(.sticky, .sticky-swatch, .w-sticky-notes, .w-sticky-notes-glyph, .w-sticky-notes-note)[data-color="green"] { --paper: var(--sticky-green); --paper-bar: var(--sticky-green-bar); --paper-dot: var(--sticky-green-dot); }
+:is(.sticky, .sticky-swatch, .w-sticky-notes, .w-sticky-notes-glyph, .w-sticky-notes-note)[data-color="gray"] { --paper: var(--sticky-gray); --paper-bar: var(--sticky-gray-bar); --paper-dot: var(--sticky-gray-dot); }
+
+/* A color swatch: the dot in a note's bar, the color menu, the corkboard filter and the widget settings. */
+.sticky-swatch {
+  display: inline-block;
+  flex: none;
+  inline-size: 14px;
+  block-size: 14px;
+  border-radius: var(--radius-full);
+  background: var(--paper-dot);
+  box-shadow: inset 0 0 0 1px var(--sticky-swatch-ring);
+}
+
+/* ------------------------------------------------------------------ the sticky note
+   States. default: paper + soft shadow. hover (pointer): the bar's buttons darken their ink; the resize corner shows.
+   focus: the whole note gets the ring while its text has focus; buttons get their own ring. active: buttons press to
+   0.96; a dragged or resized note lifts (deeper shadow). selected: N/A (notes are not selectable). disabled: N/A (no
+   disabled notes; while the dashboard is being rearranged the layer is inert and faded). loading: N/A (notes render
+   from the local library, never fetched). error: N/A here (failed saves toast and keep the text in the editor). */
+
+.sticky {
+  --focus-ring: var(--sticky-focus);
+  --sticky-radius: var(--radius-sm);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 0;
+  border-radius: var(--sticky-radius);
+  background: var(--paper);
+  box-shadow: var(--sticky-shadow);
+  color: var(--sticky-ink);
+  transition: box-shadow var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
+}
+.sticky:has(.sticky-text:focus-visible) { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+.sticky-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+  min-block-size: 32px;
+  padding: var(--space-1) var(--space-2);
+  border-start-start-radius: inherit;
+  border-start-end-radius: inherit;
+  background: var(--paper-bar);
+  color: var(--sticky-ink-muted);
+}
+.sticky-bar-spacer { flex: 1; }
+.sticky .icon-btn, .sticky-dot, .sticky-grip { color: var(--sticky-ink-muted); }
+.sticky .icon-btn[aria-expanded="true"] { background-color: var(--sticky-active); color: var(--sticky-ink); }
+
+.sticky-dot, .sticky-grip {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  inline-size: 28px;
+  block-size: 28px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.sticky-dot[aria-expanded="true"] { background: var(--sticky-active); }
+.sticky-grip { flex: 1; min-inline-size: 28px; cursor: grab; }
+.sticky-grip > svg { opacity: 0.7; transition: opacity var(--dur-fast) var(--ease-out); }
+@media (hover: hover) {
+  .sticky .icon-btn:hover:not(:disabled), .sticky-dot:hover, .sticky-grip:hover { background-color: var(--sticky-hover); color: var(--sticky-ink); }
+  .sticky:hover .sticky-grip > svg { opacity: 1; }
+}
+:is(.sticky-dot, .sticky-grip):active { background-color: var(--sticky-active); scale: var(--press-scale); }
+.sticky-grip:focus-visible > svg { opacity: 1; }
+
+.sticky-place {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-inline-size: 0;
+  padding-inline: var(--space-2);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  white-space: nowrap;
+}
+.sticky-place > svg { flex: none; }
+.sticky-place-text { overflow: hidden; text-overflow: ellipsis; }
+
+/* The editor stacks a rendered preview over a transparent textarea in one grid cell. The textarea stays focusable
+   (Tab reaches it) and shows itself while it has focus or when the note is empty. */
+.sticky-editor { display: grid; flex: 1; min-block-size: 0; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
+.sticky-editor > .sticky-preview, .sticky-editor > .sticky-text { grid-area: 1 / 1; min-block-size: 0; }
+.sticky-text, .sticky-preview {
+  padding: var(--space-4) var(--space-6) var(--space-6);
+  font-size: var(--text-md);
+  line-height: var(--lh-prose);
+}
+.sticky-text {
+  inline-size: 100%;
+  margin: 0;
+  border: 0;
+  border-radius: 0 0 var(--sticky-radius) var(--sticky-radius);
+  background: transparent;
+  color: var(--sticky-ink);
+  font-family: inherit;
+  overflow-wrap: anywhere;
+  resize: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--sticky-edge) transparent;
+  opacity: 0;
+  pointer-events: none;
+}
+.sticky-editor:is(.is-editing, .is-empty) > .sticky-text { opacity: 1; pointer-events: auto; }
+.sticky-editor:is(.is-editing, .is-empty) > .sticky-preview { visibility: hidden; }
+.sticky-text:focus, .sticky-text:focus-visible { outline: none; }
+.sticky-text::placeholder { color: var(--sticky-ink-muted); opacity: 1; }
+.sticky-text::selection, .sticky-preview ::selection { background: color-mix(in oklab, var(--paper-dot) 45%, transparent); }
+
+.sticky-preview.markdown-body {
+  --be-text: var(--text-md);
+  --be-leading: var(--lh-prose);
+  --be-h1: var(--text-lg);
+  --be-h2: calc(var(--text-md) + 1px);
+  --be-h3: var(--text-md);
+  --be-check-edge: var(--sticky-ink-muted);
+  --be-indent: var(--space-8);
+  overflow: auto;
+  overscroll-behavior: contain;
+  color: var(--sticky-ink);
+  cursor: text;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+  scrollbar-color: var(--sticky-edge) transparent;
+}
+/* Every source line is its own block; keep the rhythm of the text as typed. */
+.sticky-preview.markdown-body p { margin-block: 0; }
+.sticky-preview.markdown-body :is(h1, h2, h3) { margin-block: var(--space-2) 0; }
+.sticky-preview.markdown-body > :is(h1, h2, h3):first-child { margin-block-start: 0; }
+.sticky-preview.markdown-body :is(ul, ol) { margin-block: 0; }
+.sticky-preview.markdown-body .task-line { margin-block-end: 0; }
+.sticky-preview.markdown-body .task-line.done > span { color: var(--sticky-ink-muted); text-decoration: line-through; }
+.sticky-preview.markdown-body li::marker { color: var(--sticky-ink-muted); }
+.sticky-preview.markdown-body :not(pre) > code { background: var(--sticky-hover); }
+.sticky-preview.markdown-body .task-line > input[type="checkbox"]:not(:checked)::before { background: color-mix(in oklab, var(--paper) 40%, var(--bg-field)); }
+
+.sticky-foot {
+  flex: none;
+  padding: 0 var(--space-6) var(--space-4);
+  color: var(--sticky-ink-muted);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.sticky.is-hidden { box-shadow: 0 0 0 1px var(--sticky-edge); }
+.sticky-place.is-hidden, .sticky-place.is-warning { font-weight: var(--weight-medium); color: var(--sticky-ink); }
+
+/* ---------- Floating on the dashboard ---------- */
+
+.stickies-layer { position: absolute; inset: 0; pointer-events: none; }
+.sticky.is-floating {
+  position: absolute;
+  inset-block-start: var(--sy, 24px);
+  /* x is a share of the stage width; the clamp keeps the whole note inside the stage (true geometry, not inline). */
+  left: clamp(0px, calc(var(--sx, 0.72) * 100%), max(0px, 100% - min(var(--sw, 240px), 100%)));
+  inline-size: min(var(--sw, 240px), 100%);
+  block-size: var(--sh, 220px);
+  pointer-events: auto;
+}
+.sticky.is-floating .sticky-bar { cursor: grab; touch-action: none; user-select: none; }
+.sticky.is-dragging, .sticky.is-dragging .sticky-bar, .sticky.is-dragging .sticky-grip { cursor: grabbing; }
+.sticky.is-dragging, .sticky.is-resizing { box-shadow: var(--sticky-shadow-lift); }
+.sticky.is-dragging .sticky-text, .sticky.is-resizing .sticky-text { user-select: none; }
+
+.sticky-resize {
+  position: absolute;
+  inset-block-end: 0;
+  right: 0;
+  inline-size: 20px;
+  block-size: 20px;
+  border-end-end-radius: var(--sticky-radius);
+  background: linear-gradient(135deg, transparent 0 52%, var(--sticky-ink-muted) 52% 58%, transparent 58% 70%, var(--sticky-ink-muted) 70% 76%, transparent 76%);
+  opacity: 0;
+  cursor: nwse-resize;
+  touch-action: none;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.sticky.is-floating:focus-within .sticky-resize, .sticky.is-resizing .sticky-resize { opacity: 0.55; }
+@media (hover: hover) { .sticky.is-floating:hover .sticky-resize { opacity: 0.55; } }
+@media (hover: none) { .sticky-resize { opacity: 0.55; } }
+
+/* While the dashboard is being rearranged, the notes step back so widgets underneath can be grabbed. */
+.stickies-layer.is-muted .sticky { opacity: 0.2; pointer-events: none; box-shadow: none; }
+
+/* ---------- Narrow dashboards: a strip below the widgets instead of floating notes ---------- */
+
+.dash-stickies:has(> .stickies-layer.is-docked) { position: static; pointer-events: auto; }
+.stickies-layer.is-docked {
+  position: static;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-block-start: var(--dash-gap, 16px);
+  pointer-events: auto;
+}
+.stickies-strip-head { display: flex; align-items: center; gap: var(--space-4); padding-inline: var(--space-2); }
+.stickies-strip-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 1;
+  min-inline-size: 0;
+  margin: 0;
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  line-height: var(--lh-sm);
+}
+.stickies-strip-title > svg { color: var(--fg-muted); }
+.stickies-strip-count { color: var(--fg-subtle); font-weight: var(--weight-regular); font-variant-numeric: tabular-nums; }
+.stickies-strip {
+  display: flex;
+  gap: var(--space-6);
+  margin: 0;
+  padding: var(--space-2) var(--space-2) var(--space-6);
+  list-style: none;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scroll-snap-type: inline mandatory;
+  scroll-padding-inline: var(--space-2);
+  scrollbar-width: thin;
+}
+/* The next note peeks past the edge, so the strip reads as scrollable. */
+.stickies-strip-cell { flex: 0 0 min(240px, calc(100% - 40px)); scroll-snap-align: start; }
+.stickies-strip .sticky { block-size: 200px; }
+
+/* ------------------------------------------------------------------ color popover */
+
+.sticky-colors { min-inline-size: 168px; }
+.sticky-color-item .sticky-swatch { inline-size: 16px; block-size: 16px; }
+.sticky-color-check { margin-inline-start: auto; color: var(--accent-soft-fg); }
+
+/* ------------------------------------------------------------------ the Sticky notes view
+   Controls (search, color radios, show segmented, buttons) come from components.css with their 8 states. The color
+   radios here: default swatch; hover ring; focus ring (global :focus-visible); active press; selected 2px ring in
+   --fg-default with aria-checked; disabled N/A (every color stays choosable); loading/error N/A (local filter). */
+
+.stickies-view { display: flex; flex-direction: column; min-block-size: 100%; background: var(--bg-app); }
+.stickies-head {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: var(--z-sticky);
+  padding: var(--space-6) var(--space-9) var(--space-6);
+  background: var(--bg-app);
+  border-block-end: 1px solid var(--border-default);
+}
+.stickies-head-inner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-inline-size: 1240px;
+  margin-inline: auto;
+}
+.stickies-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3) var(--space-5); min-inline-size: 0; }
+.stickies-title {
+  margin: 0;
+  color: var(--fg-default);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  line-height: var(--lh-xl);
+  letter-spacing: var(--tracking-title);
+  text-wrap: balance;
+}
+.stickies-title:focus:not(:focus-visible) { outline: none; }
+.stickies-count { color: var(--fg-subtle); font-size: var(--text-md); font-variant-numeric: tabular-nums; }
+.stickies-spacer { flex: 1; }
+.stickies-lede {
+  max-inline-size: 72ch;
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+  text-wrap: pretty;
+}
+.stickies-tools { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-4) var(--space-7); padding-block-start: var(--space-2); }
+.stickies-search { flex: 1 1 220px; max-inline-size: 340px; }
+
+.stickies-filters { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.stickies-filter {
+  display: inline-grid;
+  place-items: center;
+  min-inline-size: 28px;
+  block-size: 28px;
+  padding-inline: var(--space-5);
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  line-height: 1;
+  white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.stickies-filter.is-swatch { inline-size: 28px; padding: 0; }
+.stickies-filter.is-swatch .sticky-swatch { inline-size: 16px; block-size: 16px; }
+@media (hover: hover) {
+  .stickies-filter:hover { background: var(--bg-hover); color: var(--fg-default); }
+}
+.stickies-filter:active { scale: var(--press-scale); }
+.stickies-filter[aria-checked="true"] { background: var(--bg-selected); color: var(--accent-soft-fg); font-weight: var(--weight-medium); }
+.stickies-filter.is-swatch[aria-checked="true"] { background: transparent; box-shadow: inset 0 0 0 2px var(--fg-default); }
+
+.stickies-body {
+  flex: 1;
+  padding: var(--space-9) var(--space-9) var(--space-10);
+  /* A faint pin-board dot grid behind the notes. */
+  background-image: radial-gradient(circle at 1px 1px, var(--border-default) 1px, transparent 1.5px);
+  background-size: 22px 22px;
+}
+.stickies-body > .empty-state { max-inline-size: 440px; margin: var(--space-10) auto 0; }
+.stickies-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 224px), 1fr));
+  gap: var(--space-8);
+  max-inline-size: 1240px;
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+}
+.stickies-cell { display: flex; min-inline-size: 0; }
+.stickies-cell .sticky { flex: 1; min-block-size: 232px; }
+
+[data-surface="side"] .stickies-head, [data-surface="side"] .stickies-body { padding-inline: var(--space-6); }
+
+/* On small screens the header scrolls away with the notes instead of holding a third of the screen. */
+@media (max-width: 640px), (max-height: 560px) {
+  .stickies-head { position: static; }
+}
+@media (max-width: 640px) {
+  .stickies-head { padding-inline: var(--space-7); }
+  .stickies-body { padding: var(--space-7); }
+  .stickies-board { gap: var(--space-6); }
+  .stickies-search { flex-basis: 100%; max-inline-size: none; }
+}
+
+/* ------------------------------------------------------------------ motion, contrast, forced colors */
+
+[data-motion="reduced"] .sticky, [data-motion="reduced"] .sticky-resize { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  .sticky, .sticky-resize { transition: none; }
+}
+@media (prefers-contrast: more) {
+  .sticky { box-shadow: 0 0 0 1px var(--sticky-ink-muted), var(--sticky-shadow); }
+}
+@media (forced-colors: active) {
+  .sticky { border: 1px solid CanvasText; }
+  .sticky-bar { border-block-end: 1px solid CanvasText; }
+  .sticky-swatch { forced-color-adjust: none; box-shadow: inset 0 0 0 1px CanvasText; }
+  .stickies-filter.is-swatch[aria-checked="true"] { outline: 2px solid Highlight; }
+  .sticky-resize { forced-color-adjust: none; background: linear-gradient(135deg, transparent 0 52%, CanvasText 52% 58%, transparent 58% 70%, CanvasText 70% 76%, transparent 76%); }
+}

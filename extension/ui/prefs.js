@@ -28,7 +28,17 @@ export const prefs = {
   },
 };
 
-// Theme attributes are cached here so theme-boot.js can paint the right theme before the library loads.
-export function cacheAppearance({ theme = 'system', accent = 'blue', density = 'comfortable' } = {}) {
-  try { storage()?.setItem('still.appearance.v1', JSON.stringify({ theme, accent, density })); } catch {}
+// The appearance snapshot (ui/appearance.js appearanceSnapshot) is cached here so theme-boot.js can paint the right skin,
+// mode, scales and wallpaper before the library loads. Written only when it changes.
+const APPEARANCE_KEY = 'still.appearance.v1';
+export function cacheAppearance(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return;
+  try {
+    const text = JSON.stringify(snapshot);
+    if (storage()?.getItem(APPEARANCE_KEY) !== text) storage()?.setItem(APPEARANCE_KEY, text);
+  } catch {}
+}
+/** The cached snapshot (may be an older { theme, accent, density } record, or {}). */
+export function cachedAppearance() {
+  try { return JSON.parse(storage()?.getItem(APPEARANCE_KEY) || '{}') || {}; } catch { return {}; }
 }

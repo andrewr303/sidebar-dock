@@ -1,1 +1,318 @@
-/* Sticky notes widget (.w-sticky-notes-*) */
+/* Sticky notes widget (.w-sticky-notes-*): one row (h 1) or a small tile (h 2) drawn as sticky-note paper, and a board
+   (h 3+) on the widget material with a mini board of this board's notes. Paper tokens come from styles/stickies.css.
+   The dashboard's floating ⋯ button sits in the inline-end corner, so every layout keeps 36px clear there.
+
+   States. Buttons (+, eye, mini notes, "Open all"): default; hover (pointer) brighter fill; focus ring (ink-colored on
+   paper in dark mode); active press 0.96; selected: the eye is a toggle (aria-pressed: filled when the notes show,
+   outlined with eye-off when hidden); disabled N/A (always available); loading N/A (local data); error N/A (failed
+   writes toast). Mini notes: hidden ones are faded with an eye-off badge and "(hidden)" in their name. */
+
+.widget-body:has(> .w-sticky-notes) { padding: 0; overflow: hidden; }
+
+.w-sticky-notes {
+  --focus-ring: var(--sticky-focus);
+  --wsn-ink: var(--sticky-ink);
+  --wsn-muted: var(--sticky-ink-muted);
+  --wsn-btn: rgb(255 255 255 / 0.6);
+  --wsn-btn-hover: rgb(255 255 255 / 0.9);
+  --wsn-btn-ring: rgb(46 42 31 / 0.14);
+  block-size: 100%;
+  min-block-size: 0;
+  border-radius: var(--widget-radius, 16px);
+  background: linear-gradient(135deg, var(--paper) 0%, var(--paper) 45%, var(--paper-bar) 100%);
+  box-shadow: var(--sticky-shadow);
+  color: var(--wsn-ink);
+}
+[data-theme="dark"] .w-sticky-notes {
+  --wsn-btn: rgb(255 250 235 / 0.1);
+  --wsn-btn-hover: rgb(255 250 235 / 0.18);
+  --wsn-btn-ring: rgb(255 250 235 / 0.16);
+}
+
+/* The board size, and any widget given a frame (card, glass, flat) or no background, use the dashboard's material. */
+.w-sticky-notes[data-layout="board"], .widget:not(.is-bare) .w-sticky-notes, .widget[data-frame="none"] .w-sticky-notes {
+  --wsn-ink: var(--fg-default);
+  --wsn-muted: var(--fg-subtle);
+  --wsn-btn: var(--bg-sunken);
+  --wsn-btn-hover: var(--bg-active);
+  --wsn-btn-ring: var(--border-default);
+}
+.w-sticky-notes[data-layout="board"] {
+  border: 1px solid var(--widget-border, transparent);
+  background: var(--widget-bg, var(--bg-surface));
+  box-shadow: var(--widget-rim, 0 0 0 0 transparent), var(--widget-shadow, var(--shadow-sm));
+  -webkit-backdrop-filter: blur(var(--widget-blur, 0px)) saturate(1.4);
+  backdrop-filter: blur(var(--widget-blur, 0px)) saturate(1.4);
+}
+.widget:not(.is-bare) .w-sticky-notes, .widget[data-frame="none"] .w-sticky-notes {
+  border-color: transparent;
+  background: none;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+/* Restore the app's own focus ring (the paper override above changes --focus-ring for the paper layouts only). */
+.w-sticky-notes[data-layout="board"], .widget:not(.is-bare) .w-sticky-notes { --focus-ring: inherit; }
+
+/* ---------- Shared pieces ---------- */
+
+.w-sticky-notes-glyph {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  inline-size: 32px;
+  block-size: 32px;
+  border-radius: var(--radius-sm);
+  background: var(--paper-bar);
+  color: var(--sticky-ink);
+  box-shadow: inset 0 0 0 1px var(--sticky-edge);
+}
+.w-sticky-notes[data-layout="board"] .w-sticky-notes-glyph, .widget:not(.is-bare) .w-sticky-notes-glyph { background: var(--paper); }
+
+.w-sticky-notes-text { display: flex; flex-direction: column; flex: 1; min-inline-size: 0; }
+.w-sticky-notes-title {
+  margin: 0;
+  overflow: hidden;
+  color: var(--wsn-ink);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  line-height: var(--lh-md);
+  letter-spacing: var(--tracking-tight);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.w-sticky-notes-summary {
+  margin: 0;
+  overflow: hidden;
+  color: var(--wsn-muted);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.w-sticky-notes-actions { display: flex; align-items: center; gap: var(--space-4); flex: none; }
+.w-sticky-notes-btn {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  inline-size: 32px;
+  block-size: 32px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--wsn-btn);
+  box-shadow: inset 0 0 0 1px var(--wsn-btn-ring);
+  color: var(--wsn-ink);
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+@media (hover: hover) {
+  .w-sticky-notes-btn:hover { background: var(--wsn-btn-hover); }
+  .w-sticky-notes-btn.is-eye[aria-pressed="false"]:hover { background: var(--wsn-btn); color: var(--wsn-ink); }
+}
+.w-sticky-notes-btn:active { scale: var(--press-scale); }
+/* Off: an outline with the struck-through eye, so "hidden" reads by shape, not only by fill. */
+.w-sticky-notes-btn.is-eye[aria-pressed="false"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--wsn-muted); color: var(--wsn-muted); }
+.w-sticky-notes-eye {
+  grid-area: 1 / 1;
+  display: inline-grid;
+  place-items: center;
+  transition: opacity var(--dur-base) var(--ease-out), scale var(--dur-base) var(--ease-out), filter var(--dur-base) var(--ease-out);
+}
+.w-sticky-notes-btn[aria-pressed="true"] .w-sticky-notes-eye.is-off,
+.w-sticky-notes-btn[aria-pressed="false"] .w-sticky-notes-eye.is-on { opacity: 0; scale: 0.25; filter: blur(4px); }
+
+/* ---------- One row (h 1) ---------- */
+
+.w-sticky-notes[data-layout="bar"] {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: 0 calc(var(--space-4) + 32px) 0 var(--space-7);
+}
+
+/* ---------- Small tile (h 2) ---------- */
+
+.w-sticky-notes[data-layout="tile"] {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2) var(--space-5);
+  padding: var(--space-7) var(--space-7) var(--space-6);
+}
+.w-sticky-notes[data-layout="tile"] .w-sticky-notes-text { padding-inline-end: 28px; }
+.w-sticky-notes[data-layout="tile"] .w-sticky-notes-actions { grid-column: 1 / -1; align-self: end; gap: var(--space-5); }
+.w-sticky-notes[data-layout="tile"] .w-sticky-notes-btn { inline-size: 36px; block-size: 36px; }
+
+/* ---------- Board (h 3+) ---------- */
+
+.w-sticky-notes[data-layout="board"] { display: flex; flex-direction: column; }
+.w-sticky-notes-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  flex: none;
+  padding: var(--space-6) calc(var(--space-4) + 32px) var(--space-4) var(--space-7);
+}
+.w-sticky-notes-grid {
+  flex: 1;
+  min-block-size: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  grid-auto-rows: 92px;
+  gap: var(--space-5);
+  margin: 0;
+  padding: var(--space-3) var(--space-7) var(--space-6);
+  list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.w-sticky-notes-note {
+  --focus-ring: var(--sticky-focus);
+  position: relative;
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  padding: var(--space-5) var(--space-4) var(--space-3);
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: linear-gradient(var(--paper-bar) 0 6px, var(--paper) 6px);
+  box-shadow: var(--sticky-shadow);
+  color: var(--sticky-ink);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  text-align: start;
+  transition: box-shadow var(--dur-fast) var(--ease-out), translate var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
+}
+@media (hover: hover) { .w-sticky-notes-note:hover { box-shadow: var(--sticky-shadow-lift); translate: 0 -1px; } }
+.w-sticky-notes-note:active { scale: var(--press-scale); }
+.w-sticky-notes-note-text {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+}
+.w-sticky-notes-note.is-hidden { opacity: 0.62; box-shadow: inset 0 0 0 1px var(--sticky-edge); }
+.w-sticky-notes-note-badge {
+  position: absolute;
+  inset-block-end: var(--space-2);
+  inset-inline-end: var(--space-2);
+  display: inline-grid;
+  place-items: center;
+  inline-size: 20px;
+  block-size: 20px;
+  border-radius: var(--radius-full);
+  background: var(--paper-bar);
+  color: var(--sticky-ink);
+}
+
+.w-sticky-notes-empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: var(--space-5);
+  padding: 0 var(--space-7) var(--space-4);
+}
+.w-sticky-notes-empty p {
+  max-inline-size: 42ch;
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+  text-wrap: pretty;
+}
+
+.w-sticky-notes-foot { flex: none; padding: 0 var(--space-5) var(--space-5); }
+.w-sticky-notes-all {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-block-size: 28px;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+@media (hover: hover) { .w-sticky-notes-all:hover { background: var(--bg-hover); color: var(--fg-default); text-decoration: none; } }
+.w-sticky-notes-all:active { scale: var(--press-scale); }
+
+/* ---------- Settings (color for new notes) ---------- */
+
+.w-sticky-notes-swatches { display: flex; flex-wrap: wrap; gap: var(--space-4); }
+.w-sticky-notes-swatch {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  inline-size: 36px;
+  block-size: 36px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border-default);
+  transition: box-shadow var(--dur-fast) var(--ease-out);
+}
+.w-sticky-notes-swatch .sticky-swatch { grid-area: 1 / 1; inline-size: 24px; block-size: 24px; }
+.w-sticky-notes-swatch-check { grid-area: 1 / 1; color: var(--sticky-dot-ink); opacity: 0; }
+@media (hover: hover) { .w-sticky-notes-swatch:hover { box-shadow: inset 0 0 0 1px var(--border-strong); } }
+.w-sticky-notes-swatch:active { scale: var(--press-scale); }
+.w-sticky-notes-swatch[aria-checked="true"] { box-shadow: inset 0 0 0 2px var(--fg-default); }
+.w-sticky-notes-swatch[aria-checked="true"] .w-sticky-notes-swatch-check { opacity: 1; }
+
+/* ---------- Narrow sizes ---------- */
+
+/* Tiles keep room to wrap the title and summary instead of cutting them short. */
+.w-sticky-notes[data-layout="tile"] .w-sticky-notes-title,
+.w-sticky-notes[data-layout="tile"] .w-sticky-notes-summary {
+  display: -webkit-box;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  text-wrap: pretty;
+}
+@container widget (max-width: 300px) {
+  .w-sticky-notes[data-layout="bar"] .w-sticky-notes-glyph { display: none; }
+  .w-sticky-notes[data-layout="bar"] { gap: var(--space-4); padding-inline-start: var(--space-6); }
+  .w-sticky-notes[data-layout="tile"] .w-sticky-notes-glyph { inline-size: 28px; block-size: 28px; }
+  .w-sticky-notes-actions { gap: var(--space-3); }
+}
+/* Two columns wide: the row keeps its icon and two buttons; the words stay available to screen readers. */
+@container widget (max-width: 220px) {
+  .w-sticky-notes[data-layout="bar"] { justify-content: center; padding-inline: var(--space-4) calc(var(--space-2) + 32px); }
+  .w-sticky-notes[data-layout="bar"] .w-sticky-notes-glyph { display: inline-grid; }
+  .w-sticky-notes[data-layout="bar"] .w-sticky-notes-text {
+    position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+}
+/* A 2 × 2 tile stacks: icon, words, then the buttons. */
+@container widget (max-width: 220px) and (min-height: 120px) {
+  .w-sticky-notes[data-layout="tile"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); row-gap: var(--space-3); }
+  .w-sticky-notes[data-layout="tile"] .w-sticky-notes-text { padding-inline-end: 0; }
+  .w-sticky-notes[data-layout="tile"] .w-sticky-notes-title { -webkit-line-clamp: 1; line-clamp: 1; }
+}
+@container widget (max-height: 60px) {
+  .w-sticky-notes[data-layout="bar"] .w-sticky-notes-summary { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .w-sticky-notes-eye, .w-sticky-notes-note { transition: none; }
+  .w-sticky-notes-btn[aria-pressed] .w-sticky-notes-eye { scale: 1; filter: none; }
+}
+[data-motion="reduced"] .w-sticky-notes-eye { transition: none; scale: 1; filter: none; }
+@media (forced-colors: active) {
+  .w-sticky-notes, .w-sticky-notes-note { border: 1px solid CanvasText; }
+  .w-sticky-notes-btn { border: 1px solid ButtonText; }
+  .w-sticky-notes-swatch[aria-checked="true"] { outline: 2px solid Highlight; }
+}

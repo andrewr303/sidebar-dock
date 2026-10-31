@@ -20,6 +20,14 @@
 .main { position: relative; flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 
 /* ---------- Sidebar ---------- */
+/* The navigation (full-tab sidebar and the side panel's Library root) reads 2px larger than body text on rows 4px taller
+   than --row-h, with 2px between entries. Both follow data-font-size and density through --text-* and --row-h. */
+:is(.sidebar, .library-root) {
+  --nav-text: calc(var(--text-sm) + 2px);
+  --nav-lh: calc(var(--nav-text) * 1.4);
+  --nav-meta: calc(var(--text-xs) + 1px);
+  --nav-row-h: calc(var(--row-h) + 4px);
+}
 .sidebar {
   display: flex; flex-direction: column;
   min-width: 0; min-height: 0;
@@ -77,6 +85,7 @@
 .sidebar-foot-link + .icon-btn { margin-inline-start: auto; }
 .sidebar-foot-link.is-current { background: var(--bg-selected); color: var(--accent-soft-fg); }
 .sidebar-foot .icon-btn { color: var(--fg-subtle); }
+.sidebar-foot .icon-btn.is-current { background: var(--bg-selected); color: var(--accent-soft-fg); }
 
 /* Collapsed sidebar (< 1100px or hidden by the user): an overlay drawer with a scrim. */
 .app-frame.is-nav-collapsed > .sidebar {
@@ -106,15 +115,15 @@
 .panel-scrim { display: none; }
 
 /* ---------- Nav sections, headings and tree rows ---------- */
-.nav-section { display: flex; flex-direction: column; }
+.nav-section { display: flex; flex-direction: column; gap: 2px; }
 .nav-heading {
   display: flex; align-items: center; gap: var(--space-2);
-  height: 28px;
-  margin-block-start: var(--space-5);
+  height: 30px;
+  margin-block-start: var(--space-6);
   padding-inline: 24px var(--space-2);
   border-radius: var(--radius-sm);
   color: var(--fg-subtle);
-  font-size: var(--text-xs); font-weight: var(--weight-semibold);
+  font-size: var(--nav-meta, var(--text-xs)); font-weight: var(--weight-semibold);
 }
 .heading-toggle {
   display: inline-flex; align-items: center; gap: var(--space-2);
@@ -136,18 +145,18 @@
 .nav-heading .nav-heading-action:hover { color: var(--fg-default); }
 .nav-empty { padding: var(--space-2) var(--space-4) var(--space-2) 32px; color: var(--fg-subtle); font-size: var(--text-xs); line-height: var(--lh-xs); }
 
-.tree { display: flex; flex-direction: column; }
+.tree { display: flex; flex-direction: column; gap: 2px; }
 .tree-row {
   --indent: 0;
   position: relative;
   display: flex; align-items: center; gap: var(--space-4);
   width: 100%; min-width: 0;
-  height: var(--row-h);
+  height: var(--nav-row-h, var(--row-h));
   padding-inline: calc(var(--space-2) + var(--indent) * 16px) var(--space-4);
   border-radius: var(--radius-sm);
   color: var(--fg-default);
-  font-size: var(--text-sm);
-  line-height: var(--lh-sm);
+  font-size: var(--nav-text, var(--text-sm));
+  line-height: var(--nav-lh, var(--lh-sm));
   text-align: start;
   white-space: nowrap;
   cursor: pointer;
@@ -176,7 +185,15 @@
 .nav-icon { flex: none; color: var(--fg-muted); }
 .tag-hash { flex: none; width: 16px; color: var(--fg-subtle); font-weight: var(--weight-medium); text-align: center; }
 .tree-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.tree-count { flex: none; color: var(--fg-subtle); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+.tree-count { flex: none; color: var(--fg-subtle); font-size: var(--nav-meta, var(--text-xs)); font-variant-numeric: tabular-nums; }
+/* Row glyphs share the collection tiles' 22px column, so every name starts on the same line. */
+:is(.sidebar, .library-root) .tree-row > .nav-icon { margin-inline: 2px; }
+:is(.sidebar, .library-root) .tag-hash { width: 22px; }
+/* Side panel rows that open a full tab (Dashboard, Sticky notes) end with a small arrow. */
+.nav-row-out { flex: none; margin-inline-start: calc(var(--space-2) * -1); color: var(--fg-subtle); }
+.nav-row:hover .nav-row-out { color: var(--fg-muted); }
+/* The full-screen destinations lead the sidebar, separated from the library views by a little extra room. */
+.nav-top > .nav-row[data-view="assistant"] { margin-block-end: var(--space-3); }
 .tree-row.is-new, .tree-row.is-more { color: var(--fg-subtle); }
 .tree-row.is-new .nav-icon, .tree-row.is-more .nav-icon { color: var(--fg-subtle); }
 .tree-row.is-new:hover, .tree-row.is-more:hover { color: var(--fg-default); }
@@ -215,7 +232,7 @@
   background: var(--bg-field);
   box-shadow: 0 0 0 3px var(--focus-ring-soft);
   color: var(--fg-default);
-  font-size: var(--text-sm);
+  font-size: var(--nav-text, var(--text-sm));
 }
 .tree-rename:focus-visible { outline: none; }
 

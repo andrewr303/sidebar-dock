@@ -1,1 +1,130 @@
-/* Quick links widget (.w-quick-links-*) */
+/* Quick links widget (.w-quick-links-*): shortcuts as white icon tiles (the shared .w-links-* tile grid from
+   links-folder.css), compact chips or a list with addresses. */
+.w-quick-links { block-size: 100%; min-block-size: 0; }
+.w-quick-links.is-empty { display: grid; place-items: center; }
+.w-quick-links.is-empty .empty-state { padding: 0; }
+
+/* Tiles: the card already pads the body, so the grid only keeps room for the hover lift. */
+.w-quick-links .w-links-grid { block-size: 100%; padding: var(--space-2) 0 var(--space-3); }
+@container widget (max-height: 88px) {
+  /* A one-row card: smaller tiles without labels (names stay in the tooltip and accessible name). */
+  .w-quick-links.is-tiles { --lf-tile: 44px; --lf-tile-radius: 13px; --lf-cell: 60px; }
+  .w-quick-links.is-tiles .w-links-label { display: none; }
+  .w-quick-links.is-tiles .w-links-more { inset-block-start: -2px; }
+}
+
+/* Chips */
+.w-quick-links-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: var(--space-4);
+  margin: 0;
+  padding: var(--space-1);
+  list-style: none;
+}
+.w-quick-links-chip-cell { position: relative; min-inline-size: 0; max-inline-size: 100%; }
+.w-quick-links-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  max-inline-size: 100%;
+  min-block-size: var(--control-h-md);
+  padding-inline: var(--space-4) var(--space-6);
+  border-radius: var(--radius-full);
+  background: var(--bg-control);
+  box-shadow: 0 0 0 1px var(--border-default), var(--shadow-xs);
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.w-quick-links-chip:hover, .w-quick-links-row-link:hover { text-decoration: none; }
+.w-quick-links-chip:hover { background: color-mix(in oklab, var(--bg-control) 100%, var(--fg-default) 5%); }
+.w-quick-links-chip:active { transform: scale(var(--press-scale)); }
+.w-quick-links-chip:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.w-quick-links-chip-label { min-inline-size: 0; max-inline-size: 18ch; overflow: hidden; text-overflow: ellipsis; }
+.w-quick-links-chip > .site-icon { border-radius: var(--radius-xs); overflow: hidden; }
+.w-quick-links-chip.is-add { background: transparent; box-shadow: inset 0 0 0 1.5px var(--border-strong); color: var(--fg-muted); font-weight: var(--weight-regular); }
+.w-quick-links-chip.is-add:hover { background: var(--bg-hover); color: var(--fg-default); }
+
+/* List */
+.w-quick-links-list { display: grid; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
+.w-quick-links-row { position: relative; display: flex; align-items: center; min-inline-size: 0; }
+.w-quick-links-row-link {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-5);
+  min-inline-size: 0;
+  min-block-size: 40px;
+  padding: var(--space-3) calc(var(--space-4) + 28px) var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  color: var(--fg-default);
+  text-align: start;
+  text-decoration: none;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.w-quick-links-row-link:hover { background: var(--bg-hover); }
+.w-quick-links-row-link:active { background: var(--bg-active); }
+.w-quick-links-row-link:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.w-quick-links-row-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  inline-size: 28px;
+  block-size: 28px;
+  border-radius: var(--radius-md);
+  background: var(--lf-tile-bg);
+  box-shadow: 0 0 0 1px var(--lf-tile-ring);
+}
+.w-quick-links-row-text { display: flex; flex-direction: column; min-inline-size: 0; }
+.w-quick-links-row-title, .w-quick-links-row-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.w-quick-links-row-title { font-size: var(--text-sm); font-weight: var(--weight-medium); line-height: var(--lh-sm); }
+.w-quick-links-row-host { color: var(--fg-muted); font-size: var(--text-xs); line-height: var(--lh-xs); }
+.w-quick-links-row-link.is-add { color: var(--fg-muted); }
+.w-quick-links-row-link.is-add .w-quick-links-row-icon { background: transparent; box-shadow: inset 0 0 0 1.5px var(--border-strong); }
+.w-quick-links-row-link.is-add .w-quick-links-row-title { font-weight: var(--weight-regular); }
+.w-quick-links-row-more {
+  position: absolute;
+  inset-inline-end: var(--space-3);
+  display: grid;
+  place-items: center;
+  inline-size: var(--control-h-xs);
+  block-size: var(--control-h-xs);
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
+}
+.w-quick-links-row-more:hover { background: var(--bg-active); color: var(--fg-default); }
+.w-quick-links-row-more:focus-visible { opacity: 1; }
+@media (hover: hover) {
+  .w-quick-links-row:hover > .w-quick-links-row-more { opacity: 1; }
+}
+.dashboard.is-editing .w-quick-links-row-more { display: none; }
+
+/* Drag and drop cues for chips (a bar beside the chip) and rows (a line above or below). */
+.w-quick-links-chip-cell.is-dragging, .w-quick-links-row.is-dragging { opacity: 0.35; }
+.w-quick-links-chip-cell.is-drop-before::before, .w-quick-links-chip-cell.is-drop-after::after,
+.w-quick-links-row.is-drop-before::before, .w-quick-links-row.is-drop-after::after {
+  content: '';
+  position: absolute;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  pointer-events: none;
+}
+.w-quick-links-chip-cell.is-drop-before::before, .w-quick-links-chip-cell.is-drop-after::after { inset-block: 2px; inline-size: 3px; }
+.w-quick-links-chip-cell.is-drop-before::before { inset-inline-start: -5.5px; }
+.w-quick-links-chip-cell.is-drop-after::after { inset-inline-end: -5.5px; }
+.w-quick-links-row.is-drop-before::before, .w-quick-links-row.is-drop-after::after { inset-inline: var(--space-4); block-size: 2px; }
+.w-quick-links-row.is-drop-before::before { inset-block-start: -2px; }
+.w-quick-links-row.is-drop-after::after { inset-block-end: -2px; }
+:is(.w-quick-links-chips, .w-quick-links-list).is-drop-active { border-radius: var(--radius-md); background: color-mix(in oklab, var(--accent) 6%, transparent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .w-quick-links-chip { transition: none; }
+}
+[data-motion="reduced"] .w-quick-links-chip { transition: none; }

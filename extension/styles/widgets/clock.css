@@ -1,1 +1,234 @@
-/* Clock widget (.w-clock-*) */
+/* =====================================================================
+   Clock widget (.w-clock-*).
+
+   The time scales with the widget body (container "widget"): cqw/cqh
+   keep a digital clock as large as its card allows. World clocks show
+   beside the time from 440px wide, under it from 230px tall, and stay
+   hidden in smaller cards. Data colors: day/night tiles use the amber and
+   indigo palette tokens; the analog second hand uses orange.
+
+   States
+     default   time, date, greeting and zones
+     hover     zone rows and settings results tint with --bg-hover
+     focus     2px --focus-ring on settings inputs and results
+     active    press scale on buttons (components.css)
+     disabled  move up/down at the ends of the zone list (native disabled)
+     loading   N/A: the clock renders synchronously from the device time
+     error     N/A: an unknown stored time zone is dropped, never shown
+     selected  N/A: the clock has no selection; style and hours use
+               segmented radios (aria-checked) in settings
+   ===================================================================== */
+
+.w-clock {
+  --w-clock-ink: var(--fg-default);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: center;
+  gap: var(--space-7);
+  block-size: 100%;
+  min-block-size: 0;
+  color: var(--w-clock-ink);
+  font-variant-numeric: tabular-nums;
+}
+.w-clock-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: 0;
+  min-block-size: 0;
+  text-align: center;
+}
+
+/* ---------- Digital and minimal ---------- */
+.w-clock-time {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  max-inline-size: 100%;
+  font-size: clamp(28px, min(25cqw, 54cqh), 168px);
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: -0.035em;
+  white-space: nowrap;
+}
+.w-clock-time time { display: inline-flex; align-items: baseline; }
+.w-clock-sec {
+  min-inline-size: 1.5em;
+  margin-inline-start: 0.04em;
+  color: var(--fg-muted);
+  font-size: 0.36em;
+  font-weight: var(--weight-regular);
+  letter-spacing: 0;
+  text-align: start;
+}
+.w-clock-period {
+  margin-inline-start: 0.2em;
+  color: var(--fg-muted);
+  font-size: max(var(--text-xs), 0.28em);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-caps);
+}
+.w-clock-sec + .w-clock-period { margin-inline-start: 0.3em; }
+.w-clock-greeting {
+  max-inline-size: 100%;
+  margin-block-end: var(--space-3);
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: clamp(var(--text-sm), 4.5cqw, var(--text-lg));
+  font-weight: var(--weight-medium);
+  line-height: var(--lh-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.w-clock-date {
+  max-inline-size: 100%;
+  margin-block-start: clamp(var(--space-2), 3cqh, var(--space-5));
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: clamp(var(--text-sm), 4.2cqw, var(--text-lg));
+  line-height: var(--lh-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.w-clock[data-style="minimal"] .w-clock-time { font-size: clamp(28px, min(29cqw, 72cqh), 200px); letter-spacing: -0.045em; }
+
+/* Short cards drop the greeting first, then the date. */
+@container widget (max-height: 150px) { .w-clock-greeting { display: none; } }
+@container widget (max-height: 84px) { .w-clock-date { display: none; } }
+
+/* ---------- Analog ---------- */
+.w-clock-analog { flex: none; block-size: min(86cqh, 92cqw); aspect-ratio: 1; }
+.w-clock.has-date .w-clock-analog { block-size: min(calc(86cqh - 28px), 92cqw); }
+.w-clock.has-date.has-greeting .w-clock-analog { block-size: min(calc(86cqh - 54px), 92cqw); }
+.w-clock-face { display: block; inline-size: 100%; block-size: 100%; overflow: visible; }
+.w-clock-dial { fill: color-mix(in oklab, var(--fg-default) 3%, transparent); stroke: var(--border-default); stroke-width: 0.8; }
+.w-clock-tick { stroke: var(--fg-faint); stroke-width: 0.8; stroke-linecap: round; }
+.w-clock-tick.is-hour { stroke: var(--fg-muted); stroke-width: 1.8; }
+.w-clock-hand { stroke: var(--w-clock-ink); stroke-linecap: round; transform-box: view-box; transform-origin: 50% 50%; }
+.w-clock-hand.is-hour { stroke-width: 3.4; }
+.w-clock-hand.is-minute { stroke-width: 2.2; }
+.w-clock-hand.is-second { stroke: var(--c-orange); stroke-width: 1; }
+.w-clock-pin { fill: var(--w-clock-ink); }
+.w-clock-hand.is-second ~ .w-clock-pin { fill: var(--c-orange); }
+
+/* ---------- World clocks ---------- */
+.w-clock-zones {
+  display: none;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  list-style: none;
+}
+.w-clock-zone {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-5);
+  min-block-size: 40px;
+  padding-block: var(--space-2);
+}
+.w-clock-zone + .w-clock-zone { border-block-start: 1px solid var(--border-subtle); }
+.w-clock-zone-sky {
+  display: grid;
+  place-items: center;
+  inline-size: 24px;
+  block-size: 24px;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.w-clock-zone-sky .icon { grid-area: 1 / 1; transition: opacity var(--dur-base) var(--ease-out), scale var(--dur-base) var(--ease-out), filter var(--dur-base) var(--ease-out); }
+.w-clock-zone[data-daylight="day"] .w-clock-zone-sky { background: var(--c-amber-soft); color: var(--c-amber); }
+.w-clock-zone[data-daylight="night"] .w-clock-zone-sky { background: var(--c-indigo-soft); color: var(--c-indigo); }
+.w-clock-zone[data-daylight="day"] .w-clock-zone-sky .is-night,
+.w-clock-zone[data-daylight="night"] .w-clock-zone-sky .is-day { opacity: 0; scale: 0.25; filter: blur(4px); }
+@media (prefers-reduced-motion: reduce) { .w-clock-zone-sky .icon { transition: opacity var(--dur-fast) var(--ease-out); scale: 1 !important; filter: none !important; } }
+:root[data-motion="reduced"] .w-clock-zone-sky .icon { transition: opacity var(--dur-fast) var(--ease-out); scale: 1 !important; filter: none !important; }
+.w-clock-zone-text { display: flex; flex-direction: column; min-inline-size: 0; }
+.w-clock-zone-name { overflow: hidden; font-size: var(--text-sm); font-weight: var(--weight-medium); line-height: var(--lh-sm); text-overflow: ellipsis; white-space: nowrap; }
+.w-clock-zone-meta { overflow: hidden; color: var(--fg-muted); font-size: var(--text-xs); line-height: var(--lh-xs); text-overflow: ellipsis; white-space: nowrap; }
+.w-clock-zone-time { font-size: var(--text-lg); font-weight: var(--weight-medium); line-height: var(--lh-lg); letter-spacing: var(--tracking-tight); white-space: nowrap; }
+.w-clock-zone-period { margin-inline-start: 0.25em; color: var(--fg-muted); font-size: var(--text-xs); font-weight: var(--weight-medium); }
+
+/* Under the time once the card is tall enough. */
+@container widget (min-height: 230px) {
+  .w-clock.has-zones { grid-template-rows: auto minmax(0, auto); align-content: center; }
+  .w-clock.has-zones .w-clock-zones { display: flex; }
+  .w-clock.has-zones .w-clock-time { font-size: clamp(28px, min(22cqw, 26cqh), 120px); }
+  .w-clock.has-zones[data-style="minimal"] .w-clock-time { font-size: clamp(28px, min(24cqw, 30cqh), 132px); }
+  .w-clock.has-zones .w-clock-analog { block-size: min(42cqh, 70cqw); }
+}
+/* Beside the time on wide cards. */
+@container widget (min-width: 440px) and (min-height: 96px) {
+  .w-clock.has-zones { grid-template-columns: minmax(0, 1.1fr) minmax(200px, 1fr); grid-template-rows: minmax(0, 1fr); align-content: stretch; column-gap: var(--space-9); }
+  .w-clock.has-zones[data-style="analog"] { grid-template-columns: minmax(0, 1fr) minmax(200px, 1.25fr); }
+  .w-clock.has-zones .w-clock-zones { display: flex; justify-content: safe center; padding-inline-start: var(--space-8); border-inline-start: 1px solid var(--border-subtle); }
+  .w-clock.has-zones .w-clock-time { font-size: clamp(28px, min(12.5cqw, 50cqh), 132px); }
+  .w-clock.has-zones[data-style="minimal"] .w-clock-time { font-size: clamp(28px, min(14cqw, 62cqh), 150px); }
+  .w-clock.has-zones .w-clock-analog { block-size: min(78cqh, 44cqw); }
+  .w-clock.has-zones.has-date .w-clock-analog { block-size: min(calc(78cqh - 28px), 44cqw); }
+  .w-clock.has-zones .w-clock-date, .w-clock.has-zones .w-clock-greeting { font-size: clamp(var(--text-sm), 2.4cqw, var(--text-lg)); }
+}
+
+/* ---------- Settings ---------- */
+.w-clock-settings { display: flex; flex-direction: column; gap: var(--space-7); container-type: inline-size; }
+.w-clock-settings .segmented { flex-wrap: wrap; }
+.w-clock-zone-editor { display: flex; flex-direction: column; gap: var(--space-6); }
+.w-clock-zone-empty { color: var(--fg-muted); font-size: var(--text-sm); line-height: var(--lh-sm); }
+.w-clock-zone-list { display: flex; flex-direction: column; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
+.w-clock-zone-edit {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(0, 11.5em) auto;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+}
+.w-clock-zone-edit .input { inline-size: 100%; min-inline-size: 0; }
+.w-clock-zone-edit-meta { overflow: hidden; color: var(--fg-muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; text-align: end; text-overflow: ellipsis; white-space: nowrap; }
+.w-clock-zone-edit-tools { display: inline-flex; gap: var(--space-1); }
+@container (max-width: 420px) {
+  .w-clock-zone-edit { grid-template-columns: minmax(0, 1fr) auto; }
+  .w-clock-zone-edit-meta { grid-row: 2; grid-column: 1 / -1; padding-inline-start: var(--space-2); text-align: start; }
+}
+.w-clock-zone-add { display: flex; flex-direction: column; gap: var(--space-3); }
+.w-clock-zone-add .input-wrap, .w-clock-zone-add .input { inline-size: 100%; }
+.w-clock-zone-results { display: flex; flex-direction: column; gap: 1px; margin: 0; padding: 0; list-style: none; }
+.w-clock-zone-result {
+  display: grid;
+  grid-template-columns: 16px minmax(0, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-4);
+  inline-size: 100%;
+  min-block-size: 32px;
+  padding: var(--space-2) var(--space-4);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-default);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: start;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.w-clock-zone-result .icon { color: var(--fg-subtle); }
+@media (hover: hover) { .w-clock-zone-result:hover { background: var(--bg-hover); } }
+.w-clock-zone-result:active { scale: var(--press-scale); }
+.w-clock-zone-result:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.w-clock-zone-result-name { overflow: hidden; font-weight: var(--weight-medium); text-overflow: ellipsis; white-space: nowrap; }
+.w-clock-zone-result-meta { overflow: hidden; color: var(--fg-muted); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+.w-clock-zone-none { padding: var(--space-3) var(--space-4); color: var(--fg-muted); font-size: var(--text-sm); }
+
+@media (forced-colors: active) {
+  .w-clock-hand, .w-clock-tick.is-hour { stroke: CanvasText; }
+  .w-clock-hand.is-second { stroke: Highlight; }
+  .w-clock-pin { fill: CanvasText; }
+  .w-clock-zone-sky { border: 1px solid CanvasText; }
+}

@@ -5,6 +5,7 @@
 // {
 //   type: 'clock',                     stable id (kebab-case), never renamed once shipped
 //   title, description, icon,          gallery copy; icon is a ui/icons.js name
+//   displayTitle?(ctx, widget) => string   instance title when the person has not renamed it (e.g. the collection name)
 //   category: 'library' | 'productivity' | 'info' | 'web' | 'developer'
 //   keywords: ['time', ...],           gallery search
 //   size: { w, h, minW, minH, maxW, maxH }   default and limits in grid cells (12 columns; one row = --dash-row)
@@ -156,8 +157,8 @@ export function writePath(object, path, value) {
   const keys = String(path).split('.');
   if (keys.some(key => key === '__proto__' || key === 'constructor' || key === 'prototype')) return object;
   let target = object;
-  for (const key of keys.slice(0, -1)) {
-    if (!target[key] || typeof target[key] !== 'object' || Array.isArray(target[key])) target[key] = {};
+  for (const [index, key] of keys.slice(0, -1).entries()) {
+    if (!target[key] || typeof target[key] !== 'object') target[key] = /^\d+$/.test(keys[index + 1]) ? [] : {};
     target = target[key];
   }
   target[keys.at(-1)] = value;

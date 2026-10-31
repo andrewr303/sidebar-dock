@@ -1,1 +1,458 @@
-/* assistant.css */
+/* =====================================================================
+   assistant.css: the full-screen assistant (ui/assistant-page.js), the
+   'assistant' view of the full tab and the new tab. Chats rail | header +
+   conversation (ai.css styles the transcript and composer for
+   data-surface="page") | Context & sources rail. The rails dock when the
+   main column is wide enough (data-layout from a ResizeObserver) and open
+   as sheets over the conversation otherwise. Tokens only.
+   ===================================================================== */
+
+/* The page fills the main column; the transcript and the rails scroll inside it. */
+.main[data-view="assistant"] { overflow: hidden; }
+.assistant-page {
+  --asst-chats-w: 264px;
+  --asst-context-w: 296px;
+  --asst-measure: 800px;
+  --asst-sheet-w: min(320px, calc(100% - var(--space-10)));
+  position: absolute; inset: 0;
+  display: flex;
+  min-width: 0; min-height: 0;
+  overflow: hidden;
+  background: var(--bg-app);
+}
+.asst-size { display: none; }
+
+/* ---------- Center column ---------- */
+.asst-center {
+  display: flex; flex-direction: column;
+  flex: 1;
+  min-width: 0; min-height: 0;
+  container: asst-center / inline-size;
+}
+.asst-center > .ai-panel { flex: 1; height: auto; }
+
+/* ---------- Header ----------
+   Title input states: default reads as the heading; hover shows a field
+   tint; focus shows the field edge and the focus ring; active (typing) as
+   focus; disabled N/A (a chat without a saved conversation shows plain
+   text); loading N/A (renames save in the background, the value stays);
+   error: a blank name is put back; selected N/A.
+   Model badge: default tag fill; hover darker; focus ring; active press;
+   expanded (menu open) as active; disabled N/A (hidden until the model is
+   known); loading N/A; error state "Connect a model" (opens AI settings). */
+.asst-head {
+  display: flex; align-items: center; gap: var(--space-4);
+  flex: none;
+  min-height: var(--topbar-h);
+  padding: var(--space-3) var(--space-4) var(--space-3) var(--space-4);
+}
+.asst-head-lead, .asst-head-actions { display: flex; align-items: center; gap: var(--space-1); flex: none; }
+.asst-head .icon-btn { color: var(--fg-muted); }
+/* The rail toggles say open or closed with their icon; the active fill is kept for menus that are open. */
+.asst-head .icon-btn[aria-controls][aria-expanded="true"]:not(:active) { background-color: transparent; }
+@media (hover: hover) { .asst-head .icon-btn[aria-controls][aria-expanded="true"]:hover { background-color: var(--bg-hover); } }
+.asst-heading { display: flex; align-items: center; gap: var(--space-4); flex: 1; min-width: 0; }
+.asst-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: var(--fg-default);
+  font-size: var(--text-md); font-weight: var(--weight-semibold);
+  line-height: var(--lh-md);
+  letter-spacing: var(--tracking-tight);
+}
+.asst-title-text {
+  display: block;
+  padding-inline: var(--space-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.asst-title-input {
+  display: block;
+  field-sizing: content;
+  min-width: 6ch; max-width: 100%;
+  height: var(--control-h-md);
+  padding-inline: var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit; letter-spacing: inherit;
+  text-overflow: ellipsis;
+  transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+@media (hover: hover) {
+  .asst-title-input:hover:not(:focus) { background: var(--bg-hover); cursor: text; }
+}
+.asst-title-input:focus { background: var(--bg-field); box-shadow: inset 0 0 0 1px var(--border-input); }
+.asst-title-input:focus-visible { outline-offset: 1px; }
+
+.asst-model {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  flex: none;
+  max-width: 24ch;
+  height: var(--control-h-sm);
+  padding-inline: var(--space-4) var(--space-3);
+  border-radius: var(--radius-full);
+  background: var(--bg-tag);
+  color: var(--fg-muted);
+  font-size: var(--text-xs); font-weight: var(--weight-medium);
+  white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), scale var(--dur-fast) var(--ease-out);
+}
+.asst-model > .icon { flex: none; color: var(--fg-subtle); }
+.asst-model-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+@media (hover: hover) {
+  .asst-model:hover { background: var(--bg-active); color: var(--fg-default); }
+}
+.asst-model:active { scale: var(--press-scale); }
+.asst-model[aria-expanded="true"] { background: var(--bg-active); color: var(--fg-default); }
+.asst-model.is-missing { background: var(--warning-soft); color: var(--warning); }
+.asst-model.is-missing > .icon { color: currentColor; }
+/* The composer has its own model picker, so a narrow header drops the badge first. */
+@container asst-center (max-width: 520px) {
+  .asst-model:not(.is-missing) { display: none; }
+}
+
+/* ---------- Empty state: greeting, quick scopes, suggestions ----------
+   Scope chips (toggle buttons): default outlined; hover tint; focus ring;
+   active press; selected aria-pressed with the accent tint and ring;
+   disabled, loading, error N/A (every scope is always available).
+   Suggestion cards: default raised card; hover tint and arrow; focus ring;
+   active press; disabled N/A (a suggestion without a model is not shown:
+   the setup takes its place); loading N/A (sending shows in the
+   transcript); error N/A; selected N/A. */
+.ai-panel[data-surface="page"] .ai-start { justify-content: safe center; }
+.asst-empty {
+  display: flex; flex-direction: column; align-items: center;
+  gap: var(--space-4);
+  padding-block: var(--space-9);
+  text-align: center;
+}
+.asst-mark {
+  display: inline-grid; place-items: center;
+  width: 44px; height: 44px;
+  margin-block-end: var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--accent-soft);
+  color: var(--accent-soft-fg);
+}
+.asst-greeting {
+  margin: 0;
+  color: var(--fg-default);
+  font-size: calc(var(--text-2xl) * 1.25); font-weight: var(--weight-semibold);
+  line-height: 1.2;
+  letter-spacing: var(--tracking-title);
+  text-wrap: balance;
+}
+.asst-lede {
+  max-width: 54ch;
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--text-md); line-height: var(--lh-prose);
+  text-wrap: pretty;
+}
+.asst-scopes {
+  display: flex; flex-wrap: wrap; justify-content: center;
+  gap: var(--space-3);
+  max-width: 100%;
+  margin-block-start: var(--space-8);
+}
+.asst-scopes-label {
+  flex-basis: 100%;
+  margin-block-end: var(--space-1);
+  color: var(--fg-subtle);
+  font-size: var(--text-xs); font-weight: var(--weight-medium); line-height: var(--lh-xs);
+}
+.asst-scope {
+  display: inline-flex; align-items: center; gap: var(--space-3);
+  min-width: 0; max-width: 100%;
+  height: var(--control-h-md);
+  padding-inline: var(--space-4) var(--space-5);
+  border-radius: var(--radius-full);
+  background: var(--bg-surface);
+  box-shadow: inset 0 0 0 1px var(--border-default);
+  color: var(--fg-default);
+  font-size: var(--text-sm); font-weight: var(--weight-medium);
+  transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), scale var(--dur-fast) var(--ease-out);
+}
+.asst-scope > .icon { flex: none; color: var(--fg-muted); }
+.asst-scope-label { min-width: 0; max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (hover: hover) {
+  .asst-scope:hover { background-image: linear-gradient(var(--bg-hover) 0 0); box-shadow: inset 0 0 0 1px var(--border-strong); }
+}
+.asst-scope:active { scale: var(--press-scale); }
+:is(.asst-scope[aria-pressed="true"], .asst-scope.is-selected) { background: var(--bg-selected); box-shadow: inset 0 0 0 1px var(--accent-soft-strong); color: var(--accent-soft-fg); }
+:is(.asst-scope[aria-pressed="true"], .asst-scope.is-selected) > .icon { color: currentColor; }
+.asst-scope.is-more { background: transparent; box-shadow: inset 0 0 0 1px var(--border-default); color: var(--fg-muted); }
+.asst-scope.is-more[aria-expanded="true"] { background: var(--bg-active); color: var(--fg-default); }
+
+.asst-suggestions {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: var(--space-4);
+  width: 100%;
+  margin-block-start: var(--space-7);
+  text-align: start;
+}
+.asst-suggestion {
+  display: flex; align-items: center; gap: var(--space-5);
+  width: 100%; height: 100%;
+  min-height: 56px;
+  padding: var(--space-5) var(--space-6) var(--space-5) var(--space-5);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--fg-default);
+  font-size: var(--text-sm); line-height: var(--lh-sm);
+  text-align: start;
+  transition: background-color var(--dur-fast) var(--ease-out), scale var(--dur-fast) var(--ease-out);
+}
+[data-theme="dark"] .asst-suggestion { background: var(--bg-raised); }
+.asst-suggestion-icon {
+  display: inline-grid; place-items: center; flex: none;
+  width: 30px; height: 30px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tag);
+  color: var(--fg-muted);
+}
+.asst-suggestion-label { flex: 1; min-width: 0; text-wrap: pretty; overflow-wrap: anywhere; }
+.asst-suggestion-go { flex: none; color: var(--fg-subtle); opacity: 0; transition: opacity var(--dur-fast) var(--ease-out); }
+@media (hover: hover) {
+  .asst-suggestion:hover { background-image: linear-gradient(var(--bg-hover) 0 0); }
+  .asst-suggestion:hover .asst-suggestion-go { opacity: 1; }
+}
+@media (hover: none) { .asst-suggestion-go { opacity: 1; } }
+.asst-suggestion:focus-visible .asst-suggestion-go { opacity: 1; }
+.asst-suggestion:active { scale: var(--press-scale); }
+
+/* ---------- Chats rail ----------
+   Chat rows: default title and preview; hover tint and the row's actions
+   button; focus ring inside the row (actions stay visible while anything in
+   the row has focus); active press tint; selected (aria-current) accent
+   tint and medium weight; disabled N/A; loading: skeleton lines in the
+   list's place; error: an inline message with Try again; no chats and no
+   matches have their own messages. Search: default sunken field; hover N/A
+   (a field); focus ring around the field; others N/A. */
+.asst-chats {
+  display: flex; flex-direction: column;
+  flex: none;
+  width: var(--asst-chats-w);
+  min-height: 0;
+  border-inline-end: 1px solid var(--border-subtle);
+  background: var(--bg-app);
+}
+.asst-chats-head {
+  display: flex; align-items: center; gap: var(--space-3);
+  flex: none;
+  min-height: var(--topbar-h);
+  padding: var(--space-3) var(--space-6);
+}
+.asst-new { flex: 1; justify-content: flex-start; }
+.asst-search {
+  display: flex; align-items: center; gap: var(--space-4);
+  flex: none;
+  height: var(--control-h-md);
+  margin: 0 var(--space-6) var(--space-4);
+  padding-inline: var(--space-5) var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+  color: var(--fg-subtle);
+}
+.asst-search:has(.asst-search-input:focus-visible) { outline: 2px solid var(--focus-ring); outline-offset: 0; }
+.asst-search-icon { flex: none; }
+.asst-search-input {
+  flex: 1; min-width: 0;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+}
+.asst-search-input:focus-visible { outline: none; }
+.asst-search-input::-webkit-search-cancel-button { display: none; }
+.asst-search-clear { --ib-h: var(--control-h-xs); }
+
+.asst-chat-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-2) var(--space-4) var(--space-9);
+}
+.asst-group + .asst-group { margin-block-start: var(--space-6); }
+.asst-group-label {
+  margin: 0;
+  padding: var(--space-3) var(--space-4) var(--space-2);
+  color: var(--fg-subtle);
+  font-size: var(--text-xs); font-weight: var(--weight-medium); line-height: var(--lh-xs);
+}
+.asst-group-list { display: flex; flex-direction: column; gap: 1px; margin: 0; padding: 0; list-style: none; }
+.asst-chat { position: relative; display: flex; align-items: center; border-radius: var(--radius-sm); transition: background-color var(--dur-fast) var(--ease-out); }
+.asst-chat-main {
+  display: flex; flex-direction: column; gap: 1px;
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: inherit;
+  text-align: start;
+}
+.asst-chat-main:focus-visible { outline-offset: -2px; }
+.asst-chat-title, .asst-chat-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asst-chat-title { color: var(--fg-default); font-size: var(--text-sm); line-height: var(--lh-sm); }
+.asst-chat-meta { color: var(--fg-subtle); font-size: var(--text-xs); line-height: var(--lh-xs); }
+.asst-chat:active { background: var(--bg-active); }
+.asst-chat.is-current { background: var(--bg-selected); }
+.asst-chat.is-current .asst-chat-title { font-weight: var(--weight-medium); }
+.asst-chat-more { position: absolute; inset-inline-end: var(--space-2); color: var(--fg-subtle); }
+.asst-chat-more:hover { color: var(--fg-default); }
+/* Row actions show on hover or focus (always on touch screens); the title makes room for them. */
+@media (hover: hover) {
+  .asst-chat:hover:not(.is-current) { background: var(--bg-hover); }
+  .asst-chat-more { opacity: 0; transition: opacity var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out); }
+  .asst-chat:is(:hover, :focus-within) .asst-chat-more, .asst-chat-more[aria-expanded="true"] { opacity: 1; }
+  .asst-chat:is(:hover, :focus-within) .asst-chat-main, .asst-chat:has([aria-expanded="true"]) .asst-chat-main { padding-inline-end: calc(var(--control-h-sm) + var(--space-3)); }
+}
+@media (hover: none) {
+  .asst-chat-main { padding-inline-end: calc(var(--control-h-sm) + var(--space-3)); }
+}
+.asst-chats-loading { padding: var(--space-6) var(--space-4); }
+.asst-chats-empty {
+  display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-3);
+  padding: var(--space-6) var(--space-4);
+  color: var(--fg-subtle);
+  font-size: var(--text-sm); line-height: var(--lh-sm);
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+.asst-chats-empty p { margin: 0; }
+.asst-chats-empty-title { color: var(--fg-default); font-weight: var(--weight-medium); }
+.asst-chats-empty .btn { margin-inline-start: calc(var(--space-4) * -1); }
+
+/* ---------- Context & sources rail ----------
+   Scope select: the shared select control (default, hover, focus, disabled
+   from components.css); loading, error, selected N/A. Source rows (ai.css
+   .ai-source): default; hover tint; focus ring; active tint; others N/A.
+   "Add items": ghost button states from components.css. */
+.asst-context {
+  display: flex; flex-direction: column;
+  flex: none;
+  width: var(--asst-context-w);
+  min-height: 0;
+  border-inline-start: 1px solid var(--border-subtle);
+  background: var(--bg-app);
+}
+.asst-pane-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-4);
+  flex: none;
+  min-height: var(--topbar-h);
+  padding: var(--space-3) var(--space-4) var(--space-3) var(--space-7);
+}
+.asst-pane-head .icon-btn { color: var(--fg-subtle); }
+.asst-pane-title { margin: 0; color: var(--fg-default); font-size: var(--text-sm); font-weight: var(--weight-semibold); line-height: var(--lh-sm); }
+.asst-pane-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 var(--space-7) var(--space-9); }
+.asst-section { display: flex; flex-direction: column; gap: var(--space-5); padding-block: var(--space-7); border-block-start: 1px solid var(--border-subtle); }
+.asst-section:first-child { padding-block-start: var(--space-2); border-block-start: 0; }
+.asst-section-title {
+  display: flex; align-items: center; gap: var(--space-3);
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--text-xs); font-weight: var(--weight-semibold); line-height: var(--lh-xs);
+}
+.asst-count { color: var(--fg-subtle); font-weight: var(--weight-regular); font-variant-numeric: tabular-nums; }
+.asst-scope-card {
+  display: flex; align-items: center; gap: var(--space-5);
+  padding: var(--space-5);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+}
+[data-theme="dark"] .asst-scope-card { background: var(--bg-raised); }
+.asst-scope-tile {
+  display: inline-grid; place-items: center; flex: none;
+  width: 28px; height: 28px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tag);
+  color: var(--fg-muted);
+}
+.asst-scope-text { display: flex; flex-direction: column; min-width: 0; }
+.asst-scope-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-default); font-size: var(--text-sm); font-weight: var(--weight-medium); line-height: var(--lh-sm); }
+.asst-scope-meta { color: var(--fg-subtle); font-size: var(--text-xs); line-height: var(--lh-xs); font-variant-numeric: tabular-nums; }
+.asst-field { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.asst-field-label { color: var(--fg-subtle); font-size: var(--text-xs); line-height: var(--lh-xs); }
+.asst-field .select { display: block; width: 100%; }
+.asst-field select { width: 100%; }
+.asst-added { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.asst-add-items { align-self: flex-start; margin-inline-start: calc(var(--space-4) * -1); margin-block-start: calc(var(--space-2) * -1); }
+.asst-context .asst-sources { margin: 0 calc(var(--space-3) * -1); padding: 0; list-style: none; }
+.asst-context .asst-sources .ai-source { font-size: var(--text-sm); }
+.asst-context .asst-sources .ai-source-meta { display: none; }
+.asst-hint { margin: 0; color: var(--fg-subtle); font-size: var(--text-sm); line-height: var(--lh-sm); text-wrap: pretty; }
+.asst-facts { display: flex; flex-direction: column; gap: var(--space-3); margin: 0; }
+.asst-facts > div { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-6); min-width: 0; font-size: var(--text-sm); line-height: var(--lh-sm); }
+.asst-facts dt { flex: none; color: var(--fg-subtle); }
+.asst-facts dd { min-width: 0; margin: 0; color: var(--fg-default); text-align: end; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+
+/* ---------- Sheets (narrow layouts) ----------
+   A rail that cannot dock opens over the conversation with a scrim; the
+   conversation is inert meanwhile. Escape, the scrim or the close button
+   close it and focus returns to the header toggle. */
+.asst-scrim { position: absolute; inset: 0; z-index: 2; background: var(--bg-scrim); }
+:is(.asst-chats, .asst-context).is-sheet {
+  position: absolute; inset-block: 0; z-index: 3;
+  width: var(--asst-sheet-w);
+  border: 0;
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+}
+.asst-chats.is-sheet { inset-inline-start: 0; }
+.asst-context.is-sheet { inset-inline-end: 0; }
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-motion="reduced"]) .asst-scrim { animation: asst-fade var(--dur-base) var(--ease-out); }
+  :root:not([data-motion="reduced"]) .asst-chats.is-sheet { animation: asst-from-start var(--dur-slow) var(--ease-out); }
+  :root:not([data-motion="reduced"]) .asst-context.is-sheet { animation: asst-from-end var(--dur-slow) var(--ease-out); }
+  :root:not([data-motion="reduced"]) .asst-chats.is-sheet:dir(rtl) { animation-name: asst-from-end; }
+  :root:not([data-motion="reduced"]) .asst-context.is-sheet:dir(rtl) { animation-name: asst-from-start; }
+}
+@keyframes asst-fade { from { opacity: 0; } }
+@keyframes asst-from-start { from { opacity: 0; translate: -24px 0; } }
+@keyframes asst-from-end { from { opacity: 0; translate: 24px 0; } }
+
+/* ---------- Narrow layout ---------- */
+.assistant-page[data-layout="narrow"] .asst-head { padding-inline: var(--space-3); gap: var(--space-2); }
+.assistant-page[data-layout="narrow"] .asst-heading { gap: var(--space-3); }
+/* Small columns: a quieter greeting so the suggestions stay above the composer. */
+@container asst-center (max-width: 480px) {
+  .asst-empty { gap: var(--space-3); padding-block: var(--space-6); }
+  .asst-mark { display: none; }
+  .asst-greeting { font-size: var(--text-2xl); }
+  .asst-lede { font-size: var(--text-sm); line-height: var(--lh-sm); }
+  .asst-scopes { margin-block-start: var(--space-6); }
+  .asst-scope { height: var(--control-h-sm); font-size: var(--text-xs); }
+  .asst-suggestion { min-height: 48px; padding-block: var(--space-4); }
+}
+
+/* ---------- Skins ---------- */
+/* Liquid Glass: the main pane is the glass; the rails are panes of it, separated by its own hairline. */
+:root[data-skin="glass"] .assistant-page { background: transparent; }
+:root[data-skin="glass"] :is(.asst-chats, .asst-context):not(.is-sheet) { background: transparent; border-color: var(--glass-border); }
+:root[data-skin="glass"] :is(.asst-chats, .asst-context).is-sheet {
+  background: var(--glass-sheen), var(--glass-panel);
+  box-shadow: inset 0 1px 0 var(--glass-rim), var(--glass-shadow-lg);
+  -webkit-backdrop-filter: var(--glass-blur-strong);
+  backdrop-filter: var(--glass-blur-strong);
+}
+:root[data-skin="glass"] .asst-search { background: var(--glass-bar); box-shadow: inset 0 0 0 1px var(--glass-border); }
+:root[data-skin="glass"] .asst-scrim { -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+
+/* ---------- Contrast ---------- */
+@media (prefers-contrast: more) {
+  .asst-suggestion, .asst-scope-card { box-shadow: inset 0 0 0 1px var(--border-strong); }
+  .asst-scope { box-shadow: inset 0 0 0 1px var(--border-strong); }
+  .asst-chats, .asst-context { border-color: var(--border-strong); }
+}
+@media (forced-colors: active) {
+  .asst-suggestion, .asst-scope-card, .asst-scope, .asst-search, :is(.asst-chats, .asst-context).is-sheet { border: 1px solid CanvasText; }
+  .asst-scope[aria-pressed="true"], .asst-scope.is-selected, .asst-chat.is-current { outline: 2px solid Highlight; outline-offset: -2px; }
+  .asst-chat-more { opacity: 1; }
+  .asst-chat-main { padding-inline-end: calc(var(--control-h-sm) + var(--space-3)); }
+  .asst-model { border: 1px solid ButtonText; }
+}

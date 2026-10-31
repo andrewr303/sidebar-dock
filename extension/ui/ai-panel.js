@@ -1,9 +1,11 @@
 // Assistant panel (SPEC §7.3) on the lib/ai facade: conversation header with history, a transcript painted by the
 // 'ai.transcript' mount (streamed tokens repaint only that mount, never the app), proposal cards that gate every library
 // change, context chips, the model picker, the composer, and a no-provider setup with keyless hand-off.
+// Three surfaces share one conversation state (ctx.state.ai): the side panel's Ask tab ('side'), the full tab's right
+// panel ('full') and the full-screen assistant view ('page', drawn by assistant-page.js around renderAiPanel).
 import { html, raw, cx, plural } from './html.js';
-import { icon } from './icons.js';
-import { button, iconButton, collectionIcon, favicon, domainOf, relativeDate, emptyState, spinner, badge, avatarTile, TYPE_ICONS } from './components.js';
+import { icon, registerIcons } from './icons.js';
+import { button, iconButton, collectionIcon, siteIcon, domainOf, relativeDate, emptyState, spinner, badge, avatarTile, TYPE_ICONS } from './components.js';
 import { registerActions, registerMount, registerShortcuts, hasAction } from './runtime.js';
 import { registerPopover } from './overlay.js';
 import { morph } from './morph.js';
@@ -11,6 +13,12 @@ import { renderMarkdown } from '../lib/markdown.js';
 import { openSettings } from './settings.js';
 import { createNote } from './notes.js';
 import { openAddForPage } from './quick-add.js';
+import { CONVERSATIONS_KEY } from '../lib/ai/conversations.js';
+
+registerIcons({
+  'chevrons-left-right': '<path d="m9 7-5 5 5 5"/><path d="m15 7 5 5-5 5"/>',
+  'chevrons-right-left': '<path d="m20 17-5-5 5-5"/><path d="m4 17 5-5-5-5"/>',
+});
 
 export const MAX_QUESTION = 32000;
 const COUNT_FROM = 28000;
@@ -30,6 +38,9 @@ const SETUP_PATHS = [
 ];
 const SETTINGS_ERRORS = new Set(['auth', 'no_connection', 'no_model', 'not_found', 'disabled', 'workspace_required', 'origin_blocked']);
 const CITATION = /\[\[([\w:.-]+)\]\]/g;
+// Where lib/ai/conversations.js keeps each conversation body (the index lives under CONVERSATIONS_KEY). Pages watch these
+// keys so the side panel, full tabs and the new tab show the same conversations as they change.
+export const CONVERSATION_BODY_PREFIX = 'still.ai.conversation.v2:';
 
 const isWebUrl = url => /^https?:\/\/[^/\s]/i.test(String(url || ''));
 const unique = list => [...new Set((list || []).filter(id => typeof id === 'string' && id))];
@@ -236,6 +247,73 @@ export function formatDuration(ms) {
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
+// Case- and accent-insensitive text for matching ("Café" finds "cafe").
+const fold = value => String(value ?? '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+
+/** History entries whose title or last answer contain every word of the query (all of them when it is blank). */
+export function filterConversations(list, query = '') {
+  const words = fold(query).split(/\s+/).filter(Boolean);
+  const entries = Array.isArray(list) ? list : [];
+  if (!words.length) return entries;
+  return entries.filter(entry => {
+    const hay = fold(`${entry?.title || ''} ${entry?.preview || ''}`);
+    return words.every(word => hay.includes(word));
+  });
+}
+
+/** A one-line preview of an answer for lists: citations, links and Markdown marks removed. */
+export function plainPreview(value) {
+  return text(value).replace(CITATION, '').replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_`#>~|]+/g, '')
+    .replace(/\s+/g, ' ').replace(/ ([.,;:!?])/g, '$1').trim();
+}
+
+/** The answer the sources pane describes: the latest assistant message that has text or is still being written. */
+export function latestAnswer(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  for (let index = list.length - 1; index >= 0; index--) {
+    const message = list[index];
+    if (message?.role === 'assistant' && (message.text || message.live)) return message;
+  }
+  return null;
+}
+
+/** The question still waiting for an answer: the last message, when it is a question (an answer elsewhere, or none yet). */
+export function unansweredQuestion(messages) {
+  const last = Array.isArray(messages) ? messages.at(-1) : null;
+  return last?.role === 'user' ? last : null;
+}
+
+/**
+ * A whole conversation as Markdown for copying, downloading or saving as a note. Questions are quoted with "You", answers
+ * follow as written with their citations turned into links (exportAnswer); answers that failed say so in italics.
+ */
+export function conversationMarkdown(conversation, { links = 'markdown', isItem = () => true, title = true } = {}) {
+  const parts = [];
+  const name = cleanTitle(conversation?.title);
+  if (title) parts.push(`# ${name || 'Assistant chat'}`);
+  for (const message of conversation?.messages || []) {
+    if (message?.role === 'user') {
+      const lines = text(message.text).trim().split('\n');
+      parts.push([`> **You:** ${lines[0]}`, ...lines.slice(1).map(line => line.trim() ? `> ${line}` : '>')].join('\n'));
+    } else if (message?.role === 'assistant') {
+      const answer = exportAnswer(message.text, message.citations || [], { links, isItem }).trim();
+      if (answer) parts.push(answer);
+      else if (message.error && message.error !== 'Stopped') parts.push(`_The answer did not finish: ${text(message.error).trim()}_`);
+    }
+  }
+  return `${parts.join('\n\n')}\n`;
+}
+
+/** A safe file name for a downloaded chat: the title in lowercase words joined by hyphens, at most 60 characters. */
+export function markdownFileName(title) {
+  const base = fold(cleanTitle(title)).replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 60).replace(/-+$/, '');
+  return `${base || 'assistant-chat'}.md`;
+}
+
+/** The id of the open conversation, or of the one the running answer is creating. */
+export const conversationIdOf = s => s?.conversation?.id || s?.run?.conversationId || '';
+const newConversationId = () => `conversation_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
+
 // ------------------------------------------------------------------------------------------------ state
 
 // Live per-proposal UI state (resolver, Review exclusions, receipt, undo); proposal ids are unique across conversations.
@@ -264,7 +342,10 @@ const popoverOpen = (ctx, name) => ctx.state.popover?.name === name;
 const threadMessages = s => [...(s.conversation?.messages || []), ...(s.run ? [s.run.user, s.run.message] : [])];
 const findMessage = (s, id) => threadMessages(s).find(message => message.id === id) || null;
 const liveItem = (ctx, id) => { const item = ctx.select?.byId?.(id); return item && !item.deletedAt ? item : null; };
-const aiVisible = ctx => ctx.env.isSidepanel ? ctx.state.panel?.kind === 'ai' || (!ctx.state.panel && ctx.state.sideTab === 'ask') : ctx.state.panel?.kind === 'ai';
+// The full-screen assistant: the 'assistant' view of a full tab or the new tab (the side panel shows the Ask tab instead).
+const onPage = ctx => !ctx.env.isSidepanel && ctx.state.view === 'assistant';
+const aiVisible = ctx => ctx.env.isSidepanel ? ctx.state.panel?.kind === 'ai' || (!ctx.state.panel && ctx.state.sideTab === 'ask')
+  : ctx.state.panel?.kind === 'ai' || onPage(ctx);
 const composer = () => document.getElementById('ai-input');
 
 function contextFor(ctx) {
@@ -381,7 +462,10 @@ function submit(ctx, { question, scope, replace } = {}) {
 async function startRun(ctx, { question, scope, replaceFrom, access, fromDraft }) {
   const s = st(ctx);
   const id = `run-${++runSeq}`;
+  // A new chat gets its id now, so the conversation (saved with the question before the answer starts) can be opened
+  // elsewhere while the answer is still being written.
   const run = { id, controller: new AbortController(), question, scope, lastEvent: '', thinkingStartedAt: 0, thinkingMs: 0, notes: [], startedAt: Date.now(),
+    conversationId: s.conversation?.id || newConversationId(),
     user: { id: `${id}-q`, role: 'user', text: question, context: { scope: scope.scope, ids: scope.ids || [], collectionId: scope.collectionId || '', ...(scope.page ? { page: { url: scope.page.url, title: scope.page.title } } : {}) }, live: true },
     message: { id: `${id}-a`, role: 'assistant', text: '', thinking: '', tools: [], proposals: [], citations: [], error: '', status: '', live: true } };
   if (replaceFrom && s.conversation) {
@@ -406,7 +490,7 @@ async function startRun(ctx, { question, scope, replaceFrom, access, fromDraft }
     if (replaceFrom && s.conversation?.id) s.conversation = await ctx.ai.saveConversation(s.conversation);
     const t = s.target || {};
     const result = await ctx.ai.runAssistant({
-      conversationId: s.conversation?.id, input: question, context: prepared.context, signal: run.controller.signal,
+      conversationId: run.conversationId, input: question, context: prepared.context, signal: run.controller.signal,
       connectionId: t.connectionId, model: t.model, effort: t.efforts?.length ? t.effort : undefined,
       onEvent: event => onEvent(ctx, run, event), onProposal: proposal => onProposal(ctx, run, proposal),
     });
@@ -567,9 +651,9 @@ async function openConversation(ctx, id) {
 async function refreshHistory(ctx, { quiet = false } = {}) {
   const s = st(ctx);
   if (!ctx.ai?.listConversations) return;
-  try { s.history = await ctx.ai.listConversations(); }
-  catch (error) { console.error(error); s.history = s.history || []; if (!quiet) ctx.toast('Your chat history could not be read.', { tone: 'danger' }); }
-  if (popoverOpen(ctx, 'ai.history') || !quiet) ctx.render();
+  try { s.history = await ctx.ai.listConversations(); s.historyError = false; }
+  catch (error) { console.error(error); s.history = s.history || []; s.historyError = true; if (!quiet) ctx.toast('Your chat history could not be read.', { tone: 'danger' }); }
+  if (popoverOpen(ctx, 'ai.history') || !quiet || onPage(ctx)) ctx.render();
 }
 
 function retry(ctx, assistantId) {
@@ -577,7 +661,11 @@ function retry(ctx, assistantId) {
   const messages = s.conversation?.messages || [];
   const index = messages.findIndex(message => message.id === assistantId);
   const question = index > 0 ? messages.slice(0, index).reverse().find(message => message.role === 'user') : null;
-  if (!question) return null;
+  return question ? askAgain(ctx, question) : null;
+}
+
+/** Asks a saved question again with the context it was asked with; the question and everything after it are replaced. */
+function askAgain(ctx, question) {
   const record = question.context || { scope: 'library' };
   const scope = record.scope === 'page'
     ? { scope: 'page', page: { url: text(record.page?.url), title: text(record.page?.title) } }
@@ -595,7 +683,8 @@ function retry(ctx, assistantId) {
 export function askAi(ctx, { prompt = '', scope, ids, collectionId, send = false } = {}) {
   const s = st(ctx);
   if (ctx.env.isSidepanel) { ctx.state.panel = null; ctx.state.sideTab = 'ask'; }
-  else { ctx.state.panel = { kind: 'ai' }; ctx.syncUrl?.(); }
+  // On the full-screen assistant the page is the assistant: focus its composer instead of opening the panel beside it.
+  else if (!onPage(ctx)) { ctx.state.panel = { kind: 'ai' }; ctx.syncUrl?.(); }
   if (scope) {
     const kind = scope === 'item' && unique(ids).length > 1 ? 'items' : scope;
     const explicit = { scope: kind, ids: unique(ids).slice(0, 200), collectionId: text(collectionId) };
@@ -619,28 +708,203 @@ export function askAi(ctx, { prompt = '', scope, ids, collectionId, send = false
   });
 }
 
+/** Starts a new chat (the composer takes focus unless focus is false). */
+export const newAiChat = (ctx, options) => newChat(ctx, options);
+/** Opens a saved conversation by id. */
+export const openAiConversation = (ctx, id) => openConversation(ctx, id);
+/** Re-reads the chat history list (quiet: no toast when it cannot be read). */
+export const refreshAiHistory = (ctx, options) => refreshHistory(ctx, options);
+/** The shared assistant state (conversation, run, draft, history, context, model target). */
+export const aiState = ctx => st(ctx);
+/** The context the next question is asked with: { kind, chips, scope } (see resolveContext). */
+export const aiContext = ctx => contextFor(ctx);
+/** Label, tooltip and glyph for a context chip. */
+export const contextChipView = (ctx, chip) => chipView(ctx, chip);
+/** A removable context chip, as the composer shows it. */
+export const renderContextChip = (ctx, chip) => renderChip(ctx, chip);
+/** Sources cited by a message, numbered as in the answer ([{ n, id, title, url }]). */
+export const citationsOf = (ctx, message) => citationsFor(ctx, message);
+
+/** Loads the chat history once (the full-screen assistant lists it beside the conversation). */
+export function ensureAiHistory(ctx) {
+  const s = st(ctx);
+  if (s.history !== null || s.historyLoading || !ctx.ai?.listConversations) return;
+  s.historyLoading = true;
+  refreshHistory(ctx, { quiet: true }).finally(() => { s.historyLoading = false; });
+}
+
+/**
+ * Sets what the next question is about without starting a new chat: { scope: 'library' } | { scope: 'collection',
+ * collectionId } ('' is Inbox) | { scope: 'items', ids }. Items added with "+" are cleared.
+ */
+export function setAiScope(ctx, scope = { scope: 'library' }) {
+  const s = st(ctx);
+  s.added = [];
+  if (scope.scope === 'collection') s.explicit = { scope: 'collection', ids: [], collectionId: text(scope.collectionId) };
+  else if (['item', 'items'].includes(scope.scope) && unique(scope.ids).length) {
+    const ids = unique(scope.ids).slice(0, 200);
+    s.explicit = { scope: ids.length === 1 ? 'item' : 'items', ids, collectionId: '' };
+  } else s.explicit = null; // the whole library is what is left without explicit context on the full-screen assistant
+  ctx.render();
+}
+
+/** Renames a saved conversation; returns the saved title, or null when the name is blank or the chat is gone. */
+export async function renameAiConversation(ctx, id, name) {
+  const s = st(ctx);
+  const title = String(name ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  if (!title || !ctx.ai?.getConversation) return null;
+  const conversation = s.conversation?.id === id && !s.run ? s.conversation : await ctx.ai.getConversation(id);
+  if (!conversation) return null;
+  if (conversation.title === title) return title;
+  const saved = await ctx.ai.saveConversation({ ...conversation, title });
+  if (s.conversation?.id === id) s.conversation = { ...s.conversation, title: saved.title };
+  await refreshHistory(ctx, { quiet: true });
+  ctx.render();
+  return saved.title;
+}
+
+/** Copies, downloads or saves the open conversation as Markdown: how = 'copy' | 'download' | 'note'. */
+export async function exportConversation(ctx, how) {
+  const s = st(ctx);
+  const conversation = s.conversation;
+  if (!conversation?.messages?.length) { ctx.toast('Ask a question first. There is nothing to export yet.'); return; }
+  const isItem = id => !!liveItem(ctx, id);
+  if (how === 'note') {
+    const content = conversationMarkdown(conversation, { links: 'wiki', isItem, title: false });
+    const title = cleanTitle(conversation.title).slice(0, 120) || 'Assistant chat';
+    const relatedIds = unique(conversation.messages.flatMap(message => (message.citations || []).map(source => source.id))).filter(isItem);
+    let note = await createNote(ctx, { title, content, relatedIds, open: false });
+    if (!note) note = await ctx.store.saveItem({ type: 'note', title, content, relatedIds, tags: [] });
+    if (note?.id) ctx.toast('Saved the chat as a note', { tone: 'success', action: { label: 'Open', run: () => ctx.openItem(note.id) } });
+    return;
+  }
+  const markdown = conversationMarkdown(conversation, { isItem });
+  if (how === 'download') {
+    const url = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }));
+    const link = Object.assign(document.createElement('a'), { href: url, download: markdownFileName(conversation.title) });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    ctx.toast('Downloaded the chat as a Markdown file');
+    return;
+  }
+  await navigator.clipboard.writeText(markdown);
+  ctx.toast('Copied the chat as Markdown');
+}
+
+/** The full-tab address of the full-screen assistant, optionally opening a conversation. */
+export function assistantUrl(conversationId = '') {
+  const runtime = globalThis.chrome?.runtime;
+  const url = new URL(runtime?.id && typeof runtime.getURL === 'function' ? runtime.getURL('index.html') : new URL('index.html', location.href));
+  url.searchParams.set('libraryView', 'assistant');
+  if (conversationId) url.searchParams.set('conversation', conversationId);
+  return url.href;
+}
+
+/**
+ * Opens the full-screen assistant on the same conversation: in place from the full tab's panel, in a new tab from the side
+ * panel (the conversation is saved first; an answer still being written there appears in the tab when it finishes).
+ */
+async function openFullScreen(ctx) {
+  const s = st(ctx);
+  if (!ctx.env.isSidepanel) {
+    ctx.state.panel = null;
+    ctx.navigate('assistant');
+    ctx.nextFrame(() => composer()?.focus({ preventScroll: true }));
+    return;
+  }
+  const id = conversationIdOf(s);
+  if (s.conversation?.id && !s.run && ctx.ai?.saveConversation) {
+    try { s.conversation = await ctx.ai.saveConversation(s.conversation); } catch (error) { console.error(error); }
+  }
+  const url = assistantUrl(id);
+  if (ctx.env.isExtension && globalThis.chrome?.tabs?.create) await chrome.tabs.create({ url, active: true });
+  else window.open(url, '_blank', 'noopener');
+}
+
+// ------------------------------------------------------------------------------------------------ cross-page sync
+
+// Conversations are shared by every Still page (the side panel, full tabs, new tabs): when another page saves the open
+// conversation or the history list, this page follows, unless it is writing an answer itself.
+let historyTimer = 0;
+function onConversationsChanged(ctx, changes) {
+  const s = st(ctx);
+  if (CONVERSATIONS_KEY in changes && s.history !== null) {
+    clearTimeout(historyTimer);
+    historyTimer = setTimeout(() => refreshHistory(ctx, { quiet: true }), 150);
+  }
+  const id = s.conversation?.id;
+  const change = id ? changes[CONVERSATION_BODY_PREFIX + id] : null;
+  if (change && !s.run) followConversation(ctx, id, change.newValue);
+}
+
+async function followConversation(ctx, id, value) {
+  const s = st(ctx);
+  if (value === undefined || value === null) {
+    if (s.conversation?.id !== id || s.run) return;
+    newChat(ctx, { focus: false });
+    announce(ctx, 'This chat was deleted in another window.');
+    ctx.render();
+    return;
+  }
+  const current = s.conversation;
+  if (!current || current.id !== id) return;
+  if (value.updatedAt === current.updatedAt && value.title === current.title && (value.messages || []).length === current.messages.length) return;
+  const conversation = await ctx.ai?.getConversation?.(id);
+  if (!conversation || s.run || s.conversation?.id !== id) return;
+  s.conversation = conversation;
+  if (transcript) transcript.stick = true;
+  bump(ctx, { render: true });
+}
+
+function watchConversations(ctx) {
+  const storage = globalThis.chrome?.storage;
+  if (storage?.onChanged) {
+    storage.onChanged.addListener((changes, area) => { if (area === 'local') onConversationsChanged(ctx, changes); });
+    return;
+  }
+  // Preview (no chrome.*): conversations live in localStorage, whose 'storage' event reaches the other open pages.
+  globalThis.addEventListener?.('storage', event => {
+    if (!event.key || !(event.key === CONVERSATIONS_KEY || event.key.startsWith(CONVERSATION_BODY_PREFIX))) return;
+    let newValue;
+    try { newValue = event.newValue === null ? undefined : JSON.parse(event.newValue); } catch { return; }
+    onConversationsChanged(ctx, { [event.key]: { newValue } });
+  });
+}
+
 export async function init(ctx) {
   const s = st(ctx);
+  // Module init runs once the engine import has settled: from here a missing ctx.ai means it failed to load.
+  s.engineSettled = true;
   if (!ctx.ai) { ctx.render(); return; }
   try { ctx.ai.onConnectionsChanged?.(() => refreshTarget(ctx)); } catch (error) { console.error(error); }
+  try { watchConversations(ctx); } catch (error) { console.error(error); }
   await refreshTarget(ctx);
   if (s.target === undefined) s.target = null;
 }
 
 // ------------------------------------------------------------------------------------------------ rendering: panel
 
-export function renderAiPanel(ctx, { surface = ctx.env?.isSidepanel ? 'side' : 'full' } = {}) {
+/**
+ * The assistant: header, transcript (or the empty / setup state) and the composer. surface: 'side' | 'full' | 'page'.
+ * The full-screen page draws its own header (head: markup or '') and empty state (empty: (ctx, resolved) => markup).
+ */
+export function renderAiPanel(ctx, { surface = ctx.env?.isSidepanel ? 'side' : 'full', head, empty = renderEmpty } = {}) {
   const s = st(ctx);
   const ready = !!ctx.ai;
   const hasThread = !!(s.conversation?.messages?.length || s.run);
   const resolved = contextFor(ctx);
   return html`<section class="ai-panel" data-surface="${surface}" aria-label="Assistant">
-    ${renderHead(ctx, surface, hasThread)}
-    ${!ready ? html`<div class="ai-scroll ai-start" data-key="ai.unavailable">${emptyState({ icon: 'sparkles', title: 'The assistant is not available',
+    ${head === undefined ? renderHead(ctx, surface, hasThread) : head}
+    ${!ready ? s.engineSettled ? html`<div class="ai-scroll ai-start" data-key="ai.unavailable">${emptyState({ icon: 'sparkles', title: 'The assistant is not available',
       body: 'Still could not load its AI engine. Reload Still to try again.', actions: button({ label: 'Reload', icon: 'refresh-cw', action: 'app.retry-boot', size: 'sm' }) })}</div>`
+      : html`<div class="ai-scroll ai-start" data-key="ai.loading" aria-busy="true"></div>`
       : hasThread ? html`<div class="ai-scroll ai-thread" data-mount="ai.transcript" data-morph="skip" data-key="ai.transcript" role="region" aria-label="Conversation" tabindex="-1"></div>`
-        : html`<div class="ai-scroll ai-start" data-key="ai.start">${s.target === null ? renderSetup(ctx, resolved) : renderEmpty(ctx, resolved)}</div>`}
-    ${ready ? renderDock(ctx, resolved) : ''}
+        // While the model connection is still being read, show nothing rather than suggestions that may turn into the setup.
+        : html`<div class="ai-scroll ai-start" data-key="ai.start" ${s.target === undefined ? raw('aria-busy="true"') : ''}>${s.target === null ? renderSetup(ctx, resolved)
+          : s.target === undefined ? '' : empty(ctx, resolved)}</div>`}
+    ${ready || !s.engineSettled ? renderDock(ctx, resolved) : ''}
     <div class="sr-only" role="status" aria-live="polite" data-key="ai.announce">${s.announce}</div>
   </section>`;
 }
@@ -655,7 +919,8 @@ function renderHead(ctx, surface, hasThread) {
       ${ctx.ai ? '' : raw('disabled')}><span class="ai-title-text">${title}</span><span class="sr-only">, chat history</span>${icon('chevron-down', { size: 14 })}</button>
     <span class="spacer"></span>
     ${iconButton({ icon: 'square-pen', label: 'New chat', action: 'ai.new', disabled: !ctx.ai || (!hasThread && !s.draft) })}
-    ${surface === 'full' ? html`${iconButton({ icon: expanded ? 'minimize-2' : 'maximize-2', label: expanded ? 'Narrow the panel' : 'Widen the panel', action: 'ai.expand', pressed: expanded, tooltipPlacement: 'bottom end' })}
+    ${iconButton({ icon: 'maximize', label: 'Open full screen', action: 'ai.open-page', disabled: !ctx.ai, tooltipPlacement: surface === 'side' ? 'bottom end' : undefined })}
+    ${surface === 'full' ? html`${iconButton({ icon: expanded ? 'chevrons-right-left' : 'chevrons-left-right', label: expanded ? 'Narrow the panel' : 'Widen the panel', action: 'ai.expand', pressed: expanded, tooltipPlacement: 'bottom end' })}
       ${iconButton({ icon: 'x', label: 'Close', action: 'app.close-panel', tooltipPlacement: 'bottom end' })}` : ''}
   </header>`;
 }
@@ -740,7 +1005,8 @@ function renderModelButton(ctx) {
   const label = t === undefined ? 'Model' : t === null ? 'No model' : shortModelLabel(t.modelLabel || t.model);
   const effort = t?.efforts?.length && t.effort ? ` · ${ctx.ai?.EFFORT_LABELS?.[t.effort] || t.effort} effort` : '';
   const tip = t ? `${t.providerName} · ${t.modelLabel || t.model}${effort}` : 'Choose a model';
-  return html`<button type="button" class="ai-model-btn" data-action="ai.model" aria-haspopup="menu" aria-expanded="${popoverOpen(ctx, 'ai.model') ? 'true' : 'false'}"
+  const open = popoverOpen(ctx, 'ai.model') && !!ctx.state.popover?.anchorEl?.classList?.contains('ai-model-btn');
+  return html`<button type="button" class="ai-model-btn" data-action="ai.model" aria-haspopup="menu" aria-expanded="${open ? 'true' : 'false'}"
     data-tooltip="${tip}"><span class="ai-model-label">${label}</span>${icon('chevron-down', { size: 12 })}</button>`;
 }
 
@@ -790,9 +1056,11 @@ function paint(view) {
   const messages = threadMessages(s);
   const lastUser = messages.findLast(message => message.role === 'user');
   const lastAnswer = messages.findLast(message => message.role === 'assistant');
+  const waiting = s.run ? null : unansweredQuestion(messages);
   morph(el, html`${messages.map(message => message.role === 'user'
     ? renderQuestion(ctx, message, { last: message === lastUser })
-    : renderAnswer(ctx, view, message, { last: message === lastAnswer }))}`);
+    : renderAnswer(ctx, view, message, { last: message === lastAnswer }))}
+    ${waiting ? renderUnanswered(ctx, waiting) : ''}`);
   if (stick) el.scrollTop = el.scrollHeight;
 }
 
@@ -809,6 +1077,14 @@ function scopeLabel(ctx, record) {
   const ids = record.ids || [];
   if (ids.length === 1) return { glyph: icon('file-text', { size: 12 }), label: liveItem(ctx, ids[0])?.title || 'One item' };
   return { glyph: icon('layers', { size: 12 }), label: plural(ids.length, 'item') };
+}
+
+// A saved question without an answer: another window is still answering it, or that answer never finished.
+function renderUnanswered(ctx, question) {
+  return html`<div class="ai-unanswered" data-key="wait:${question.id}">
+    <p class="ai-note">${icon('clock', { size: 14 })}<span>No answer here yet. If another window is answering, it appears when it finishes.</span></p>
+    ${button({ label: 'Ask again', icon: 'refresh-cw', size: 'sm', action: 'ai.ask-again', data: { id: question.id } })}
+  </div>`;
 }
 
 function renderQuestion(ctx, message, { last }) {
@@ -925,7 +1201,7 @@ function renderTools(ctx, message) {
 function sourceRow(ctx, item, n) {
   if (!item) return '';
   return html`<li><button type="button" class="ai-source" data-action="ai.cite" data-id="${item.id}">
-    ${n ? html`<span class="ai-source-n">${n}</span>` : ''}${isWebUrl(item.url) ? favicon(item.url, { size: 16 }) : html`<span class="ai-source-icon">${icon(TYPE_ICONS[item.type] || 'file-text', { size: 14 })}</span>`}
+    ${n ? html`<span class="ai-source-n">${n}</span>` : ''}${isWebUrl(item.url) ? siteIcon(item.url, { size: 16 }) : html`<span class="ai-source-icon">${icon(TYPE_ICONS[item.type] || 'file-text', { size: 14 })}</span>`}
     <span class="ai-source-title">${item.title || item.url || 'Untitled'}</span>${domainOf(item.url) ? html`<span class="ai-source-meta">${domainOf(item.url)}</span>` : ''}</button></li>`;
 }
 
@@ -968,10 +1244,15 @@ function renderActions(ctx, message, { last, citations }) {
     ${sources.length ? html`<button type="button" class="ai-sources-toggle" data-action="ai.toggle" data-open="${sourcesKey}" aria-expanded="${showSources ? 'true' : 'false'}">
       ${icon('link', { size: 12 })}<span>${plural(sources.length, 'source')}</span></button>` : ''}
   </div>
-  ${showSources ? html`<ol class="ai-sources" role="list" data-key="src:${message.id}">${sources.map(source => source.id === 'page:current'
-    ? html`<li><button type="button" class="ai-source" data-action="ai.cite" data-id="page:current" data-url="${source.url}"><span class="ai-source-n">${source.n}</span>${favicon(source.url, { size: 16 })}
+  ${showSources ? html`<ol class="ai-sources" role="list" data-key="src:${message.id}">${renderSourceRows(ctx, sources)}</ol>` : ''}`;
+}
+
+/** Numbered rows for the sources that can still be opened (saved items and the page an answer read). */
+export function renderSourceRows(ctx, citations = []) {
+  return citations.filter(source => source.id === 'page:current' || liveItem(ctx, source.id)).map(source => source.id === 'page:current'
+    ? html`<li><button type="button" class="ai-source" data-action="ai.cite" data-id="page:current" data-url="${source.url}"><span class="ai-source-n">${source.n}</span>${siteIcon(source.url, { size: 16 })}
       <span class="ai-source-title">${source.title || 'This page'}</span><span class="ai-source-meta">${domainOf(source.url)}</span></button></li>`
-    : sourceRow(ctx, liveItem(ctx, source.id), source.n))}</ol>` : ''}`;
+    : sourceRow(ctx, liveItem(ctx, source.id), source.n));
 }
 
 // ------------------------------------------------------------------------------------------------ rendering: proposals
@@ -1107,14 +1388,14 @@ function renderReceipt(ctx, proposal, status) {
 
 function renderHistoryPopover(ctx) {
   const s = st(ctx);
-  const query = s.historyQuery.trim().toLowerCase();
-  const list = (s.history || []).filter(entry => !query || `${entry.title} ${entry.preview || ''}`.toLowerCase().includes(query));
+  const query = s.historyQuery.trim();
+  const list = filterConversations(s.history, query);
   const row = entry => {
     const current = entry.id === s.conversation?.id;
     return html`<li class="${cx('ai-history-row', current && 'is-current')}" data-key="h:${entry.id}">
       <button type="button" class="ai-history-main" data-action="ai.history-open" data-id="${entry.id}" ${current ? raw('aria-current="true"') : ''}>
         <span class="ai-history-title">${entry.title || 'New conversation'}</span>
-        <span class="ai-history-meta">${relativeDate(entry.updatedAt)}${entry.preview ? html` · ${entry.preview}` : ''}</span></button>
+        <span class="ai-history-meta">${relativeDate(entry.updatedAt)}${entry.preview ? html` · ${plainPreview(entry.preview)}` : ''}</span></button>
       <span class="ai-history-tools">
         ${iconButton({ icon: 'pencil', label: 'Rename', size: 'sm', action: 'ai.history-rename', data: { id: entry.id } })}
         ${iconButton({ icon: 'trash-2', label: 'Delete', size: 'sm', action: 'ai.history-delete', data: { id: entry.id } })}
@@ -1201,6 +1482,16 @@ function contextOptions(ctx) {
     }
     if (resolved.kind !== 'library') options.push({ kind: 'scope', scope: 'library', label: 'Whole library', hint: 'Search everything', glyph: icon('library', { size: 16 }) });
   }
+  // Inbox and collections: recent ones without a query, matching names with one.
+  const current = resolved.kind === 'collection' ? resolved.scope.collectionId : null;
+  const taken = new Set(options.map(option => option.collectionId).filter(id => id !== undefined));
+  const words = fold(query).split(/\s+/).filter(Boolean);
+  const named = name => words.every(word => fold(name).includes(word));
+  if (current !== '' && !taken.has('') && named('Inbox')) options.push({ kind: 'scope', scope: 'collection', collectionId: '', label: 'Inbox', hint: 'Not in a collection', glyph: collectionIcon(null, { size: 16 }) });
+  const collections = words.length ? (ctx.select?.tree?.() || []).filter(collection => named(collection.name)) : ctx.select?.recentCollections?.(6) || [];
+  for (const collection of collections.filter(entry => entry.id !== current && !taken.has(entry.id)).slice(0, words.length ? 4 : 5)) {
+    options.push({ kind: 'scope', scope: 'collection', collectionId: collection.id, label: collection.name, hint: 'Collection', glyph: collectionIcon(collection, { size: 16 }) });
+  }
   for (const item of itemMatches(ctx, query, 8)) options.push({ kind: 'item', id: item.id, item });
   return options;
 }
@@ -1214,7 +1505,7 @@ function renderContextPopover(ctx) {
     ? html`<div role="option" id="ai-ctx-${index}" class="${cx('ai-ctx-option', index === active && 'is-active')}" aria-selected="false" data-action="ai.ctx-pick" data-index="${index}">
         ${entry.glyph}<span class="ai-ctx-label">${entry.label}</span><span class="ai-ctx-hint">${entry.hint}</span></div>`
     : html`<div role="option" id="ai-ctx-${index}" class="${cx('ai-ctx-option', index === active && 'is-active')}" aria-selected="${added.has(entry.id) ? 'true' : 'false'}" data-action="ai.ctx-pick" data-index="${index}">
-        ${isWebUrl(entry.item.url) ? favicon(entry.item.url, { size: 16 }) : icon(TYPE_ICONS[entry.item.type] || 'file-text', { size: 16 })}
+        ${isWebUrl(entry.item.url) ? siteIcon(entry.item.url, { size: 16 }) : icon(TYPE_ICONS[entry.item.type] || 'file-text', { size: 16 })}
         <span class="ai-ctx-label">${entry.item.title || entry.item.url || 'Untitled'}</span>
         ${added.has(entry.id) ? icon('check', { size: 14, className: 'ai-ctx-check' }) : html`<span class="ai-ctx-hint">${domainOf(entry.item.url)}</span>`}</div>`;
   const scopes = options.map((entry, index) => [entry, index]).filter(([entry]) => entry.kind === 'scope');
@@ -1416,7 +1707,7 @@ registerActions({
     const s = st(ctx);
     s.ctxQuery = '';
     s.ctxActive = 0;
-    ctx.openPopover('ai.context', el, {}, { placement: 'top-start' });
+    ctx.openPopover('ai.context', el, {}, { placement: el?.dataset?.placement || 'top-start' });
   },
   'ai.ctx-query': ({ ctx, el }) => { const s = st(ctx); s.ctxQuery = el.value; s.ctxActive = 0; ctx.render(); },
   'ai.ctx-key': ({ ctx, event }) => {
@@ -1459,7 +1750,7 @@ registerActions({
   'ai.model': ({ ctx, el }) => {
     const s = st(ctx);
     s.modelView = 'models';
-    ctx.openPopover('ai.model', el, {}, { placement: 'top-start' });
+    ctx.openPopover('ai.model', el, {}, { placement: el.dataset.placement || 'top-start' });
     const id = s.target?.connectionId;
     const connection = s.connections.find(entry => entry.id === id);
     if (id && connection?.via === 'direct' && connection.hasKey && typeof ctx.ai?.listModels === 'function') {
@@ -1518,19 +1809,14 @@ registerActions({
   'ai.history-open': ({ ctx, data }) => openConversation(ctx, data.id),
   'ai.history-rename': async ({ ctx, data }) => {
     const s = st(ctx);
-    const entry = (s.history || []).find(item => item.id === data.id);
+    const entry = (s.history || []).find(item => item.id === data.id) || (s.conversation?.id === data.id ? s.conversation : null);
     const name = await ctx.prompt({ title: 'Rename chat', label: 'Name', value: entry?.title || '', confirmLabel: 'Rename' });
     if (name === null || !name.trim()) return;
-    const conversation = await ctx.ai.getConversation(data.id);
-    if (!conversation) return;
-    const saved = await ctx.ai.saveConversation({ ...conversation, title: name.trim().slice(0, 200) });
-    if (s.conversation?.id === data.id) s.conversation = { ...s.conversation, title: saved.title };
-    await refreshHistory(ctx, { quiet: true });
-    ctx.render();
+    await renameAiConversation(ctx, data.id, name);
   },
   'ai.history-delete': async ({ ctx, data }) => {
     const s = st(ctx);
-    const entry = (s.history || []).find(item => item.id === data.id);
+    const entry = (s.history || []).find(item => item.id === data.id) || (s.conversation?.id === data.id ? s.conversation : null);
     const ok = await ctx.confirm({ title: 'Delete this chat?', body: `“${entry?.title || 'This chat'}” is removed from this device. Saved notes and items stay.`, confirmLabel: 'Delete', tone: 'danger' });
     if (!ok) return;
     await ctx.ai.deleteConversation(data.id);
@@ -1557,6 +1843,11 @@ registerActions({
   'ai.save-note': async ({ ctx, data }) => { const message = findMessage(st(ctx), data.id); if (message?.text) await saveAsNote(ctx, message); },
   'ai.insert-note': async ({ ctx, data }) => { const message = findMessage(st(ctx), data.id); if (message?.text) await insertIntoNote(ctx, message); },
   'ai.retry': ({ ctx, data }) => { retry(ctx, data.id); },
+  'ai.ask-again': ({ ctx, data }) => {
+    const question = (st(ctx).conversation?.messages || []).find(message => message.id === data.id && message.role === 'user');
+    if (question) askAgain(ctx, question);
+  },
+  'ai.open-page': ({ ctx }) => openFullScreen(ctx),
   'ai.allow-host': ({ ctx, data }) => {
     const s = st(ctx);
     const connection = s.connections.find(entry => entry.id === data.connection);

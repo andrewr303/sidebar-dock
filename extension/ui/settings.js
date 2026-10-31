@@ -1,59 +1,36 @@
-// Settings and help (SPEC.md §7.4, §13). One dialog: a section nav beside the content in the full tab, a section list
-// with drill-in in the side panel. Sections: general, appearance, library, ai, search, agents, integrations, shortcuts,
-// about, help. Library settings go through ctx.store.updateSettings (app.js applies theme, accent and density); AI
-// configuration goes through the ctx.ai facade; bridge, MCP and Raindrop through lib/integrations.js.
+// Settings and help (SPEC.md §7.4, §13). A full page in the full tab (views 'settings' and 'settings:<section>') and a covering
+// panel in the side panel (ctx.state.panel = { kind: 'settings' }); both use one layout that switches to a section list with
+// drill-in below 760px (styles/settings.css container queries). A search field filters every section down to matching rows.
+// Library settings go through ctx.store.updateSettings (app.js applies them to <html>); AI configuration through the ctx.ai
+// facade; bridge, MCP and Raindrop through lib/integrations.js. Appearance, New tab & dashboard and Connected accounts live in
+// ui/settings/*.js; the building blocks and the search renderer in ui/settings/parts.js.
 import { html, cx, plural, safeHref, safeSrc } from './html.js';
 import { icon } from './icons.js';
-import { button, iconButton, segmented, select, switchToggle, field, input, badge, spinner, emptyState, kbd, collectionIcon, chip, fileSize, relativeDate, shortDate } from './components.js';
+import { button, iconButton, segmented, select, field, input, badge, spinner, emptyState, kbd, fileSize, relativeDate, shortDate } from './components.js';
 import { registerDialog } from './overlay.js';
-import { registerActions, listShortcuts } from './runtime.js';
+import { registerActions, registerShortcuts, registerMount, listShortcuts } from './runtime.js';
 import { renderCollectionPickerTrigger } from './pickers.js';
+import { navToggle } from './sidebar.js';
 import * as integrations from '../lib/integrations.js';
 import { createFullBackup, importPortableFile, exportBookmarkHtml, exportNotesMarkdown } from '../lib/portability.js';
 import { REFERENCE_ASSETS } from '../lib/references.js';
+import { SETTINGS_SECTIONS, normalizeSection, isSection, sectionById, sectionFromView, settingsView, groupSections, adjacentSections,
+  searchTerms, matchSections } from './settings/catalog.js';
+import { uiState, isBusy, withBusy, renderFiltered, isSearching, matches, searchable, resetIds, group, card, row, switchRow, blockRow, callout,
+  codeBlock, progressBar, disclosure, disclosed, loadingBlock, linkButton, note, providerMark } from './settings/parts.js';
+import { renderAppearance, ACCENTS } from './settings/appearance.js';
+import { renderNewTab, attachNewTab, detachNewTab } from './settings/newtab.js';
+import { renderAccounts, attachAccounts, detachAccounts } from './settings/accounts.js';
 
-const DIALOG = 'settings';
+export { SETTINGS_SECTIONS, normalizeSection, ACCENTS };
+
 const CONNECT = 'settings.connect';
 const REPO = 'https://github.com/AVRCORP/sidebar-dock';
 const SHORTCUTS_PAGE = 'chrome://extensions/shortcuts';
 const RAINDROP_ORIGIN = 'https://api.raindrop.io/*';
-
-/* ------------------------------------------------------------------ static content */
-
-export const SETTINGS_SECTIONS = Object.freeze([
-  { id: 'general', label: 'General', icon: 'settings-2', summary: 'Default collection, side panel, deleting', description: 'How saving and the side panel behave.' },
-  { id: 'appearance', label: 'Appearance', icon: 'palette', summary: 'Theme, accent color, density', description: 'Theme, accent color and density. Changes apply right away.' },
-  { id: 'library', label: 'Library & backup', icon: 'hard-drive', summary: 'Backup, import, export, storage', description: 'Back up your library, bring in bookmarks and manage storage on this device.' },
-  { id: 'ai', label: 'AI models', icon: 'sparkles', groupStart: true, summary: 'Providers, default models, local bridge', description: 'Connect the models Still uses for Ask, note writing tools and save suggestions.' },
-  { id: 'search', label: 'Semantic search', icon: 'brain', summary: 'Embeddings and the search index', description: 'Find items by meaning, not only by matching words.' },
-  { id: 'agents', label: 'Agents & MCP', icon: 'terminal', summary: 'Claude Code, Codex, Claude Desktop', description: 'Let coding agents search and organize your library through MCP.' },
-  { id: 'integrations', label: 'Integrations', icon: 'plug', groupStart: true, summary: 'Raindrop.io and other apps', description: 'Move links between Still and the apps you already use.' },
-  { id: 'shortcuts', label: 'Keyboard shortcuts', icon: 'keyboard', summary: 'Keys in Still and in Chrome', description: 'Keys that work inside Still, and the Chrome keys that work on any page.' },
-  { id: 'about', label: 'About', icon: 'info', summary: 'Version and where your data lives', description: 'Version, where your data lives and how to get help.' },
-  { id: 'help', label: 'Help', icon: 'circle-help', summary: 'Getting started, search syntax, references', description: 'Getting started, search syntax and the reference room.' },
-]);
-const SECTION_IDS = new Set(SETTINGS_SECTIONS.map(section => section.id));
-export const normalizeSection = section => (SECTION_IDS.has(section) ? section : 'general');
-
-// Order and labels follow tokens.css (Settings > Appearance). "amber" is an alias of gold and is not offered.
-export const ACCENTS = Object.freeze([
-  { id: 'blue', label: 'Blue' }, { id: 'teal', label: 'Teal' }, { id: 'green', label: 'Green' }, { id: 'gold', label: 'Raindrop gold' },
-  { id: 'orange', label: 'Orange' }, { id: 'pink', label: 'Pink' }, { id: 'graphite', label: 'Graphite' },
-]);
-const THEMES = [{ value: 'system', label: 'System', icon: 'sun-moon' }, { value: 'light', label: 'Light', icon: 'sun' }, { value: 'dark', label: 'Dark', icon: 'moon' }];
-const DENSITIES = [{ value: 'comfortable', label: 'Comfortable', icon: 'rows-3' }, { value: 'compact', label: 'Compact', icon: 'list' }];
 const HANDOFF_CHOICES = ['claude', 'chatgpt', 'grok'];
 
-// Letter or icon tiles for providers and clients (no brand artwork ships with the extension).
-const MARKS = {
-  anthropic: { text: 'A', color: 'orange' }, openai: { text: 'O', color: 'green' }, xai: { text: 'x', color: 'gray' }, google: { text: 'G', color: 'blue' },
-  openrouter: { text: 'OR', color: 'indigo' }, mistral: { text: 'M', color: 'amber' }, groq: { text: 'G', color: 'red' }, deepseek: { text: 'D', color: 'cyan' },
-  perplexity: { text: 'P', color: 'teal' }, voyage: { text: 'V', color: 'violet' }, cohere: { text: 'C', color: 'pink' },
-  ollama: { icon: 'cpu', color: 'gray' }, lmstudio: { text: 'LM', color: 'gray' }, 'custom-openai': { icon: 'server', color: 'gray' }, 'custom-anthropic': { icon: 'server', color: 'gray' },
-  bridge: { icon: 'plug-zap', color: 'blue' }, 'agent:claude-code': { icon: 'terminal', color: 'orange' }, 'agent:codex': { icon: 'terminal', color: 'gray' },
-  'chatgpt-oauth': { icon: 'message-circle', color: 'green' }, raindrop: { icon: 'cloud', color: 'blue' }, cursor: { text: 'Cu', color: 'gray' },
-  vscode: { icon: 'code-xml', color: 'blue' }, chrome: { icon: 'globe', color: 'blue' }, opencode: { text: 'OC', color: 'gray' }, gemini: { text: 'G', color: 'blue' }, 'claude-desktop': { text: 'A', color: 'orange' },
-};
+/* ------------------------------------------------------------------ static content */
 
 export const MCP_CLIENTS = Object.freeze([
   { id: 'claude', name: 'Claude Code', mark: 'agent:claude-code', blurb: 'Anthropic’s coding agent for the terminal and IDEs.', docs: 'https://code.claude.com/docs/en/mcp',
@@ -134,6 +111,7 @@ const GETTING_STARTED = [
   { icon: 'highlighter', title: 'Highlight', text: 'Select text on a page, right-click and choose Highlight selection. Highlights show up on the saved item.' },
   { icon: 'sparkles', title: 'Ask', text: 'Ask about this page, a collection or your whole library once a model is connected in AI models.' },
   { icon: 'terminal', title: 'Work with agents', text: 'Claude Code, Codex and Claude Desktop can search and organize your library through MCP.' },
+  { icon: 'layout-dashboard', title: 'Make the new tab yours', text: 'New tabs open your dashboard. Add widgets, pick a theme and a wallpaper in Appearance and New tab & dashboard.' },
 ];
 
 const GUIDES = [
@@ -315,29 +293,20 @@ const data = {
   clients: null, clientsError: '',
   importJob: null, raindrop: null, login: null,
 };
-const busy = new Set();
 const drafts = { bridgeUrl: null, bridgeToken: '', raindropToken: '' };
 let connectDraft = { apiKey: '', baseUrl: '', label: '', workspaceId: '', defaultModel: '' };
-// pausedHere: sync was paused in this window without a stored setting (integrations.setBridgeEnabled is missing).
-const live = { offAi: null, offIndex: null, tick: 0, loginTimer: 0, forceClose: false, pausedHere: false };
+// mounted: a Settings page is on screen. pausedHere: sync was paused in this window without a stored setting
+// (integrations.setBridgeEnabled is missing). pending: work to do once the page has loaded (open a provider, scroll to a row).
+const live = { offAi: null, offIndex: null, tick: 0, loginTimer: 0, mounted: false, pausedHere: false, searchTimer: 0, engineSettled: false, pending: { providerId: '', anchor: '' } };
 
-const uiState = ctx => (ctx.state.settings ||= { section: 'general', list: false, open: new Set() });
-const isOpen = ctx => ctx.state.dialogs.some(entry => entry.name === DIALOG);
 const settingsOf = ctx => ctx.library?.settings || {};
-const version = () => { try { return globalThis.chrome?.runtime?.getManifest?.()?.version || '0.3.0'; } catch { return '0.3.0'; } };
+const version = () => { try { return globalThis.chrome?.runtime?.getManifest?.()?.version || '0.4.0'; } catch { return '0.4.0'; } };
 const topProps = (ctx, name) => ctx.state.dialogs.findLast(entry => entry.name === name)?.props || null;
 const patchConnect = (ctx, patch) => { if (topProps(ctx, CONNECT)) ctx.updateDialog(CONNECT, patch); };
 const aiSettings = ctx => data.aiSettings || ctx.ai?.DEFAULT_AI_SETTINGS || {};
 const focusSoon = (ctx, selector) => ctx.nextFrame(() => document.querySelector(selector)?.focus({ preventScroll: false }));
 const since = iso => relativeDate(iso).replace(/^Just now$/, 'just now');
 const bridgeSettings = () => (data.integration && live.pausedHere ? { ...data.integration, bridgeEnabled: false } : data.integration);
-
-async function withBusy(ctx, key, fn) {
-  if (busy.has(key)) return undefined;
-  busy.add(key);
-  ctx.render();
-  try { return await fn(); } finally { busy.delete(key); ctx.render(); }
-}
 
 // Chrome shows a permission prompt only during a user gesture, so callers start this before their first await.
 // Without the permissions API (preview mode) there is nothing to grant.
@@ -378,12 +347,14 @@ async function loadCommands() {
 
 async function loadAi(ctx, { refresh = false } = {}) {
   const ai = ctx.ai;
-  if (!ai) { data.aiError = 'unavailable'; ctx.render(); return; }
+  // app.js loads the AI engine after the first render; init() below loads again once it has settled.
+  if (!ai) { if (live.engineSettled) data.aiError = 'unavailable'; ctx.render(); return; }
   try { data.connections = await ai.listConnections({ refresh }); data.aiError = ''; } catch (error) { data.connections ||= []; data.aiError = error.message; }
   try { data.aiSettings = await ai.getAiSettings(); } catch (error) { data.aiError ||= error.message; }
   try { data.bridge = await ai.getBridgeStatus(); } catch { data.bridge = null; }
   try { data.index = ai.getIndexStatus(); } catch { /* the index reports through subscribeIndex */ }
   ctx.render();
+  openPendingConnect(ctx);
 }
 
 async function loadClients(ctx) {
@@ -402,14 +373,27 @@ async function refresh(ctx, { bridge = false } = {}) {
   ctx.render();
 }
 
+// "Set up" buttons elsewhere (Ask's empty state) open Settings straight into a provider's connect dialog.
+function openPendingConnect(ctx) {
+  const providerId = live.pending.providerId;
+  if (!providerId || !live.mounted || !ctx.ai?.getProvider?.(providerId)) return;
+  live.pending.providerId = '';
+  const existing = (data.connections || []).find(c => c.via === 'direct' && c.providerId === providerId && ctx.ai.getProvider(providerId)?.kind !== 'custom');
+  ctx.run(() => openConnect(ctx, { providerId, id: existing?.id || '' }));
+}
+
 function attach(ctx) {
   detach();
+  live.mounted = true;
   const ai = ctx.ai;
   try { live.offAi = ai?.onConnectionsChanged?.(() => loadAi(ctx)) || null; } catch { live.offAi = null; }
-  try { live.offIndex = ai?.subscribeIndex?.(status => { data.index = status; if (isOpen(ctx)) ctx.render(); }) || null; } catch { live.offIndex = null; }
+  try { live.offIndex = ai?.subscribeIndex?.(status => { data.index = status; if (live.mounted) ctx.render(); }) || null; } catch { live.offIndex = null; }
   // Relative times ("Synced 8 seconds ago") and the bridge sync status (app.js updates it without rendering).
-  live.tick = setInterval(() => { if (isOpen(ctx)) ctx.render(); }, 5000);
+  live.tick = setInterval(() => { if (live.mounted && !document.hidden) ctx.render(); }, 5000);
   if (data.login && ['pending', 'user_action_needed'].includes(data.login.status)) pollLogin(ctx);
+  attachNewTab(ctx);
+  attachAccounts(ctx);
+  refresh(ctx, { bridge: true }).catch(error => console.error(error));
 }
 
 function detach() {
@@ -417,150 +401,217 @@ function detach() {
   if (typeof live.offIndex === 'function') live.offIndex();
   clearInterval(live.tick);
   clearTimeout(live.loginTimer);
-  Object.assign(live, { offAi: null, offIndex: null, tick: 0, loginTimer: 0 });
+  Object.assign(live, { offAi: null, offIndex: null, tick: 0, loginTimer: 0, mounted: false });
+  detachNewTab();
+  detachAccounts();
 }
+
+// Mounted on an invisible marker inside the page, so loading starts when Settings appears and listeners stop when it leaves.
+// Leaving Settings also forgets the search, so coming back (from any link) shows a section again.
+registerMount('settings-live', (el, ctx) => {
+  attach(ctx);
+  return { update() {}, destroy() { detach(); clearTimeout(live.searchTimer); if (ctx.state.settings) ctx.state.settings.query = ''; } };
+});
 
 /* ------------------------------------------------------------------ public entry */
 
-/** Opens Settings at a section: general, appearance, library, ai, search, agents, integrations, shortcuts, about, help. */
-export function openSettings(ctx, section = 'general') {
+/**
+ * Opens Settings at a section: appearance, newtab, general, library, ai, search, agents, accounts, integrations, shortcuts,
+ * about, help. options: { anchor } scrolls to a row id; { providerId } opens that AI provider's connect dialog (section 'ai').
+ */
+export function openSettings(ctx, section = 'general', options = {}) {
   const ui = uiState(ctx);
-  const known = SECTION_IDS.has(section);
-  ui.section = known ? section : 'general';
-  // The side panel starts on the section list unless a specific section was asked for.
-  ui.list = !!ctx.env?.isSidepanel && (!known || section === 'general');
-  if (isOpen(ctx)) { ctx.render(); return; }
-  ctx.openDialog(DIALOG, { ...(ctx.env?.isSidepanel ? { size: 'full' } : {}), onClose: detach });
-  attach(ctx);
-  refresh(ctx, { bridge: true }).catch(error => console.error(error));
-}
-
-/* ------------------------------------------------------------------ building blocks */
-
-function providerMark(id, size = 32) {
-  const mark = MARKS[id] || { icon: 'circle', color: 'gray' };
-  return html`<span class="avatar-tile settings-mark" data-color="${mark.color}" style="--size:${size}px" aria-hidden="true">${mark.icon
-    ? icon(mark.icon, { size: Math.round(size * 0.5) }) : mark.text}</span>`;
-}
-
-const group = ({ title, description, actions, body, id, className }) => html`<section class="${cx('settings-group', className)}" ${id ? html`id="${id}"` : ''}>
-  ${title ? html`<header class="settings-group-head"><div class="settings-group-heading"><h4 class="settings-group-title">${title}</h4>
-    ${description ? html`<p class="settings-group-desc">${description}</p>` : ''}</div>${actions || ''}</header>` : ''}
-  ${body}
-</section>`;
-
-const card = (rows, className) => html`<div class="${cx('settings-card', className)}">${rows}</div>`;
-
-function row({ label, description, control, lead, className, stacked, id, descClass } = {}) {
-  return html`<div class="${cx('settings-row', stacked && 'is-stacked', className)}" ${id ? html`id="${id}"` : ''}>
-    ${lead || ''}
-    <div class="settings-row-text"><span class="settings-row-label">${label}</span>${description ? html`<span class="${cx('settings-row-desc', descClass)}">${description}</span>` : ''}</div>
-    ${control ? html`<div class="settings-row-control">${control}</div>` : ''}
-  </div>`;
-}
-
-const switchRow = options => html`<div class="settings-row is-switch">${switchToggle(options)}</div>`;
-
-function callout({ tone = 'info', icon: ico, title, body, actions, live: announce } = {}) {
-  const glyph = ico || { success: 'circle-check', danger: 'circle-alert', warning: 'triangle-alert', info: 'info' }[tone] || 'info';
-  return html`<div class="settings-callout" data-tone="${tone}" ${announce ? html`role="${tone === 'danger' ? 'alert' : 'status'}"` : ''}>
-    ${icon(glyph, { size: 16, className: 'settings-callout-icon' })}
-    <div class="settings-callout-text">${title ? html`<p class="settings-callout-title">${title}</p>` : ''}${body ? html`<p class="settings-callout-body">${body}</p>` : ''}
-      ${actions ? html`<div class="settings-callout-actions">${actions}</div>` : ''}</div>
-  </div>`;
-}
-
-function codeBlock(code, { label = 'Copy', done = 'Copied' } = {}) {
-  return html`<div class="settings-code"><pre><code>${code}</code></pre>
-    ${iconButton({ icon: 'copy', label, action: 'app.copy', data: { text: code, done }, size: 'sm', className: 'settings-code-copy', tooltipPlacement: 'top end' })}</div>`;
-}
-
-function progressBar({ percent = null, label, tone } = {}) {
-  const indeterminate = percent === null || percent === undefined;
-  return html`<div class="${cx('settings-progress', indeterminate && 'is-indeterminate')}" ${tone ? html`data-tone="${tone}"` : ''} role="progressbar" aria-label="${label}"
-    ${indeterminate ? '' : html`aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}" style="--progress:${percent / 100}"`}><span class="settings-progress-bar"></span></div>`;
-}
-
-const disclosure = (ctx, id, label, { count } = {}) => {
-  const open = uiState(ctx).open.has(id);
-  return html`<button type="button" class="settings-disclosure" aria-expanded="${open ? 'true' : 'false'}" aria-controls="settings-more-${id}"
-    data-action="settings.disclose" data-id="${id}">${icon(open ? 'chevron-down' : 'chevron-right', { size: 14 })}<span>${label}</span>${count != null ? html`<span class="count">${count}</span>` : ''}</button>`;
-};
-const disclosed = (ctx, id) => uiState(ctx).open.has(id);
-
-const loadingBlock = label => html`<div class="settings-loading" role="status">${spinner({ size: 16 })}<span>${label}</span></div>`;
-
-const linkButton = ({ label, href, icon: ico = 'external-link', variant = 'secondary', size = 'sm' }) => html`<a class="${cx('btn', `btn-${variant}`, size !== 'md' && `btn-${size}`)}"
-  href="${safeHref(href)}" target="_blank" rel="noopener noreferrer"><span class="btn-label">${label}</span>${icon(ico, { size: 14, className: 'btn-icon-right' })}</a>`;
-
-function aiUnavailable() {
-  return emptyState({ icon: 'circle-alert', tone: 'danger', title: 'AI settings could not load', body: 'Reload Still to try again. Your library is not affected.',
-    actions: button({ label: 'Reload', icon: 'refresh-cw', variant: 'secondary', size: 'sm', action: 'app.retry-boot' }) });
-}
-
-/* ------------------------------------------------------------------ frame */
-
-function navItem(section, active) {
-  return html`<button type="button" role="tab" class="${cx('settings-nav-item', section.groupStart && 'is-group-start')}" id="settings-tab-${section.id}"
-    aria-selected="${active ? 'true' : 'false'}" aria-controls="settings-panel" tabindex="${active ? '0' : '-1'}" ${active ? html`data-autofocus` : ''}
-    data-action="settings.section" data-section="${section.id}">${icon(section.icon, { size: 16 })}<span>${section.label}</span></button>`;
-}
-
-function renderSettings(ctx) {
-  const ui = uiState(ctx);
-  const section = SETTINGS_SECTIONS.find(entry => entry.id === ui.section) || SETTINGS_SECTIONS[0];
-  const close = iconButton({ icon: 'x', label: 'Close settings', action: 'settings.close', size: 'sm' });
-  if (ctx.env.isSidepanel) {
-    if (ui.list) {
-      return html`<div class="settings is-side">
-        <header class="settings-side-head"><h2 class="settings-side-title" id="dialog-title-settings">Settings</h2>${close}</header>
-        <div class="settings-scroll" data-key="settings-index">
-          <ul class="settings-index" role="list">${SETTINGS_SECTIONS.map((entry, index) => html`<li class="${cx(entry.groupStart && 'is-group-start')}">
-            <button type="button" class="settings-index-row" id="settings-row-${entry.id}" data-action="settings.section" data-section="${entry.id}" ${index === 0 ? html`data-autofocus` : ''}>
-              <span class="settings-index-icon" aria-hidden="true">${icon(entry.icon, { size: 16 })}</span>
-              <span class="settings-index-text"><span class="settings-index-label">${entry.label}</span><span class="settings-index-desc">${entry.summary}</span></span>
-              ${icon('chevron-right', { size: 16, className: 'settings-index-chevron' })}
-            </button></li>`)}</ul>
-          <p class="settings-foot">Still ${version()}</p>
-        </div>
-      </div>`;
-    }
-    return html`<div class="settings is-side is-drilled">
-      <header class="settings-side-head">
-        ${iconButton({ icon: 'arrow-left', label: 'All settings', action: 'settings.back', size: 'sm', className: 'settings-back', attrs: { 'data-autofocus': true } })}
-        <h2 class="settings-side-title" id="dialog-title-settings">${section.label}</h2>${close}
-      </header>
-      <div class="settings-scroll" data-key="settings-panel-${section.id}" id="settings-panel">
-        ${section.description ? html`<p class="settings-intro">${section.description}</p>` : ''}
-        ${renderSection(ctx, section.id)}
-      </div>
-    </div>`;
+  const explicit = isSection(normalizeSection(section, ''));
+  const id = normalizeSection(section);
+  ui.query = '';
+  live.pending = { providerId: options?.providerId || '', anchor: options?.anchor || '' };
+  if (ctx.env?.isSidepanel) {
+    ui.section = id;
+    // The side panel starts on the section list unless a specific section was asked for.
+    ui.list = !explicit || id === 'general';
+    ctx.closePopover?.({ restore: false });
+    ctx.state.panel = { kind: 'settings' };
+    ctx.render();
+    afterOpen(ctx);
+    return;
   }
-  return html`<div class="settings">
-    <nav class="settings-nav" aria-label="Settings sections">
-      <h2 class="settings-nav-title" id="dialog-title-settings">Settings</h2>
-      <div class="settings-nav-list" role="tablist" aria-orientation="vertical" aria-label="Settings sections">${SETTINGS_SECTIONS.map(entry => navItem(entry, entry.id === section.id))}</div>
-      <p class="settings-foot">Still ${version()}</p>
-    </nav>
-    <section class="settings-main">
-      <header class="settings-main-head">
-        <div class="settings-main-heading"><h3 class="settings-main-title">${section.label}</h3>${section.description ? html`<p class="settings-main-desc">${section.description}</p>` : ''}</div>
-        ${close}
-      </header>
-      <div class="settings-scroll" role="tabpanel" id="settings-panel" aria-labelledby="settings-tab-${section.id}" tabindex="-1" data-key="settings-panel-${section.id}">
-        ${renderSection(ctx, section.id)}
+  ui.section = id;
+  // General is also the default: the bare 'settings' view shows it on wide pages and the section list on narrow ones.
+  const view = id === 'general' ? 'settings' : settingsView(id);
+  if (ctx.state.view === view) ctx.render(); else ctx.navigate(view);
+  afterOpen(ctx);
+}
+
+function afterOpen(ctx) {
+  ctx.nextFrame(() => {
+    if (live.pending.providerId && live.mounted && data.connections) openPendingConnect(ctx);
+    const anchor = live.pending.anchor && document.getElementById(live.pending.anchor);
+    live.pending.anchor = '';
+    if (anchor) { reveal(anchor); return; }
+    if (!ctx.state.dialogs.length) focusEntry(ctx);
+  });
+}
+
+/** Scrolls a row into view, focuses it and flashes it once so the eye lands on it. */
+function reveal(el) {
+  const smooth = !matchMedia('(prefers-reduced-motion: reduce)').matches && document.documentElement.dataset.motion !== 'reduced';
+  el.scrollIntoView({ block: 'center', behavior: smooth ? 'smooth' : 'auto' });
+  el.focus({ preventScroll: true });
+  el.classList.remove('is-flash');
+  void el.offsetWidth;
+  el.classList.add('is-flash');
+  setTimeout(() => el.classList.remove('is-flash'), 1700);
+}
+
+// Focus after opening or changing section: the back button when drilled in (narrow), the current section link in the
+// full tab's navigation column, else the section or page heading.
+function focusEntry(ctx) {
+  const page = document.querySelector('.settings-page');
+  if (!page) return;
+  const visible = el => (el?.getClientRects().length ? el : null);
+  const target = visible(page.querySelector('.settings-back'))
+    || (!ctx.env.isSidepanel && visible(page.querySelector('.settings-nav [aria-current="page"]')))
+    || visible(page.querySelector('.settings-section-title'))
+    || page.querySelector('.settings-title');
+  target?.focus({ preventScroll: true });
+}
+
+/* ------------------------------------------------------------------ page frame */
+
+const sectionHref = id => `index.html?libraryView=${encodeURIComponent(settingsView(id))}`;
+
+/** Full-page settings for the 'settings' / 'settings:<section>' views (surface 'full') and the side panel's panel (surface 'side'). */
+export function renderSettingsPage(ctx, { surface = ctx.env?.isSidepanel ? 'side' : 'full' } = {}) {
+  resetIds();
+  const ui = uiState(ctx);
+  if (surface === 'full') {
+    // A link elsewhere that opens another section ends the search started on this one.
+    if (ui.query && ui.queryView !== ctx.state.view) ui.query = '';
+    // The view is the source of truth in the full tab: 'settings' is the section list (narrow) or General (wide).
+    const fromView = sectionFromView(ctx.state.view);
+    ui.section = fromView || 'general';
+    ui.list = !fromView;
+  } else ui.section = normalizeSection(ui.section);
+  const terms = searchTerms(ui.query);
+  const results = terms.length ? searchResults(ctx, terms) : null;
+  const state = results ? 'search' : ui.list ? 'list' : 'section';
+  const section = sectionById(ui.section);
+  return html`<div class="settings-page" data-surface="${surface}" data-state="${state}" data-key="settings-page" data-keydown="settings.key">
+    <span data-mount="settings-live" data-morph="skip" data-key="settings-live" hidden></span>
+    <div class="settings-frame">
+      <div class="settings-side">
+        ${renderHeader(ctx, { surface, state, section })}
+        ${renderNav(ctx, { surface, state, section, results })}
       </div>
-    </section>
+      <div class="settings-content" id="settings-content" data-key="settings-content-${state === 'search' ? 'search' : section.id}">
+        ${results ? renderResults(ctx, results, ui.query) : renderSectionPage(ctx, section, surface)}
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderHeader(ctx, { surface, state, section }) {
+  const ui = uiState(ctx);
+  const drilled = state === 'section';
+  return html`<header class="settings-head">
+    <div class="settings-head-inner">
+      <div class="settings-head-lead">${surface === 'full' ? navToggle(ctx) : ''}${drilled ? iconButton({ icon: 'arrow-left', label: 'All settings', action: 'settings.back', className: 'settings-back', id: 'settings-back' }) : ''}</div>
+      <h1 class="settings-title" tabindex="-1">${drilled ? html`<span class="settings-title-section">${section.label}</span><span class="settings-title-root">Settings</span>` : 'Settings'}</h1>
+      <div class="search-field settings-search" role="search">
+        ${icon('search', { size: 16, className: 'search-field-icon' })}
+        <input class="search-field-input" type="search" id="settings-search" data-focus-key="settings-search" value="${ui.query}" placeholder="Search settings"
+          aria-label="Search settings" aria-controls="settings-content" autocomplete="off" spellcheck="false" data-view-search
+          data-input="settings.search" data-keydown="settings.search-key">
+        ${ui.query ? iconButton({ icon: 'x', label: 'Clear search', action: 'settings.search-clear', size: 'sm', className: 'search-field-clear' }) : surface === 'full' ? kbd('/') : ''}
+      </div>
+      ${surface === 'side' ? iconButton({ icon: 'x', label: 'Close settings', action: 'settings.close', className: 'settings-close' }) : ''}
+    </div>
+  </header>`;
+}
+
+function navEntry(ctx, entry, { surface, current, count }) {
+  const inner = html`<span class="settings-nav-icon" aria-hidden="true">${icon(entry.icon, { size: 16 })}</span>
+    <span class="settings-nav-text"><span class="settings-nav-label">${entry.label}</span><span class="settings-nav-summary">${entry.summary}</span></span>
+    ${count ? html`<span class="count settings-nav-count" aria-label="${plural(count, 'match', 'matches')}">${count}</span>` : ''}
+    ${icon('chevron-right', { size: 16, className: 'settings-nav-chevron' })}`;
+  const attrs = html`class="settings-nav-item" id="settings-nav-${entry.id}" data-action="settings.section" data-section="${entry.id}" ${current ? html`aria-current="page"` : ''}`;
+  // Links in the full tab (Ctrl/⌘-click opens a section in a new tab); buttons in the side panel, which cannot navigate.
+  return surface === 'full' ? html`<a ${attrs} href="${sectionHref(entry.id)}">${inner}</a>` : html`<button type="button" ${attrs}>${inner}</button>`;
+}
+
+function renderNav(ctx, { surface, state, section, results }) {
+  const counts = new Map((results?.sections || []).map(entry => [entry.section.id, entry.hits || 0]));
+  const include = results ? [...counts.keys()] : null;
+  const groups = groupSections(include);
+  return html`<nav class="settings-nav" aria-label="Settings sections">
+    ${groups.length ? groups.map(entry => html`<div class="settings-nav-group" role="group" aria-labelledby="settings-nav-group-${entry.id}">
+      <p class="settings-nav-heading" id="settings-nav-group-${entry.id}">${entry.label}</p>
+      <ul class="settings-nav-list" role="list">${entry.sections.map(item => html`<li>${navEntry(ctx, item, { surface, current: !results && item.id === section.id, count: counts.get(item.id) })}</li>`)}</ul>
+    </div>`) : html`<p class="settings-nav-empty">No sections match.</p>`}
+    ${state === 'search' ? '' : html`<p class="settings-foot">Still ${version()}</p>`}
+  </nav>`;
+}
+
+function renderSectionPage(ctx, section, surface) {
+  const { previous, next } = adjacentSections(section.id);
+  const step = (entry, dir) => {
+    if (!entry) return html`<span class="settings-step is-empty"></span>`;
+    const inner = html`${dir === 'previous' ? icon('arrow-left', { size: 14 }) : ''}<span class="settings-step-text"><span class="settings-step-dir">${dir === 'previous' ? 'Previous' : 'Next'}</span>
+      <span class="settings-step-label">${entry.label}</span></span>${dir === 'next' ? icon('arrow-right', { size: 14 }) : ''}`;
+    return surface === 'full'
+      ? html`<a class="${cx('settings-step', `is-${dir}`)}" href="${sectionHref(entry.id)}" data-action="settings.section" data-section="${entry.id}">${inner}</a>`
+      : html`<button type="button" class="${cx('settings-step', `is-${dir}`)}" data-action="settings.section" data-section="${entry.id}">${inner}</button>`;
+  };
+  return html`<article class="settings-section" data-section="${section.id}" aria-labelledby="settings-section-title">
+    <header class="settings-section-head">
+      <span class="settings-section-icon" aria-hidden="true">${icon(section.icon, { size: 18 })}</span>
+      <h2 class="settings-section-title" id="settings-section-title" tabindex="-1">${section.label}</h2>
+    </header>
+    <p class="settings-section-desc">${section.description}</p>
+    <div class="settings-section-body">${renderSection(ctx, section.id)}</div>
+    <footer class="settings-section-foot">${step(previous, 'previous')}${step(next, 'next')}</footer>
+  </article>`;
+}
+
+/** Every section rendered with the query applied: { sections: [{ section, content, hits }], total }. */
+function searchResults(ctx, terms) {
+  const sections = [];
+  const catalog = new Set(matchSections(terms.join(' ')).map(section => section.id));
+  for (const section of SETTINGS_SECTIONS) {
+    const { content, hits } = renderFiltered(terms, [section.label], () => renderSection(ctx, section.id));
+    if (content) sections.push({ section, content, hits });
+    // Sections that match by name or keywords but have nothing loaded to filter yet (AI before it loads) still get a link.
+    else if (catalog.has(section.id)) sections.push({ section, content: '', hits: 0 });
+  }
+  return { sections, total: sections.reduce((sum, entry) => sum + entry.hits, 0) };
+}
+
+function renderResults(ctx, results, query) {
+  const found = results.sections.length;
+  const announcement = found ? `${plural(results.total || found, 'setting')} match “${query.trim()}”` : `No settings match “${query.trim()}”`;
+  return html`<div class="settings-results">
+    <p class="sr-only" role="status" aria-live="polite">${announcement}</p>
+    ${found ? results.sections.map(({ section, content }) => html`<section class="settings-result" aria-labelledby="settings-result-${section.id}">
+      <header class="settings-result-head">
+        <span class="settings-section-icon" aria-hidden="true">${icon(section.icon, { size: 16 })}</span>
+        <h2 class="settings-result-title" id="settings-result-${section.id}">${section.label}</h2>
+        ${button({ label: `Open ${section.label}`, iconRight: 'arrow-right', size: 'sm', variant: 'ghost', action: 'settings.section', data: { section: section.id }, className: 'settings-result-open' })}
+      </header>
+      ${content || html`<p class="settings-row-desc settings-result-summary">${section.summary}.</p>`}
+    </section>`) : emptyState({ icon: 'search-x', title: 'No settings match', body: `Nothing matches “${query.trim()}”. Try a shorter word, such as theme, backup or token.`,
+      actions: button({ label: 'Clear search', size: 'sm', action: 'settings.search-clear' }) })}
   </div>`;
 }
 
 function renderSection(ctx, id) {
   switch (id) {
     case 'appearance': return renderAppearance(ctx);
+    case 'newtab': return renderNewTab(ctx);
     case 'library': return renderLibrary(ctx);
     case 'ai': return renderAi(ctx);
     case 'search': return renderSearch(ctx);
     case 'agents': return renderAgents(ctx);
+    case 'accounts': return renderAccounts(ctx);
     case 'integrations': return renderIntegrations(ctx);
     case 'shortcuts': return renderShortcuts(ctx);
     case 'about': return renderAbout(ctx);
@@ -569,70 +620,33 @@ function renderSection(ctx, id) {
   }
 }
 
+function aiUnavailable() {
+  if (isSearching()) return '';
+  return emptyState({ icon: 'circle-alert', tone: 'danger', title: 'AI settings could not load', body: 'Reload Still to try again. Your library is not affected.',
+    actions: button({ label: 'Reload', icon: 'refresh-cw', variant: 'secondary', size: 'sm', action: 'app.retry-boot' }) });
+}
+
 /* ------------------------------------------------------------------ General */
 
 function renderGeneral(ctx) {
   const s = settingsOf(ctx);
   return html`
-    ${group({ title: 'Saving', body: card([
-      row({ label: 'Default collection', description: 'Where Alt+Shift+S, the toolbar button and Save page to Still put new links. The Add dialog starts with the collection you used last.',
-        control: renderCollectionPickerTrigger({ ctx, value: s.defaultCollectionId || '', action: 'settings.default-collection', id: 'settings-default-collection', label: 'Default collection', size: 'sm', allowCreate: true }) }),
+    ${group({ title: 'Saving', body: () => card([
+      row({ label: 'Default collection', keywords: 'inbox folder', description: 'Where Alt+Shift+S, the toolbar button and Save page to Still put new links. The Add dialog starts with the collection you used last.',
+        control: renderCollectionPickerTrigger({ ctx, value: s.defaultCollectionId || '', action: 'settings.default-collection', id: 'settings-default-collection', label: 'Default collection', allowCreate: true }) }),
       switchRow({ label: 'Open the side panel after saving', description: 'Shows the saved page so you can add tags or a note. Applies to the page menu and Alt+Shift+S.',
         checked: s.openPanelOnSave !== false, action: 'settings.toggle', data: { key: 'openPanelOnSave' } }),
     ]) })}
-    ${group({ title: 'Side panel', body: card([
-      row({ lead: html`<span class="settings-row-icon" aria-hidden="true">${icon('panel-right', { size: 16 })}</span>`, label: 'Toolbar button',
+    ${group({ title: 'Side panel', body: () => card([
+      row({ lead: html`<span class="settings-row-icon" aria-hidden="true">${icon('panel-right', { size: 16 })}</span>`, label: 'Toolbar button', keywords: 'pin icon',
         description: 'Clicking the Still icon in the Chrome toolbar opens the side panel. Pin Still from the puzzle piece menu to keep it one click away.' }),
       switchRow({ label: 'Start on This page', description: 'Open the side panel on the page you are viewing. Turn off to start on your library.',
         checked: s.startOnPage !== false, action: 'settings.toggle', data: { key: 'startOnPage' } }),
     ]) })}
-    ${group({ title: 'Deleting', body: card([
-      switchRow({ label: 'Confirm before moving items to Trash', description: 'Items in Trash can be restored until you empty it, so Still normally moves them without asking.',
+    ${group({ title: 'Deleting', body: () => card([
+      switchRow({ label: 'Confirm before moving items to Trash', keywords: 'delete remove', description: 'Items in Trash can be restored until you empty it, so Still normally moves them without asking.',
         checked: s.confirmDelete === true, action: 'settings.toggle', data: { key: 'confirmDelete' } }),
     ]) })}`;
-}
-
-/* ------------------------------------------------------------------ Appearance */
-
-function renderAppearance(ctx) {
-  const s = settingsOf(ctx);
-  const theme = ['light', 'dark'].includes(s.theme) ? s.theme : 'system';
-  const accent = ACCENTS.some(entry => entry.id === s.accent) ? s.accent : s.accent === 'amber' ? 'gold' : 'blue';
-  const density = s.density === 'compact' ? 'compact' : 'comfortable';
-  const resolved = globalThis.document?.documentElement?.dataset?.theme === 'dark' ? 'dark' : 'light';
-  const accentLabel = ACCENTS.find(entry => entry.id === accent)?.label || 'Blue';
-  return html`
-    ${group({ title: 'Look', body: card([
-      row({ label: 'Theme', description: theme === 'system' ? `Follows your system setting. Now ${resolved}.` : `Always ${theme}.`,
-        control: segmented({ name: 'theme', value: theme, options: THEMES, action: 'settings.appearance', size: 'sm', ariaLabel: 'Theme' }) }),
-      row({ label: 'Accent color', description: `${accentLabel}. Used for buttons, selection and links.`,
-        control: html`<div class="accent-swatches" role="radiogroup" aria-label="Accent color">${ACCENTS.map(entry => html`<button type="button" role="radio"
-          class="accent-swatch" data-accent="${entry.id}" data-theme="${resolved}" aria-checked="${entry.id === accent ? 'true' : 'false'}" tabindex="${entry.id === accent ? '0' : '-1'}"
-          aria-label="${entry.label}" data-tooltip="${entry.label}" data-action="settings.appearance" data-name="accent" data-value="${entry.id}">${icon('check', { size: 14, className: 'accent-swatch-check' })}</button>`)}</div>` }),
-      row({ label: 'Density', description: density === 'compact' ? 'Compact rows fit more on screen.' : 'Comfortable rows are easier to scan.',
-        control: segmented({ name: 'density', value: density, options: DENSITIES, action: 'settings.appearance', size: 'sm', ariaLabel: 'Density' }) }),
-    ]) })}
-    ${group({ title: 'Preview', description: 'This is how lists, collections and buttons look with these settings.', body: appearancePreview() })}`;
-}
-
-function appearancePreview() {
-  const rows = [
-    { name: 'Inbox', icon: null, count: 23 },
-    { name: 'Design', icon: 'palette', color: 'pink', count: 24, selected: true },
-    { name: 'Reading list', icon: 'book-open', color: 'orange', count: 9 },
-  ];
-  return html`<div class="appearance-preview" aria-hidden="true" inert>
-    <div class="appearance-preview-side">${rows.map(entry => html`<span class="${cx('ap-row', entry.selected && 'is-selected')}">
-      ${collectionIcon(entry.icon ? { icon: entry.icon, color: entry.color } : null, { size: 18 })}<span class="ap-name">${entry.name}</span><span class="count">${entry.count}</span></span>`)}</div>
-    <div class="appearance-preview-main">
-      ${[{ title: 'Refactoring UI: Design tips for developers', site: 'refactoringui.com', tag: 'ui', letter: 'R', color: 'blue' },
-        { title: 'Inter typeface family', site: 'rsms.me', tag: 'typography', letter: 'A', color: 'gray' }].map(item => html`<span class="ap-item">
-        <span class="ap-thumb" data-color="${item.color}">${item.letter}</span>
-        <span class="ap-lines"><span class="ap-title">${item.title}</span><span class="ap-meta">${item.site} · <span class="ap-tag">#${item.tag}</span></span></span></span>`)}
-      <span class="ap-actions">${button({ label: 'Save', variant: 'primary', size: 'sm' })}${button({ label: 'Cancel', variant: 'secondary', size: 'sm' })}
-        ${chip({ label: 'Selected', selected: true })}<span class="ap-switch">${switchToggle({ checked: true, label: 'On' })}</span></span>
-    </div>
-  </div>`;
 }
 
 /* ------------------------------------------------------------------ Library & backup */
@@ -645,32 +659,32 @@ function renderLibrary(ctx) {
   const files = library.items.filter(item => item.attachmentId && !item.deletedAt).length;
   const job = data.importJob;
   return html`
-    ${group({ title: 'Backup', body: card([
-      row({ label: 'Full backup', description: 'Items, collections, notes, highlights and files in one JSON file. AI keys and device settings are not included.',
-        control: button({ label: 'Download backup', icon: 'download', size: 'sm', action: 'settings.backup', loading: busy.has('backup') }) }),
-      row({ label: 'Restore or bring in a file', description: 'A Still backup, a bookmarks HTML file from any browser or Raindrop, or a CSV with a url column. Items in the file are added; items that already exist are replaced by the file’s copy.',
+    ${group({ title: 'Backup', body: () => card([
+      row({ label: 'Full backup', keywords: 'export download json', description: 'Items, collections, notes, highlights and files in one JSON file. AI keys, accounts and device settings are not included.',
+        control: button({ label: 'Download backup', icon: 'download', size: 'sm', action: 'settings.backup', loading: isBusy('backup') }) }),
+      row({ label: 'Restore or bring in a file', keywords: 'import upload html csv bookmarks', description: 'A Still backup, a bookmarks HTML file from any browser or Raindrop, or a CSV with a url column. Items in the file are added; items that already exist are replaced by the file’s copy.',
         control: button({ label: 'Choose file', icon: 'upload', size: 'sm', action: 'settings.import-choose', loading: !!job?.running }) }),
-      job ? importStatus(job) : '',
+      job && !isSearching() ? importStatus(job) : '',
     ]) })}
-    ${group({ title: 'Export', body: card([
-      row({ label: 'Bookmarks', description: 'An HTML bookmarks file that Chrome, Firefox, Safari and Raindrop can import.',
-        control: button({ label: 'Export HTML', icon: 'file-down', size: 'sm', action: 'settings.export-html', loading: busy.has('export-html') }) }),
-      row({ label: 'Notes and highlights', description: 'Every note, personal note and highlight in one Markdown file.',
-        control: button({ label: 'Export Markdown', icon: 'file-down', size: 'sm', action: 'settings.export-notes', loading: busy.has('export-notes') }) }),
+    ${group({ title: 'Export', body: () => card([
+      row({ label: 'Bookmarks', keywords: 'html export', description: 'An HTML bookmarks file that Chrome, Firefox, Safari and Raindrop can import.',
+        control: button({ label: 'Export HTML', icon: 'file-down', size: 'sm', action: 'settings.export-html', loading: isBusy('export-html') }) }),
+      row({ label: 'Notes and highlights', keywords: 'markdown export', description: 'Every note, personal note and highlight in one Markdown file.',
+        control: button({ label: 'Export Markdown', icon: 'file-down', size: 'sm', action: 'settings.export-notes', loading: isBusy('export-notes') }) }),
     ]) })}
-    ${group({ title: 'Bring in from other apps', body: card([
-      row({ lead: providerMark('chrome', 32), label: 'Chrome bookmarks', description: ctx.env.isExtension
+    ${group({ title: 'Bring in from other apps', keywords: 'import', body: () => card([
+      row({ lead: providerMark('chrome', 32), label: 'Chrome bookmarks', keywords: 'import browser', description: ctx.env.isExtension
         ? 'Copies your Chrome bookmarks into Still and keeps folders as collections. Chrome asks for access first.'
         : 'Available when Still runs as the installed extension.',
-        control: button({ label: 'Bring in from Chrome', icon: 'folder-input', size: 'sm', action: 'settings.import-chrome', disabled: !ctx.env.isExtension, loading: busy.has('chrome-bookmarks') }) }),
-      raindropBlock(ctx),
+        control: button({ label: 'Bring in from Chrome', icon: 'folder-input', size: 'sm', action: 'settings.import-chrome', disabled: !ctx.env.isExtension, loading: isBusy('chrome-bookmarks') }) }),
+      searchable(['Raindrop.io', 'token', 'import', 'bookmarks', 'highlights', 'collections'], raindropBlock(ctx)),
     ]) })}
-    ${group({ title: 'Storage', body: card([
-      row({ label: 'On this device', description: html`${plural(items, 'item')}${files ? html`, ${plural(files, 'file')}` : ''}${data.storage?.usage != null
+    ${group({ title: 'Storage', body: () => card([
+      row({ label: 'On this device', keywords: 'storage space usage quota', description: html`${plural(items, 'item')}${files ? html`, ${plural(files, 'file')}` : ''}${data.storage?.usage != null
         ? html`. ${fileSize(data.storage.usage)} used by Still.` : '.'}`, control: data.storage?.usage != null && data.storage.quota
-        ? html`<span class="settings-meter" aria-hidden="true"><span style="--progress:${Math.min(1, data.storage.usage / data.storage.quota)}"></span></span>` : '' }),
-      row({ label: 'Trash', description: trash ? `${plural(trash, 'item')} in Trash. Emptying deletes them forever.` : 'Trash is empty.',
-        control: button({ label: 'Empty trash', icon: 'trash-2', size: 'sm', variant: 'secondary', className: 'settings-danger-btn', action: 'settings.empty-trash', disabled: !trash, loading: busy.has('empty-trash') }) }),
+        ? html`<span class="settings-meter" role="img" aria-label="${Math.max(1, Math.round((data.storage.usage / data.storage.quota) * 100))}% of the space Chrome allows"><span style="--progress:${Math.min(1, Math.max(0.01, data.storage.usage / data.storage.quota))}"></span></span>` : '' }),
+      row({ label: 'Trash', keywords: 'empty delete', description: trash ? `${plural(trash, 'item')} in Trash. Emptying deletes them forever.` : 'Trash is empty.',
+        control: button({ label: 'Empty trash', icon: 'trash-2', size: 'sm', variant: 'secondary', className: 'settings-danger-btn', action: 'settings.empty-trash', disabled: !trash, loading: isBusy('empty-trash') }) }),
     ]) })}`;
 }
 
@@ -690,15 +704,18 @@ function importStatus(job) {
     actions: button({ label: 'Dismiss', size: 'sm', variant: 'ghost', action: 'settings.import-dismiss' }) })}</div>`;
 }
 
+function raindropStatus(info) {
+  return info.raindropConnectedAt ? { label: 'Connected', tone: 'success', icon: 'circle-check' } : info.raindropConfigured ? { label: 'Token saved', tone: 'neutral' } : { label: 'Not connected', tone: 'neutral' };
+}
+
 function raindropBlock(ctx) {
   const info = data.integration || {};
   const job = data.raindrop;
-  const status = info.raindropConnectedAt ? { label: 'Connected', tone: 'success' } : info.raindropConfigured ? { label: 'Token saved', tone: 'neutral' } : { label: 'Not connected', tone: 'neutral' };
   const configured = !!info.raindropConfigured;
   return html`<div class="settings-row is-stacked settings-raindrop" id="settings-raindrop" tabindex="-1">
     <div class="settings-row-split">
       ${providerMark('raindrop', 32)}
-      <div class="settings-row-text"><span class="settings-row-label">Raindrop.io ${badge(status)}</span>
+      <div class="settings-row-text"><span class="settings-row-label">Raindrop.io ${badge(raindropStatus(info))}</span>
         <span class="settings-row-desc">Brings in collections, bookmarks, notes and highlights with your Raindrop API token. The token stays on this device.${info.raindropConnectedAt
           ? ` Checked ${shortDate(info.raindropConnectedAt)}.` : ''}</span></div>
     </div>
@@ -707,7 +724,7 @@ function raindropBlock(ctx) {
         control: input({ id: 'settings-raindrop-token', name: 'token', type: 'password', value: drafts.raindropToken, action: 'settings.raindrop-field',
           placeholder: configured ? 'Saved. Paste a new token to replace it.' : 'Paste your Raindrop test token', describedBy: 'settings-raindrop-token-hint' }) })}
       <div class="settings-actions">
-        ${button({ label: configured ? 'Save and check' : 'Connect', type: 'submit', size: 'sm', variant: configured ? 'secondary' : 'primary', loading: busy.has('raindrop-connect') })}
+        ${button({ label: configured ? 'Save and check' : 'Connect Raindrop', type: 'submit', size: 'sm', variant: configured ? 'secondary' : 'primary', loading: isBusy('raindrop-connect') })}
         ${configured ? button({ label: 'Bring in library', icon: 'download', size: 'sm', variant: 'primary', action: 'settings.raindrop-import', loading: !!job?.running }) : ''}
         ${configured ? button({ label: 'Disconnect', size: 'sm', variant: 'ghost', action: 'settings.raindrop-disconnect' }) : ''}
       </div>
@@ -721,20 +738,23 @@ function raindropBlock(ctx) {
 
 function renderAi(ctx) {
   const ai = ctx.ai;
-  if (!ai) return aiUnavailable();
+  if (!ai) return live.engineSettled ? aiUnavailable() : loadingBlock('Loading AI settings');
   if (!data.connections) return loadingBlock('Loading AI connections');
   const direct = data.connections.filter(c => c.via === 'direct');
   const chatReady = data.connections.some(c => c.enabled !== false && ai.getProvider(c.providerId)?.chat);
   return html`
-    ${data.aiError && data.aiError !== 'unavailable' ? callout({ tone: 'danger', title: 'Some AI settings could not load', body: data.aiError }) : ''}
-    ${direct.length ? group({ title: 'Your connections', body: card(direct.map(c => connectionRow(ctx, c))) })
-      : callout({ tone: 'info', icon: 'sparkles', title: 'Connect a model to use Ask and the writing tools',
+    ${data.aiError && data.aiError !== 'unavailable' && !isSearching() ? callout({ tone: 'danger', title: 'Some AI settings could not load', body: data.aiError }) : ''}
+    ${direct.length ? group({ title: 'Your connections', keywords: 'connected providers keys', body: () => card(direct.map(c => connectionRow(ctx, c))) })
+      : isSearching() ? '' : callout({ tone: 'info', icon: 'sparkles', title: 'Connect a model to use Ask and the writing tools',
         body: 'Anthropic, OpenAI and Ollama are the quickest to set up. Keys stay on this device. Claude Code, Codex and a ChatGPT plan work through the local bridge below.' })}
     ${chatReady ? renderAiDefaults(ctx) : ''}
-    ${providerGroups(ai.CATALOG).map(entry => group({ title: entry.title, body: html`<div class="provider-grid">${entry.providers.map(provider => providerTile(provider, direct))}</div>` }))}
-    ${group({ title: 'Local bridge', description: 'A small companion that runs on this computer. It lets Still use Claude Code, Codex, your ChatGPT plan and keys you keep outside the browser.',
-      body: bridgeBlock(ctx, { agents: true }) })}
-    <p class="settings-note">${icon('lock', { size: 14 })}<span>API keys are stored on this device in Chrome’s extension storage. They are not included in backups, exports or bridge sync.</span></p>`;
+    ${providerGroups(ai.CATALOG).map(entry => group({ title: entry.title, keywords: 'add provider connect api key', body: () => {
+      const tiles = entry.providers.map(provider => searchable([provider.name, provider.description], providerTile(provider, direct))).filter(tile => String(tile).trim());
+      return tiles.length ? html`<div class="provider-grid">${tiles}</div>` : '';
+    } }))}
+    ${group({ title: 'Local bridge', keywords: 'companion pair token', description: 'A small companion that runs on this computer. It lets Still use Claude Code, Codex, your ChatGPT plan and keys you keep outside the browser.',
+      body: () => bridgeBlock(ctx, { agents: true, where: 'ai' }) })}
+    ${isSearching() ? '' : note('lock', 'API keys are stored on this device in Chrome’s extension storage. They are not included in backups, exports or bridge sync.')}`;
 }
 
 function connectionRow(ctx, connection) {
@@ -743,11 +763,11 @@ function connectionRow(ctx, connection) {
   const modelName = (connection.models || []).find(model => model.id === connection.defaultModel)?.name || connection.defaultModel;
   const error = connection.status === 'error' && connection.lastError;
   const meta = [connection.label !== connection.providerName ? connection.providerName : '', modelName].filter(Boolean).join(' · ');
-  return row({ className: 'connection-row', lead: providerMark(connection.providerId, 32),
+  return row({ className: 'connection-row', lead: providerMark(connection.providerId, 32), keywords: connection.providerName,
     label: html`${connection.label}${isDefault ? badge({ label: 'Default', tone: 'accent' }) : ''}`,
     description: error || meta || connection.baseUrl, descClass: error ? 'is-error' : '',
     control: html`${badge(status)}
-      ${button({ label: 'Test', size: 'sm', variant: 'ghost', action: 'settings.connection-test', data: { id: connection.id }, loading: busy.has(`test:${connection.id}`) })}
+      ${button({ label: 'Test', size: 'sm', variant: 'ghost', action: 'settings.connection-test', data: { id: connection.id }, loading: isBusy(`test:${connection.id}`) })}
       ${button({ label: 'Edit', size: 'sm', variant: 'secondary', action: 'settings.connect-open', data: { id: connection.id, provider: connection.providerId } })}` });
 }
 
@@ -787,65 +807,69 @@ function renderAiDefaults(ctx) {
   const effort = settings.chat?.effort || 'medium';
   const handoff = settings.handoffTarget || 'claude';
   const targets = (ai.HANDOFF_TARGETS || []).filter(target => HANDOFF_CHOICES.includes(target.id) || target.id === handoff);
-  return group({ title: 'Defaults', body: card([
-    row({ label: 'Chat model', description: chat.model?.description || 'Used by Ask and by note writing tools unless you pick another model there.',
-      control: select({ name: 'chat', value: chatValue, label: 'Chat model', action: 'settings.ai-model', size: 'sm', className: 'settings-select',
+  return group({ title: 'Defaults', keywords: 'default model', body: () => card([
+    row({ label: 'Chat model', keywords: 'ask assistant', description: chat.model?.description || 'Used by Ask, the AI assistant and note writing tools unless you pick another model there.',
+      control: select({ name: 'chat', value: chatValue, label: 'Chat model', action: 'settings.ai-model', className: 'settings-select',
         options: withCurrent(modelSelectOptions(ctx), chatValue, chat.id) }) }),
-    row({ label: 'Reasoning effort', description: efforts.length ? 'Higher effort thinks longer before answering. It is slower and uses more tokens.' : 'This model does not offer an effort setting.',
-      control: select({ name: 'effort', value: efforts.length ? effortFor(chat.model, effort) : '', label: 'Reasoning effort', action: 'settings.ai-effort', size: 'sm', className: 'settings-select is-narrow',
+    row({ label: 'Reasoning effort', keywords: 'thinking', description: efforts.length ? 'Higher effort thinks longer before answering. It is slower and uses more tokens.' : 'This model does not offer an effort setting.',
+      control: select({ name: 'effort', value: efforts.length ? effortFor(chat.model, effort) : '', label: 'Reasoning effort', action: 'settings.ai-effort', className: 'settings-select is-narrow',
         disabled: !efforts.length, options: efforts.length ? efforts.map(level => ({ value: level, label: ai.EFFORT_LABELS?.[level] || level })) : [{ value: '', label: 'Not adjustable' }] }) }),
-    row({ label: 'Fast model', description: 'Used for quick jobs: title and tag suggestions, summaries in the Add dialog and short rewrites.',
-      control: select({ name: 'quick', value: quickValue, label: 'Fast model', action: 'settings.ai-quick', size: 'sm', className: 'settings-select',
+    row({ label: 'Fast model', keywords: 'quick suggestions', description: 'Used for quick jobs: title and tag suggestions, summaries in the Add dialog and short rewrites.',
+      control: select({ name: 'quick', value: quickValue, label: 'Fast model', action: 'settings.ai-quick', className: 'settings-select',
         options: withCurrent(modelSelectOptions(ctx, { includeSame: true }), quickValue, quick.id) }) }),
     switchRow({ label: 'Suggest a title and tags when saving', description: 'Uses the fast model in the Add dialog. Nothing is sent until you open the dialog for a page.',
       checked: settings.autoSuggestOnSave !== false, action: 'settings.ai-flag', data: { key: 'autoSuggestOnSave' } }),
     switchRow({ label: 'Include page text when asking about a page', description: 'Sends the readable text of the page you are on with your question.',
       checked: settings.includePageText !== false, action: 'settings.ai-flag', data: { key: 'includePageText' } }),
-    row({ label: 'Continue in', description: 'Where “Open in” sends a question and its sources when you want to keep going in another app.',
-      control: segmented({ name: 'handoff', value: handoff, size: 'sm', action: 'settings.ai-handoff', ariaLabel: 'Continue in',
+    row({ label: 'Continue in', keywords: 'handoff open in claude chatgpt grok', description: 'Where “Open in” sends a question and its sources when you want to keep going in another app.',
+      control: segmented({ name: 'handoff', value: handoff, action: 'settings.ai-handoff', ariaLabel: 'Continue in',
         options: targets.map(target => ({ value: target.id, label: target.name })) }) }),
   ]) });
 }
 
 /* ------------------------------------------------------------------ Local bridge (AI models and Agents & MCP) */
 
-function bridgeBlock(ctx, { agents = false } = {}) {
+function bridgeBlock(ctx, { agents = false, where = 'ai' } = {}) {
   const info = bridgeSettings();
   if (!info) return loadingBlock('Checking the local bridge');
-  if (!info.bridgeConfigured) return pairForm(info);
+  if (!info.bridgeConfigured) return searchable(['Local bridge', 'pair', 'token', 'address', 'npm run bridge'], pairForm(info, where));
   const summary = bridgeSummary({ integration: info, live: ctx.state.bridge, bridge: data.bridge });
   const paused = summary.state === 'paused';
-  const rows = [row({ className: 'bridge-row', lead: providerMark('bridge', 32), label: html`Local bridge ${badge({ label: summary.label, tone: summary.tone })}`,
+  const rows = [row({ className: 'bridge-row', lead: providerMark('bridge', 32), label: html`Local bridge ${badge({ label: summary.label, tone: summary.tone })}`, keywords: 'sync pair',
     description: html`${summary.detail} <span class="settings-mono">${info.bridgeUrl}</span>`,
-    control: html`${paused ? button({ label: 'Resume sync', icon: 'refresh-cw', size: 'sm', action: 'settings.bridge-resume', loading: busy.has('bridge-sync') })
-      : button({ label: 'Pause sync', size: 'sm', variant: 'secondary', action: 'settings.bridge-pause', loading: busy.has('bridge-sync') })}
+    control: html`${paused ? button({ label: 'Resume sync', icon: 'refresh-cw', size: 'sm', action: 'settings.bridge-resume', loading: isBusy('bridge-sync') })
+      : button({ label: 'Pause sync', size: 'sm', variant: 'secondary', action: 'settings.bridge-pause', loading: isBusy('bridge-sync') })}
       ${button({ label: 'Unpair', size: 'sm', variant: 'ghost', action: 'settings.bridge-unpair' })}` })];
   if (!agents) return card(rows);
   const bridge = data.bridge;
   const reachable = !!bridge?.reachable;
-  const agentRows = ['claude', 'codex'].map(id => agentRow(ctx, id, bridge));
-  const codex = bridge?.agents?.find(agent => agent.id === 'codex');
-  if (codex?.capabilities?.oauthLogin) agentRows.push(chatGptRow(ctx, bridge));
   const providers = bridge?.providers || [];
   return html`${card(rows)}
-    ${group({ title: 'Coding agents and ChatGPT', className: 'settings-subgroup', description: reachable ? 'Chat with the agents you already use. They answer from their own sign-in; Still sends only the question and the context you choose.'
+    ${group({ title: 'Coding agents and ChatGPT', className: 'settings-subgroup', keywords: 'claude code codex chatgpt plan sign in', description: reachable ? 'Chat with the agents you already use. They answer from their own sign-in; Still sends only the question and the context you choose.'
       : 'Start the bridge to see Claude Code, Codex and ChatGPT sign-in here.',
       actions: iconButton({ icon: 'refresh-cw', label: 'Check again', size: 'sm', action: 'settings.bridge-refresh' }),
-      body: reachable ? card(agentRows) : '' })}
+      body: () => {
+        if (!reachable) return '';
+        const agentRows = ['claude', 'codex'].map(id => agentRow(ctx, id, bridge));
+        const codex = bridge?.agents?.find(agent => agent.id === 'codex');
+        if (codex?.capabilities?.oauthLogin) agentRows.push(chatGptRow(ctx, bridge));
+        return card(agentRows);
+      } })}
     ${reachable && providers.length ? group({ title: 'Providers on the bridge', className: 'settings-subgroup', description: 'Set up on the bridge with keys that never enter the browser.',
-      body: card(providers.map(provider => bridgeProviderRow(ctx, provider))) }) : ''}`;
+      body: () => card(providers.map(provider => bridgeProviderRow(ctx, provider))) }) : ''}`;
 }
 
-function pairForm(info) {
+function pairForm(info, where) {
+  const id = suffix => `settings-bridge-${suffix}-${where}`;
   return html`<form class="settings-card settings-pair" data-submit="settings.bridge-pair">
-    ${row({ lead: providerMark('bridge', 32), label: html`Local bridge ${badge({ label: 'Not paired', tone: 'neutral' })}`,
-      description: html`In the Still folder, run <code class="settings-code-inline">npm run bridge</code> and paste the address and token it prints.` })}
+    <div class="settings-row has-lead">${providerMark('bridge', 32)}<div class="settings-row-text"><span class="settings-row-label">Local bridge ${badge({ label: 'Not paired', tone: 'neutral' })}</span>
+      <span class="settings-row-desc">In the Still folder, run <code class="settings-code-inline">npm run bridge</code> and paste the address and token it prints.</span></div></div>
     <div class="settings-pair-fields">
-      ${field({ label: 'Address', id: 'settings-bridge-url', control: input({ id: 'settings-bridge-url', name: 'url', type: 'url', value: drafts.bridgeUrl ?? info.bridgeUrl ?? integrations.DEFAULT_BRIDGE_URL,
+      ${field({ label: 'Address', id: id('url'), control: input({ id: id('url'), name: 'url', type: 'url', value: drafts.bridgeUrl ?? info.bridgeUrl ?? integrations.DEFAULT_BRIDGE_URL,
         action: 'settings.bridge-field', attrs: { 'data-field': 'bridgeUrl' } }) })}
-      ${field({ label: 'Pairing token', id: 'settings-bridge-token', hint: 'Also saved in bridge/.local/config.json.', control: input({ id: 'settings-bridge-token', name: 'token', type: 'password',
-        value: drafts.bridgeToken, placeholder: 'Paste the token', action: 'settings.bridge-field', describedBy: 'settings-bridge-token-hint', attrs: { 'data-field': 'bridgeToken' } }) })}
-      <div class="settings-pair-submit">${button({ label: 'Pair', icon: 'plug', type: 'submit', variant: 'primary', size: 'sm', loading: busy.has('pair') })}</div>
+      ${field({ label: 'Pairing token', id: id('token'), hint: 'Also saved in bridge/.local/config.json.', control: input({ id: id('token'), name: 'token', type: 'password',
+        value: drafts.bridgeToken, placeholder: 'Paste the token', action: 'settings.bridge-field', describedBy: `${id('token')}-hint`, attrs: { 'data-field': 'bridgeToken' } }) })}
+      <div class="settings-pair-submit">${button({ label: 'Pair bridge', icon: 'plug', type: 'submit', variant: 'primary', size: 'sm', loading: isBusy('pair') })}</div>
     </div>
   </form>`;
 }
@@ -859,10 +883,10 @@ function agentRow(ctx, id, bridge) {
   const current = aiSettings(ctx).chat?.connectionId === connectionId;
   const description = !agent?.available ? (id === 'claude' ? 'Install Claude Code, then check again.' : 'Install the Codex CLI, then check again.')
     : agent.reason && !ready ? agent.reason : authText(bridge?.auth?.[id]);
-  return row({ lead: providerMark(connectionId, 32), label: html`${name} ${badge(state)}`, description,
+  return row({ lead: providerMark(connectionId, 32), label: html`${name} ${badge(state)}`, keywords: name, description,
     control: html`${button({ label: current ? 'Used for chat' : 'Use for chat', icon: current ? 'check' : '', size: 'sm', pressed: current,
       disabled: !ready, action: 'settings.agent-use', data: { id: connectionId } })}
-      ${button({ label: 'Check sign-in', size: 'sm', variant: 'ghost', disabled: !agent?.available, action: 'settings.agent-auth', loading: busy.has('agent-auth') })}` });
+      ${button({ label: 'Check sign-in', size: 'sm', variant: 'ghost', disabled: !agent?.available, action: 'settings.agent-auth', loading: isBusy('agent-auth') })}` });
 }
 
 function chatGptRow(ctx, bridge) {
@@ -871,11 +895,11 @@ function chatGptRow(ctx, bridge) {
   const current = aiSettings(ctx).chat?.connectionId === 'chatgpt-oauth';
   const job = data.login;
   const pending = job && ['pending', 'user_action_needed'].includes(job.status);
-  return html`${row({ lead: providerMark('chatgpt-oauth', 32), label: html`ChatGPT plan ${signedIn ? badge({ label: 'Signed in', tone: 'success' }) : ''}`,
+  const head = row({ lead: providerMark('chatgpt-oauth', 32), label: html`ChatGPT plan ${signedIn ? badge({ label: 'Signed in', tone: 'success' }) : ''}`, keywords: 'openai subscription',
     description: signedIn ? 'Codex is signed in with your ChatGPT account. Chats use your plan’s limits.' : 'Sign in through Codex to use your ChatGPT subscription instead of an API key.',
     control: signedIn ? button({ label: current ? 'Used for chat' : 'Use for chat', icon: current ? 'check' : '', size: 'sm', pressed: current, action: 'settings.agent-use', data: { id: 'chatgpt-oauth' } })
-      : button({ label: 'Sign in with ChatGPT', size: 'sm', variant: 'primary', action: 'settings.chatgpt-signin', loading: busy.has('signin') || !!pending }) })}
-    ${job ? loginPanel(job) : ''}`;
+      : button({ label: 'Sign in with ChatGPT', size: 'sm', variant: 'primary', action: 'settings.chatgpt-signin', loading: isBusy('signin') || !!pending }) });
+  return head ? html`${head}${job ? loginPanel(job) : ''}` : '';
 }
 
 function loginPanel(job) {
@@ -908,7 +932,7 @@ function bridgeProviderRow(ctx, provider) {
 
 function renderSearch(ctx) {
   const ai = ctx.ai;
-  if (!ai) return aiUnavailable();
+  if (!ai) return live.engineSettled ? aiUnavailable() : loadingBlock('Loading AI settings');
   if (!data.connections) return loadingBlock('Loading embedding providers');
   const embeddings = aiSettings(ctx).embeddings || { enabled: false };
   const candidates = embeddingConnections(data.connections);
@@ -922,35 +946,35 @@ function renderSearch(ctx) {
   const status = data.index;
   const summary = indexSummary(status);
   const enabled = embeddings.enabled === true;
-  const note = embeddingNote({ providerName: provider?.name || status?.provider || '', local: !!provider?.local, tokens: status?.pendingTokens || 0,
+  const noteText = embeddingNote({ providerName: provider?.name || status?.provider || '', local: !!provider?.local, tokens: status?.pendingTokens || 0,
     price: model?.pricePerMTok ?? EMBEDDING_PRICES[modelId] ?? null });
   return html`
-    ${group({ title: 'Search by meaning', body: card([
+    ${group({ title: 'Search by meaning', keywords: 'semantic embeddings', body: () => card([
       switchRow({ label: 'Semantic search', description: 'Builds an index of your library with an embedding model, so search, Related items, Ask and the MCP semantic_search tool can match ideas, not only words.',
         checked: enabled, disabled: !candidates.length, action: 'settings.search-enable' }),
-      candidates.length ? row({ label: 'Embedding provider', description: current?.providerId === 'voyage' ? 'Voyage AI is Anthropic’s recommended embeddings partner.' : 'Voyage AI is recommended with Claude.',
-        control: select({ name: 'connection', value: current?.id || '', label: 'Embedding provider', action: 'settings.search-connection', size: 'sm', className: 'settings-select',
+      candidates.length ? row({ label: 'Embedding provider', keywords: 'voyage', description: current?.providerId === 'voyage' ? 'Voyage AI is Anthropic’s recommended embeddings partner.' : 'Voyage AI is recommended with Claude.',
+        control: select({ name: 'connection', value: current?.id || '', label: 'Embedding provider', action: 'settings.search-connection', className: 'settings-select',
           options: [...(current ? [] : [{ value: '', label: 'Choose a provider' }]), ...candidates.map(c => ({ value: c.id, label: `${c.label}${c.providerId === 'voyage' ? ' (recommended)' : ''}` }))] }) }) : '',
-      current && models.length ? row({ label: 'Model', description: 'Changing the provider, model or size rebuilds the index.',
-        control: html`${select({ name: 'model', value: modelId, label: 'Embedding model', action: 'settings.search-model', size: 'sm', className: 'settings-select',
+      current && models.length ? row({ label: 'Model', keywords: 'embedding model', description: 'Changing the provider, model or size rebuilds the index.',
+        control: html`${select({ name: 'model', value: modelId, label: 'Embedding model', action: 'settings.search-model', className: 'settings-select',
           options: withCurrent(models.map(entry => ({ value: entry.id, label: `${entry.name || entry.id}${entry.installed === false ? ' (not installed)' : ''}` })), modelId, modelId) })}
           ${current.providerId === 'ollama' || current.providerId === 'lmstudio' ? iconButton({ icon: 'refresh-cw', label: 'Refresh models', size: 'sm', action: 'settings.search-refresh-models', data: { id: current.id } }) : ''}` }) : '',
-      current && dimsOptions.length > 1 ? row({ label: 'Vector size', description: 'Smaller vectors use less space. Larger ones can be slightly more accurate.',
-        control: select({ name: 'dims', value: String(dims || ''), label: 'Vector size', action: 'settings.search-dims', size: 'sm', className: 'settings-select is-narrow',
+      current && dimsOptions.length > 1 ? row({ label: 'Vector size', keywords: 'dimensions', description: 'Smaller vectors use less space. Larger ones can be slightly more accurate.',
+        control: select({ name: 'dims', value: String(dims || ''), label: 'Vector size', action: 'settings.search-dims', className: 'settings-select is-narrow',
           options: dimsOptions.map(value => ({ value: String(value), label: `${value} dimensions` })) }) }) : '',
     ]) })}
-    ${candidates.length ? '' : callout({ tone: 'info', icon: 'brain', title: 'Connect an embedding model first',
+    ${candidates.length || isSearching() ? '' : callout({ tone: 'info', icon: 'brain', title: 'Connect an embedding model first',
       body: 'Voyage AI is recommended with Claude. OpenAI, Google Gemini, Mistral and Ollama (free, on this computer) work too.',
       actions: html`${button({ label: 'Connect Voyage AI', size: 'sm', variant: 'primary', action: 'settings.connect-open', data: { provider: 'voyage' } })}
         ${button({ label: 'Connect OpenAI', size: 'sm', action: 'settings.connect-open', data: { provider: 'openai' } })}
         ${button({ label: 'Use Ollama', size: 'sm', variant: 'ghost', action: 'settings.connect-open', data: { provider: 'ollama' } })}` })}
-    ${enabled || (status?.indexed || 0) > 0 ? group({ title: 'Index', body: card([indexRow(ctx, status, summary)]) }) : ''}
-    ${note.length ? html`<p class="settings-note">${icon('info', { size: 14 })}<span>${note.join(' ')}</span></p>` : ''}`;
+    ${enabled || (status?.indexed || 0) > 0 ? group({ title: 'Index', keywords: 'rebuild clear indexing', body: () => card([searchable(['index status', status?.model], indexRow(ctx, status, summary))]) }) : ''}
+    ${noteText.length && !isSearching() ? note('info', noteText.join(' ')) : ''}`;
 }
 
 function indexRow(ctx, status, summary) {
   const enabled = !!status?.enabled;
-  const working = busy.has('index');
+  const working = isBusy('index');
   const actions = [];
   if (enabled && status.running) actions.push(button({ label: 'Pause', icon: 'circle-stop', size: 'sm', action: 'settings.index-pause', loading: working }));
   else if (enabled && (status.paused || status.pending > 0 || status.error)) actions.push(button({ label: status.paused ? 'Resume' : 'Index now', icon: 'refresh-cw', size: 'sm', variant: 'primary', action: 'settings.index-resume', loading: working }));
@@ -983,24 +1007,34 @@ function renderAgents(ctx) {
   const listed = [...MCP_CLIENTS, ...extra.map(client => ({ id: client.clientId || client.id, name: client.name, mark: client.clientId || client.id, blurb: client.configPath || '', docs: client.docs,
     manual: () => client.configSnippet ? [{ label: `Add this to ${client.configPath}`, code: client.configSnippet }] : [] }))];
   const configured = (clients || []).filter(client => clientStatus(client)?.tone === 'success').length;
+  const searching = isSearching();
+  const tools = searching ? MCP_TOOLS.filter(tool => matches(tool.name, tool.text, tool.write ? 'change write' : 'read')) : MCP_TOOLS;
   return html`
-    <p class="settings-lead">Still includes an MCP server, so Claude Code, Codex, Claude Desktop and other agents can search, read and organize your library. The server runs from the Still folder on this computer and reaches this extension through the local bridge.</p>
-    ${group({ title: 'Local bridge', body: html`${bridgeBlock(ctx)}${paired && data.clientsError ? callout({ tone: 'warning', title: 'Agent connections could not be checked', body: data.clientsError }) : ''}` })}
-    ${runtime ? '' : group({ title: 'Still folder', body: card([row({ stacked: true, label: 'Where Still is on this computer',
+    ${searching ? '' : html`<p class="settings-lead">Still includes an MCP server, so Claude Code, Codex, Claude Desktop and other agents can search, read and organize your library. The server runs from the Still folder on this computer and reaches this extension through the local bridge.</p>`}
+    ${group({ title: 'Local bridge', keywords: 'pair sync companion', body: () => html`${bridgeBlock(ctx, { where: 'agents' })}${paired && data.clientsError && !searching ? callout({ tone: 'warning', title: 'Agent connections could not be checked', body: data.clientsError }) : ''}` })}
+    ${runtime ? '' : group({ title: 'Still folder', keywords: 'path project root', body: () => card([row({ stacked: true, label: 'Where Still is on this computer', id: 'settings-mcp-root-row',
       description: 'Pairing the bridge fills this in. Until then, type the folder that contains bridge/ so the commands below are ready to paste.',
       control: input({ id: 'settings-mcp-root', value: root, placeholder: '/path/to/sidebar-dock', action: 'settings.mcp-root', label: 'Still folder' }) })]) })}
-    ${group({ title: 'Connect an agent', description: paired ? 'Connect adds Still to the agent’s own configuration, with a backup of the file it changes.' : 'Pair the bridge for one-click Connect. Until then, use the setup steps for each agent.',
+    ${group({ title: 'Connect an agent', keywords: 'mcp client', description: paired ? 'Connect adds Still to the agent’s own configuration, with a backup of the file it changes.' : 'Pair the bridge for one-click Connect. Until then, use the setup steps for each agent.',
       actions: clients ? html`<span class="settings-pill">${configured} of ${plural(clients.length, 'agent')} connected</span>` : '',
-      body: card(listed.map(entry => clientRow(ctx, entry, byId.get(entry.id), setup, paired))) })}
-    ${group({ title: 'Set up from a terminal', body: card([row({ stacked: true, label: 'One command per agent',
+      body: () => card(listed.map(entry => searchable([entry.name, entry.blurb, 'mcp agent client'], clientRow(ctx, entry, byId.get(entry.id), setup, paired)))) })}
+    ${group({ title: 'Set up from a terminal', keywords: 'command line npm', body: () => card([blockRow({ label: 'One command per agent', keywords: 'npm run connect',
       description: 'From the Still folder, this connects an agent and prints the bridge address and pairing token. Use codex, desktop or cursor in place of claude.',
-      control: html`${codeBlock('npm run connect -- claude', { label: 'Copy command' })}<span class="settings-row-desc">Then start the bridge and leave it running:</span>${codeBlock('npm run bridge', { label: 'Copy command' })}` })]) })}
-    ${group({ title: 'Tools agents can use', description: `${MCP_TOOLS.length} tools. Changes go through Still, so they appear here right away and respect Trash and Undo where they apply.`,
-      body: html`${disclosure(ctx, 'tools', disclosed(ctx, 'tools') ? 'Hide the tool list' : 'Show the tool list')}${disclosed(ctx, 'tools') ? html`<div class="mcp-tools" id="settings-more-tools">
-        ${[['Read', false], ['Change', true]].map(([label, write]) => html`<div class="mcp-tools-group"><h5 class="mcp-tools-title">${label}</h5><ul class="mcp-tools-list" role="list">
-          ${MCP_TOOLS.filter(tool => tool.write === write).map(tool => html`<li><code>${tool.name}</code><span>${tool.text}</span></li>`)}</ul></div>`)}</div>` : ''}` })}
-    ${info?.bridgeUrl ? html`<p class="settings-note">${icon('info', { size: 14 })}<span>Clients that connect over HTTP can use <span class="settings-mono">${info.bridgeUrl}/mcp</span> with the pairing token as a bearer token. The commands above use stdio and keep the token out of client settings.</span></p>` : ''}`;
+      body: html`${codeBlock('npm run connect -- claude', { label: 'Copy command' })}<span class="settings-row-desc">Then start the bridge and leave it running:</span>${codeBlock('npm run bridge', { label: 'Copy command' })}` })]) })}
+    ${group({ title: 'Tools agents can use', keywords: 'mcp tools', description: `${MCP_TOOLS.length} tools. Changes go through Still, so they appear here right away and respect Trash and Undo where they apply.`,
+      body: () => {
+        if (searching) return tools.length ? toolList(tools) : '';
+        return html`${disclosure(ctx, 'tools', disclosed(ctx, 'tools') ? 'Hide the tool list' : 'Show the tool list')}${disclosed(ctx, 'tools') ? toolList(tools) : ''}`;
+      } })}
+    ${info?.bridgeUrl && !searching ? note('info', html`Clients that connect over HTTP can use <span class="settings-mono">${info.bridgeUrl}/mcp</span> with the pairing token as a bearer token. The commands above use stdio and keep the token out of client settings.`) : ''}`;
 }
+
+const toolList = tools => html`<div class="mcp-tools" id="settings-more-tools">
+  ${[['Read', false], ['Change', true]].map(([label, write]) => {
+    const list = tools.filter(tool => tool.write === write);
+    return list.length ? html`<div class="mcp-tools-group"><h4 class="mcp-tools-title">${label}</h4><ul class="mcp-tools-list" role="list">
+      ${list.map(tool => html`<li><code>${tool.name}</code><span>${tool.text}</span></li>`)}</ul></div>` : '';
+  })}</div>`;
 
 function clientRow(ctx, entry, client, setup, paired) {
   const status = client ? clientStatus(client) : null;
@@ -1009,11 +1043,11 @@ function clientRow(ctx, entry, client, setup, paired) {
   const steps = entry.manual(setup).filter(step => step.code);
   const connectable = paired && client && entry.bridge !== false;
   const actions = [];
-  if (connectable && status?.tone === 'success') actions.push(button({ label: 'Disconnect', size: 'sm', variant: 'ghost', action: 'settings.client-disconnect', data: { id: entry.id, name: entry.name }, loading: busy.has(key) }));
-  else if (connectable && client.canConnect) actions.push(button({ label: 'Connect', icon: 'plug', size: 'sm', variant: 'secondary', action: 'settings.client-connect', data: { id: entry.id, name: entry.name }, loading: busy.has(key) }));
+  if (connectable && status?.tone === 'success') actions.push(button({ label: 'Disconnect', size: 'sm', variant: 'ghost', action: 'settings.client-disconnect', data: { id: entry.id, name: entry.name }, loading: isBusy(key) }));
+  else if (connectable && client.canConnect) actions.push(button({ label: 'Connect', icon: 'plug', size: 'sm', variant: 'secondary', action: 'settings.client-connect', data: { id: entry.id, name: entry.name }, loading: isBusy(key) }));
   if (connectable && client.skillSupported !== false && client.skillPath) {
     actions.push(client.skillInstalled ? html`<span class="settings-inline-status">${icon('circle-check', { size: 14 })}Skill installed</span>`
-      : button({ label: 'Install the Still skill', size: 'sm', variant: 'ghost', action: 'settings.client-skill', data: { id: entry.id, name: entry.name }, loading: busy.has(`skill:${entry.id}`) }));
+      : button({ label: 'Install the Still skill', size: 'sm', variant: 'ghost', action: 'settings.client-skill', data: { id: entry.id, name: entry.name }, loading: isBusy(`skill:${entry.id}`) }));
   }
   const reason = client?.reason && status?.tone === 'warning' ? client.reason : '';
   return html`<div class="settings-row is-stacked client-row" data-key="client-${entry.id}">
@@ -1037,41 +1071,48 @@ function clientRow(ctx, entry, client, setup, paired) {
 
 function renderIntegrations(ctx) {
   const info = data.integration || {};
-  const raindrop = info.raindropConnectedAt ? { label: 'Connected', tone: 'success' } : info.raindropConfigured ? { label: 'Token saved', tone: 'neutral' } : { label: 'Not connected', tone: 'neutral' };
   const others = integrations.INTEGRATION_CATALOG.filter(entry => !['claude', 'codex', 'raindrop'].includes(entry.id));
   return html`
-    ${group({ title: 'Built in', body: card([
-      row({ lead: providerMark('raindrop', 32), label: html`Raindrop.io ${badge(raindrop)}`, description: 'Bring in collections, bookmarks, notes and highlights with your API token.',
-        control: button({ label: 'Set up', iconRight: 'arrow-right', size: 'sm', action: 'settings.section', data: { section: 'library', anchor: 'settings-raindrop' } }) }),
-      row({ lead: providerMark('agent:claude-code', 32), label: 'Claude Code, Codex and Claude Desktop', description: 'Agents search and organize your library through MCP and the local bridge.',
-        control: button({ label: 'Set up', iconRight: 'arrow-right', size: 'sm', action: 'settings.section', data: { section: 'agents' } }) }),
+    ${group({ title: 'Built in', body: () => card([
+      row({ lead: providerMark('raindrop', 32), label: html`Raindrop.io ${badge(raindropStatus(info))}`, keywords: 'import token bookmarks', description: 'Bring in collections, bookmarks, notes and highlights with your API token.',
+        control: button({ label: 'Set up Raindrop', iconRight: 'arrow-right', size: 'sm', action: 'settings.section', data: { section: 'library', anchor: 'settings-raindrop' } }) }),
+      row({ lead: providerMark('agent:claude-code', 32), label: 'Claude Code, Codex and Claude Desktop', keywords: 'mcp agents', description: 'Agents search and organize your library through MCP and the local bridge.',
+        control: button({ label: 'Set up agents', iconRight: 'arrow-right', size: 'sm', action: 'settings.section', data: { section: 'agents' } }) }),
+      row({ lead: providerMark('github', 32), label: 'GitHub, Linear and Product Hunt', keywords: 'accounts token pull requests issues', description: 'Dashboard widgets that show your pull requests, issues and launches.',
+        control: button({ label: 'Connect accounts', iconRight: 'arrow-right', size: 'sm', action: 'settings.section', data: { section: 'accounts' } }) }),
     ]) })}
     ${group({ title: 'Other apps', description: 'Still does not sync with these services directly. Their guides show how to move links in and out, usually with a bookmarks file or a Still backup.',
-      body: html`<ul class="integration-grid" role="list">${others.map(entry => html`<li><a class="integration-link" href="${safeHref(entry.url)}" target="_blank" rel="noopener noreferrer">
-        <span class="integration-link-head"><span class="integration-link-name">${entry.name}</span>${badge({ label: entry.category, tone: 'outline' })}${icon('arrow-up-right', { size: 14, className: 'integration-link-icon' })}</span>
-        <span class="integration-link-desc">${entry.description}</span></a></li>`)}</ul>` })}`;
+      body: () => {
+        const links = others.map(entry => searchable([entry.name, entry.category, entry.description], html`<li><a class="integration-link" href="${safeHref(entry.url)}" target="_blank" rel="noopener noreferrer">
+          <span class="integration-link-head"><span class="integration-link-name">${entry.name}</span>${badge({ label: entry.category, tone: 'outline' })}${icon('arrow-up-right', { size: 14, className: 'integration-link-icon' })}</span>
+          <span class="integration-link-desc">${entry.description}</span></a></li>`)).filter(entry => String(entry).trim());
+        return links.length ? html`<ul class="integration-grid" role="list">${links}</ul>` : '';
+      } })}`;
 }
 
 /* ------------------------------------------------------------------ Shortcuts */
 
 const keyCaps = keys => String(keys).split(' ').map(chord => kbd(chord));
 const chromeKeys = shortcut => html`<kbd class="kbd">${String(shortcut).split('+').filter(Boolean).map(part => html`<span>${part}</span>`)}</kbd>`;
+const shortcutRow = (label, keys, words = '') => searchable([label, words], html`<div class="shortcut-row"><span class="shortcut-label">${label}</span><span class="shortcut-keys">${keys}</span></div>`);
 
 function renderShortcuts(ctx) {
   const groups = groupShortcuts(listShortcuts());
   const commands = chromeCommandRows(data.commands);
   return html`
-    ${groups.map(entry => group({ title: entry.group === 'General' ? 'In Still' : entry.group, body: card(entry.rows.map(shortcut => html`<div class="shortcut-row">
-      <span class="shortcut-label">${shortcut.label}</span><span class="shortcut-keys">${keyCaps(shortcut.keys)}</span></div>`), 'shortcut-card') }))}
-    ${group({ title: 'Writing notes', body: card(NOTE_KEYS.map(shortcut => html`<div class="shortcut-row"><span class="shortcut-label">${shortcut.label}</span>
-      <span class="shortcut-keys">${shortcut.literal ? html`<kbd class="kbd"><span>${shortcut.keys}</span></kbd>` : kbd(shortcut.keys)}</span></div>`), 'shortcut-card') })}
-    ${group({ title: 'Anywhere in Chrome', description: 'These work on any page, even when Still is closed.', body: html`${card(commands.map(command => html`<div class="shortcut-row">
-      <span class="shortcut-label">${command.label}</span><span class="shortcut-keys">${command.shortcut ? chromeKeys(command.shortcut) : html`<span class="settings-row-desc">Not set</span>`}</span></div>`), 'shortcut-card')}
-      <div class="settings-actions settings-actions-below">
+    ${groups.map(entry => group({ title: entry.group === 'General' ? 'In Still' : entry.group, keywords: 'keys',
+      body: () => card(entry.rows.map(shortcut => shortcutRow(shortcut.label, keyCaps(shortcut.keys), shortcut.keys)), 'shortcut-card') }))}
+    ${group({ title: 'Writing notes', keywords: 'editor keys', body: () => card(NOTE_KEYS.map(shortcut => shortcutRow(shortcut.label,
+      shortcut.literal ? html`<kbd class="kbd"><span>${shortcut.keys}</span></kbd>` : kbd(shortcut.keys), shortcut.keys)), 'shortcut-card') })}
+    ${group({ title: 'Anywhere in Chrome', keywords: 'global commands', description: 'These work on any page, even when Still is closed.', body: () => {
+      const rows = card(commands.map(command => shortcutRow(command.label, command.shortcut ? chromeKeys(command.shortcut) : html`<span class="settings-row-desc">Not set</span>`, command.shortcut)), 'shortcut-card');
+      if (!rows) return '';
+      return html`${rows}${isSearching() ? '' : html`<div class="settings-actions settings-actions-below">
         ${button({ label: 'Change in Chrome', iconRight: 'external-link', size: 'sm', action: 'settings.shortcuts-page' })}
         ${button({ label: 'Copy page address', icon: 'copy', size: 'sm', variant: 'ghost', action: 'app.copy', data: { text: SHORTCUTS_PAGE, done: 'Copied. Paste it into the address bar.' } })}
-        <span class="settings-row-desc">${SHORTCUTS_PAGE}</span>
-      </div>` })}`;
+        <span class="settings-row-desc settings-mono">${SHORTCUTS_PAGE}</span>
+      </div>`}`;
+    } })}`;
 }
 
 /* ------------------------------------------------------------------ About */
@@ -1080,21 +1121,22 @@ function renderAbout(ctx) {
   const usage = data.storage?.usage;
   const links = [{ label: 'Documentation', url: `${REPO}#readme`, icon: 'book-open' }, { label: 'Report a problem', url: `${REPO}/issues`, icon: 'flag' }, { label: 'Source code', url: REPO, icon: 'code' }];
   return html`
-    ${group({ title: 'Still', body: card([
-      row({ lead: html`<span class="settings-brand" aria-hidden="true">${icon('bookmark', { size: 18 })}</span>`, label: `Still ${version()}`, description: 'Bookmarks, notes, highlights and AI in one local-first library.',
+    ${group({ title: 'Still', keywords: 'version', body: () => card([
+      row({ lead: html`<span class="settings-brand" aria-hidden="true">${icon('bookmark', { size: 18 })}</span>`, label: `Still ${version()}`, description: 'Bookmarks, notes, highlights, a dashboard and AI in one local-first library.',
         control: button({ label: 'Help', icon: 'circle-help', size: 'sm', variant: 'ghost', action: 'settings.section', data: { section: 'help' } }) }),
     ]) })}
-    ${group({ title: 'Where your data lives', body: card([
+    ${group({ title: 'Where your data lives', keywords: 'privacy storage', body: () => card([
       row({ label: 'Library', description: 'Items, collections, notes and highlights are kept in this Chrome profile’s extension storage. Files are kept in this browser’s database. Nothing is uploaded unless you connect something below.' }),
       row({ label: 'Storage used', description: usage != null ? `${fileSize(usage)} on this device.` : 'Chrome did not report storage use.' }),
       row({ label: 'AI keys', description: 'Stored on this device in Chrome’s extension storage. Not included in backups. Sent only to the provider they belong to.' }),
+      row({ label: 'Connected accounts', keywords: 'github linear token', description: 'Tokens for dashboard widgets stay on this device and go only to the service they belong to.' }),
       row({ label: 'AI requests', description: 'When you ask a question, the question and the context you choose go to the provider you picked. The footnote under Ask names it.' }),
       row({ label: 'Local bridge', description: 'When paired, the library syncs to the bridge on this computer so agents can use it. Files and keys stay in the browser.' }),
       row({ label: 'Backups', description: 'Download a full backup now and then. Removing the extension deletes its storage.',
         control: button({ label: 'Library & backup', iconRight: 'arrow-right', size: 'sm', action: 'settings.section', data: { section: 'library' } }) }),
     ]) })}
-    ${group({ title: 'Links', body: card(links.map(link => html`<a class="settings-link-row" href="${safeHref(link.url)}" target="_blank" rel="noopener noreferrer">
-      ${icon(link.icon, { size: 16 })}<span>${link.label}</span>${icon('arrow-up-right', { size: 14, className: 'settings-link-row-icon' })}</a>`)) })}`;
+    ${group({ title: 'Links', body: () => card(links.map(link => searchable([link.label], html`<a class="settings-link-row" href="${safeHref(link.url)}" target="_blank" rel="noopener noreferrer">
+      ${icon(link.icon, { size: 16 })}<span>${link.label}</span>${icon('arrow-up-right', { size: 14, className: 'settings-link-row-icon' })}</a>`))) })}`;
 }
 
 /* ------------------------------------------------------------------ Help */
@@ -1102,19 +1144,26 @@ function renderAbout(ctx) {
 function renderHelp(ctx) {
   const shortcuts = [{ keys: 'mod+k', label: 'Search and commands' }, { keys: 'a', label: 'Add a link' }, { keys: 'n', label: 'New note' }, { keys: 'mod+shift+a', label: 'Ask AI' }, { keys: '?', label: 'All keyboard shortcuts' }];
   return html`
-    ${group({ title: 'Getting started', body: html`<ol class="help-steps" role="list">${GETTING_STARTED.map(step => html`<li class="help-step">
-      <span class="help-step-icon" aria-hidden="true">${icon(step.icon, { size: 16 })}</span><span class="help-step-text"><span class="help-step-title">${step.title}</span><span class="help-step-body">${step.text}</span></span></li>`)}</ol>` })}
-    ${group({ title: 'Search syntax', description: 'Type these in the search field. They work in every view.', body: card(SEARCH_SYNTAX.map(entry => html`<div class="syntax-row">
-      <code class="syntax-code">${entry.code}</code><span class="syntax-text">${entry.text}</span></div>`), 'syntax-card') })}
-    ${group({ title: 'Keyboard', actions: button({ label: 'All shortcuts', iconRight: 'arrow-right', size: 'sm', variant: 'ghost', action: 'settings.section', data: { section: 'shortcuts' } }),
-      body: card(shortcuts.map(shortcut => html`<div class="shortcut-row"><span class="shortcut-label">${shortcut.label}</span><span class="shortcut-keys">${keyCaps(shortcut.keys)}</span></div>`), 'shortcut-card') })}
-    ${group({ title: 'Guides', body: card(GUIDES.map(guide => html`<a class="settings-link-row" href="${safeHref(guide.url)}" target="_blank" rel="noopener noreferrer">
-      ${icon('book-open', { size: 16 })}<span>${guide.label}</span>${icon('arrow-up-right', { size: 14, className: 'settings-link-row-icon' })}</a>`)) })}
-    ${group({ title: 'The reference room', description: `All ${REFERENCE_ASSETS.length} reference images that shaped Still: library layouts, notes, capture, collections, highlights, AI and agent connections. Open one to see it full size.`,
-      body: html`<ul class="reference-grid" role="list">${REFERENCE_ASSETS.map(asset => html`<li><figure class="reference-figure">
-        <a class="reference-link" href="./${encodeURI(asset.path)}" target="_blank" rel="noopener noreferrer" aria-label="${asset.description}, open full size">
-          <img src="${safeSrc(asset.path)}" alt="${asset.description}" loading="lazy" decoding="async" width="320" height="200"></a>
-        <figcaption><span class="reference-title">${asset.description}</span><span class="reference-file">${asset.name}</span></figcaption></figure></li>`)}</ul>` })}`;
+    ${group({ title: 'Getting started', keywords: 'guide tutorial', body: () => {
+      const steps = GETTING_STARTED.map(step => searchable([step.title, step.text], html`<li class="help-step">
+        <span class="help-step-icon" aria-hidden="true">${icon(step.icon, { size: 16 })}</span><span class="help-step-text"><span class="help-step-title">${step.title}</span><span class="help-step-body">${step.text}</span></span></li>`))
+        .filter(step => String(step).trim());
+      return steps.length ? html`<ol class="help-steps" role="list">${steps}</ol>` : '';
+    } })}
+    ${group({ title: 'Search syntax', keywords: 'operators filter', description: 'Type these in the search field. They work in every view.', body: () => card(SEARCH_SYNTAX.map(entry => searchable([entry.code, entry.text], html`<div class="syntax-row">
+      <code class="syntax-code">${entry.code}</code><span class="syntax-text">${entry.text}</span></div>`)), 'syntax-card') })}
+    ${group({ title: 'Keyboard', keywords: 'shortcuts keys', actions: isSearching() ? '' : button({ label: 'All shortcuts', iconRight: 'arrow-right', size: 'sm', variant: 'ghost', action: 'settings.section', data: { section: 'shortcuts' } }),
+      body: () => card(shortcuts.map(shortcut => shortcutRow(shortcut.label, keyCaps(shortcut.keys), shortcut.keys)), 'shortcut-card') })}
+    ${group({ title: 'Guides', keywords: 'docs documentation', body: () => card(GUIDES.map(guide => searchable([guide.label], html`<a class="settings-link-row" href="${safeHref(guide.url)}" target="_blank" rel="noopener noreferrer">
+      ${icon('book-open', { size: 16 })}<span>${guide.label}</span>${icon('arrow-up-right', { size: 14, className: 'settings-link-row-icon' })}</a>`))) })}
+    ${group({ title: 'The reference room', keywords: 'images screenshots references', description: `All ${REFERENCE_ASSETS.length} reference images that shaped Still: library layouts, notes, capture, collections, highlights, AI and agent connections. Open one to see it full size.`,
+      body: () => {
+        const figures = REFERENCE_ASSETS.map(asset => searchable([asset.description, asset.name], html`<li><figure class="reference-figure">
+          <a class="reference-link" href="./${encodeURI(asset.path)}" target="_blank" rel="noopener noreferrer" aria-label="${asset.description}, open full size">
+            <img src="${safeSrc(asset.path)}" alt="" loading="lazy" decoding="async" width="320" height="200"></a>
+          <figcaption><span class="reference-title">${asset.description}</span><span class="reference-file">${asset.name}</span></figcaption></figure></li>`)).filter(entry => String(entry).trim());
+        return figures.length ? html`<ul class="reference-grid" role="list">${figures}</ul>` : '';
+      } })}`;
 }
 
 /* ------------------------------------------------------------------ Connect dialog */
@@ -1233,16 +1282,40 @@ async function finishConnectSave(ctx, pending, { test, closeOnSuccess }) {
 
 /* ------------------------------------------------------------------ actions */
 
+/** Shows a section: the full tab navigates (so the view and history stay right), the side panel drills in. */
 function goToSection(ctx, section, anchor) {
   const ui = uiState(ctx);
-  ui.section = normalizeSection(section);
-  ui.list = false;
-  ctx.render();
+  const id = normalizeSection(section);
+  ui.query = '';
+  if (ctx.env.isSidepanel) {
+    ui.section = id;
+    ui.list = false;
+    ctx.render();
+  } else if (ctx.state.view !== settingsView(id)) ctx.navigate(settingsView(id));
+  else ctx.render();
   ctx.nextFrame(() => {
     const target = anchor && document.getElementById(anchor);
-    if (target) { target.scrollIntoView({ block: 'start', behavior: 'smooth' }); target.focus({ preventScroll: true }); }
-    else if (ctx.env.isSidepanel) document.querySelector('.settings-back')?.focus();
+    if (target) { reveal(target); return; }
+    document.querySelector('#main')?.scrollTo?.({ top: 0 });
+    focusEntry(ctx);
   });
+}
+
+function backToList(ctx) {
+  const ui = uiState(ctx);
+  const from = ui.section;
+  ui.query = '';
+  if (ctx.env.isSidepanel) { ui.list = true; ctx.render(); } else ctx.navigate('settings');
+  focusSoon(ctx, `#settings-nav-${from}`);
+}
+
+function setQuery(ctx, value) {
+  const ui = uiState(ctx);
+  if (ui.query === value) return;
+  ui.query = value;
+  ui.queryView = ctx.state.view;
+  ctx.render();
+  if (!value) ctx.nextFrame(() => document.querySelector('#main')?.scrollTo?.({ top: 0 }));
 }
 
 const updateLibrarySettings = (ctx, patch) => ctx.store.updateSettings(patch);
@@ -1256,7 +1329,7 @@ async function setAi(ctx, patch) {
 function pollLogin(ctx) {
   clearTimeout(live.loginTimer);
   const job = data.login;
-  if (!job || !['pending', 'user_action_needed'].includes(job.status) || !isOpen(ctx)) return;
+  if (!job || !['pending', 'user_action_needed'].includes(job.status) || !live.mounted) return;
   live.loginTimer = setTimeout(async () => {
     try {
       const next = await ctx.ai.chatGptSignInStatus(job.id);
@@ -1271,7 +1344,7 @@ function pollLogin(ctx) {
 
 async function runImport(ctx, file) {
   if (!file) return;
-  if (!isOpen(ctx)) openSettings(ctx, 'library');
+  if (!live.mounted) openSettings(ctx, 'library');
   data.importJob = { name: file.name || 'the file', running: true };
   ctx.render();
   try {
@@ -1284,31 +1357,75 @@ async function runImport(ctx, file) {
   ctx.render();
 }
 
-registerDialog(DIALOG, renderSettings, {
-  size: 'xl', className: 'settings-dialog',
-  // In the side panel, Escape inside a section goes back to the section list first.
-  beforeClose: ctx => {
-    if (live.forceClose || !ctx.env.isSidepanel) return true;
-    const ui = uiState(ctx);
-    if (ui.list) return true;
-    const from = ui.section;
-    ui.list = true;
-    ctx.render();
-    focusSoon(ctx, `#settings-row-${from}`);
-    return false;
-  },
-});
+// Arrow keys move between the options of a radio group (theme cards, swatches, segmented controls) and select them.
+const ARROWS = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 };
+function moveInRadioGroup(event) {
+  const target = event.target;
+  if (target?.getAttribute?.('role') !== 'radio' || !(event.key in ARROWS || event.key === 'Home' || event.key === 'End')) return false;
+  const radios = [...(target.closest('[role="radiogroup"]')?.querySelectorAll('[role="radio"]') || [])].filter(radio => !radio.disabled);
+  const index = radios.indexOf(target);
+  if (index < 0) return false;
+  const rtl = getComputedStyle(target).direction === 'rtl' && ['ArrowLeft', 'ArrowRight'].includes(event.key) ? -1 : 1;
+  const next = event.key === 'Home' ? radios[0] : event.key === 'End' ? radios.at(-1) : radios[(index + ARROWS[event.key] * rtl + radios.length) % radios.length];
+  event.preventDefault();
+  next.focus();
+  next.click();
+  return true;
+}
+
 registerDialog(CONNECT, renderConnect, { size: 'md', className: 'settings-connect' });
 
 registerActions({
-  'settings.close': ({ ctx }) => { live.forceClose = true; try { ctx.closeDialog(DIALOG); } finally { live.forceClose = false; } },
-  'settings.section': ({ ctx, data: payload }) => goToSection(ctx, payload.section, payload.anchor),
-  'settings.back': ({ ctx }) => {
+  'settings.close': ({ ctx }) => {
+    if (ctx.env.isSidepanel) { ctx.closePanel(); return; }
+    ctx.navigate('dashboard');
+  },
+  'settings.section': ({ ctx, event, data: payload }) => {
+    // Links keep their browser behavior with a modifier (new tab, new window); a plain click stays in this page.
+    if (event?.type === 'click' && (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button > 0)) return;
+    event?.preventDefault?.();
+    goToSection(ctx, payload.section, payload.anchor);
+  },
+  'settings.back': ({ ctx }) => backToList(ctx),
+  'settings.escape': ({ ctx }) => {
     const ui = uiState(ctx);
-    const from = ui.section;
-    ui.list = true;
-    ctx.render();
-    focusSoon(ctx, `#settings-row-${from}`);
+    if (ui.query) return setQuery(ctx, '');
+    if (!ui.list) return backToList(ctx);
+    ctx.closePanel();
+    return undefined;
+  },
+  'settings.key': ({ event }) => { moveInRadioGroup(event); },
+  'settings.search': ({ ctx, el }) => {
+    clearTimeout(live.searchTimer);
+    const value = el.value;
+    live.searchTimer = setTimeout(() => setQuery(ctx, value), 120);
+  },
+  'settings.search-key': ({ ctx, el, event }) => {
+    if (event.key === 'Enter') {
+      // Enter jumps to the first result.
+      event.preventDefault();
+      clearTimeout(live.searchTimer);
+      setQuery(ctx, el.value);
+      ctx.nextFrame(() => {
+        const results = document.querySelector('.settings-results');
+        const first = results?.querySelector(':is(.settings-group, .settings-result-summary) :is(a[href], button:not([disabled]), input:not([type="hidden"]):not([disabled]), select:not([disabled]), [tabindex="0"])')
+          || results?.querySelector('a[href], button:not([disabled])');
+        first?.focus();
+        first?.scrollIntoView({ block: 'nearest' });
+      });
+      return;
+    }
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    clearTimeout(live.searchTimer);
+    if (el.value) { el.value = ''; setQuery(ctx, ''); return; }
+    el.blur();
+  },
+  'settings.search-clear': ({ ctx }) => {
+    clearTimeout(live.searchTimer);
+    setQuery(ctx, '');
+    focusSoon(ctx, '#settings-search');
   },
   'settings.disclose': ({ ctx, data: payload }) => {
     const open = uiState(ctx).open;
@@ -1317,12 +1434,11 @@ registerActions({
   },
   'settings.refresh': ({ ctx }) => refresh(ctx, { bridge: true }),
 
-  // General and Appearance
+  // General
   'settings.default-collection': ({ ctx, data: payload }) => updateLibrarySettings(ctx, { defaultCollectionId: payload.value || '' }),
-  'settings.toggle': ({ ctx, el, data: payload }) => updateLibrarySettings(ctx, { [payload.key]: !!el.checked }),
-  'settings.appearance': ({ ctx, data: payload }) => {
-    if (!['theme', 'accent', 'density'].includes(payload.name)) return undefined;
-    return updateLibrarySettings(ctx, { [payload.name]: payload.value });
+  'settings.toggle': ({ ctx, el, data: payload }) => {
+    if (!['openPanelOnSave', 'startOnPage', 'confirmDelete'].includes(payload.key)) return undefined;
+    return updateLibrarySettings(ctx, { [payload.key]: !!el.checked });
   },
 
   // Library & backup
@@ -1416,16 +1532,16 @@ registerActions({
     const provider = ai.getProvider(props.providerId);
     const connection = props.id ? (data.connections || []).find(entry => entry.id === props.id) : null;
     const d = connectDraft;
-    const input = { providerId: provider.id, ...(props.id ? { id: props.id } : {}) };
-    if (d.apiKey.trim()) input.apiKey = d.apiKey.trim();
-    if (provider.editableBaseUrl && d.baseUrl.trim()) input.baseUrl = d.baseUrl.trim();
-    if (provider.kind === 'custom') input.label = d.label.trim();
-    if (provider.transport === 'anthropic') input.workspaceId = d.workspaceId.trim();
-    if (provider.chat && d.defaultModel) input.defaultModel = d.defaultModel;
-    const credentialsChanged = !props.id || !!input.apiKey || (provider.editableBaseUrl && (input.baseUrl || '') !== (connection?.baseUrl || ''))
-      || (provider.transport === 'anthropic' && input.workspaceId !== (connection?.workspaceId || '')) || connection?.status === 'error';
+    const request = { providerId: provider.id, ...(props.id ? { id: props.id } : {}) };
+    if (d.apiKey.trim()) request.apiKey = d.apiKey.trim();
+    if (provider.editableBaseUrl && d.baseUrl.trim()) request.baseUrl = d.baseUrl.trim();
+    if (provider.kind === 'custom') request.label = d.label.trim();
+    if (provider.transport === 'anthropic') request.workspaceId = d.workspaceId.trim();
+    if (provider.chat && d.defaultModel) request.defaultModel = d.defaultModel;
+    const credentialsChanged = !props.id || !!request.apiKey || (provider.editableBaseUrl && (request.baseUrl || '') !== (connection?.baseUrl || ''))
+      || (provider.transport === 'anthropic' && request.workspaceId !== (connection?.workspaceId || '')) || connection?.status === 'error';
     // saveConnection asks Chrome for host access before its first await, so it must run inside this handler's gesture.
-    const pending = ai.saveConnection(input);
+    const pending = ai.saveConnection(request);
     return finishConnectSave(ctx, pending, { test: credentialsChanged, closeOnSuccess: !!props.id && !props.justConnected });
   },
   'settings.connect-test': async ({ ctx }) => {
@@ -1474,13 +1590,16 @@ registerActions({
 
   // Local bridge
   'settings.bridge-field': ({ el }) => { drafts[el.dataset.field] = el.value; },
-  'settings.bridge-pair': ({ ctx }) => {
-    const url = String(drafts.bridgeUrl ?? data.integration?.bridgeUrl ?? integrations.DEFAULT_BRIDGE_URL).trim();
-    const token = drafts.bridgeToken.trim();
+  'settings.bridge-pair': ({ ctx, el }) => {
+    const form = el.closest?.('form') || el;
+    const url = String(form.querySelector?.('input[name="url"]')?.value ?? drafts.bridgeUrl ?? data.integration?.bridgeUrl ?? integrations.DEFAULT_BRIDGE_URL).trim();
+    const token = String(form.querySelector?.('input[name="token"]')?.value ?? drafts.bridgeToken).trim();
     if (!token) throw new Error('Paste the pairing token the bridge printed.');
+    let origin;
+    try { const parsed = new URL(url); origin = `${parsed.protocol}//${parsed.hostname}/*`; } catch { throw new Error('Enter the bridge address it printed, such as http://127.0.0.1:47321.'); }
     // pairBridge requests loopback host access synchronously, inside this click or Enter.
     const pending = ctx.ai?.pairBridge ? ctx.ai.pairBridge({ url, token })
-      : requestAccess({ origins: [`${new URL(url).protocol}//${new URL(url).hostname}/*`] }).then(granted => {
+      : requestAccess({ origins: [origin] }).then(granted => {
         if (!granted) throw new Error('Chrome did not allow Still to reach the bridge. Try again and choose Allow.');
         return integrations.configureBridge({ url, token, enabled: true });
       });
@@ -1502,14 +1621,14 @@ registerActions({
       await loadIntegration(ctx);
       ctx.toast('Bridge sync paused. Pairing is kept.');
     } else {
-      data.integration = { ...data.integration, bridgeEnabled: false };
+      live.pausedHere = true;
       ctx.toast('Bridge sync paused in this window. Pairing is kept.');
     }
   }),
   'settings.bridge-resume': ({ ctx }) => withBusy(ctx, 'bridge-sync', async () => {
+    live.pausedHere = false;
     if (typeof integrations.setBridgeEnabled === 'function') await integrations.setBridgeEnabled(true);
     await loadIntegration(ctx);
-    if (!data.integration?.bridgeEnabled) data.integration = { ...data.integration, bridgeEnabled: true };
     ctx.stopBridgeSync?.();
     if (typeof integrations.setBridgeEnabled === 'function') await ctx.startBridgeSync?.();
     else ctx.stopBridgeSync = integrations.startBridgeSync({ onStatus: info => { ctx.state.bridge = info; }, onChange: () => ctx.render() });
@@ -1517,11 +1636,12 @@ registerActions({
   }),
   'settings.bridge-unpair': async ({ ctx }) => {
     const ok = await ctx.confirm({ title: 'Unpair the local bridge?', body: 'Still forgets the pairing token. Agents and bridge connections stop working until you pair again. Your library is not changed.',
-      confirmLabel: 'Unpair', tone: 'danger' });
+      confirmLabel: 'Unpair bridge', tone: 'danger' });
     if (!ok) return;
     ctx.stopBridgeSync?.();
     ctx.stopBridgeSync = null;
     ctx.state.bridge = null;
+    live.pausedHere = false;
     await integrations.disconnectBridge();
     data.clients = null;
     data.login = null;
@@ -1636,8 +1756,20 @@ registerActions({
   },
 });
 
-/** One-time wiring: the hidden #import-input in index.html feeds Library & backup. */
+// Escape steps back in the side panel: clears the search, leaves a section, then closes Settings.
+registerShortcuts([
+  { keys: 'escape', action: 'settings.escape', when: ctx => ctx.env.isSidepanel && ctx.state.panel?.kind === 'settings' && !ctx.state.dialogs.length && !ctx.state.popover },
+]);
+
+/** One-time wiring (after the AI engine has loaded): the hidden #import-input feeds Library & backup. */
 export function init(ctx) {
+  live.engineSettled = true;
+  // A page opened straight onto Settings mounted before the AI engine existed: load its part now.
+  if (live.mounted) {
+    try { live.offAi ||= ctx.ai?.onConnectionsChanged?.(() => loadAi(ctx)) || null; } catch { live.offAi = null; }
+    try { live.offIndex ||= ctx.ai?.subscribeIndex?.(status => { data.index = status; if (live.mounted) ctx.render(); }) || null; } catch { live.offIndex = null; }
+    loadAi(ctx, { refresh: true }).then(() => loadClients(ctx)).catch(error => console.error(error));
+  }
   const picker = document.getElementById('import-input');
   if (!picker || picker.dataset.settingsBound) return;
   picker.dataset.settingsBound = 'true';
@@ -1646,9 +1778,4 @@ export function init(ctx) {
     picker.value = '';
     ctx.run(() => runImport(ctx, file));
   });
-}
-
-/** Full-page settings for the 'settings' / 'settings:<section>' view and the side panel's settings screen (scaffold). */
-export function renderSettingsPage(ctx, { surface = ctx.env?.isSidepanel ? 'side' : 'full' } = {}) {
-  return html`<div class="settings-page" data-key="settings-page" data-surface="${surface}"></div>`;
 }

@@ -2,21 +2,25 @@
 // the semantic tokens in styles/skins.css; the color mode (light/dark/system) still applies unless the skin has one mode.
 // <html data-skin="<id>" data-theme="light|dark"> is set by theme-boot.js before paint and app.js afterwards.
 
+// swatches per mode: [canvas, surface, accent, text], the resolved --bg-app, --bg-surface, --accent (with the default
+// accent) and --fg-default of styles/skins.css (tests/themes-skins.test.mjs keeps them in sync). Glass lists its ambient
+// base and translucent pane instead, since its canvas is the Aurora gradient. accentLabel names the skin's own accent,
+// which is what the default accent ("blue") shows in that skin; the other accent presets keep their names.
 export const THEMES = Object.freeze([
-  { id: 'still', label: 'Still', description: 'The original warm, matte look.', modes: ['light', 'dark'],
-    swatches: { light: ['#f7f6f3', '#ffffff', '#0d74ce', '#1f1f1f'], dark: ['#171717', '#202020', '#5eb1ef', '#ededed'] } },
-  { id: 'white', label: 'White', description: 'Pure white surfaces with crisp hairlines.', modes: ['light'],
-    swatches: { light: ['#ffffff', '#ffffff', '#0d74ce', '#111111'] } },
-  { id: 'glass', label: 'Liquid Glass', description: 'Frosted, translucent panels over a soft ambient wallpaper.', modes: ['light', 'dark'], wallpaper: 'aurora',
-    swatches: { light: ['#e5edf7', 'rgba(255,255,255,.64)', '#2463bd', '#182236'], dark: ['#0a1021', 'rgba(19,30,51,.55)', '#9fd2ff', '#f5f7fb'] } },
-  { id: 'midnight', label: 'Midnight', description: 'True black for OLED screens and late nights.', modes: ['dark'],
-    swatches: { dark: ['#000000', '#0b0b0d', '#7aa2ff', '#f2f2f2'] } },
-  { id: 'nord', label: 'Nord', description: 'Cool arctic blues and frost.', modes: ['light', 'dark'],
-    swatches: { light: ['#eceff4', '#f8f9fb', '#5e81ac', '#2e3440'], dark: ['#2e3440', '#3b4252', '#88c0d0', '#eceff4'] } },
-  { id: 'paper', label: 'Paper', description: 'Warm sepia, easy on the eyes for reading.', modes: ['light', 'dark'],
-    swatches: { light: ['#f4ecd8', '#fbf6ea', '#9a5b2d', '#3b2f22'], dark: ['#1f1a14', '#2a231b', '#d9a066', '#eadfcb'] } },
-  { id: 'rose', label: 'Rosé', description: 'Soft pinks and muted plum.', modes: ['light', 'dark'],
-    swatches: { light: ['#faf4f4', '#fffafa', '#c4467a', '#3a2530'], dark: ['#191419', '#231c23', '#eb8fb5', '#f1e4ea'] } },
+  { id: 'still', label: 'Still', description: 'The original warm, matte look.', modes: ['light', 'dark'], accentLabel: 'Blue',
+    swatches: { light: ['#fcfcfb', '#ffffff', '#1a66d6', '#1f1e1c'], dark: ['#25262a', '#2a2b2f', '#2c6bd3', '#e8e6e3'] } },
+  { id: 'white', label: 'White', description: 'Pure white surfaces with crisp hairlines.', modes: ['light'], accentLabel: 'Blue',
+    swatches: { light: ['#ffffff', '#ffffff', '#0d6fc4', '#18181b'] } },
+  { id: 'glass', label: 'Liquid Glass', description: 'Frosted, translucent panels over a soft ambient wallpaper.', modes: ['light', 'dark'], wallpaper: 'aurora', accentLabel: 'Ice blue',
+    swatches: { light: ['#e5edf7', 'rgba(255,255,255,.6)', '#2463bd', '#182236'], dark: ['#0a1021', 'rgba(19,30,51,.55)', '#9fd2ff', '#f5f7fb'] } },
+  { id: 'midnight', label: 'Midnight', description: 'True black for OLED screens and late nights.', modes: ['dark'], accentLabel: 'Periwinkle',
+    swatches: { dark: ['#000000', '#0c0c0e', '#7aa2ff', '#f2f2f3'] } },
+  { id: 'nord', label: 'Nord', description: 'Cool arctic blues and frost.', modes: ['light', 'dark'], accentLabel: 'Frost',
+    swatches: { light: ['#f4f6f9', '#fbfcfd', '#4b6d9a', '#2e3440'], dark: ['#2e3440', '#333a47', '#88c0d0', '#eceff4'] } },
+  { id: 'paper', label: 'Paper', description: 'Warm sepia, easy on the eyes for reading.', modes: ['light', 'dark'], accentLabel: 'Sienna',
+    swatches: { light: ['#f7f1e3', '#fbf7ee', '#9a5b2d', '#33281c'], dark: ['#1f1a14', '#251f18', '#d9a066', '#ebe0cc'] } },
+  { id: 'rose', label: 'Rosé', description: 'Soft pinks and muted plum.', modes: ['light', 'dark'], accentLabel: 'Raspberry',
+    swatches: { light: ['#fcf7f8', '#fffbfc', '#b83c70', '#36222d'], dark: ['#1c161c', '#221b22', '#eb8fb5', '#f1e4ea'] } },
 ]);
 
 export const THEME_IDS = THEMES.map(t => t.id);
@@ -48,7 +52,20 @@ export const WALLPAPER_PRESETS = Object.freeze([
 
 export const wallpaperPreset = id => WALLPAPER_PRESETS.find(p => p.id === id) || WALLPAPER_PRESETS[0];
 
+// px is the default UI text size (--text-sm) at each step; styles/tokens.css holds the full scale.
 export const FONT_SIZES = Object.freeze([
   { value: 'sm', label: 'Small', px: 12 }, { value: 'md', label: 'Default', px: 13 }, { value: 'lg', label: 'Large', px: 14 }, { value: 'xl', label: 'Extra large', px: 16 },
 ]);
-export const RADII = Object.freeze([{ value: 'sharp', label: 'Sharp' }, { value: 'default', label: 'Default' }, { value: 'round', label: 'Round' }]);
+// k multiplies every --radius-* step (tokens.css [data-radius]).
+export const RADII = Object.freeze([{ value: 'sharp', label: 'Sharp', k: 0.4 }, { value: 'default', label: 'Default', k: 1 }, { value: 'round', label: 'Round', k: 1.5 }]);
+// --sidebar-w at each width (tokens.css [data-sidebar-width]).
+export const SIDEBAR_WIDTHS = Object.freeze([{ value: 'narrow', label: 'Narrow', px: 220 }, { value: 'default', label: 'Default', px: 248 }, { value: 'wide', label: 'Wide', px: 288 }]);
+// Dashboard widget materials (settings dashboard.widgetStyle); skins.css paints each one per skin.
+export const WIDGET_STYLES = Object.freeze([
+  { value: 'card', label: 'Cards', description: 'Solid cards with a soft shadow.' },
+  { value: 'glass', label: 'Glass', description: 'Frosted, translucent cards. Best over a wallpaper.' },
+  { value: 'flat', label: 'Flat', description: 'No card, just a hairline outline.' },
+]);
+
+/** Whether a skin can show the given color mode. */
+export const supportsMode = (skinId, mode) => themeById(skinId).modes.includes(mode);
