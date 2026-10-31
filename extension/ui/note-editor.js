@@ -13,6 +13,8 @@ import * as pickers from './pickers.js';
 import { mountBlockEditor } from '../lib/block-editor.js';
 import { renderMarkdown } from '../lib/markdown.js';
 import { noteExcerpt, wordCount, linkResolver, resolveWikiLinks, toggleTask } from '../lib/notes.js';
+import { leadingTitle } from '../lib/import/index.js';
+import { openImport, openEmbed, itemEmbedMount, saveFileItem } from './note-import.js';
 
 export const UNTITLED = 'Untitled note';
 const SAVE_DELAY = 600;
@@ -353,6 +355,7 @@ function createEditor(host, ctx) {
       target.querySelector('[data-block-edit]')?.focus({ preventScroll: true });
     },
     metaWrite, openAiMenu, runAi, applyAi, closeAi, resolveBanner, setMode: mode => { editor?.setMode(mode); renderFoot(); },
+    openImport: files => openImportDialog(files), openEmbed: () => openEmbedDialog(),
     retry: () => { st.retry = 0; save(); },
   };
   live.add(instance);
@@ -399,8 +402,11 @@ function createEditor(host, ctx) {
       onChange: markdown => changed(markdown),
       onAskAi: () => openAiMenu(selectionPoint() || els.toolbar?.querySelector('[data-tool="ai"]') || host),
       searchLinks: async query => searchLinkCandidates(ctx.select.live(), query, { exclude: id, collectionName: cid => ctx.select.collection(cid)?.name || '' }),
-      resolveLink: target => noteResolver(ctx)(target),
+      resolveLink: target => noteResolver(ctx)(target) || justSaved(target),
       onOpenLink: linkId => openLinked(ctx, linkId),
+      onImport: ({ files } = {}) => openImportDialog(files),
+      onEmbed: () => openEmbedDialog(),
+      mountEmbed: itemEmbedMount(ctx, { lookup: itemId => latestItem(ctx, itemId) }),
       onSelectionChange: info => { st.marks = info.marks || new Set(); st.block = info.block || 'paragraph'; active = instance; syncToolbar(); },
     });
     st.built = true;
@@ -448,6 +454,51 @@ function createEditor(host, ctx) {
     if (typeof ResizeObserver === 'function') {
       observer = new ResizeObserver(() => { autosizeTitle(); rovingStop(); });
       observer.observe(host);
+    }
+  }
+
+  /* ---------- import and embeds ---------- */
+
+  // A file saved for an embed a moment ago may not be in the library snapshot yet.
+  function justSaved(target) {
+    const record = latestItem(ctx, String(target ?? ''));
+    return record && !record.deletedAt ? { id: record.id, title: record.title || 'Untitled', type: record.type } : null;
+  }
+
+  function openImportDialog(files = []) {
+    if (!editor) return;
+    openImport(ctx, { files, noteTitle: inline ? '' : titleValue(els.title?.value ?? item()?.title).trim(), insert: insertImport, embedFile });
+  }
+
+  /** Imported Markdown goes in at the caret. An untitled, empty note also takes the document's title. */
+  function insertImport(markdown, { title = '' } = {}) {
+    if (!editor || st.destroyed) return;
+    let body = String(markdown || '');
+    const empty = !editor.getMarkdown().trim();
+    if (!inline && els.title && !els.title.value.trim() && title.trim()) {
+      els.title.value = normalizeTitle(title).slice(0, 300);
+      autosizeTitle();
+      if (empty && leadingTitle(body) === title.trim()) body = body.replace(/^\s*# [^\n]*\n?/, '');
+      changed();
+    }
+    if (body.trim()) editor.insertMarkdown(body, { at: empty ? 'end' : 'cursor' });
+  }
+
+  function openEmbedDialog(tab = 'link') {
+    if (!editor) return;
+    openEmbed(ctx, { tab, collectionId: item()?.collectionId || '', embed: spec => {
+      if (spec?.item) rememberItem(spec.item);
+      editor?.command('embed', { url: spec?.url, target: spec?.target, label: spec?.label });
+    } });
+  }
+
+  async function embedFile(file) {
+    try {
+      const saved = rememberItem(await saveFileItem(ctx, file, item()?.collectionId || ''));
+      editor?.command('embed', { target: saved.id, label: saved.title });
+      ctx.toast(`Saved ${saved.title} to your library and embedded it`, { tone: 'success' });
+    } catch (error) {
+      ctx.toast(error?.message || 'The file could not be saved.', { tone: 'danger' });
     }
   }
 
@@ -739,6 +790,9 @@ function createEditor(host, ctx) {
       { label: 'Download as Markdown', icon: 'download', run: () => downloadMarkdown(record) },
       ...(pageLinkable ? [{ label: 'Link to this page', icon: 'link', run: () => metaWrite({ url: page.url }) }] : []),
       ...(surface === 'side' ? [{ label: 'Open in full tab', icon: 'external-link', run: () => openInFullTab(ctx, id) }] : []),
+      { separator: true },
+      { label: 'Import file…', icon: 'file-down', run: () => openImportDialog() },
+      { label: 'Embed…', icon: 'app-window', run: () => openEmbedDialog() },
       ...(surface === 'side' ? [
         { separator: true }, { heading: 'View' },
         { label: 'Write', checked: mode === 'blocks', keepFocus: true, run: () => instance.setMode('blocks') },

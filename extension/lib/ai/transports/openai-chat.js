@@ -3,7 +3,7 @@
 import { clampEffort } from '../catalog.js';
 import { authHeaders, providerFetch, readJsonBody, streamError } from '../http.js';
 import { parseEventData, readSse } from '../stream.js';
-import { STOP_NOTICES, compactUsage, dataUrlOf, incompleteError, isStrictSchema, parseToolInput, partsOf, textOf, toolResultText, toolSchema, uniqueTag } from './shared.js';
+import { STOP_NOTICES, compactUsage, dataUrlOf, documentSource, incompleteError, isStrictSchema, parseToolInput, partsOf, textOf, toolResultText, toolSchema, uniqueTag } from './shared.js';
 
 export function toChatMessages(messages, system, options = {}) {
   const output = system ? [{ role: 'system', content: system }] : [];
@@ -27,6 +27,7 @@ export function toChatMessages(messages, system, options = {}) {
       if (part?.type === 'tool_result') output.push({ role: 'tool', tool_call_id: part.toolUseId, content: `${part.isError ? 'Error: ' : ''}${toolResultText(part.content)}` });
       else if (part?.type === 'text') { if (part.text) parts.push({ type: 'text', text: part.text }); }
       else if (part?.type === 'image') { hasImage = true; parts.push({ type: 'image_url', image_url: { url: dataUrlOf(part) } }); }
+      else if (part?.type === 'document') { hasImage = true; const { mediaType, data, name } = documentSource(part); parts.push({ type: 'file', file: { filename: name, file_data: `data:${mediaType};base64,${data}` } }); }
     }
     if (!parts.length) continue;
     // Plain strings are the most widely accepted shape for text-only turns.

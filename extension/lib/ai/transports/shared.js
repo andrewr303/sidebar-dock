@@ -17,6 +17,12 @@ export function imageSource(part) {
 
 export const dataUrlOf = part => { const { mediaType, data } = imageSource(part); return `data:${mediaType};base64,${data}`; };
 
+/** A file part: { type: 'document', mediaType: 'application/pdf', data: base64, name }. */
+export function documentSource(part) {
+  if (typeof part?.data === 'string' && part.data) return { mediaType: part.mediaType || 'application/pdf', data: part.data, name: String(part.name || 'document.pdf').slice(0, 200) };
+  throw aiError('A file in this message could not be read.', { code: 'bad_document' });
+}
+
 export function toolResultText(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.map(part => typeof part === 'string' ? part : part?.type === 'text' ? part.text : JSON.stringify(part)).join('\n');

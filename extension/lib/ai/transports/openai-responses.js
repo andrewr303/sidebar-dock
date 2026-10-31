@@ -3,7 +3,7 @@
 import { DEFAULT_MAX_TOKENS, clampEffort } from '../catalog.js';
 import { authHeaders, providerFetch, readJsonBody, streamError } from '../http.js';
 import { parseEventData, readSse } from '../stream.js';
-import { STOP_NOTICES, compactUsage, dataUrlOf, incompleteError, isStrictSchema, parseToolInput, partsOf, textOf, toolResultText, toolSchema } from './shared.js';
+import { STOP_NOTICES, compactUsage, dataUrlOf, documentSource, incompleteError, isStrictSchema, parseToolInput, partsOf, textOf, toolResultText, toolSchema } from './shared.js';
 
 // Reasoning models accept reasoning.effort; older chat models reject it.
 const REASONING_MODEL = /^(?:gpt-(?:[5-9]|\d{2})|o\d)/;
@@ -30,6 +30,7 @@ export function toResponsesInput(messages) {
       if (part?.type === 'tool_result') items.push({ type: 'function_call_output', call_id: part.toolUseId, output: `${part.isError ? 'Error: ' : ''}${toolResultText(part.content)}` });
       else if (part?.type === 'text') { if (part.text) content.push({ type: 'input_text', text: part.text }); }
       else if (part?.type === 'image') content.push({ type: 'input_image', image_url: dataUrlOf(part) });
+      else if (part?.type === 'document') { const { mediaType, data, name } = documentSource(part); content.push({ type: 'input_file', filename: name, file_data: `data:${mediaType};base64,${data}` }); }
     }
     if (content.length) items.push({ role: 'user', content });
   }

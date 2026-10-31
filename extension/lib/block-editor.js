@@ -9,6 +9,12 @@
 //  onChange(markdown)                      every edit in every mode (not setMarkdown without emit)
 //  onAskAi({ text, markdown })             "Ask AI" in the selection toolbar and the slash menu (omit to hide both);
 //                                          the payload also carries the older names { selection, draft }
+//  onImport({ files })                     "Import file" in the slash menu, and files dropped on the editor (files is
+//                                          empty from the menu); the host converts them and calls insertMarkdown
+//  onEmbed()                               "Embed" in the slash menu; the host asks for an address or a file and calls
+//                                          command('embed', { url } | { target })
+//  mountEmbed(box, { target, label, item }) -> { destroy() } | null   shows a library item (![[id]]) inside an embed
+//                                          block; without it, item embeds show a short note
 //  placeholder                             shown while the note is empty ('Write, or press / for blocks')
 //  searchLinks(query) -> Promise<[{ id, title, type, subtitle }]>   enables the [[ link picker, which inserts [[Title]]
 //  resolveLink(title) -> { id, title, type } | null                  renders [[Title]] / [[id|Label]] as link chips
@@ -21,10 +27,11 @@
 //  getMarkdown(), setMarkdown(md, { emit = false })    emit records an undo step and fires onChange
 //  getSelection() -> { text, start, end }  text is the selected text; start/end are offsets into getMarkdown()
 //  command(type, args)                     'paragraph'|'h1'|'h2'|'h3'|'bullet'|'number'|'todo'|'quote'|'code'|'divider'|
-//                                          'table'|'toggle'|'callout'|'link'|'image'|'file'. Text types turn the current
+//                                          'table'|'toggle'|'callout'|'link'|'image'|'file'|'embed'. Text types turn the current
 //                                          (or selected) blocks into that type, or back into text when they already are;
 //                                          divider and table insert a block. args: { kind } callout, { language } code,
-//                                          { url, label } link/image/file (without url the link form opens)
+//                                          { url, label } link/image/file (without url the link form opens),
+//                                          embed: { url, label, height } frames a page, { target, label } a library item
 //  format(mark)                            'bold'|'italic'|'strike'|'code'|'link' toggles on the text selection
 //  insertMarkdown(md, { at })              'cursor' (default) | 'end' | 'replace-selection'; Markdown becomes blocks
 //  undo(), redo(), focus({ at: 'start'|'end' }), setMode(mode), getMode(), destroy()
@@ -35,7 +42,7 @@
 // edge select a range of blocks (Copy gives Markdown, Cut, Delete), Mod+/ (or the Menu key, Shift+F10) opens the block
 // menu (turn into, duplicate, move, delete), Mod+D duplicates, Mod+Z, Mod+Shift+Z and Mod+Y use the editor's own
 // history, Mod+B/I/E/K and Mod+Shift+X format. "# ", "## ", "### ", "- ", "* ", "1. ", "[] ", "[ ] ", "> ", ">! ", "```"
-// and "---" at the start of a block change its type; **bold**, *italic*, `code`, ~~strike~~ and [label](url) convert
+// and "---" at the start of a block change its type; embeds and dividers are selected as whole blocks; **bold**, *italic*, `code`, ~~strike~~ and [label](url) convert
 // when closed; "/" opens the insert menu and "[[" the link picker. Paste and drop accept plain text, Markdown and HTML.
 //
 // Also exported (pure, Node-importable): BLOCK_COMMANDS, findBlockCommands, parseMarkdown, serializeBlocks,
@@ -47,6 +54,7 @@ import {
  tableWidth, insertTableRow, removeTableRow, insertTableColumn, removeTableColumn, tableCellPosition
 } from './markdown.js';
 import {toggleTask} from './notes.js';
+import {describeEmbed,embedKindLabel,nextEmbedHeight,clampEmbedHeight} from './embeds.js';
 
 const uid=()=>globalThis.crypto?.randomUUID?.()||Math.random().toString(36).slice(2);
 const ICONS={
@@ -79,7 +87,13 @@ const ICONS={
  copy:'<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
  up:'<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
  down:'<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
- bookmark:'<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>'
+ bookmark:'<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>',
+ import:'<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M12 18v-6"/><path d="m9 15 3 3 3-3"/>',
+ embed:'<rect width="20" height="16" x="2" y="4" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/>',
+ globe:'<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+ video:'<path d="m16 13 5.2 3.5a.5.5 0 0 0 .8-.4V7.9a.5.5 0 0 0-.8-.4L16 11"/><rect x="2" y="6" width="14" height="12" rx="2"/>',
+ open:'<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+ resize:'<path d="M12 2v20"/><path d="m8 18 4 4 4-4"/><path d="m8 6 4-4 4 4"/>'
 };
 const icon=(name,size=16)=>`<svg class="be-icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${ICONS[name]||ICONS.text}</svg>`;
 const calloutIcon=kind=>`<svg class="be-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${(CALLOUT_KINDS[kind]||CALLOUT_KINDS.note).icon}</svg>`;
@@ -103,9 +117,9 @@ export const BLOCK_COMMANDS=[
  ['code','Code','A code block.','code'],
  ['divider','Divider','Separate sections.','divider']
 ];
-const SLASH_EXTRAS=[['note-link','Link to note','Link another note or saved item.','note'],['ai','Ask AI','Write or edit with AI.','ai']];
-const aliases={paragraph:['text','plain'],h1:['heading1','title'],h2:['heading2','subtitle'],h3:['heading3'],bullet:['ul','unordered','bullets'],number:['ol','ordered','numbered'],todo:['task','tasks','checklist','checkbox'],toggle:['collapse','collapsible','details','fold'],table:['grid','rows','columns','spreadsheet'],link:['url','bookmark','reference'],image:['picture','photo','media'],file:['attachment','document','pdf'],code:['fence','snippet'],divider:['hr','separator','line'],'note-link':['wiki','mention','page','backlink'],ai:['assistant','write','generate']};
-const GROUPS=[['Basic blocks',['paragraph','h1','h2','h3']],['Lists',['bullet','number','todo','toggle']],['Media and links',['link','note-link','image','file']],['Advanced',['quote','callout','code','table','divider']],['AI',['ai']]];
+const SLASH_EXTRAS=[['note-link','Link to note','Link another note or saved item.','note'],['embed','Embed','A live website, video, design or PDF.','embed'],['import','Import file','PDF, Word, Markdown and more, as blocks.','import'],['ai','Ask AI','Write or edit with AI.','ai']];
+const aliases={paragraph:['text','plain'],h1:['heading1','title'],h2:['heading2','subtitle'],h3:['heading3'],bullet:['ul','unordered','bullets'],number:['ol','ordered','numbered'],todo:['task','tasks','checklist','checkbox'],toggle:['collapse','collapsible','details','fold'],table:['grid','rows','columns','spreadsheet'],link:['url','bookmark','reference'],image:['picture','photo','media'],file:['attachment','document','pdf'],code:['fence','snippet'],divider:['hr','separator','line'],'note-link':['wiki','mention','page','backlink'],embed:['iframe','website','site','web','video','youtube','figma','frame','live'],import:['upload','convert','pdf','docx','word','markdown','md','ocr','scan'],ai:['assistant','write','generate']};
+const GROUPS=[['Basic blocks',['paragraph','h1','h2','h3']],['Lists',['bullet','number','todo','toggle']],['Media and links',['link','note-link','embed','image','file']],['Advanced',['quote','callout','code','table','divider']],['Import',['import']],['AI',['ai']]];
 const SHORTCUT_HINTS={h1:'#',h2:'##',h3:'###',bullet:'-',number:'1.',todo:'[]',quote:'>',callout:'>!',code:'```',divider:'---'};
 const normalize=value=>String(value).toLowerCase().replace(/[\s_\-/]+/g,'');
 // All terms must match an id, label or alias; exact and prefix matches rank first, then catalogue order.
@@ -324,6 +338,8 @@ export function htmlToMarkdown(html){
 
 const MD_MIME='text/x-still-markdown';
 const LIST=new Set(['bullet','number','todo']),TEXT=new Set(['paragraph','h1','h2','h3','bullet','number','todo','quote','callout','code']);
+// Blocks without text: selected as a whole, skipped by caret moves.
+const ATOMIC=new Set(['divider','embed']);
 const MODES=[['blocks','Blocks'],['markdown','Markdown'],['preview','Preview']];
 const PLACEHOLDERS={h1:'Heading 1',h2:'Heading 2',h3:'Heading 3',bullet:'List',number:'List',todo:'To-do',quote:'Quote',callout:'Callout'};
 const TYPE_ICONS={note:'note',bookmark:'bookmark',article:'note',image:'image',video:'file',file:'file'};
@@ -335,6 +351,9 @@ export function mountBlockEditor(textarea,options={}){
  const doc=textarea.ownerDocument,win=doc.defaultView;
  const onChange=typeof options.onChange==='function'?options.onChange:()=>{};
  const onAskAi=typeof options.onAskAi==='function'?options.onAskAi:null;
+ const onImport=typeof options.onImport==='function'?options.onImport:null;
+ const onEmbed=typeof options.onEmbed==='function'?options.onEmbed:null;
+ const mountEmbed=typeof options.mountEmbed==='function'?options.mountEmbed:null;
  const searchLinks=typeof options.searchLinks==='function'?options.searchLinks:null;
  const resolveLink=typeof options.resolveLink==='function'?options.resolveLink:()=>null;
  const onOpenLink=typeof options.onOpenLink==='function'?options.onOpenLink:()=>{};
@@ -348,7 +367,7 @@ export function mountBlockEditor(textarea,options={}){
  let activeId=blocks[0].id,lastRange=null,caretBefore=null,lastEdit={at:0,since:0,id:null,coalesce:false,source:''};
  let undoStack=[],redoStack=[],selected=new Set(),anchorId=null,focusId=null;
  let popupState=null,linkTarget=null,drag=null,textDrag=false,dragSelect=null,searchSeq=0,searchTimer=0,selFrame=0;
- const editingToggles=new Set(),baselines=new WeakMap(),drawn=new Map(),listeners=[];
+ const editingToggles=new Set(),baselines=new WeakMap(),drawn=new Map(),frames=new Map(),listeners=[];
  const on=(target,type,fn,opts)=>{target.addEventListener(type,fn,opts);listeners.push([target,type,fn,opts]);};
 
  const root=doc.createElement('div');root.className='block-editor';root.dataset.mode=mode;if(options.compact)root.dataset.compact='';
@@ -472,6 +491,42 @@ export function mountBlockEditor(textarea,options={}){
   const editing=editingToggles.has(b.id),body=`${domId}-toggle-${b.id}`;
   return `<div class="rich-toggle" data-toggle-id="${b.id}"><div class="rich-toggle-head"><button type="button" class="rich-toggle-chevron" data-toggle-open="${b.id}" aria-expanded="${b.open}" aria-controls="${body}" aria-label="${b.open?'Hide':'Show'} toggle content">${icon('toggle')}</button><input type="text" data-toggle-title="${b.id}" value="${esc(b.title)}" aria-label="Toggle title" placeholder="Toggle"></div><div class="rich-toggle-content" id="${body}"${b.open?'':' hidden'}>${editing?`<textarea data-toggle-body="${b.id}" aria-label="Toggle content in Markdown" spellcheck="true" rows="4">${esc(b.text)}</textarea>`:`<div class="rich-toggle-preview markdown-body">${b.text.trim()?renderMarkdown(b.text,{resolveLink}):'<p class="rich-block-hint">Empty toggle.</p>'}</div>`}<div class="rich-toggle-tools"><button type="button" class="block-editor-btn" data-toggle-edit="${b.id}">${editing?'Done':'Edit content'}</button></div></div></div>`;
  }
+ // An embed is a header bar and a frame box. The frame is mounted once per element (mountFrame) and sized in place
+ // (sizeEmbed), so typing elsewhere or resizing never reloads the embedded page.
+ function embedMarkup(b){
+  const info=b.url?describeEmbed(b.url):null,hit=b.target?resolveLink(b.target):null;
+  const label=b.label||(b.target?hit?.title||b.target:info?.label||b.url||'Embed');
+  const meta=b.target?(hit?'Embedded file':'Not in your library'):info?(info.kind==='site'?info.host:`${embedKindLabel(info.kind)} · ${info.provider}`):'';
+  const kind=b.target?'file':info?.kind||'site',button=(action,name,text)=>`<button type="button" class="block-editor-btn rich-embed-btn" data-embed-action="${action}" data-embed-id="${b.id}" aria-label="${esc(text)}" data-tooltip="${esc(text)}">${icon(name)}</button>`;
+  return `<div class="rich-embed" contenteditable="false" data-embed-kind="${esc(kind)}" role="group" aria-label="${esc(`Embed: ${label}`)}"><div class="rich-embed-bar"><span class="rich-embed-icon" aria-hidden="true">${icon(kind==='file'?'file':kind==='video'?'video':'globe')}</span><span class="rich-embed-text"><span class="rich-embed-title">${esc(label)}</span>${meta?`<span class="rich-embed-meta">${esc(meta)}</span>`:''}</span><span class="rich-embed-actions">${button('size','resize','Change height')}${button('link','link','Show as a link')}${button('open','open',b.target?'Open the item':'Open in a new tab')}</span></div><div class="rich-embed-frame" data-embed-frame="${b.id}"></div>${kind==='site'?'<p class="rich-embed-hint">Some sites refuse to appear inside other pages. If this one stays blank, open it in a new tab.</p>':''}</div>`;
+ }
+ function sizeEmbed(el,b){
+  const box=el?.querySelector('[data-embed-frame]');if(!box)return;
+  const info=b.url?describeEmbed(b.url):null,height=Number(b.height)>0?clampEmbedHeight(b.height):0;
+  box.style.setProperty('--embed-height',height?`${height}px`:'');
+  box.style.setProperty('--embed-default',info?.height?`${info.height}px`:'');
+  box.style.setProperty('--embed-aspect',info?.aspect||'');
+  box.classList.toggle('is-aspect',!height&&!!info?.aspect);
+ }
+ function mountFrame(el,b){
+  const box=el.querySelector('[data-embed-frame]');if(!box)return;sizeEmbed(el,b);
+  const note=text=>{box.dataset.media='missing';box.innerHTML=`<p class="rich-embed-note">${esc(text)}</p>`;};
+  if(b.target){
+   let handle=null;try{handle=mountEmbed?.(box,{target:b.target,label:b.label,item:resolveLink(b.target)})||null;}catch(error){console.error(error);}
+   if(handle)frames.set(el,handle);else note(resolveLink(b.target)?'Open the item to see this file.':'This item is no longer in your library.');
+   return;
+  }
+  const info=describeEmbed(b.url);
+  if(!info?.src){note('Only secure (https) pages can be shown inside a note. Open it in a new tab instead.');return;}
+  const frame=doc.createElement('iframe');
+  frame.src=info.src;frame.title=b.label||info.label;frame.loading='lazy';frame.referrerPolicy='strict-origin-when-cross-origin';
+  // PDFs need an unsandboxed frame: Chrome does not run its viewer in sandboxed ones.
+  if(info.sandbox)frame.setAttribute('sandbox','allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-presentation allow-downloads');
+  frame.setAttribute('allow','fullscreen; clipboard-write; encrypted-media; picture-in-picture');
+  box.dataset.kind=info.kind;box.append(frame);
+  frames.set(el,{destroy(){frame.remove();}});
+ }
+ function unmountFrame(el){const handle=el&&frames.get(el);if(!handle)return;frames.delete(el);try{handle.destroy?.();}catch(error){console.error(error);}}
  function blockHtml(b,number){
   const indent=LIST.has(b.type)?Math.max(0,Number(b.indent)||0):0,kind=CALLOUT_KINDS[b.kind]?b.kind:'note';
   let marker='',content;
@@ -482,6 +537,7 @@ export function mountBlockEditor(textarea,options={}){
   if(b.type==='table')content=tableMarkup(b);
   else if(b.type==='toggle')content=toggleMarkup(b);
   else if(b.type==='divider')content='<div class="block-divider" contenteditable="false" role="separator"><hr></div>';
+  else if(b.type==='embed')content=embedMarkup(b);
   else content=editableMarkup(b);
   const gutter=`<div class="block-gutter" contenteditable="false"><button type="button" class="block-handle" data-block-add="${b.id}" tabindex="-1" aria-label="Add a block below" data-tooltip="Add a block below">${icon('plus')}</button><button type="button" class="block-handle block-handle-drag" data-block-drag="${b.id}" draggable="true" tabindex="-1" aria-label="Block options" data-tooltip="Drag to move, click for options">${icon('grip')}</button></div>`;
   return `<div class="note-block block-${b.type}${selected.has(b.id)?' is-selected':''}${b.type==='todo'&&b.checked?' is-checked':''}" data-block-id="${b.id}" data-type="${b.type}"${b.type==='callout'?` data-kind="${kind}"`:''}${indent?` style="--indent:${indent}"`:''}>${gutter}${marker}${content}</div>`;
@@ -492,11 +548,12 @@ export function mountBlockEditor(textarea,options={}){
  function drawBlock(b,number){
   const html=blockHtml(b,number),known=drawn.get(b.id);if(known&&known.html===html&&known.el.isConnected)return known.el;
   const template=doc.createElement('template');template.innerHTML=html;const el=template.content.firstElementChild;
-  if(known?.el.isConnected)known.el.replaceWith(el);drawn.set(b.id,{el,html});const ed=el.querySelector('[data-block-edit]');if(ed)remember(ed);return el;
+  if(known){unmountFrame(known.el);if(known.el.isConnected)known.el.replaceWith(el);}drawn.set(b.id,{el,html});const ed=el.querySelector('[data-block-edit]');if(ed)remember(ed);
+  if(b.type==='embed')mountFrame(el,b);return el;
  }
  function render(){
   normalizeIndents();const numbers=listNumbers(blocks),ids=new Set(blocks.map(b=>b.id));
-  for(const [id,entry] of drawn)if(!ids.has(id)){entry.el.remove();drawn.delete(id);}
+  for(const [id,entry] of drawn)if(!ids.has(id)){unmountFrame(entry.el);entry.el.remove();drawn.delete(id);}
   for(const el of [...list.children])if(el!==indicator&&!drawn.has(el.dataset.blockId))el.remove();
   let previous=null;
   blocks.forEach((b,i)=>{const el=drawBlock(b,numbers[i]),want=previous?previous.nextSibling:list.firstChild;if(el!==want)list.insertBefore(el,want);previous=el;});
@@ -505,7 +562,7 @@ export function mountBlockEditor(textarea,options={}){
  }
  function renderBlock(id){
   const index=indexOf(id);if(index<0||!drawn.get(id)?.el.isConnected)return render();
-  const old=blockEl(id);drawn.delete(id);const el=drawBlock(blocks[index],listNumbers(blocks)[index]);old.replaceWith(el);
+  const old=blockEl(id);unmountFrame(old);drawn.delete(id);const el=drawBlock(blocks[index],listNumbers(blocks)[index]);old.replaceWith(el);
   paintSelection();root.classList.toggle('is-empty',docEmpty());
  }
  function updateEmpty(ed){const empty=!ed.textContent.replace(ZWSP,'')&&!ed.querySelector('[contenteditable="false"]');ed.classList.toggle('is-empty',empty);root.classList.toggle('is-empty',docEmpty());}
@@ -529,7 +586,7 @@ export function mountBlockEditor(textarea,options={}){
  // Focus and block selection
  function focusBlock(id,{at='end',start,end,x,fromAbove=false}={}){
   const b=block(id),el=blockEl(id);if(!b||!el)return;activeId=id;
-  if(b.type==='divider'){selectBlocks([id]);return;}
+  if(ATOMIC.has(b.type)){selectBlocks([id]);return;}
   if(selected.size)clearSelection();
   if(b.type==='table'){const cells=[...el.querySelectorAll('[data-table-cell]')];const cell=at==='start'||fromAbove?cells[0]:cells.filter(c=>c.dataset.cellRow===String(b.rows.length-1))[0]||cells.at(-1);focusCell(cell,at==='start'||fromAbove?'start':'end');return;}
   if(b.type==='toggle'){const title=el.querySelector('[data-toggle-title]');title?.focus();title?.setSelectionRange(at==='start'?0:title.value.length,at==='start'?0:title.value.length);return;}
@@ -571,7 +628,7 @@ export function mountBlockEditor(textarea,options={}){
  }
  function focusAfterConvert(id){
   const b=block(id);if(!b)return;
-  if(b.type==='divider'){let next=blocks[indexOf(id)+1];if(!next||!TEXT.has(next.type)){next=freshBlock();blocks.splice(indexOf(id)+1,0,next);commit();render();}focusBlock(next.id,{at:'start'});return;}
+  if(ATOMIC.has(b.type)){let next=blocks[indexOf(id)+1];if(!next||!TEXT.has(next.type)){next=freshBlock();blocks.splice(indexOf(id)+1,0,next);commit();render();}focusBlock(next.id,{at:'start'});return;}
   if(b.type==='table'){focusBlock(id,{at:'start'});return;}
   focusBlock(id,{at:'end'});
  }
@@ -828,7 +885,7 @@ export function mountBlockEditor(textarea,options={}){
  function movePopup(delta){const s=popupState;if(!s?.items.length)return;s.index=(s.index+delta+s.items.length)%s.items.length;renderPopup();}
  function choose(index){const s=popupState;const item=s?.items[index];if(!item)return;s.index=index;item.run();}
  function slashItems(query){
-  const catalog=[...BLOCK_COMMANDS,...SLASH_EXTRAS.filter(c=>(c[0]!=='note-link'||searchLinks)&&(c[0]!=='ai'||onAskAi))];
+  const catalog=[...BLOCK_COMMANDS,...SLASH_EXTRAS.filter(c=>(c[0]!=='note-link'||searchLinks)&&(c[0]!=='ai'||onAskAi)&&(c[0]!=='import'||onImport)&&(c[0]!=='embed'||onEmbed))];
   const grouped=!String(query).trim(),found=findBlockCommands(query,catalog);
   const groupOf=id=>GROUPS.findIndex(g=>g[1].includes(id));
   if(grouped)found.sort((a,b)=>groupOf(a[0])-groupOf(b[0])||catalog.indexOf(a)-catalog.indexOf(b));
@@ -865,9 +922,9 @@ export function mountBlockEditor(textarea,options={}){
   const s=popupState;closePopup();const hit=s&&triggerRange(s);if(!hit)return;const {ed,from,to}=hit;const b=readBlock(ed);if(!b)return;
   beginChange();const total=visibleLength(ed),before=rangeMarkdown(ed,0,from),after=withoutSentinel(ed,rangeMarkdown(ed,to,total));
   b.text=joinMarkdown(before,after);const empty=!b.text.trim(),caret=textLength(before);
-  if(id==='ai'||id==='link'||id==='image'||id==='file'||id==='note-link'){
+  if(id==='ai'||id==='link'||id==='image'||id==='file'||id==='note-link'||id==='import'||id==='embed'){
    commit();renderBlock(b.id);const el=editableOf(b.id);if(el){el.focus({preventScroll:true});placeCaret(el,caret);}
-   if(id==='ai')askAi('');else if(id==='note-link'&&el){insertPlain(el,'[[');const sel=win.getSelection(),r=sel.getRangeAt(0);if(r.startContainer.nodeType===3)openLinkPicker(el,r.startContainer,r.startOffset-2);}
+   if(id==='ai')askAi('');else if(id==='import')onImport?.({files:[]});else if(id==='embed')onEmbed?.();else if(id==='note-link'&&el){insertPlain(el,'[[');const sel=win.getSelection(),r=sel.getRangeAt(0);if(r.startContainer.nodeType===3)openLinkPicker(el,r.startContainer,r.startOffset-2);}
    else openLinkForm(id);
    return;
   }
@@ -1045,7 +1102,7 @@ export function mountBlockEditor(textarea,options={}){
  on(list,'pointerdown',e=>{
   if(e.button!==0||mode!=='blocks')return;const t=e.target,blockElm=t.closest('[data-block-id]');if(t.closest('.block-gutter,input,textarea,button'))return;
   if(e.shiftKey&&blockElm){const from=selected.size?anchorId:activeId;if(from&&block(from)&&from!==blockElm.dataset.blockId){e.preventDefault();selectRange(from,blockElm.dataset.blockId);return;}}
-  if(blockElm?.dataset.type==='divider'){e.preventDefault();selectBlocks([blockElm.dataset.blockId]);return;}
+  if(ATOMIC.has(blockElm?.dataset.type)){if(t.closest('[data-embed-frame]'))return;e.preventDefault();selectBlocks([blockElm.dataset.blockId]);return;}
   if(selected.size)clearSelection();
   dragSelect=blockElm&&t.closest('[data-block-edit]')?{origin:blockElm.dataset.blockId,active:false}:null;
  });
@@ -1060,6 +1117,7 @@ export function mountBlockEditor(textarea,options={}){
   const modeButton=t.closest('[data-editor-mode]');if(modeButton){const next=modeButton.dataset.editorMode,changed=next!==mode;setMode(next);if(changed&&e.detail>0)focusContent();return;}
   const formatButton=t.closest('[data-format]');if(formatButton){format(formatButton.dataset.format);return;}
   const item=t.closest('[data-popup-index]');if(item&&popup.contains(item)){choose(Number(item.dataset.popupIndex));return;}
+  const embedButton=t.closest('[data-embed-action]');if(embedButton&&list.contains(embedButton)){embedAction(embedButton.dataset.embedAction,embedButton.dataset.embedId);return;}
   const action=t.closest('[data-editor-action]')?.dataset.editorAction;
   if(action==='ask-ai'){askAi();return;}if(action==='link-save'){submitLinkForm();return;}if(action==='link-cancel'){closeLinkForm(true);return;}if(action==='link-remove'){removeLink();return;}
   const add=t.closest('[data-block-add]');if(add){addBelow(add.dataset.blockAdd);return;}
@@ -1074,6 +1132,25 @@ export function mountBlockEditor(textarea,options={}){
   if(t===list&&mode==='blocks'&&!selected.size){const last=blocks.at(-1),box=blockEl(last.id)?.getBoundingClientRect();if(box&&e.clientY>box.bottom){if(last.type==='paragraph'&&!last.text)focusBlock(last.id);else{readAll();beginChange();const fresh=freshBlock();blocks.push(fresh);commit();render();focusBlock(fresh.id);}}}
  });
  on(popup,'mousemove',e=>{const item=e.target.closest('[data-popup-index]');if(item&&popupState&&Number(item.dataset.popupIndex)!==popupState.index){popupState.index=Number(item.dataset.popupIndex);for(const el of popup.querySelectorAll('[data-popup-index]')){el.classList.toggle('is-active',el===item);el.tabIndex=el===item?0:-1;if(el.hasAttribute('aria-selected'))el.setAttribute('aria-selected',String(el===item));}setActiveDescendant();}});
+ function embedAction(action,id){
+  const b=block(id);if(!b||b.type!=='embed')return;
+  if(action==='open'){if(b.target){const hit=resolveLink(b.target);if(hit?.id!=null)onOpenLink(String(hit.id));else report('That item is no longer in your library.');}else win.open(b.url,'_blank','noopener,noreferrer');return;}
+  readAll();beginChange();activeId=id;
+  if(action==='size'){b.height=nextEmbedHeight(b.height,b.target?640:describeEmbed(b.url)?.height||480);commit();sizeEmbed(blockEl(id),b);report(`Height ${b.height} pixels`);return;}
+  if(action==='link'){const label=b.label||(b.target?'':describeEmbed(b.url)?.label||b.url);const text=b.target?`[[${b.target}${b.label?'|'+b.label:''}]]`:linkMarkdown(escapeText(label),b.url);const next={id:uid(),type:'paragraph',text,checked:false,language:''};blocks[indexOf(id)]=next;commit();render();focusBlock(next.id,{at:'end'});}
+ }
+ // Embeds replace an empty paragraph or go below the current block; a paragraph after them keeps typing easy.
+ function insertEmbed(spec={}){
+  const info=spec.target?null:describeEmbed(spec.url);
+  const fields=spec.target?{target:String(spec.target).replace(/[[\]|\n]/g,' ').trim(),label:String(spec.label||'').replace(/[[\]|\n]/g,' ').trim()}:{url:info?.url||'',label:String(spec.label||'').trim()||info?.label||''};
+  if(!fields.target&&!fields.url){report('Use a web address (https://) to embed.');return false;}
+  if(mode!=='blocks')setMode('blocks');
+  readAll();beginChange();
+  const id=currentId(),b=block(id),fresh={id:uid(),type:'embed',text:'',checked:false,language:'',...fields,height:Number(spec.height)>0?clampEmbedHeight(spec.height):0};
+  if(b&&b.type==='paragraph'&&!b.text.trim()){fresh.id=b.id;blocks[indexOf(b.id)]=fresh;}else blocks.splice(indexOf(id)+1,0,fresh);
+  let next=blocks[indexOf(fresh.id)+1];if(!next||!TEXT.has(next.type)||next.text){next=freshBlock();blocks.splice(indexOf(fresh.id)+1,0,next);}
+  clearSelection(false);commit();render();focusBlock(next.id,{at:'start'});return true;
+ }
  function addBelow(id){readAll();beginChange();const fresh=freshBlock();blocks.splice(indexOf(id)+1,0,fresh);commit();render();focusBlock(fresh.id,{at:'start'});const ed=editableOf(fresh.id);if(!ed)return;insertPlain(ed,'/');const r=win.getSelection().getRangeAt(0);if(r.startContainer.nodeType===3)openSlash(ed,r.startContainer,r.startOffset-1);}
  function tableAction(button){
   readAll();const b=block(button.dataset.tableId);if(!b)return;const active=doc.activeElement?.dataset?.tableCell===b.id?doc.activeElement:null;
@@ -1141,7 +1218,7 @@ export function mountBlockEditor(textarea,options={}){
    if(e.shiftKey){const next=blocks[indexOf(focusId)+delta];if(next)selectRange(anchorId,next.id);return;}
    const edge=delta<0?indexOf(ids[0]):indexOf(ids.at(-1)),next=blocks[edge+delta]||blocks[edge];selectBlocks([next.id]);return;
   }
-  if(key==='Enter'){e.preventDefault();const id=focusId||ids[0];clearSelection();focusBlock(id);return;}
+  if(key==='Enter'){e.preventDefault();const id=focusId||ids[0];clearSelection();if(ids.length===1&&ATOMIC.has(block(id)?.type)){readAll();beginChange();const fresh=freshBlock();blocks.splice(indexOf(id)+1,0,fresh);commit();render();focusBlock(fresh.id);return;}focusBlock(id);return;}
   if(key==='Backspace'||key==='Delete'){e.preventDefault();e.stopPropagation();removeBlocks(ids);return;}
   if(key==='Tab'){e.preventDefault();indentBlocks(ids,e.shiftKey?-1:1);return;}
   if(mod&&key.toLowerCase()==='a'){e.preventDefault();selectBlocks(blocks.map(b=>b.id));return;}
@@ -1149,8 +1226,8 @@ export function mountBlockEditor(textarea,options={}){
   if(actionsKey(e)){e.preventDefault();e.stopPropagation();const id=focusId||ids[0];openActions(id,blockEl(id)?.querySelector('[data-block-drag]'));return;}
   if(key.length===1&&!mod)e.preventDefault();
  }
- // Caret moves skip dividers (they are removed with Backspace/Delete beside them, or selected with Escape and Shift+arrows).
- const neighbor=(index,step)=>{for(let i=index+step;i>=0&&i<blocks.length;i+=step)if(blocks[i].type!=='divider')return blocks[i];return blocks[index+step]||null;};
+ // Caret moves skip dividers and embeds (selected with Escape and Shift+arrows; dividers also go with Backspace/Delete beside them).
+ const neighbor=(index,step)=>{for(let i=index+step;i>=0&&i<blocks.length;i+=step)if(!ATOMIC.has(blocks[i].type))return blocks[i];return blocks[index+step]||null;};
  function textKey(e,ed){
   const b=block(ed.dataset.blockEdit);if(!b)return;const mod=modDown(e),key=e.key,sel=win.getSelection(),collapsed=sel.isCollapsed;
   if(key==='Enter'&&!e.altKey&&!mod){e.preventDefault();onEnter(ed,e.shiftKey);return;}
@@ -1234,6 +1311,15 @@ export function mountBlockEditor(textarea,options={}){
   if(range&&ed.contains(range.startContainer)){const sel=win.getSelection();sel.removeAllRanges();sel.addRange(range);}else placeCaret(ed,contentLength(ed));
   pasteInto(ed,source,{rich:!!rich});
  });
+ // Files dropped on the editor go to the host's importer (captured first, so app-wide upload drops stay out of it).
+ const dropsFiles=e=>!!onImport&&!drag&&mode==='blocks'&&[...(e.dataTransfer?.types||[])].includes('Files');
+ on(root,'dragover',e=>{if(!dropsFiles(e))return;e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect='copy';});
+ on(root,'drop',e=>{
+  if(!dropsFiles(e))return;const files=[...(e.dataTransfer.files||[])];if(!files.length)return;e.preventDefault();e.stopPropagation();
+  const ed=e.target.closest?.('[data-block-edit]'),range=ed&&doc.caretRangeFromPoint?.(e.clientX,e.clientY);
+  if(ed&&range&&ed.contains(range.startContainer)){ed.focus({preventScroll:true});const sel=win.getSelection();sel.removeAllRanges();sel.addRange(range);lastRange={id:ed.dataset.blockEdit,...selectionOffsets(ed)};}
+  onImport({files});
+ },true);
  on(list,'drop',e=>{if(!drag)return;e.preventDefault();const before=dropBefore(e.clientY),ids=drag.ids;drag=null;indicator.hidden=true;moveBlocksBefore(ids,before?.dataset.blockId||null);});
  on(root,'dragend',()=>{drag=null;indicator.hidden=true;for(const el of list.querySelectorAll('.is-dragging'))el.classList.remove('is-dragging');});
  on(doc,'selectionchange',()=>{if(!selFrame)selFrame=win.requestAnimationFrame(()=>{selFrame=0;selectionChanged();});});
@@ -1256,6 +1342,7 @@ export function mountBlockEditor(textarea,options={}){
     if(args.url){const href=safeMarkdownUrl(args.url);if(!href){report('Use an https://, http:// or mailto: address.');return;}const label=String(args.label||'').trim()||href;const ed=restoreEditorSelection();const markdown=linkMarkdown(escapeText(name==='file'?'File: '+label:label),href,name==='image');if(ed){const {start,end}=selectionOffsets(ed);beginChange();replaceRange(ed,start,end,markdown);}else insertMarkdown(markdown,{at:'end'});return;}
     openLinkForm(name);return;
    }
+   if(name==='embed')return insertEmbed(args);
    if(TEXT.has(name)||['toggle','table','divider'].includes(name))turnInto(name,args);
   },
   format,
@@ -1268,7 +1355,7 @@ export function mountBlockEditor(textarea,options={}){
   setMode,
   getMode:()=>mode,
   destroy(){
-   closePopup();hideToolbar();closeLinkForm();clearTimeout(searchTimer);if(selFrame)win.cancelAnimationFrame(selFrame);
+   closePopup();hideToolbar();closeLinkForm();clearTimeout(searchTimer);if(selFrame)win.cancelAnimationFrame(selFrame);for(const el of [...frames.keys()])unmountFrame(el);
    for(const [target,type,fn,opts] of listeners)target.removeEventListener(type,fn,opts);
    root.before(textarea);root.remove();textarea.classList.remove('block-editor-textarea');textarea.style.height='';textarea.hidden=false;
   }

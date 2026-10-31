@@ -3,7 +3,7 @@
 import { ANTHROPIC_COMPAT_VERSION, ANTHROPIC_EFFORTS, ANTHROPIC_FALLBACK_BETA, ANTHROPIC_VERSION, DEFAULT_MAX_TOKENS, clampEffort, supportsFallbacks } from '../catalog.js';
 import { providerFetch, readJsonBody, streamError } from '../http.js';
 import { parseEventData, readSse } from '../stream.js';
-import { STOP_NOTICES, compactUsage, imageSource, incompleteError, isStrictSchema, parseToolInput, partsOf, refusalError, toolResultText, toolSchema } from './shared.js';
+import { STOP_NOTICES, compactUsage, documentSource, imageSource, incompleteError, isStrictSchema, parseToolInput, partsOf, refusalError, toolResultText, toolSchema } from './shared.js';
 
 export const isOfficialHost = baseUrl => { try { return new URL(baseUrl).hostname === 'api.anthropic.com'; } catch { return false; } };
 
@@ -43,6 +43,7 @@ export function toAnthropicMessages(messages) {
       if (part?.type === 'tool_result') results.push(toolResultBlock(part));
       else if (part?.type === 'text') { if (part.text) rest.push({ type: 'text', text: part.text }); }
       else if (part?.type === 'image') rest.push(imageBlock(part));
+      else if (part?.type === 'document') { const { mediaType, data, name } = documentSource(part); rest.push({ type: 'document', source: { type: 'base64', media_type: mediaType, data }, title: name }); }
       else if (part?.type === 'tool_use') rest.push({ type: 'tool_use', id: part.id, name: part.name, input: part.input || {} });
     }
     // Tool results must lead the user turn that answers a tool call.
