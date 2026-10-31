@@ -155,3 +155,16 @@ test('portable dashboards drop credential-like keys and merge by board id', () =
   assert.deepEqual(merged.prefs, { a: 1, stickiesHidden: true });
   assert.equal(merged.boards[0].widgets[0].config.token, undefined);
 });
+
+test('a backup never switches on website embedding', () => {
+  const state = normalizeDashboard({ boards: [{ id: 'b', name: 'Home', widgets: [
+    { id: 'w1', type: 'embed', x: 0, y: 0, w: 4, h: 3, config: { url: 'https://grafana.example.com', allowFraming: true, zoom: 90 } },
+    { id: 'w2', type: 'notes', x: 4, y: 0, w: 3, h: 3, config: { allowFraming: true } },
+  ] }] });
+  const [embed, notes] = portableDashboard(state).boards[0].widgets;
+  assert.equal(embed.config.allowFraming, false);
+  assert.equal(embed.config.zoom, 90, 'other settings survive');
+  assert.equal(notes.config.allowFraming, true, 'only website widgets are affected');
+  const merged = mergeDashboards(normalizeDashboard({}), state).state;
+  assert.equal(merged.boards.find(b => b.id === 'b').widgets.find(w => w.id === 'w1').config.allowFraming, false);
+});

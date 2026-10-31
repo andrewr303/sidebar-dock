@@ -152,7 +152,7 @@ test('framing rules are stable per widget, scoped to the site and this extension
   assert.deepEqual(framingOrigins('http://localhost:3000/'), ['http://localhost/*']);
   const rule = frameRule({ widgetId: 'w_abc', url: 'https://www.example.com/dash', extensionId: 'extid' });
   assert.equal(rule.id, id);
-  assert.deepEqual(rule.condition, { resourceTypes: ['sub_frame'], requestDomains: ['example.com'], initiatorDomains: ['extid', 'example.com'] });
+  assert.deepEqual(rule.condition, { resourceTypes: ['sub_frame'], requestDomains: ['example.com'], initiatorDomains: ['extid'] }, 'only frames Still loads, never the site\'s own requests');
   assert.deepEqual(rule.action.responseHeaders.map(h => [h.header, h.operation]), [['x-frame-options', 'remove'], ['content-security-policy', 'remove']]);
   assert.equal(frameRule({ widgetId: 'w', url: 'nope', extensionId: 'x' }), null);
 });

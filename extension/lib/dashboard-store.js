@@ -315,10 +315,16 @@ function stripSecrets(value, depth = 0) {
     .map(([key, entry]) => [key, stripSecrets(entry, depth + 1)]));
 }
 
-/** A portable copy of a dashboard state: normalized, with credential-like config keys removed. */
+/**
+ * A portable copy of a dashboard state: normalized, with credential-like config keys removed. Website widgets lose
+ * "Allow embedding": it strips a site's framing protection, so it is only ever switched on by a person on this device.
+ */
 export function portableDashboard(input) {
   const state = normalizeDashboard(input);
-  for (const board of state.boards) for (const widget of board.widgets) widget.config = stripSecrets(widget.config);
+  for (const board of state.boards) for (const widget of board.widgets) {
+    widget.config = stripSecrets(widget.config);
+    if (widget.type === 'embed' && widget.config?.allowFraming) widget.config = { ...widget.config, allowFraming: false };
+  }
   state.prefs = stripSecrets(state.prefs);
   return state;
 }

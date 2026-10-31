@@ -139,7 +139,10 @@ export function framingOrigins(url) {
 
 /**
  * The session rule that removes a site's "do not frame me" headers (X-Frame-Options and Content-Security-Policy) for
- * frames this extension's pages load from it, and for the site's own navigations inside such a frame.
+ * frames this extension's pages load from it. Only Still may be the initiator: a rule that also matched the site's own
+ * requests would apply in every tab, so any web page could frame the site through one of its frameable pages
+ * (clickjacking) and its same-site frames would lose their CSP. A link clicked inside the frame that opens a protected
+ * page of the same site therefore shows the site's refusal; the widget's "Page not showing?" help covers that.
  */
 export function frameRule({ widgetId, url, extensionId }) {
   const host = framingHost(url);
@@ -154,7 +157,7 @@ export function frameRule({ widgetId, url, extensionId }) {
         { header: 'content-security-policy', operation: 'remove' },
       ],
     },
-    condition: { resourceTypes: ['sub_frame'], requestDomains: [host], initiatorDomains: [extensionId, host] },
+    condition: { resourceTypes: ['sub_frame'], requestDomains: [host], initiatorDomains: [extensionId] },
   };
 }
 
