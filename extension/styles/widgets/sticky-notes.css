@@ -81,15 +81,19 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The summary takes a second line rather than cutting short beside the buttons. */
 .w-sticky-notes-summary {
+  display: -webkit-box;
   margin: 0;
   overflow: hidden;
   color: var(--wsn-muted);
   font-size: var(--text-xs);
   line-height: var(--lh-xs);
   font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  text-wrap: pretty;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 .w-sticky-notes-actions { display: flex; align-items: center; gap: var(--space-4); flex: none; }
@@ -272,9 +276,8 @@
 
 /* ---------- Narrow sizes ---------- */
 
-/* Tiles keep room to wrap the title and summary instead of cutting them short. */
-.w-sticky-notes[data-layout="tile"] .w-sticky-notes-title,
-.w-sticky-notes[data-layout="tile"] .w-sticky-notes-summary {
+/* Tiles keep room to wrap the title too instead of cutting it short. */
+.w-sticky-notes[data-layout="tile"] .w-sticky-notes-title {
   display: -webkit-box;
   white-space: normal;
   -webkit-box-orient: vertical;
@@ -283,18 +286,30 @@
   text-wrap: pretty;
 }
 @container widget (max-width: 300px) {
-  .w-sticky-notes[data-layout="bar"] .w-sticky-notes-glyph { display: none; }
+  .w-sticky-notes:is([data-layout="bar"], [data-layout="board"]) .w-sticky-notes-glyph { display: none; }
   .w-sticky-notes[data-layout="bar"] { gap: var(--space-4); padding-inline-start: var(--space-6); }
+  .w-sticky-notes-head { gap: var(--space-4); }
   .w-sticky-notes[data-layout="tile"] .w-sticky-notes-glyph { inline-size: 28px; block-size: 28px; }
   .w-sticky-notes-actions { gap: var(--space-3); }
 }
-/* Two columns wide: the row keeps its icon and two buttons; the words stay available to screen readers. */
+/* Two columns wide: the row and the board's header keep the icon and two buttons; the words stay available to screen
+   readers. */
 @container widget (max-width: 220px) {
-  .w-sticky-notes[data-layout="bar"] { justify-content: center; padding-inline: var(--space-4) calc(var(--space-2) + 32px); }
-  .w-sticky-notes[data-layout="bar"] .w-sticky-notes-glyph { display: inline-grid; }
-  .w-sticky-notes[data-layout="bar"] .w-sticky-notes-text {
+  .w-sticky-notes[data-layout="bar"] { justify-content: safe center; padding-inline: var(--space-4) calc(var(--space-2) + 32px); }
+  .w-sticky-notes:is([data-layout="bar"], [data-layout="board"]) .w-sticky-notes-glyph { display: inline-grid; }
+  .w-sticky-notes:is([data-layout="bar"], [data-layout="board"]) .w-sticky-notes-text {
     position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
   }
+}
+/* Narrower still (two columns of a tablet-width board): the row drops its icon so both buttons fit inside the widget,
+   and a tile takes less padding so "Sticky notes" stays on one line. */
+@container widget (max-width: 150px) {
+  .w-sticky-notes[data-layout="bar"] .w-sticky-notes-glyph { display: none; }
+  .w-sticky-notes[data-layout="tile"] { padding-inline: var(--space-6); }
+}
+/* A narrow three-row board keeps the button and the way to all notes; the explanation needs more room. */
+@container widget (max-width: 220px) and (max-height: 300px) {
+  .w-sticky-notes-empty p { display: none; }
 }
 /* A 2 × 2 tile stacks: icon, words, then the buttons. */
 @container widget (max-width: 220px) and (min-height: 120px) {

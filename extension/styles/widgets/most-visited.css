@@ -32,6 +32,8 @@
 .w-most-visited.is-state .empty-state { padding: var(--space-4) 0; }
 @container widget (max-height: 120px) {
   .w-most-visited.is-state .empty-state-icon { display: none; }
+  .w-most-visited.is-state .empty-state { padding-block: 0; }
+  .w-most-visited.is-state .empty-state-body { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 }
 
 /* ---------- Tiles ---------- */

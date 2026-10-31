@@ -164,13 +164,26 @@ function moveMenu(ctx, widget) {
   ];
 }
 
+/**
+ * Removes a widget with an Undo toast. Focus that was on the widget, its ⋯ menu or its settings dialog would fall to
+ * the page, so it moves to the next widget (the frame in edit mode, else its ⋯ button) or to Add widget.
+ */
 export async function removeWidget(ctx, widgetId) {
   const found = dashboardStore.findWidget(widgetId);
   if (!found) return;
   const title = widgetTitle(found.widget, undefined, ctx);
+  const frames = [...document.querySelectorAll('.dash-grid > .widget')];
+  const index = frames.findIndex(el => el.dataset.widgetId === widgetId);
+  const neighbor = index < 0 ? null : frames[index + 1] || frames[index - 1];
   const { boardId, widget } = await dashboardStore.removeWidget(widgetId);
   dashUi(ctx).announce = `Removed ${title}`;
   ctx.toast(`Removed ${title}`, { action: { label: 'Undo', run: () => dashboardStore.restoreWidget(boardId, widget) } });
+  ctx.nextFrame(() => {
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    const next = neighbor?.isConnected ? (neighbor.tabIndex >= 0 ? neighbor : neighbor.querySelector('.widget-menu-btn')) : null;
+    (next || document.querySelector('.dash-actions [data-action="dashboard.add-widget"]'))?.focus({ preventScroll: true });
+  });
 }
 
 function frameMenu(ctx, widget, anchor) {

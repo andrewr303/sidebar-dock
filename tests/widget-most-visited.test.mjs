@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { siteKey, mostVisitedConfig, mostVisitedDefaults, siteLabel, cleanSites, visibleSites } from '../extension/ui/widgets/most-visited/model.js';
+import { siteKey, mostVisitedConfig, mostVisitedDefaults, siteLabel, cleanSites, visibleSites, assumedAccess } from '../extension/ui/widgets/most-visited/model.js';
 
 test('site keys ignore www, fragments and trailing slashes', () => {
   assert.equal(siteKey('https://www.Example.com/a/#x'), 'example.com/a');
@@ -31,4 +31,13 @@ test('visible sites skip hidden and non-web pages, keep order and respect the co
   const config = mostVisitedConfig({ count: 2, hidden: ['https://a.com'] });
   assert.deepEqual(visibleSites(list, config), { sites: [{ url: 'https://b.com', title: 'B' }, { url: 'https://c.com', title: 'C' }], hiddenCount: 1 });
   assert.deepEqual(visibleSites(null, config), { sites: [], hiddenCount: 0 });
+});
+
+test('before Chrome answers, access is the last answer kept, else whether a list is cached', () => {
+  assert.equal(assumedAccess(false, true), false);
+  assert.equal(assumedAccess(true, false), true);
+  assert.equal(assumedAccess(undefined, true), true);
+  // A new install: nothing kept, nothing cached, so the "Allow access" state paints at once instead of loading tiles.
+  assert.equal(assumedAccess(undefined, false), false);
+  assert.equal(assumedAccess('yes', false), false);
 });

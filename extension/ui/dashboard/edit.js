@@ -30,6 +30,8 @@ const place = (el, r) => {
 };
 const frameEl = (grid, id) => grid.querySelector(`:scope > [data-widget-id="${CSS.escape(id)}"]`);
 const position = r => `column ${r.x + 1}, row ${r.y + 1}`;
+// Grid columns run from the inline start, so in a right-to-left page screen x and arrow keys point the other way.
+const inlineSign = el => (getComputedStyle(el).direction === 'rtl' ? -1 : 1);
 
 function announce(ctx, text) {
   dashUi(ctx).announce = text;
@@ -55,7 +57,7 @@ function applyPreview(s, next) {
 function update() {
   const s = session;
   if (!s) return;
-  const dx = s.lastX - s.startX;
+  const dx = (s.lastX - s.startX) * s.sign;
   const dy = s.lastY - s.startY + (s.scroller.scrollTop - s.startScroll);
   if (!s.active) {
     if (Math.hypot(s.lastX - s.startX, s.lastY - s.startY) < DRAG_THRESHOLD) return;
@@ -72,7 +74,7 @@ function update() {
     const current = s.preview.find(r => r.id === s.id);
     if (cell.x !== current.x || cell.y !== current.y) applyPreview(s, moveWidget(s.base, s.id, cell));
     const placed = s.preview.find(r => r.id === s.id);
-    const tx = px - cellLeft(placed.x, m);
+    const tx = (px - cellLeft(placed.x, m)) * s.sign;
     const ty = py - cellTop(placed.y, m);
     s.frame.style.transform = `translate(${Math.round(tx)}px, ${Math.round(ty)}px)`;
     setDragVisual({ id: s.id, kind: 'move', tx, ty });
@@ -124,7 +126,7 @@ function start(ctx, event) {
   const scroller = document.getElementById('main') || document.scrollingElement;
   session = {
     ctx, kind: resize ? 'resize' : 'move', edge: resize?.dataset.resize || '', id, boardId: board.id, base, preview: base,
-    item: base.find(r => r.id === id), def: getWidget(widget.type), title: widgetTitle(widget, undefined, ctx), frame, grid, dashboard, scroller, m: metricsOf(grid),
+    item: base.find(r => r.id === id), def: getWidget(widget.type), title: widgetTitle(widget, undefined, ctx), frame, grid, dashboard, scroller, m: metricsOf(grid), sign: inlineSign(grid),
     placeholder: dashboard.querySelector('.dash-placeholder'), startX: event.clientX, startY: event.clientY, lastX: event.clientX,
     lastY: event.clientY, startScroll: scroller.scrollTop, pointerId: event.pointerId, active: false, raf: 0,
   };
@@ -181,7 +183,8 @@ async function keyboard(ctx, el, event) {
   const widget = board?.widgets.find(w => w.id === id);
   if (!widget) return;
   const title = widgetTitle(widget, undefined, ctx);
-  const arrows = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+  const sign = inlineSign(el);
+  const arrows = { ArrowLeft: [-sign, 0], ArrowRight: [sign, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
   if (arrows[event.key]) {
     event.preventDefault();
     const [dx, dy] = arrows[event.key];
@@ -200,10 +203,7 @@ async function keyboard(ctx, el, event) {
   }
   if (event.key === 'Delete' || event.key === 'Backspace') {
     event.preventDefault();
-    const frames = [...document.querySelectorAll('.dash-grid > .widget')];
-    const next = frames[frames.indexOf(el) + 1] || frames[frames.indexOf(el) - 1];
-    await removeWidget(ctx, id);
-    ctx.nextFrame(() => (next?.isConnected ? next : document.querySelector('.dash-actions [data-action="dashboard.add-widget"]'))?.focus({ preventScroll: true }));
+    await removeWidget(ctx, id); // focus moves on to the next widget
     return;
   }
   if (event.key === 'Enter') {

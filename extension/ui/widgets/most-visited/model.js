@@ -55,3 +55,12 @@ export function visibleSites(list, config) {
   const shown = all.filter(site => !hidden.has(siteKey(site.url)));
   return { sites: shown.slice(0, config.count), hiddenCount: all.length - shown.length };
 }
+
+/**
+ * Whether to draw the widget as having topSites access before Chrome answers: the last check's answer when one was
+ * kept, else whether a list is cached (it is removed when access goes). No list and no answer means a new install,
+ * where the optional permission is not granted yet. Returns true or false.
+ */
+export function assumedAccess(remembered, hasList) {
+  return typeof remembered === 'boolean' ? remembered : !!hasList;
+}

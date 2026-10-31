@@ -1,5 +1,7 @@
 // Dashboard header: greeting and date (with the weather chip), the unified search, the board switcher and the actions
 // (Ask, Add widget, Edit layout, Customize). There is no app top bar on this view, so this is the top of the page.
+// The search comes after the actions in the DOM because narrower dashboards show it on a row below them; wide ones
+// place it between heading and actions with grid areas (and reading-flow keeps focus in that visual order).
 import { html, cx } from '../html.js';
 import { icon, registerIcons } from '../icons.js';
 import { button, iconButton } from '../components.js';
@@ -50,7 +52,6 @@ export function renderHeader(ctx, board) {
         ${showHeader ? html`<p class="dash-meta"><span class="dash-date">${dateLabel()}</span>${chip ? html`<span class="dash-meta-sep" aria-hidden="true">·</span>${chip}` : ''}</p>` : ''}
       </div>
     </div>
-    ${tab.search && !editing ? renderSearch(ctx) : ''}
     <div class="dash-actions" role="group" aria-label="Dashboard actions">
       ${editing ? html`
         ${button({ label: 'Tidy up', icon: 'wand-sparkles', variant: 'ghost', action: 'dashboard.tidy', attrs: { 'data-tooltip': 'Move widgets up to close gaps' } })}
@@ -67,6 +68,7 @@ export function renderHeader(ctx, board) {
           disabled: !canEdit(ctx) })}
         ${iconButton({ icon: 'palette', label: 'Customize', action: 'dashboard.customize', expanded: menuOpenFor(ctx, 'dashboard.customize'), tooltipPlacement: 'bottom end' })}`}
     </div>
+    ${tab.search && !editing ? renderSearch(ctx) : ''}
   </header>
   ${editing ? html`<p class="dash-edit-hint" data-key="dash-edit-hint">${icon('info', { size: 14 })}<span>Drag a widget by its header to move it and drag its edges to resize.
     With a widget focused, arrow keys move it, Shift and arrow keys resize it and Delete removes it.</span></p>` : ''}`;

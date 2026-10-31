@@ -15,6 +15,7 @@ const inBounds = (layout, cols = GRID_COLS) => {
   }
 };
 const at = (layout, id) => layout.find(r => r.id === id);
+const sortReadingIds = rects => [...rects].sort((p, q) => p.y - q.y || p.x - q.x).map(r => r.id);
 
 const sample = () => [
   { id: 'a', x: 0, y: 0, w: 3, h: 3 },
@@ -126,14 +127,53 @@ test('packForColumns keeps order, fits narrower grids and never overlaps', () =>
     const reading = [...packed].sort((p, q) => p.y - q.y || p.x - q.x).map(r => r.id);
     assert.deepEqual(reading, ['a', 'b', 'd', 'c'], `reading order kept at ${cols} columns`);
   }
-  assert.equal(scaledWidth(3, 8), 2);
+  assert.equal(scaledWidth(3, 8), 4);
   assert.equal(scaledWidth(6, 8), 4);
-  assert.equal(scaledWidth(1, 8), 2);
+  assert.equal(scaledWidth(7, 8), 8);
+  assert.equal(scaledWidth(1, 8), 4);
   assert.equal(scaledWidth(12, 4), 4);
-  assert.equal(scaledWidth(3, 6), 2);
+  assert.equal(scaledWidth(3, 6), 3, 'half the row, not a squeezed third');
+  assert.equal(scaledWidth(4, 6), 3);
   assert.equal(scaledWidth(6, 6), 3);
+  assert.equal(scaledWidth(8, 6), 6, 'wider than half takes the row');
   assert.equal(scaledWidth(5, 2), 2);
+  assert.equal(scaledWidth(3, 3), 3);
   assert.deepEqual(packForColumns(sample(), 12), settle(sample()));
+});
+
+test('packForColumns leaves no holes in the first-run board at 6 columns', () => {
+  const seed = [
+    ['clock', 0, 0, 3, 2], ['weather', 3, 0, 3, 2], ['quick', 6, 0, 6, 2], ['f1', 0, 2, 4, 3], ['f2', 4, 2, 4, 3], ['f3', 8, 2, 4, 3],
+    ['notes', 0, 5, 4, 3], ['check', 4, 5, 4, 3], ['visited', 8, 5, 4, 2], ['sticky', 8, 7, 4, 1],
+  ].map(([id, x, y, w, h]) => ({ id, x, y, w, h }));
+  const packed = packForColumns(seed, 6);
+  noOverlaps(packed);
+  inBounds(packed, 6);
+  assert.deepEqual(sortReadingIds(packed), sortReadingIds(seed), 'reading order kept');
+  // No empty cell has a widget below it in the same column: columns only end raggedly at the bottom.
+  const bottom = layoutBottom(packed);
+  for (let x = 0; x < 6; x++) {
+    let open = false;
+    for (let y = 0; y < bottom; y++) {
+      const covered = packed.some(r => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+      if (!covered) open = true;
+      else assert.equal(open, false, `hole above row ${y} in column ${x}`);
+    }
+  }
+  assert.ok(packed.every(r => r.w === 3), 'two widgets per row');
+});
+
+test('packForColumns widens a half-width widget left alone in its rows', () => {
+  // 4 + 8 on 12 columns: the 8 takes the whole row at 6 columns, so the 4 would sit next to a hole.
+  const narrowThenWide = packForColumns([{ id: 'cal', x: 0, y: 0, w: 4, h: 3 }, { id: 'lin', x: 4, y: 0, w: 8, h: 2 }], 6);
+  assert.deepEqual(narrowThenWide.map(({ id, x, y, w }) => [id, x, y, w]), [['cal', 0, 0, 6], ['lin', 0, 3, 6]]);
+  // An odd count: the last widget gets the row to itself.
+  const three = packForColumns([0, 4, 8].map((x, i) => ({ id: `w${i}`, x, y: 0, w: 4, h: 2 })), 6);
+  assert.deepEqual(three.map(({ id, x, y, w }) => [id, x, y, w]), [['w0', 0, 0, 3], ['w1', 3, 0, 3], ['w2', 0, 2, 6]]);
+  // A half that shares any of its rows keeps its width.
+  const staggered = packForColumns([{ id: 'a', x: 0, y: 0, w: 4, h: 2 }, { id: 'b', x: 4, y: 0, w: 4, h: 3 }, { id: 'c', x: 8, y: 0, w: 4, h: 2 }], 6);
+  assert.deepEqual(staggered.map(({ id, x, y, w }) => [id, x, y, w]), [['a', 0, 0, 3], ['b', 3, 0, 3], ['c', 0, 2, 3]]);
+  noOverlaps(staggered);
 });
 
 test('layoutChanges lists only moved or resized rects', () => {

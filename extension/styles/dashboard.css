@@ -68,15 +68,23 @@
 
 /* ------------------------------------------------------------------ header */
 
+/* The header stacks above the grid so the search suggestions cover the widgets even when a skin makes the header its
+   own stacking context (a frosted bar over a wallpaper). The DOM puts the search after the actions, where narrower
+   dashboards show it; reading-flow keeps keyboard focus in visual order where wide ones place it between them. */
 .dash-header {
+  position: relative;
+  z-index: var(--z-dropdown);
   display: grid;
   grid-template-columns: minmax(0, 1fr) max-content;
   grid-template-areas: "heading actions";
+  reading-flow: grid-rows;
   align-items: center;
   column-gap: var(--space-8);
   row-gap: var(--space-7);
   margin-block-end: var(--space-8);
 }
+/* No suggestions while editing: a widget dragged upward passes over the header instead. */
+.dashboard.is-editing .dash-header { z-index: auto; }
 /* The greeting keeps up to 440px (then ellipsis), the actions their content, and the search centers in what is left. */
 .dash-header.has-search {
   grid-template-columns: fit-content(440px) minmax(260px, 1fr) max-content;
@@ -231,6 +239,13 @@
 }
 .dash-search-hints > span { display: inline-flex; align-items: center; gap: var(--space-2); white-space: nowrap; }
 @keyframes dash-pop-in { from { opacity: 0; transform: translateY(calc(var(--enter-shift) * -1)); } }
+/* Forced colors drop the shadows that draw the field's edge, its focus ring, the list's edge and the active option. */
+@media (forced-colors: active) {
+  .dash-search-field, .dash-search-pop { border: 1px solid ButtonText; }
+  .dash-search-field:focus-within { outline: 2px solid Highlight; outline-offset: 1px; }
+  .dash-search-option.is-active { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+  .dash-search-option.is-active :is(.dash-search-option-icon, .dash-search-option-meta) { color: HighlightText; }
+}
 
 /* ------------------------------------------------------------------ grid */
 
@@ -402,17 +417,27 @@
 }
 .widget-resize.is-e::after { inline-size: 4px; block-size: 28px; }
 .widget-resize.is-s::after { inline-size: 28px; block-size: 4px; }
+/* The corner grip sits where widgets put a footer or a timestamp, so like the edge handles it shows on hover and focus
+   (always on touch screens), as a raised chip that covers that corner cleanly instead of mixing its glyph into text. */
 .widget-resize.is-se {
   display: grid; place-items: center;
-  inset-block-end: 2px; inset-inline-end: 2px;
+  inset-block-end: 3px; inset-inline-end: 3px;
   inline-size: 22px; block-size: 22px;
-  border-radius: var(--radius-sm) var(--radius-sm) calc(var(--widget-radius) - 2px) var(--radius-sm);
+  border-radius: var(--radius-sm);
+  border-end-end-radius: calc(var(--widget-radius) - 3px);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-sm);
   color: var(--fg-muted);
   cursor: nwse-resize;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
 }
-.widget-resize.is-se .icon { transform: rotate(90deg); }
+.widget:hover > .widget-resize.is-se, .widget:focus-visible > .widget-resize.is-se, .widget.is-resizing > .widget-resize.is-se { opacity: 1; }
+@media (hover: none) { .widget-resize.is-se { opacity: 1; } }
+.widget-resize.is-se:dir(rtl) { cursor: nesw-resize; }
+.widget-resize.is-se:dir(rtl) .icon { scale: -1 1; }
 .widget:hover > .widget-resize::after, .widget:focus-visible > .widget-resize::after, .widget.is-resizing > .widget-resize::after { opacity: 0.7; }
-.widget-resize.is-se:hover { background: var(--bg-hover); color: var(--fg-default); }
+.widget-resize.is-se:hover { background: linear-gradient(var(--bg-hover), var(--bg-hover)), var(--bg-raised); color: var(--fg-default); }
 .widget-size-badge {
   position: absolute;
   inset-block-end: var(--space-4);

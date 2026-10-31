@@ -15,10 +15,11 @@ import { readCache, writeCache, deleteCache, onWidgetCacheChange } from '../../l
 import { OPEN_IN_OPTIONS, anchorTarget, copyLink, openMenuItems, openAll, tidyMenu, stableAnchor, registerLinkGrid, rovingStop, initLinkGrids } from './links/shared.js';
 import { tileIcon } from './links/favicons.js';
 import { hostOf } from './links/model.js';
-import { mostVisitedConfig, mostVisitedDefaults, visibleSites, siteKey, siteLabel, cleanSites, COUNT_OPTIONS } from './most-visited/model.js';
+import { mostVisitedConfig, mostVisitedDefaults, visibleSites, siteKey, siteLabel, cleanSites, assumedAccess, COUNT_OPTIONS } from './most-visited/model.js';
 
 const TYPE = 'most-visited';
 const CACHE_KEY = 'most-visited';
+const ACCESS_KEY = 'most-visited-access';   // the last permission check's answer (outside CACHE_KEY's prefix)
 const REFRESH_GAP = 15_000;   // ms between automatic reads (focus, visibility)
 const VIEWS = [{ value: 'tiles', label: 'Tiles', icon: 'layout-grid' }, { value: 'list', label: 'List', icon: 'list' }];
 const DENIED = 'Chrome did not allow access to your most visited sites. Try again and choose Allow.';
@@ -33,6 +34,8 @@ let lastCtx = null;
 let started = false;
 const rerender = () => lastCtx?.render?.();
 const cachedSites = () => { const value = readCache(CACHE_KEY)?.value; return Array.isArray(value) ? value : null; };
+// Until this page's own check answers, a new tab paints what the last one found instead of loading tiles.
+const currentAccess = () => session.access ?? assumedAccess(readCache(ACCESS_KEY)?.value, !!cachedSites());
 
 /** Reads Chrome's top sites into the cache. `force` skips the short gap between automatic reads. */
 function refresh({ force = false } = {}) {
@@ -41,6 +44,7 @@ function refresh({ force = false } = {}) {
   if (!force && session.access !== null && Date.now() - session.checkedAt < REFRESH_GAP) return Promise.resolve();
   session.loading = (async () => {
     session.access = await hasPermissions('topSites');
+    if (readCache(ACCESS_KEY)?.value !== session.access) writeCache(ACCESS_KEY, session.access);
     if (!session.access) {
       // Access was removed (Chrome's settings, another tab): forget the list too.
       if (cachedSites()) deleteCache(CACHE_KEY);
@@ -138,7 +142,7 @@ function siteMenu(ctx, widgetId, key, anchor) {
 function widgetMenu(ctx, widget) {
   const config = mostVisitedConfig(widget.config);
   const set = patch => dashboardStore.updateWidgetConfig(widget.id, patch);
-  const sites = session.access === false ? [] : visibleSites(cachedSites() || [], config).sites;
+  const sites = currentAccess() === false ? [] : visibleSites(cachedSites() || [], config).sites;
   return tidyMenu([
     sites.length > 1 && { label: 'Open all in new tabs', icon: 'external-link', hint: sites.length.toLocaleString(), run: () => openAll(ctx, sites.map(site => site.url), { label: 'your most visited sites' }) },
     config.hidden.length && { label: 'Show hidden sites', icon: 'eye', hint: config.hidden.length.toLocaleString(), run: () => showHidden(ctx, widget.id) },
@@ -206,7 +210,7 @@ function render(ctx, widget, env) {
   start(ctx);
   const config = mostVisitedConfig(widget.config);
   if (!inExtension()) return previewState(env);
-  if (session.access === false) return accessState(widget, env);
+  if (currentAccess() === false) return accessState(widget, env);
   const list = cachedSites();
   if (!list) return session.error ? errorState(widget) : loadingState(config);
   const { sites, hiddenCount } = visibleSites(list, config);
@@ -249,7 +253,7 @@ function renderSettings(_ctx, widget, draft) {
   const list = cachedSites() || [];
   const labelFor = key => { const site = list.find(entry => siteKey(entry.url) === key); return site ? siteLabel(site) : key.split('/')[0]; };
   return html`<div class="w-most-visited-settings" data-key="mv-settings-${widget.id}">
-    ${session.access === false ? html`<div class="w-most-visited-settings-access" role="status">
+    ${currentAccess() === false ? html`<div class="w-most-visited-settings-access" role="status">
       <p>Still doesn’t have access to your most visited sites yet.</p>
       ${button({ label: 'Allow access', icon: 'lock-open', size: 'sm', action: 'w.most-visited.allow', data: { widget: widget.id } })}
     </div>` : ''}

@@ -111,3 +111,31 @@ test('indices stay valid across toggle, edit and append round trips', () => {
   const tasks = extractTasks(md);
   assert.deepEqual(tasks.map(t => [t.index, t.plain, t.done]), [[1, 'Done item', true], [2, 'Renamed', true], [3, 'Nested child', false], [4, 'Added', false]]);
 });
+
+test('setup states fit two rows: title and main action only, the rest returns from three rows', async () => {
+  await import('../extension/ui/widgets/checklist.js');
+  const { getWidget, widgetEnv } = await import('../extension/ui/dashboard/registry.js');
+  const def = getWidget('checklist');
+  const ctx = { library: { items: [], collections: [] }, select: { byId: () => null, collection: () => null, live: () => [], descendants: () => [] } };
+  const draw = (config, w, h) => {
+    const widget = { id: 'wcl', type: 'checklist', x: 0, y: 0, w, h, config };
+    return String(def.render(ctx, widget, widgetEnv({ widget })));
+  };
+  for (const config of [{ source: 'note', noteId: '' }, { source: 'note', noteId: 'gone' }]) {
+    const short = draw(config, 2, 2);
+    assert.match(short, /class="w-checklist is-setup is-short"/);
+    assert.match(short, /Create checklist/);
+    assert.doesNotMatch(short, /empty-state-body|Choose a note/);
+    const tall = draw(config, 2, 3);
+    assert.doesNotMatch(tall, /is-short/);
+    assert.match(tall, /empty-state-body/);
+    assert.match(tall, /Choose a note/);
+  }
+  for (const config of [{ source: 'collection', collectionId: 'gone' }, { source: 'all' }]) {
+    const short = draw(config, 4, 2);
+    assert.match(short, /is-short/);
+    assert.doesNotMatch(short, /empty-state-body/);
+    assert.match(short, /data-action="w\.checklist\.(pick-collection|create)"/);
+    assert.match(draw(config, 4, 3), /empty-state-body/);
+  }
+});

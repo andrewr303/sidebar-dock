@@ -77,16 +77,22 @@ function render(ctx, widget, env) {
   return renderNote(ctx, widget, config, env);
 }
 
-function renderNote(ctx, widget, config) {
+// Two rows tall, setup states keep only the title and the main action: no icon or description, and choosing a note
+// stays in the widget menu.
+const isShort = env => !!env && env.h <= 2;
+const setupClass = env => cx('w-checklist', 'is-setup', isShort(env) && 'is-short');
+
+function renderNote(ctx, widget, config, env) {
   const note = config.noteId ? latestItem(ctx, config.noteId) : null;
   if (!note || note.deletedAt || note.type !== 'note') {
     const missing = !!config.noteId;
-    return html`<div class="w-checklist is-setup" data-widget="${widget.id}">${emptyState({
+    const short = isShort(env);
+    return html`<div class="${setupClass(env)}" data-widget="${widget.id}">${emptyState({
       icon: missing ? 'circle-slash' : 'list-checks', compact: true,
       title: missing ? 'This checklist is no longer in your library' : 'Start a checklist',
-      body: missing ? 'Its note may have been deleted. Create a new one or choose another note.' : 'Items are saved as tasks in a note, so they also show up in Tasks and search.',
+      body: short ? '' : missing ? 'Its note may have been deleted. Create a new one or choose another note.' : 'Items are saved as tasks in a note, so they also show up in Tasks and search.',
       actions: html`${button({ label: 'Create checklist', icon: 'plus', size: 'sm', action: 'w.checklist.create', data: { widget: widget.id } })}
-        ${button({ label: 'Choose a note', icon: 'search', size: 'sm', variant: 'ghost', action: 'w.checklist.choose', data: { widget: widget.id } })}`,
+        ${short ? '' : button({ label: 'Choose a note', icon: 'search', size: 'sm', variant: 'ghost', action: 'w.checklist.choose', data: { widget: widget.id } })}`,
     })}</div>`;
   }
   const tasks = noteTasks(note);
@@ -118,13 +124,13 @@ function renderNote(ctx, widget, config) {
   </div>`;
 }
 
-function renderScope(ctx, widget, config) {
+function renderScope(ctx, widget, config, env) {
   const inCollection = config.source === 'collection';
   const id = config.collectionId || '';
   if (inCollection && id && !ctx.select.collection(id)) {
-    return html`<div class="w-checklist is-setup" data-widget="${widget.id}">${emptyState({
+    return html`<div class="${setupClass(env)}" data-widget="${widget.id}">${emptyState({
       icon: 'circle-slash', compact: true, title: 'This collection is no longer in your library',
-      body: 'Choose another collection to list its open tasks.',
+      body: isShort(env) ? '' : 'Choose another collection to list its open tasks.',
       actions: button({ label: 'Choose a collection', icon: 'folder', size: 'sm', action: 'w.checklist.pick-collection', data: { widget: widget.id } }),
     })}</div>`;
   }
@@ -143,10 +149,10 @@ function renderScope(ctx, widget, config) {
   groups.sort((a, b) => String(b.note.updatedAt || '').localeCompare(String(a.note.updatedAt || '')));
   const where = inCollection ? collectionName(ctx, id) : '';
   if (!groups.length) {
-    return html`<div class="w-checklist is-setup" data-widget="${widget.id}">${emptyState({
+    return html`<div class="${setupClass(env)}" data-widget="${widget.id}">${emptyState({
       icon: 'circle-check-big', compact: true,
       title: done ? 'No open tasks' : where ? `No tasks in ${where}` : 'No tasks yet',
-      body: done ? `All ${plural(done, 'task')} ${inCollection ? `in ${where} ` : ''}are done.` : 'Add “- [ ]” items to a note and they show up here.',
+      body: isShort(env) ? '' : done ? `All ${plural(done, 'task')} ${inCollection ? `in ${where} ` : ''}are done.` : 'Add “- [ ]” items to a note and they show up here.',
       actions: button({ label: 'Create checklist', icon: 'plus', size: 'sm', action: 'w.checklist.create', data: { widget: widget.id } }),
     })}</div>`;
   }

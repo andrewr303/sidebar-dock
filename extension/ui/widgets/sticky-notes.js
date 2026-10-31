@@ -76,7 +76,7 @@ function render(ctx, widget, env) {
         <span class="w-sticky-notes-glyph" data-color="${config.color}" aria-hidden="true">${icon('sticker', { size: 16 })}</span>
         <div class="w-sticky-notes-text">
           <p class="w-sticky-notes-title" aria-hidden="true">Sticky notes</p>
-          <p class="w-sticky-notes-summary">${summary}</p>
+          <p class="w-sticky-notes-summary" title="${summary}">${summary}</p>
         </div>
         <div class="w-sticky-notes-actions">${addButton(widget, config)}${eyeToggle(widget, layerOn)}</div>
       </header>
@@ -92,7 +92,7 @@ function render(ctx, widget, env) {
     <span class="w-sticky-notes-glyph" data-color="${config.color}" aria-hidden="true">${icon('sticker', { size: layout === 'tile' ? 18 : 16 })}</span>
     <div class="w-sticky-notes-text">
       <p class="w-sticky-notes-title" aria-hidden="true">Sticky notes</p>
-      <p class="w-sticky-notes-summary">${summary}</p>
+      <p class="w-sticky-notes-summary" title="${summary}">${summary}</p>
     </div>
     <div class="w-sticky-notes-actions">${addButton(widget, config)}${eyeToggle(widget, layerOn)}</div>
   </div>`;

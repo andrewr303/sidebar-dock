@@ -11,7 +11,7 @@ const byReading = (a, b) => a.y - b.y || a.x - b.x;
 
 /**
  * Columns to show for a grid this many pixels wide: the full 12 down to tablet widths (a 3-column widget is still
- * ~180px there), then 6 (every widget at half its columns, so rows pair up) and finally one stacked column of 2.
+ * ~180px there), then 6 (widgets pair up two to a row, see scaledWidth) and finally one stacked column of 2.
  */
 export function columnsForWidth(px) {
   const width = Number(px) || 0;
@@ -131,16 +131,22 @@ export function findFreeSpot(rects, w, h, cols = GRID_COLS, { fromY = 0 } = {}) 
   return { x: 0, y: limit };
 }
 
-/** Width a 12-column widget gets on a narrower grid: proportional, at least 2 columns (or the whole grid). */
+/**
+ * Width a 12-column widget gets on a narrower grid: half the row, or the whole row when it was wider than half of the
+ * 12 columns (or half would be under 2 columns). Proportional widths left holes (3 + 3 + 6 became 2 + 2 + 3 of 6) and
+ * squeezed widgets to a third of a narrow window, so packed grids only pair widgets up.
+ */
 export function scaledWidth(w, cols) {
   if (cols >= GRID_COLS) return clamp(w, 1, GRID_COLS);
-  if (cols <= 2) return cols;
-  return clamp(Math.ceil((w * cols) / GRID_COLS), Math.min(2, cols), cols);
+  const half = Math.floor(cols / 2);
+  return w > GRID_COLS / 2 || half < 2 ? cols : half;
 }
 
 /**
- * Layout for a narrower grid: widgets keep their reading order and height, take proportional widths and flow into
- * the first gap at or after the previous widget's row (so order is preserved without leaving holes).
+ * Layout for a narrower grid: widgets keep their reading order and height, take half or full widths and flow into
+ * the first gap at or after the previous widget's row, so a half-width widget fills whichever side frees up first
+ * (masonry, no holes) and reading order is preserved. A half-width widget left alone in its rows (before a
+ * full-width one, or the last one) then takes the whole row instead of leaving a hole beside it.
  */
 export function packForColumns(rects, cols) {
   if (cols >= GRID_COLS) return settle(rects, GRID_COLS);
@@ -152,6 +158,10 @@ export function packForColumns(rects, cols) {
     const next = { ...rect, w, x: spot.x, y: spot.y };
     placed.push(next);
     cursor = spot.y;
+  }
+  // Widening only touches rows no other widget uses, so it cannot overlap anything or change the reading order.
+  for (const r of placed) {
+    if (r.w < cols && !placed.some(o => o !== r && o.y < r.y + r.h && o.y + o.h > r.y)) Object.assign(r, { x: 0, w: cols });
   }
   const order = new Map(rects.map((r, i) => [r.id, i]));
   return placed.sort((a, b) => order.get(a.id) - order.get(b.id));
