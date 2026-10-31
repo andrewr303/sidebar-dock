@@ -124,7 +124,7 @@ function start(ctx, event) {
   const scroller = document.getElementById('main') || document.scrollingElement;
   session = {
     ctx, kind: resize ? 'resize' : 'move', edge: resize?.dataset.resize || '', id, boardId: board.id, base, preview: base,
-    item: base.find(r => r.id === id), def: getWidget(widget.type), title: widgetTitle(widget), frame, grid, dashboard, scroller, m: metricsOf(grid),
+    item: base.find(r => r.id === id), def: getWidget(widget.type), title: widgetTitle(widget, undefined, ctx), frame, grid, dashboard, scroller, m: metricsOf(grid),
     placeholder: dashboard.querySelector('.dash-placeholder'), startX: event.clientX, startY: event.clientY, lastX: event.clientX,
     lastY: event.clientY, startScroll: scroller.scrollTop, pointerId: event.pointerId, active: false, raf: 0,
   };
@@ -180,7 +180,7 @@ async function keyboard(ctx, el, event) {
   const board = dashboardStore.activeBoard();
   const widget = board?.widgets.find(w => w.id === id);
   if (!widget) return;
-  const title = widgetTitle(widget);
+  const title = widgetTitle(widget, undefined, ctx);
   const arrows = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
   if (arrows[event.key]) {
     event.preventDefault();

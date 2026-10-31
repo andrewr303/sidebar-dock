@@ -221,6 +221,35 @@ export function today(forecast, now = Date.now()) {
   return days.findLast(day => day.time <= nowSec) || days[0] || null;
 }
 
+/**
+ * Forecast days from today on (at most `count`), so a forecast cached yesterday still starts with today. Days are
+ * keyed by their local midnight; a forecast whose last day has ended gives [].
+ */
+export function upcomingDays(forecast, now = Date.now(), count = 7) {
+  const days = forecast?.daily || [];
+  const nowSec = now / 1000;
+  if (!days.length || days.at(-1).time + 86_400 <= nowSec) return [];
+  const start = Math.max(0, days.findLastIndex(day => day.time <= nowSec));
+  return days.slice(start, start + count);
+}
+
+/** Readings older than this give way to the forecast for the current hour. */
+const CURRENT_MAX_AGE = 90 * 60;
+/**
+ * The current conditions to show: the cached reading, or, when it is more than 90 minutes old (a new tab painting an
+ * old cache while offline), the forecast for this hour with the same feels-like difference. estimated marks the swap.
+ */
+export function currentConditions(forecast, now = Date.now()) {
+  const current = forecast?.current;
+  if (!current) return null;
+  const nowSec = now / 1000;
+  if (!Number.isFinite(current.time) || nowSec - current.time < CURRENT_MAX_AGE) return current;
+  const hour = (forecast.hourly || []).findLast(h => h.time <= nowSec && nowSec - h.time < 3600);
+  if (!hour) return current;
+  const feelsDelta = Number.isFinite(current.feels) ? current.feels - current.temp : 0;
+  return { ...current, temp: hour.temp, feels: hour.temp + feelsDelta, code: hour.code ?? current.code, isDay: hour.isDay, time: hour.time, estimated: true };
+}
+
 // ------------------------------------------------------------------ formatting
 
 /** 66.4 -> "66°", -3.6 -> "−4°" (a real minus sign). */

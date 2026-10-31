@@ -20,6 +20,8 @@ import { thumb, countText, brandMark } from './product-hunt/glyphs.js';
 const roving = new Map();    // widget id -> post id that holds the list's tab stop
 const announce = new Map();  // widget id -> polite status text after a manual refresh
 const RANGE_SHORT = { today: 'Today', yesterday: 'Yesterday', week: 'Week', month: 'Month' };
+/** Automatic "top" layouts render a few extra rows that CSS reveals in tall, narrow widgets (container height queries). */
+const TOP_MAX = 8;
 
 const widgetOf = id => findWidget(id)?.widget || null;
 const configOf = id => normalizeConfig(widgetOf(id)?.config);
@@ -53,11 +55,13 @@ function render(ctx, widget, env) {
     return wrap(html`${sync}${loadingState(layout, config)}`);
   }
   const all = feed.value.posts || [];
-  const posts = visiblePosts(all, { sort: effectiveSort(feed), hidden: config.hidden, limit: layout === 'top' ? 3 : config.limit });
+  const moreRows = layout === 'top' && config.layout === 'auto';
+  const posts = visiblePosts(all, { sort: effectiveSort(feed), hidden: config.hidden, limit: layout !== 'top' ? config.limit : moreRows ? Math.min(TOP_MAX, config.limit) : 3 });
   const hiddenHere = all.filter(post => config.hidden.includes(post.id)).length;
   const saved = post => !!ctx.select?.savedForUrl?.(post.url);
-  const tabId = tabStop(widget.id, posts.map(post => post.id));
-  const opts = { config, mode: feed.mode, tabId, saved };
+  // Extra top rows may be hidden by the container, so only the first three can hold the list's tab stop there.
+  const tabId = tabStop(widget.id, posts.slice(0, moreRows ? 3 : posts.length).map(post => post.id));
+  const opts = { config, mode: feed.mode, tabId, saved, moreRows };
   if (layout === 'top') {
     return wrap(html`${sync}${posts.length ? renderTop(widget, posts, opts) : emptyList(widget, feed, { compact: true, allHidden: all.length > 0 })}`);
   }
@@ -187,11 +191,20 @@ function srDetails(post) {
   return parts.length ? html`<span class="sr-only">, ${parts.join(', ')}</span>` : '';
 }
 
-function actions(widget, post, { saved, compact = false }) {
+/** The row opens Product Hunt or the product's site (settings); this is a direct link to the other one, when known. */
+function altLink(post, config) {
+  if (!post.website) return '';
+  const toSite = config.open !== 'website';
+  const label = toSite ? `Visit the ${post.name} website` : `Open ${post.name} on Product Hunt`;
+  return html`<a class="w-ph-act w-ph-act-alt" href="${safeHref(toSite ? post.website : post.url)}" target="_blank" rel="noopener noreferrer" tabindex="-1"
+    aria-label="${label}" data-tooltip="${toSite ? 'Visit website' : 'Open on Product Hunt'}">${icon(toSite ? 'globe' : 'product-hunt', { size: 16 })}</a>`;
+}
+
+function actions(widget, post, { saved, config, compact = false }) {
   const data = html`data-widget="${widget.id}" data-post="${post.id}"`;
   const isSaved = saved(post);
   return html`<span class="w-ph-actions">
-    ${compact ? '' : html`<button type="button" class="${cx('w-ph-act', isSaved && 'is-saved')}" data-action="w.product-hunt.save" ${data} tabindex="-1"
+    ${compact ? '' : html`${altLink(post, config)}<button type="button" class="${cx('w-ph-act', isSaved && 'is-saved')}" data-action="w.product-hunt.save" ${data} tabindex="-1"
       aria-label="${isSaved ? `Open ${post.name} in Still` : `Save ${post.name} to Still`}" data-tooltip="${isSaved ? 'Saved. Open in Still' : 'Save to Still'}">${icon(isSaved ? 'bookmark-check' : 'bookmark-plus', { size: 16 })}</button>
     <button type="button" class="w-ph-act" data-action="w.product-hunt.hide" ${data} tabindex="-1" aria-label="Hide ${post.name}" data-tooltip="Hide">${icon('eye-off', { size: 16 })}</button>`}
     <button type="button" class="w-ph-act w-ph-more" data-action="w.product-hunt.post-menu" ${data} tabindex="-1" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ${post.name}" data-tooltip="More">${icon('ellipsis', { size: 16 })}</button>
@@ -226,7 +239,7 @@ function renderList(widget, posts, opts) {
 
 function renderTop(widget, posts, opts) {
   const { config } = opts;
-  return html`<ol class="w-ph-top" role="list" data-keydown="w.product-hunt.list-key" data-widget="${widget.id}">${posts.map(post => html`<li class="w-ph-row w-ph-top-item" data-key="ph-${post.id}" data-row="${post.id}">
+  return html`<ol class="w-ph-top" role="list" data-keydown="w.product-hunt.list-key" data-widget="${widget.id}" data-more="${opts.moreRows ? 'on' : 'off'}">${posts.map(post => html`<li class="w-ph-row w-ph-top-item" data-key="ph-${post.id}" data-row="${post.id}">
     <span class="w-ph-top-rank" aria-hidden="true">${post.position}</span>
     ${config.showThumbs ? thumb(post, 28, { className: 'w-ph-top-thumb' }) : ''}
     <a class="w-ph-link" ${linkAttrs(post, opts)} title="${post.tagline ? `${post.name}: ${post.tagline}` : post.name}">
@@ -383,7 +396,8 @@ function handleListKey({ event, el, ctx, data }) {
   if (event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
   const row = event.target.closest('.w-ph-row');
   if (!row || !el.contains(row)) return;
-  const rows = [...el.querySelectorAll('.w-ph-row')];
+  // Rows the container hides (extra rows in a short "top" layout) are skipped.
+  const rows = [...el.querySelectorAll('.w-ph-row')].filter(item => item.checkVisibility?.() ?? item.offsetParent !== null);
   const index = rows.indexOf(row);
   const cards = el.dataset.layout === 'cards';
   const columns = cards ? Math.max(1, getComputedStyle(el).gridTemplateColumns.split(' ').filter(Boolean).length) : 1;
@@ -407,7 +421,7 @@ function handleListKey({ event, el, ctx, data }) {
   if (key === 'Home') return run(() => focusRow(rows[0]));
   if (key === 'End') return run(() => focusRow(rows.at(-1)));
   if (key === forward || key === back) {
-    const buttons = [...row.querySelectorAll('.w-ph-act')];
+    const buttons = [...row.querySelectorAll('.w-ph-act')].filter(button => button.checkVisibility?.() ?? button.offsetParent !== null);
     const at = buttons.indexOf(event.target);
     if (at >= 0) return run(() => (key === forward ? buttons[Math.min(buttons.length - 1, at + 1)].focus() : at > 0 ? buttons[at - 1].focus() : focusRow(row)));
     // Cards move between cards sideways (their actions are on S, H and the menu); list rows step into their actions.

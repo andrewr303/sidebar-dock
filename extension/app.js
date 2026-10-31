@@ -72,6 +72,7 @@ const ctx = {
     if (isSidepanel && sidePanelRoute(view)) return;
     closePopover({ restore: false });
     const changed = view !== state.view;
+    if (view === 'assistant' && !isSidepanel && state.panel?.kind === 'ai') state.panel = null; // the page is the assistant
     state.view = view;
     if (changed && !keep) Object.assign(state, { query: '', typeFilter: 'all', tagFilter: '', selectMode: false });
     state.selection = new Set();
@@ -252,7 +253,7 @@ registerActions({
       : tab === 'ask' ? 'assistant' : tab === 'notes' ? 'notes' : state.view;
     const item = state.panel?.kind === 'item' ? state.panel.id : '';
     // The full-screen assistant opens the same conversation (assistant-page.js reads the conversation parameter).
-    const conversation = view === 'assistant' ? String(state.ai?.conversation?.id || '') : '';
+    const conversation = view === 'assistant' ? aiPanel.conversationIdOf(state.ai) : '';
     await openTab(fullTabUrl(view, { q: view === state.view ? state.query : '', item, conversation }));
   },
   // Opens a main view: navigates in place in a full tab; from the side panel opens it in a tab (the Ask tab for the assistant).

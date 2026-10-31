@@ -565,6 +565,52 @@ export function setFilter(board, patch = {}) {
 
 export const clearFilter = board => setFilter(board, { label: '', query: '' });
 
+/* ------------------------------------------------------------------ settings dialog */
+
+/**
+ * Inline errors for the settings dialog's draft ({ columns, labels }): { 'columns.0.title': 'message', ... }, or null.
+ * Columns need a name and a whole-number limit; labels need a name that no other label on the board uses.
+ */
+export function settingsErrors(draft = {}) {
+  const errors = {};
+  const columns = Array.isArray(draft.columns) ? draft.columns : [];
+  if (!columns.length) errors.columns = 'Add at least one column.';
+  columns.forEach((column, index) => {
+    if (!text(column?.title, LIMITS.column)) errors[`columns.${index}.title`] = 'Name this column.';
+    const raw = column?.limit;
+    if (raw !== '' && raw != null) {
+      const limit = Number(raw);
+      if (!Number.isInteger(limit) || limit < 0 || limit > LIMITS.wip) errors[`columns.${index}.limit`] = `Enter a whole number from 0 to ${LIMITS.wip}.`;
+    }
+  });
+  const names = new Set();
+  (Array.isArray(draft.labels) ? draft.labels : []).forEach((label, index) => {
+    const name = text(label?.name, LIMITS.label).toLowerCase();
+    if (!name) errors[`labels.${index}.name`] = 'Name this label, or remove it.';
+    else if (names.has(name)) errors[`labels.${index}.name`] = 'Another label already has this name.';
+    names.add(name);
+  });
+  return Object.keys(errors).length ? errors : null;
+}
+
+/**
+ * Applies the settings dialog's draft (layout, showDescriptions, columns, labels) to the live board. Cards are kept:
+ * cards in a removed column move to the first column, and removed labels come off every card.
+ */
+export function applySettings(board, draft = {}) {
+  const columns = (Array.isArray(draft.columns) ? draft.columns : board.columns).filter(isObject).map(column => {
+    const previous = findColumn(board, column.id) || {};
+    return { ...previous, ...column, limit: Number(column.limit) || 0, done: column.done === true };
+  });
+  return normalizeBoard({
+    ...board,
+    layout: LAYOUTS.includes(draft.layout) ? draft.layout : board.layout,
+    showDescriptions: 'showDescriptions' in draft ? draft.showDescriptions === true : board.showDescriptions,
+    columns,
+    labels: Array.isArray(draft.labels) ? draft.labels : board.labels,
+  });
+}
+
 /** The stored config for a board (what env.update receives). */
 export const toConfig = board => ({
   columns: board.columns, cards: board.cards, labels: board.labels, filter: board.filter, layout: board.layout, showDescriptions: board.showDescriptions,

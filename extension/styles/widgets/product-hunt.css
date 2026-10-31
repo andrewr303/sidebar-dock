@@ -267,6 +267,10 @@
 .w-ph-act:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .w-ph-act[aria-expanded="true"] { background: var(--bg-active); color: var(--fg-default); }
 .w-ph-act.is-saved { color: var(--accent-soft-fg); }
+a.w-ph-act:hover { text-decoration: none; }
+/* The "visit website" link joins the row pill only where the row has room to spare; it is always in the ⋯ menu. */
+.w-ph-list .w-ph-act-alt { display: none; }
+@container widget (min-width: 440px) { .w-ph-list .w-ph-act-alt { display: grid; } }
 @media (hover: hover) { .w-ph-act:hover { background: var(--bg-hover); color: var(--fg-default); } }
 
 /* ---------- top three (small widgets) ---------- */
@@ -311,15 +315,32 @@
 @container widget (max-height: 150px) { .w-ph-top .w-ph-tagline { display: none; } .w-ph-top-rank { font-size: 28px; } }
 /* Narrow, or wide and short with the three side by side: upvotes move under the name so names keep their room. */
 @container widget (max-width: 219px) {
-  .w-ph-top-item { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "rank text" "rank votes"; }
+  .w-ph-top-item { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "rank text"; }
+  .w-ph-top-item:has(> .w-ph-top-votes) { grid-template-areas: "rank text" "rank votes"; }
   .w-ph-top-item > .w-ph-top-thumb { display: none; }
-  .w-ph-top .w-ph-tagline { display: none; }
+  /* Without counts (the public feed) the tagline takes the second line instead. */
+  .w-ph-top-item:has(> .w-ph-top-votes) .w-ph-tagline { display: none; }
 }
+/* The smallest widgets keep one line per launch: rank and name (the count is in the row's tooltip and label). */
+@container widget (max-width: 219px) and (max-height: 150px) {
+  .w-ph-top-item { grid-template-areas: "rank text"; }
+  .w-ph-top-item > .w-ph-top-votes { display: none; }
+}
+/* Tall, narrow widgets with the automatic layout reveal more of the ranking as their height allows. */
+.w-ph-top[data-more="on"] > .w-ph-top-item:nth-child(n+4) { display: none; }
+@container widget (min-height: 250px) { .w-ph-top[data-more="on"] > .w-ph-top-item:nth-child(4) { display: grid; } }
+@container widget (min-height: 310px) { .w-ph-top[data-more="on"] > .w-ph-top-item:nth-child(5) { display: grid; } }
+@container widget (min-height: 370px) { .w-ph-top[data-more="on"] > .w-ph-top-item:nth-child(6) { display: grid; } }
+@container widget (min-height: 430px) { .w-ph-top[data-more="on"] > .w-ph-top-item:nth-child(7) { display: grid; } }
+@container widget (min-height: 490px) { .w-ph-top[data-more="on"] > .w-ph-top-item:nth-child(8) { display: grid; } }
 @container widget (min-width: 520px) and (max-height: 180px) {
   .w-ph-top { flex-direction: row; align-items: center; gap: var(--space-4); }
-  .w-ph-top-item { flex: 1 1 0; min-inline-size: 0; max-block-size: none; margin-inline: 0; grid-template-columns: auto auto minmax(0, 1fr); grid-template-areas: "rank thumb text" "rank thumb votes"; }
-  .w-ph[data-thumbs="off"] .w-ph-top-item { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "rank text" "rank votes"; }
+  .w-ph-top-item { flex: 1 1 0; min-inline-size: 0; max-block-size: none; margin-inline: 0; grid-template-columns: auto auto minmax(0, 1fr); grid-template-areas: "rank thumb text"; }
+  .w-ph-top-item:has(> .w-ph-top-votes) { grid-template-areas: "rank thumb text" "rank thumb votes"; }
+  .w-ph[data-thumbs="off"] .w-ph-top-item { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "rank text"; }
+  .w-ph[data-thumbs="off"] .w-ph-top-item:has(> .w-ph-top-votes) { grid-template-areas: "rank text" "rank votes"; }
   .w-ph-top-item > :is(.w-ph-top-rank, .w-ph-top-thumb) { align-self: center; }
+  .w-ph-top-item:not(:has(> .w-ph-top-votes)) .w-ph-tagline { display: block; }
 }
 
 /* ---------- cards (extra large widgets) ---------- */
@@ -424,7 +445,8 @@
 .w-ph-setup-icon { color: var(--warning); }
 .w-ph-setup-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-4); margin-block-start: var(--space-2); }
 .w-ph-setup.is-compact { gap: var(--space-3); padding: var(--space-2); }
-@container widget (max-height: 150px) { .w-ph-setup.is-compact .w-ph-setup-text, .w-ph-setup.is-compact .w-ph-mark { display: none; } }
+@container widget (max-height: 150px) { .w-ph-setup.is-compact .w-ph-setup-text { display: none; } }
+@container widget (max-height: 100px) { .w-ph-setup.is-compact .w-ph-mark { display: none; } }
 /* Wide and short: mark, text and action in one row. */
 @container widget (min-width: 420px) and (max-height: 150px) {
   .w-ph-setup.is-compact { flex-direction: row; gap: var(--space-6); text-align: start; }

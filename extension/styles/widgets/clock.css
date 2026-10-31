@@ -125,6 +125,16 @@
   scrollbar-width: thin;
   list-style: none;
 }
+/* More zones below the fold: the last visible row fades out as a cue until the list is scrolled to its end. */
+@property --w-clock-fade { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@supports (animation-timeline: scroll()) {
+  .w-clock-zones {
+    mask-image: linear-gradient(to bottom, #000 calc(100% - var(--w-clock-fade)), transparent);
+    animation: w-clock-fade linear both;
+    animation-timeline: scroll(self);
+  }
+  @keyframes w-clock-fade { from, 96% { --w-clock-fade: 24px; } to { --w-clock-fade: 0px; } }
+}
 .w-clock-zone {
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr) auto;

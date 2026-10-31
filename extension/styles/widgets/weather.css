@@ -45,7 +45,7 @@
 .w-weather-glyph .wx-fog { stroke: var(--wx-fog); }
 
 .w-weather {
-  --wx-hero: clamp(32px, 22cqmin, 64px);
+  --wx-hero: clamp(32px, 26cqmin, 64px);
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto minmax(0, 1fr) auto auto;
@@ -98,7 +98,7 @@
   display: flex;
   align-items: flex-start;
   color: var(--fg-default);
-  font-size: clamp(28px, calc(18cqmin + 8px), 56px);
+  font-size: clamp(28px, calc(22cqmin + 6px), 60px);
   font-weight: 300;
   line-height: 1;
   letter-spacing: var(--tracking-title);
@@ -137,6 +137,12 @@
 .w-weather-place .icon { flex: none; color: var(--fg-subtle); }
 .w-weather-place span { overflow: hidden; text-overflow: ellipsis; }
 .w-weather-hilo { display: flex; gap: var(--space-4); color: var(--fg-default); font-weight: var(--weight-medium); }
+
+/* Short cards show only the now block: center it instead of leaving the space below empty. */
+@container widget (max-height: 167px) and (max-width: 599px), (max-height: 149px) {
+  .w-weather { grid-template-rows: minmax(0, 1fr) auto; }
+  .w-weather-now { align-self: center; }
+}
 
 /* Narrow tiles: glyph and temperature first, the rest under them. */
 @container widget (max-width: 239px) {
@@ -329,7 +335,7 @@
 :root[data-motion="reduced"] .w-weather-refresh.is-busy .icon { animation: none; opacity: 0.5; }
 
 /* ---------- Setup ---------- */
-.w-weather.is-setup { display: flex; flex-direction: column; justify-content: center; gap: var(--space-6); }
+.w-weather.is-setup { display: flex; flex-direction: column; justify-content: center; gap: var(--space-6); min-block-size: 0; }
 .w-weather-setup-head { display: flex; align-items: flex-start; gap: var(--space-6); }
 .w-weather-setup-icon {
   display: inline-grid;
@@ -352,11 +358,15 @@
   .w-weather.is-setup { gap: var(--space-4); }
 }
 @container widget (max-height: 96px) { .w-weather-setup-head { display: none; } }
-@container widget (min-height: 200px) and (min-width: 300px) {
-  .w-weather-setup-inline { display: block; }
+@container widget (min-height: 160px) and (min-width: 280px) {
+  .w-weather-setup-inline { display: flex; flex-direction: column; min-block-size: 0; }
   .w-weather-setup-short { display: none; }
-  .w-weather.is-setup { justify-content: flex-start; }
 }
+/* Open results take the room of the introduction and scroll inside the card. */
+.w-weather.is-setup:has(.w-weather-results:not([hidden])) { justify-content: flex-start; }
+.w-weather.is-setup:has(.w-weather-results:not([hidden])) .w-weather-setup-head { display: none; }
+.w-weather-setup-inline .w-weather-picker { min-block-size: 0; }
+.w-weather-setup-inline .w-weather-results { flex: 0 1 auto; min-block-size: 64px; max-block-size: none; }
 
 /* ---------- Place picker (setup and settings) ---------- */
 .w-weather-picker { display: flex; flex-direction: column; gap: var(--space-4); min-inline-size: 0; }

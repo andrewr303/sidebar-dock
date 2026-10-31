@@ -33,18 +33,18 @@ const isWeb = url => /^https?:\/\//i.test(String(url || ''));
  */
 export function indexTree(roots = []) {
   const nodes = new Map();
-  const visit = (node, parentId) => {
+  const visit = (node, parentId, position = 0) => {
     if (!node || node.id == null) return null;
     const id = String(node.id);
     const entry = {
       id, parentId: node.parentId != null ? String(node.parentId) : parentId, title: String(node.title || ''), url: node.url ? String(node.url) : '',
-      dateAdded: Number(node.dateAdded) || 0, index: Number.isInteger(node.index) ? node.index : 0, children: undefined, links: 0, total: 0,
+      dateAdded: Number(node.dateAdded) || 0, index: Number.isInteger(node.index) ? node.index : position, children: undefined, links: 0, total: 0,
     };
     nodes.set(id, entry);
     if (!node.url) {
       entry.children = [];
-      for (const child of Array.isArray(node.children) ? node.children : []) {
-        const done = visit(child, id);
+      for (const [position, child] of (Array.isArray(node.children) ? node.children : []).entries()) {
+        const done = visit(child, id, position);
         if (!done) continue;
         entry.children.push(done.id);
         if (done.url) { if (isWeb(done.url)) { entry.links++; entry.total++; } } else entry.total += done.total;
@@ -225,5 +225,37 @@ export function importPlan(index, folderId, { existing = new Set(), makeId, pare
     }
   };
   walk(root, parentId);
-  return { collections, items, skipped, rootId: collections[0]?.id || '' };
+  // Subfolders whose links are all in Still already would arrive empty: leave them (and empty branches) out.
+  const used = new Set(items.map(item => item.collectionId));
+  for (const collection of [...collections].reverse()) if (used.has(collection.id) && collection.parentId) used.add(collection.parentId);
+  const kept = collections.filter((collection, i) => i === 0 || used.has(collection.id));
+  return { collections: kept, items, skipped, rootId: kept[0]?.id || '' };
+}
+
+/**
+ * The index for chrome.bookmarks.move() that puts nodeId where a drag or a keyboard move wants it inside folderId, or
+ * -1 when it would not move. Chrome counts the index in the folder as it is before the move (every child, including
+ * bookmarklets and folders the widget hides). Either `beforeId` ('' = after the last child) or `delta` (+1 / -1 steps
+ * through the children the widget shows, in Chrome's order).
+ */
+export function moveIndex(index, folderId, nodeId, { beforeId, delta, showFolders = true } = {}) {
+  const folder = index?.nodes.get(String(folderId));
+  const node = index?.nodes.get(String(nodeId));
+  if (!isFolder(folder) || !node) return -1;
+  const same = node.parentId === folder.id;
+  let target;
+  if (delta) {
+    if (!same) return -1;
+    const shown = folderChildren(index, folder.id, { showFolders });
+    const from = shown.findIndex(n => n.id === node.id);
+    const to = Math.max(0, Math.min(shown.length - 1, from + Math.sign(delta)));
+    if (from < 0 || to === from) return -1;
+    target = delta > 0 ? shown[to].index + 1 : shown[to].index;
+  } else {
+    const before = beforeId ? index.nodes.get(String(beforeId)) : null;
+    target = before && before.parentId === folder.id ? before.index : folder.children.length;
+  }
+  // Dropping a node onto its own place (just before itself or just after itself) is not a move.
+  if (same && (target === node.index || target === node.index + 1)) return -1;
+  return target;
 }

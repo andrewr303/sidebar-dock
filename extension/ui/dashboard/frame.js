@@ -17,12 +17,11 @@ const FRAMES = [
 ];
 const initialized = new Set();
 
-let titleCtx = null;
 /** Display title: the instance's own title, else the definition's displayTitle (e.g. a collection name), else its title. */
-export function widgetTitle(widget, def = getWidget(widget.type)) {
+export function widgetTitle(widget, def = getWidget(widget.type), ctx = null) {
   if (widget.title) return widget.title;
-  if (def?.displayTitle && titleCtx) {
-    try { const title = def.displayTitle(titleCtx, widget); if (title) return String(title); } catch (error) { console.error(error); }
+  if (def?.displayTitle && ctx) {
+    try { const title = def.displayTitle(ctx, widget); if (title) return String(title); } catch (error) { console.error(error); }
   }
   return def?.title || 'Widget';
 }
@@ -46,7 +45,7 @@ function renderBody(ctx, board, widget, def, env) {
       actions: button({ label: 'Remove widget', icon: 'trash-2', size: 'sm', action: 'dashboard.widget-remove', data: { widget: widget.id } }) });
   }
   if (ui.errors.get(widget.id) === ui.stamp) {
-    return emptyState({ icon: 'triangle-alert', title: `${widgetTitle(widget, def)} could not be shown`, compact: true, tone: 'danger',
+    return emptyState({ icon: 'triangle-alert', title: `${widgetTitle(widget, def, ctx)} could not be shown`, compact: true, tone: 'danger',
       body: 'Something went wrong while drawing this widget. Your dashboard and library are unchanged.',
       actions: button({ label: 'Reload widget', icon: 'refresh-cw', size: 'sm', action: 'dashboard.widget-reload', data: { widget: widget.id } }) });
   }
@@ -57,7 +56,7 @@ function renderBody(ctx, board, widget, def, env) {
   try { return def.render(ctx, widget, env); } catch (error) {
     console.error(`[still] widget ${widget.type} failed to render`, error);
     ui.errors.set(widget.id, ui.stamp);
-    return emptyState({ icon: 'triangle-alert', title: `${widgetTitle(widget, def)} could not be shown`, compact: true, tone: 'danger',
+    return emptyState({ icon: 'triangle-alert', title: `${widgetTitle(widget, def, ctx)} could not be shown`, compact: true, tone: 'danger',
       body: 'Something went wrong while drawing this widget. Your dashboard and library are unchanged.',
       actions: button({ label: 'Reload widget', icon: 'refresh-cw', size: 'sm', action: 'dashboard.widget-reload', data: { widget: widget.id } }) });
   }
@@ -74,11 +73,10 @@ const menuButton = (ctx, widget, title, className = 'widget-menu-btn') => html`<
 
 /** One widget frame placed on the grid at rect (cells on the shown grid). */
 export function renderFrame(ctx, board, widget, rect) {
-  titleCtx = ctx;
   const ui = dashUi(ctx);
   const def = getWidget(widget.type);
   const env = envFor(ctx, board, widget);
-  const title = widgetTitle(widget, def);
+  const title = widgetTitle(widget, def, ctx);
   const editing = env.editing;
   const frame = widget.style?.frame || 'default';
   // Bare definitions (a big clock, a folder tile) draw no chrome unless a background is chosen; they never show a title row.
@@ -169,7 +167,7 @@ function moveMenu(ctx, widget) {
 export async function removeWidget(ctx, widgetId) {
   const found = dashboardStore.findWidget(widgetId);
   if (!found) return;
-  const title = widgetTitle(found.widget);
+  const title = widgetTitle(found.widget, undefined, ctx);
   const { boardId, widget } = await dashboardStore.removeWidget(widgetId);
   dashUi(ctx).announce = `Removed ${title}`;
   ctx.toast(`Removed ${title}`, { action: { label: 'Undo', run: () => dashboardStore.restoreWidget(boardId, widget) } });
@@ -199,10 +197,11 @@ function frameMenu(ctx, widget, anchor) {
 
 async function renameWidget(ctx, widget) {
   const def = getWidget(widget.type);
-  const value = await ctx.prompt({ title: 'Rename widget', label: 'Title', value: widgetTitle(widget, def), placeholder: def?.title || 'Widget', confirmLabel: 'Rename' });
+  const fallback = widgetTitle({ ...widget, title: '' }, def, ctx);
+  const value = await ctx.prompt({ title: 'Rename widget', label: 'Title', value: widgetTitle(widget, def, ctx), placeholder: fallback, confirmLabel: 'Rename' });
   if (value === null) return;
   // An empty title or the default one goes back to following the widget's own title (e.g. a collection name).
-  const title = value.trim() === (def?.title || '') ? '' : value.trim();
+  const title = [def?.title || '', fallback].includes(value.trim()) ? '' : value.trim();
   await dashboardStore.updateWidget(widget.id, { title });
 }
 
@@ -233,7 +232,7 @@ registerActions({
   'dashboard.widget-menu': ({ ctx, el, data }) => {
     const found = dashboardStore.findWidget(data.widget);
     if (!found) return;
-    ctx.openMenu(el, frameMenu(ctx, found.widget, el), { placement: 'bottom-end', label: `${widgetTitle(found.widget)} options` });
+    ctx.openMenu(el, frameMenu(ctx, found.widget, el), { placement: 'bottom-end', label: `${widgetTitle(found.widget, undefined, ctx)} options` });
   },
   'dashboard.widget-settings': ({ ctx, data }) => openWidgetSettings(ctx, data.widget),
   'dashboard.widget-remove': ({ ctx, data }) => removeWidget(ctx, data.widget),
