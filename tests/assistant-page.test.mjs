@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { assistantLayout, railPlacement, scopeOptions, renderAssistantPage, ASSISTANT_LAYOUT } from '../extension/ui/assistant-page.js';
 import { aiState, setAiScope, renderAiPanel } from '../extension/ui/ai-panel.js';
+import { dispatch } from '../extension/ui/runtime.js';
 
 const flat = fragment => String(fragment).replace(/\s+/g, ' ');
 const count = (markup, pattern) => (String(markup).match(pattern) || []).length;
@@ -135,6 +136,34 @@ test('without a model the page shows the setup and a badge to connect one', () =
   const out = flat(renderAssistantPage(fakeCtx({ target: null })));
   assert.match(out, /Connect a model to ask here/);
   assert.match(out, /class="asst-model is-missing"/);
+  // A narrow header shows the badge as its plug icon only, so the button names itself.
+  assert.match(out, /class="asst-model is-missing" data-action="ai.settings" aria-label="Connect a model" data-tooltip="Connect a model"/);
+});
+
+test('sending without a model says so next to the composer, not in a toast over it', async () => {
+  const ctx = fakeCtx({ target: null });
+  const toasts = [];
+  ctx.toast = message => toasts.push(message);
+  aiState(ctx).draft = 'What did I save about agents?';
+  await dispatch('ai.send', { ctx });
+  assert.deepEqual(toasts, []);
+  const out = flat(renderAiPanel(ctx, { surface: 'page', head: '' }));
+  assert.match(out, /data-key="ai.model-notice"/);
+  assert.match(out, /Connect a model to ask here, or open your question in another app\./);
+  assert.match(out, /data-action="ai.settings"/);
+  assert.doesNotMatch(out, /Ask ChatGPT/, 'the setup on screen already lists the other apps');
+  assert.equal(aiState(ctx).draft, 'What did I save about agents?', 'the question stays in the composer');
+  // Each send is announced: the live region's text changes every time, even when the notice is already showing.
+  const first = aiState(ctx).announce;
+  assert.match(first, /^Connect a model to ask here/);
+  await dispatch('ai.send', { ctx });
+  assert.notEqual(aiState(ctx).announce, first);
+  assert.equal(aiState(ctx).announce.trim(), first.trim());
+  // With a chat open the setup is gone, so the notice offers the other apps itself.
+  aiState(ctx).conversation = conversation;
+  assert.match(flat(renderAiPanel(ctx, { surface: 'page', head: '' })), /data-action="ai.handoff" data-target="chatgpt"/);
+  await dispatch('ai.model-notice-dismiss', { ctx });
+  assert.doesNotMatch(flat(renderAiPanel(ctx, { surface: 'page', head: '' })), /ai.model-notice/);
 });
 
 test('the page closes the full tab Ask panel instead of showing the chat twice', () => {

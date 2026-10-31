@@ -122,7 +122,9 @@ function renderHeader(ctx, place) {
 function renderModelBadge(ctx) {
   const t = aiState(ctx).target;
   if (!ctx.ai || t === undefined) return '';
-  if (t === null) return html`<button type="button" class="asst-model is-missing" data-action="ai.settings">${icon('plug', { size: 14 })}<span class="asst-model-label">Connect a model</span></button>`;
+  // A narrow header shows only the plug icon (assistant.css), so the button carries its name and tooltip itself.
+  if (t === null) return html`<button type="button" class="asst-model is-missing" data-action="ai.settings" aria-label="Connect a model"
+    data-tooltip="Connect a model">${icon('plug', { size: 14 })}<span class="asst-model-label">Connect a model</span></button>`;
   const where = t.via === 'agent' || t.via === 'bridge' ? 'plug' : t.local ? 'cpu' : 'cloud';
   const open = ctx.state.popover?.name === 'ai.model' && !!ctx.state.popover?.anchorEl?.classList?.contains('asst-model');
   const name = t.modelLabel || t.model;

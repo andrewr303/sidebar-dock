@@ -125,15 +125,20 @@ function syncUrl() {
 ctx.syncUrl = syncUrl;
 
 // Uploaded wallpapers live in IndexedDB; the layer shows them through one object URL, revoked when it is replaced.
+// The URL is handed out only once its image is decoded, so the layer paints it at once instead of blank for a few frames.
 const wallpaperImage = { id: '', url: '', loading: null, token: 0 };
+const decodeImage = url => { const img = new Image(); img.src = url; return img.decode().catch(() => {}); };
 function loadWallpaperImage(id) {
   if (wallpaperImage.id === id && (wallpaperImage.url || wallpaperImage.loading)) return wallpaperImage.loading || Promise.resolve(wallpaperImage.url);
   const token = ++wallpaperImage.token;
   wallpaperImage.id = id;
-  wallpaperImage.loading = Promise.resolve().then(() => store.getAttachment(id)).then(record => {
+  wallpaperImage.loading = Promise.resolve().then(() => store.getAttachment(id)).then(async record => {
     if (token !== wallpaperImage.token) return '';
     const blob = record?.blob;
     const url = blob instanceof Blob && /^image\//.test(blob.type || record.mime || '') ? URL.createObjectURL(blob) : '';
+    // The side panel shows the layer only with Liquid Glass; elsewhere there it would decode an image nothing paints.
+    if (url && (!isSidepanel || document.documentElement.dataset.skin === 'glass')) await decodeImage(url);
+    if (token !== wallpaperImage.token) { if (url) URL.revokeObjectURL(url); return ''; }
     if (wallpaperImage.url) URL.revokeObjectURL(wallpaperImage.url);
     Object.assign(wallpaperImage, { url, loading: null });
     return url;
@@ -286,7 +291,9 @@ function applyBootParams() {
     const askTab = state.view === 'assistant';
     if (askTab || state.view === 'dashboard' || state.view === 'stickies' || isSettingsView(state.view)) state.view = 'all';
     const deepLink = state.view !== 'all' && state.view !== 'notes';
-    state.sideTab = params.get('tab') || (askTab ? 'ask' : deepLink ? 'library' : state.view === 'notes' ? 'notes' : isExtension ? 'page' : 'library');
+    // "Start on This page" (Settings > General) picks the tab a plain open lands on; off, the panel starts on the library.
+    const pageFirst = isExtension && library?.settings?.startOnPage !== false;
+    state.sideTab = params.get('tab') || (askTab ? 'ask' : deepLink ? 'library' : state.view === 'notes' ? 'notes' : pageFirst ? 'page' : 'library');
     if (deepLink) state.sideStack = [state.view];
   }
   const item = params.get('item');
@@ -308,6 +315,12 @@ runtime.onRendered(updateTitle);
 const dashboardReady = isSidepanel ? Promise.resolve()
   : Promise.resolve().then(() => dashboard.preload?.()).catch(error => console.warn('[still] dashboard data not preloaded', error));
 const settle = (promise, ms) => Promise.race([promise, new Promise(resolve => setTimeout(resolve, ms))]);
+// Where skins.css paints the wallpaper layer: behind the dashboard, behind the whole full tab with the "app" scope, and
+// everywhere with Liquid Glass.
+function wallpaperShows() {
+  const { wallpaper, skin, wallpaperScope } = document.documentElement.dataset;
+  return wallpaper === 'on' && (skin === 'glass' || state.view === 'dashboard' || (wallpaperScope === 'app' && !isSidepanel));
+}
 
 async function boot() {
   try {
@@ -324,6 +337,9 @@ async function boot() {
   applyBootParams();
   // Paint the dashboard with its data instead of a loading frame (bounded, so a stuck store never blocks the app).
   if (state.view === 'dashboard') await settle(dashboardReady, 1500);
+  // Likewise an uploaded wallpaper the first frame shows, so the page does not paint on a plain background first and the
+  // image pop in after it. Where the layer is hidden (the side panel and other views with the dashboard scope) nothing waits.
+  if (wallpaperImage.loading && wallpaperShows()) await settle(wallpaperImage.loading, 300);
   store.subscribe(next => {
     const looksChanged = appearanceChanged(library?.settings, next?.settings);
     library = next;

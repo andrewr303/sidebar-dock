@@ -205,7 +205,7 @@ export function renderSidebar(ctx) {
   const footLink = ({ view, label, icon: ico, filter }) => {
     const current = ctx.state.view === view;
     return html`<a class="${cx('btn', 'btn-ghost', 'sidebar-foot-link', current && 'is-current')}" href="${viewHref(view)}" data-action="sidebar.navigate"
-      data-view="${view}" data-drop-filter="${filter}" ${current ? raw('aria-current="page"') : ''}>${icon(ico, { size: 16 })}<span class="btn-label">${label}</span></a>`;
+      data-view="${view}" data-drop-filter="${filter}" data-tooltip="${label}" data-tooltip-pos="start" ${current ? raw('aria-current="page"') : ''}>${icon(ico, { size: 16 })}<span class="btn-label">${label}</span></a>`;
   };
   const home = ctx.startView?.() || 'dashboard';
   const inSettings = /^settings(?::|$)/.test(ctx.state.view);

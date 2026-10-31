@@ -290,10 +290,12 @@ const onDashboard = ctx => !ctx.env?.isSidepanel && ctx.state?.view === 'dashboa
 
 /**
  * Creates a sticky note and focuses its editor. On the dashboard it lands on the active board near the top of the
- * visible area; from anywhere else it shows on every board. Options: boardId, color, content, x, y, focus.
- * Returns the saved item.
+ * visible area; from anywhere else it shows on every board. A full tab showing neither the dashboard nor the Sticky
+ * notes view opens the latter first (e.g. from the command palette), so the new note is on screen to type in.
+ * Options: boardId, color, content, x, y, focus. Returns the saved item.
  */
 export async function createSticky(ctx, { boardId, color, content = '', x, y, focus = true } = {}) {
+  if (focus && !ctx.env?.isSidepanel && !onDashboard(ctx) && ctx.state?.view !== 'stickies') ctx.navigate?.('stickies');
   const board = typeof boardId === 'string' ? boardId : onDashboard(ctx) ? activeBoard()?.id || '' : '';
   const everyNote = liveStickies(ctx.select?.live?.() || []);
   const neighbours = everyNote.filter(note => !note.sticky.hidden && (!board || onBoard(note.sticky, board)));
@@ -307,7 +309,9 @@ export async function createSticky(ctx, { boardId, color, content = '', x, y, fo
   if (onDashboard(ctx) && !stickiesShown(ctx)) await setStickiesShown(ctx, true);
   if (focus) {
     if (ctx.env?.isSidepanel) openNote(ctx, item.id, { focus: 'body' });
-    else pendingFocus.add(item.id);
+    // The library's change event can mount the editor before the save above returns, so focus it if it is already
+    // there and queue it for its mount otherwise.
+    else focusSticky(ctx, item.id, { enter: true });
   }
   // The side panel has no dashboard: say where the note went (its editor opens here).
   if (ctx.env?.isSidepanel) ctx.toast?.('Sticky note added. It floats on your dashboard and stays in Notes.');
@@ -327,11 +331,12 @@ async function saveContent(ctx, id, content) {
   if (z !== undefined && raised.get(id) === z) raised.delete(id);
 }
 
-/** Focuses a sticky note's editor (now, or as soon as it mounts). */
-export function focusSticky(ctx, id, { scroll = true } = {}) {
+/** Focuses a sticky note's editor (now, or as soon as it mounts). enter: the note is new (it fades in). */
+export function focusSticky(ctx, id, { scroll = true, enter = false } = {}) {
   const area = typeof document !== 'undefined' ? [...document.querySelectorAll(`[data-sticky-text="${CSS.escape(id)}"]`)].find(el => el.offsetParent !== null) : null;
   if (!area) { pendingFocus.add(id); ctx.render(); return; }
-  focusArea(area, { scroll });
+  pendingFocus.delete(id);
+  focusArea(area, { scroll, enter });
 }
 
 /** Brings a sticky note into view on the dashboard: shows it (and the layer) if hidden, then focuses its editor. */

@@ -51,11 +51,18 @@ export function collectionCounts(notes) {
   return { total: (notes || []).length, none, byId };
 }
 
-/** Drops a leading heading that only repeats the note title, so previews start with the body. */
+/**
+ * Drops a leading line that only repeats the note title, so previews start with the body: a heading, or the plain first
+ * line a title was taken from (sticky notes). Tasks, list items, quotes and lines too long for a whole title stay.
+ */
 export function previewSource(content, title) {
   const text = String(content || '');
+  const name = String(title || '').trim().toLowerCase();
   const match = /^\s*#{1,3}[ \t]+(.+?)[ \t]*#*[ \t]*(?:\r?\n|$)/.exec(text);
-  if (match && match[1].trim().toLowerCase() === String(title || '').trim().toLowerCase()) return text.slice(match[0].length).replace(/^\s*\n/, '');
+  if (match && match[1].trim().toLowerCase() === name) return text.slice(match[0].length).replace(/^\s*\n/, '');
+  const line = /^\s*([^\r\n]*)(?:\r?\n|$)/.exec(text);
+  const plain = name && line[1].trim().length <= 80 && !/^(?:[-*+][ \t]|\d+[.)][ \t]|[>|#:]|!\[|```|~~~)/.test(line[1]);
+  if (plain && noteTitleFromContent(line[1]).toLowerCase() === name) return text.slice(line[0].length).replace(/^\s*\n/, '');
   return text;
 }
 
@@ -244,9 +251,9 @@ function noteCard(ctx, note, { clamp = 8, showPage = true, from = '' } = {}) {
   const collection = note.collectionId ? ctx.select.collection(note.collectionId) : null;
   const name = noteName(note);
   const reminder = note.reminderAt && !note.reminderNotifiedAt;
-  const body = String(note.content || '').trim()
-    ? raw(cardHtml(ctx, note, expanded))
-    : html`<p class="note-card-empty">Empty note</p>`;
+  // A note whose only line is its title (a one-line sticky note) has no body to preview.
+  const body = !String(note.content || '').trim() ? html`<p class="note-card-empty">Empty note</p>`
+    : previewSource(note.content, note.title).trim() ? raw(cardHtml(ctx, note, expanded)) : '';
   return html`<article class="${cx('note-card', expanded && 'is-expanded')}" data-key="nc:${from || 'notes'}:${note.id}" data-id="${note.id}" style="--clamp:${clamp}" aria-labelledby="nc-${from || 'n'}-${note.id}">
     <header class="note-card-head">
       <h3 class="note-card-title"><button type="button" class="note-card-open" id="nc-${from || 'n'}-${note.id}" data-action="notes.open" data-id="${note.id}" data-from="${from}">${name}</button></h3>
@@ -390,7 +397,7 @@ function noteRow(ctx, note, selectedId) {
   ].filter(part => String(part));
   return html`<li data-key="nr:${note.id}"><button type="button" class="${cx('notes-row', selected && 'is-selected')}" data-action="notes.open" data-id="${note.id}" aria-current="${selected ? 'true' : 'false'}">
     <span class="notes-row-top">${note.pinned ? icon('pin', { size: 12, className: 'notes-row-pin' }) : ''}<span class="notes-row-title">${noteName(note)}</span><time class="notes-row-time" datetime="${note.updatedAt}" title="${shortDate(note.updatedAt)}">${shortAgo(note.updatedAt)}</time></span>
-    <span class="${cx('notes-row-preview', !info.preview && 'is-empty')}">${info.preview || 'No text yet'}</span>
+    ${info.preview || !String(note.content || '').trim() ? html`<span class="${cx('notes-row-preview', !info.preview && 'is-empty')}">${info.preview || 'No text yet'}</span>` : ''}
     ${meta.length ? html`<span class="notes-row-meta">${meta}</span>` : ''}
   </button></li>`;
 }
@@ -613,6 +620,9 @@ function openCardMenu(ctx, anchor, id, from) {
     ...(ctx.env.isSidepanel ? [{ label: 'Open in full tab', icon: 'external-link', run: () => openInFullTab(ctx, id) }] : []),
     { separator: true },
     { label: 'Move to Trash', icon: 'trash-2', danger: true, run: async () => {
+      // "Confirm before moving items to Trash" (Settings > General) asks first, as library.js trashItems does.
+      if (ctx.library?.settings?.confirmDelete === true && !(await ctx.confirm({ title: `Move “${noteName(note)}” to Trash?`,
+        body: 'You can restore items from Trash until you empty it.', confirmLabel: 'Move to Trash' }))) return;
       rememberItem(await ctx.store.deleteItem(id));
       ctx.toast('Moved to Trash', { action: { label: 'Undo', run: async () => rememberItem(await ctx.store.restoreItem(id)) } });
     } },

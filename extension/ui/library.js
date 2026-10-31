@@ -542,9 +542,18 @@ export async function setArchived(ctx, ids, archived) {
   clearSelectionOf(ctx, ids);
 }
 
+/** With "Confirm before moving items to Trash" on (Settings > General), asks first; resolves true to go ahead. */
+export async function confirmTrash(ctx, items) {
+  if (ctx.library?.settings?.confirmDelete !== true || !items.length) return true;
+  const title = items.length > 1 ? `Move ${label(items.length)} to Trash?` : items[0].title ? `Move “${items[0].title}” to Trash?` : 'Move this item to Trash?';
+  return ctx.confirm({ title, body: 'You can restore items from Trash until you empty it.', confirmLabel: 'Move to Trash' });
+}
+
 export async function trashItems(ctx, ids) {
+  const items = ids.map(byId(ctx)).filter(item => item && !item.deletedAt);
+  if (!(await confirmTrash(ctx, items))) return;
   const at = nowIso();
-  const changes = ids.map(byId(ctx)).filter(item => item && !item.deletedAt).map(item => ({ id: item.id, patch: { deletedAt: at } }));
+  const changes = items.map(item => ({ id: item.id, patch: { deletedAt: at } }));
   await applyChanges(ctx, changes, `Moved ${label(changes.length)} to Trash`);
   clearSelectionOf(ctx, ids);
   if (ctx.state.panel?.kind === 'item' && ids.includes(ctx.state.panel.id)) ctx.closePanel();

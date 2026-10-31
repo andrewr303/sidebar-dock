@@ -69,10 +69,12 @@
   padding: 0 var(--space-4) var(--space-6);
 }
 .sidebar-foot {
+  container: sidebar-foot / inline-size;
   display: flex; align-items: center; gap: var(--space-1);
   flex: none;
   padding: var(--space-4);
   border-block-start: 1px solid var(--border-default);
+  font-size: var(--text-sm); /* the links' size: the em in the query below */
 }
 .sidebar-foot-link {
   flex: 0 1 auto; min-width: 0;
@@ -83,6 +85,14 @@
   font-weight: var(--weight-regular);
 }
 .sidebar-foot-link + .icon-btn { margin-inline-start: auto; }
+.sidebar-foot-link[data-tooltip]::after { content: none; }
+/* Archive and Trash become icon buttons (named, with a tooltip) when their labels would not fit beside Settings and Help:
+   the labels take about 9.25em, the icons, paddings and the two buttons about 100px (narrow sidebar, larger text). */
+@container sidebar-foot (max-width: calc(9.25em + 100px)) {
+  .sidebar-foot-link { flex: none; width: var(--control-h-md); padding: 0; justify-content: center; }
+  .sidebar-foot-link > .btn-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .sidebar-foot-link[data-tooltip]::after { content: attr(data-tooltip); }
+}
 .sidebar-foot-link.is-current { background: var(--bg-selected); color: var(--accent-soft-fg); }
 .sidebar-foot .icon-btn { color: var(--fg-subtle); }
 .sidebar-foot .icon-btn.is-current { background: var(--bg-selected); color: var(--accent-soft-fg); }
@@ -553,3 +563,21 @@ html.is-resizing, html.is-resizing * { cursor: col-resize !important; user-selec
 .boot-error .brand-mark { margin-block-end: var(--space-4); }
 .boot-error-title { font-size: var(--text-lg); line-height: var(--lh-lg); }
 .boot-error-hint { font-size: var(--text-xs); line-height: var(--lh-xs); }
+
+/* ---------- Forced colors ----------
+   Selection backgrounds are dropped in forced colors, so the current sidebar entry and side panel tab take the system
+   highlight. Their icons and counts follow its text color, and a focused one draws its ring in that color. */
+@media (forced-colors: active) {
+  .tree-row.is-current, .sidebar-foot :is(.sidebar-foot-link, .icon-btn).is-current, .tabbar-tab[aria-current="page"] {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+  :is(.tree-row.is-current, .sidebar-foot .is-current, .tabbar-tab[aria-current="page"]) :is(.icon, .tree-count, .tag-hash, .tree-chev, .tree-action) { color: inherit; }
+  .tree-row.is-current .collection-icon { background: none; color: inherit; }
+  /* Inside the highlight, a hovered row action inverts it (the author hover fills would hide its glyph), and the rename
+     field takes the system field colors again. */
+  :is(.tree-row.is-current, .sidebar-foot .is-current, .tabbar-tab[aria-current="page"]) :is(.tree-action, .tree-chev):hover { background: HighlightText; color: Highlight; }
+  .tree-row.is-current .tree-rename { forced-color-adjust: auto; }
+  :is(.tree-row.is-current, .sidebar-foot .is-current, .tabbar-tab[aria-current="page"]):focus-visible { outline-color: HighlightText; }
+}

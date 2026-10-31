@@ -326,7 +326,7 @@ function st(ctx) {
   if (!s.init) {
     Object.assign(s, { init: true, conversation: null, draft: '', editing: null, run: null, explicit: null, added: [], dismissed: new Set(),
       target: undefined, connections: [], settings: null, history: null, historyQuery: '', ctxQuery: '', ctxActive: 0, ctxOptions: [],
-      modelView: 'models', open: new Set(), pagePermission: null, suggestions: [], version: 0, announce: '' });
+      modelView: 'models', open: new Set(), pagePermission: null, modelNotice: false, suggestions: [], version: 0, announce: '' });
   }
   return s;
 }
@@ -407,6 +407,7 @@ async function refreshTarget(ctx) {
     const efforts = model?.efforts?.length ? model.efforts : [];
     s.target = { ...target, efforts, effort: efforts.includes(target.effort) ? target.effort : model?.defaultEffort || efforts[0] || target.effort,
       baseUrl: connection?.baseUrl || '', local: !!connection?.local, connection };
+    s.modelNotice = false;
   } catch (error) {
     s.target = null;
     s.targetError = error?.message || '';
@@ -449,7 +450,9 @@ function submit(ctx, { question, scope, replace } = {}) {
   const value = String(question ?? s.draft).trim();
   if (!value) return null;
   if (value.length > MAX_QUESTION) { ctx.toast(`Shorten the question to ${MAX_QUESTION.toLocaleString()} characters or less.`, { tone: 'danger' }); return null; }
-  if (s.target === null) { ctx.toast('Connect a model in Settings to ask here, or open the question in another app.'); return null; }
+  // Said next to the composer, not in a toast: a toast sits over the composer's end and its Send button.
+  // A trailing no-break space on every other send changes the live region's text, so each Enter is announced again.
+  if (s.target === null) { s.modelNotice = true; announce(ctx, s.announce === MODEL_NOTICE ? `${MODEL_NOTICE}\u00a0` : MODEL_NOTICE); ctx.render(); return null; }
   const access = requestModelAccess(ctx);
   const replaceFrom = replace ?? s.editing?.messageId ?? null;
   const fromDraft = question === undefined;
@@ -970,6 +973,7 @@ function renderDock(ctx, resolved) {
   const canSend = !running && !!s.draft.trim() && !over && s.target !== null;
   return html`<div class="ai-dock">
     ${s.pagePermission ? renderPageNotice(ctx) : ''}
+    ${s.modelNotice && s.target === null ? renderModelNotice({ handoffs: !!(s.conversation?.messages?.length || s.run) }) : ''}
     <form class="${cx('ai-composer', running && 'is-running')}" data-submit="ai.send" aria-label="Ask the assistant">
       <div class="ai-chips" role="list" aria-label="Context">${resolved.chips.map(chip => renderChip(ctx, chip))}</div>
       ${s.editing ? html`<div class="ai-editing">${icon('pencil', { size: 12 })}<span>Editing your last question</span>
@@ -1027,6 +1031,19 @@ function renderPageNotice(ctx) {
       <div class="ai-notice-actions">${button({ label: 'Allow and ask', variant: 'primary', size: 'sm', action: 'ai.page-allow' })}
         ${button({ label: 'Ask without the page', variant: 'ghost', size: 'sm', action: 'ai.page-skip' })}</div></div>
     ${iconButton({ icon: 'x', label: 'Dismiss', size: 'sm', action: 'ai.page-dismiss' })}
+  </div>`;
+}
+
+// A question sent with no model connected: where to connect one, or which app can take the question instead. handoffs:
+// the app buttons, when the setup (which lists them) is not on screen because a chat is open.
+const MODEL_NOTICE = 'Connect a model to ask here, or open your question in another app.';
+function renderModelNotice({ handoffs = true } = {}) {
+  return html`<div class="ai-notice" data-key="ai.model-notice">
+    ${icon('plug', { size: 16 })}
+    <div class="ai-notice-text"><p>${MODEL_NOTICE}</p>
+      <div class="ai-notice-actions">${button({ label: 'Connect a model', variant: 'primary', size: 'sm', action: 'ai.settings' })}
+        ${handoffs ? HANDOFFS.map(target => button({ label: `Ask ${target.label}`, iconRight: 'external-link', variant: 'ghost', size: 'sm', action: 'ai.handoff', data: { target: target.id } })) : ''}</div></div>
+    ${iconButton({ icon: 'x', label: 'Dismiss', size: 'sm', action: 'ai.model-notice-dismiss' })}
   </div>`;
 }
 
@@ -1879,6 +1896,7 @@ registerActions({
     submit(ctx, { question: notice.question, scope: { ...notice.scope, page: { ...notice.scope.page, text: '' } }, replace: notice.replaceFrom });
   },
   'ai.page-dismiss': ({ ctx }) => { st(ctx).pagePermission = null; ctx.render(); },
+  'ai.model-notice-dismiss': ({ ctx }) => { st(ctx).modelNotice = false; ctx.render(); ctx.nextFrame(() => composer()?.focus({ preventScroll: true })); },
   'ai.proposal-review': ({ ctx, data }) => {
     const ui = proposalUi.get(data.id);
     if (!ui) return;

@@ -7,7 +7,7 @@
 import { html, cx, plural, safeHref, safeSrc } from './html.js';
 import { icon } from './icons.js';
 import { button, iconButton, segmented, select, field, input, badge, spinner, emptyState, kbd, fileSize, relativeDate, shortDate } from './components.js';
-import { registerDialog } from './overlay.js';
+import { registerDialog, focusOrigin, refocus } from './overlay.js';
 import { registerActions, registerShortcuts, registerMount, listShortcuts } from './runtime.js';
 import { renderCollectionPickerTrigger } from './pickers.js';
 import { navToggle } from './sidebar.js';
@@ -297,7 +297,8 @@ const drafts = { bridgeUrl: null, bridgeToken: '', raindropToken: '' };
 let connectDraft = { apiKey: '', baseUrl: '', label: '', workspaceId: '', defaultModel: '' };
 // mounted: a Settings page is on screen. pausedHere: sync was paused in this window without a stored setting
 // (integrations.setBridgeEnabled is missing). pending: work to do once the page has loaded (open a provider, scroll to a row).
-const live = { offAi: null, offIndex: null, tick: 0, loginTimer: 0, mounted: false, pausedHere: false, searchTimer: 0, engineSettled: false, pending: { providerId: '', anchor: '' } };
+// returnTo: what had focus when Settings opened over the side panel (the More button), focused again when it closes.
+const live = { offAi: null, offIndex: null, tick: 0, loginTimer: 0, mounted: false, pausedHere: false, searchTimer: 0, engineSettled: false, pending: { providerId: '', anchor: '' }, returnTo: null };
 
 const settingsOf = ctx => ctx.library?.settings || {};
 const version = () => { try { return globalThis.chrome?.runtime?.getManifest?.()?.version || '0.4.0'; } catch { return '0.4.0'; } };
@@ -426,6 +427,7 @@ export function openSettings(ctx, section = 'general', options = {}) {
   ui.query = '';
   live.pending = { providerId: options?.providerId || '', anchor: options?.anchor || '' };
   if (ctx.env?.isSidepanel) {
+    if (ctx.state.panel?.kind !== 'settings') live.returnTo = focusOrigin();
     ui.section = id;
     // The side panel starts on the section list unless a specific section was asked for.
     ui.list = !explicit || id === 'general';
@@ -440,6 +442,14 @@ export function openSettings(ctx, section = 'general', options = {}) {
   const view = id === 'general' ? 'settings' : settingsView(id);
   if (ctx.state.view === view) ctx.render(); else ctx.navigate(view);
   afterOpen(ctx);
+}
+
+// Closing Settings in the side panel puts focus back where it was before Settings opened, else on the panel's content.
+function closeSidePanel(ctx) {
+  const back = live.returnTo;
+  live.returnTo = null;
+  ctx.closePanel();
+  ctx.nextFrame(() => { if (!refocus(back)) document.getElementById('main')?.focus({ preventScroll: true }); });
 }
 
 function afterOpen(ctx) {
@@ -1377,7 +1387,7 @@ registerDialog(CONNECT, renderConnect, { size: 'md', className: 'settings-connec
 
 registerActions({
   'settings.close': ({ ctx }) => {
-    if (ctx.env.isSidepanel) { ctx.closePanel(); return; }
+    if (ctx.env.isSidepanel) { closeSidePanel(ctx); return; }
     ctx.navigate('dashboard');
   },
   'settings.section': ({ ctx, event, data: payload }) => {
@@ -1391,7 +1401,7 @@ registerActions({
     const ui = uiState(ctx);
     if (ui.query) return setQuery(ctx, '');
     if (!ui.list) return backToList(ctx);
-    ctx.closePanel();
+    closeSidePanel(ctx);
     return undefined;
   },
   'settings.key': ({ event }) => { moveInRadioGroup(event); },

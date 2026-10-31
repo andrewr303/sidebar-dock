@@ -108,6 +108,42 @@ test('newStickyInput and createSticky defaults', async () => {
   assert.equal(empty.sticky.color, 'yellow');
 });
 
+test('createSticky opens the Sticky notes view from a full tab that shows no sticky notes', async () => {
+  const visits = [];
+  const make = (view, env = {}) => ({
+    state: { view }, env, select: { live: () => [] }, library: { settings: {} },
+    store: { saveItem: async value => normalizeItem(value) }, render() {}, toast() {}, navigate: next => visits.push(next),
+  });
+  await createSticky(make('all'));
+  assert.deepEqual(visits, ['stickies'], 'All items has no sticky surface: the corkboard opens');
+  await createSticky(make('stickies'));
+  await createSticky(make('dashboard'));
+  await createSticky(make('inbox'), { focus: false });
+  assert.deepEqual(visits, ['stickies'], 'the dashboard and the corkboard show the note where it is; focus: false stays put');
+});
+
+test('a new sticky takes focus even when its editor mounted before the save returned', async () => {
+  const saved = globalThis.document;
+  const savedCss = globalThis.CSS;
+  const focused = [];
+  const editors = [];
+  const area = id => ({ dataset: { stickyText: id }, offsetParent: {}, value: '', closest: () => null, focus() { focused.push(id); }, setSelectionRange() {} });
+  globalThis.CSS = { escape: value => String(value) };
+  globalThis.document = { querySelectorAll: selector => editors.filter(el => selector.includes(`"${el.dataset.stickyText}"`)) };
+  try {
+    const ctx = {
+      state: { view: 'stickies' }, env: {}, select: { live: () => [] }, render() {},
+      // The library's change event wins the race: the editor is on the page before saveItem resolves.
+      store: { saveItem: async value => { const item = normalizeItem({ ...value, id: 'race-1' }); editors.push(area(item.id)); return item; } },
+    };
+    await createSticky(ctx);
+    assert.deepEqual(focused, ['race-1']);
+  } finally {
+    globalThis.document = saved;
+    globalThis.CSS = savedCss;
+  }
+});
+
 test('a sticky keeps its first line as the title unless it was given a title of its own', () => {
   const note = { title: 'Groceries', content: 'Groceries\nEggs' };
   assert.equal(stickyTitleAfterEdit(note, 'Shopping\nEggs'), 'Shopping');

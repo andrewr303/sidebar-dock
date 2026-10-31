@@ -54,7 +54,8 @@
 .asst-heading { display: flex; align-items: center; gap: var(--space-4); flex: 1; min-width: 0; }
 .asst-title {
   flex: 0 1 auto;
-  min-width: 0;
+  /* A floor, so the chat name never shrinks to a sliver beside the model badge. */
+  min-width: 6ch;
   margin: 0;
   color: var(--fg-default);
   font-size: var(--text-md); font-weight: var(--weight-semibold);
@@ -108,9 +109,17 @@
 .asst-model[aria-expanded="true"] { background: var(--bg-active); color: var(--fg-default); }
 .asst-model.is-missing { background: var(--warning-soft); color: var(--warning); }
 .asst-model.is-missing > .icon { color: currentColor; }
+/* Its tooltip only repeats the label, so it shows once the label is gone (below). */
+.asst-model.is-missing::after { content: none; }
 /* The composer has its own model picker, so a narrow header drops the badge first. */
 @container asst-center (max-width: 520px) {
   .asst-model:not(.is-missing) { display: none; }
+}
+/* "Connect a model" stays, as its plug icon (named by aria-label, with the tooltip), so the chat name keeps its room. */
+@container asst-center (max-width: 440px) {
+  .asst-model.is-missing { padding-inline: var(--space-3); }
+  .asst-model.is-missing .asst-model-label { display: none; }
+  .asst-model.is-missing::after { content: attr(data-tooltip); }
 }
 
 /* ---------- Empty state: greeting, quick scopes, suggestions ----------
