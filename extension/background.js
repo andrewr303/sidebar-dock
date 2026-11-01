@@ -26,6 +26,13 @@
  *   getFullPageCaptureJob { jobId? }, openLibrary | still:open-library { itemId? },
  *   openSidePanel | still:open-sidepanel { windowId? } -> { opened, windowId }, newNote | still:new-note,
  *   importBrowserBookmarks
+ *   still:snapshots          { op: 'list'|'create'|'restore'|'delete', args[] } -> lib/storage/snapshots.js results
+ *
+ * Storage safety (lib/storage/): on every worker start the snapshot gate compares the manifest version with
+ * still.meta.v1.lastVersion and, when it changed, snapshots all Still data (reason 'update') before any library operation
+ * is served (the store awaits the gate). A library migration snapshots first ('before-migration'); the daily alarm
+ * 'still:snapshot-daily' snapshots only when data changed since the last snapshot (marked by the store's onCommit hook
+ * and by storage changes to other Still keys).
  *
  * Broadcasts to extension pages (runtime.sendMessage; nobody listening is fine):
  *   still:full-page-progress { jobId, status, ... }
@@ -45,8 +52,19 @@ import {
   normalizeRecentCollections, PAGE_TEXT_LIMIT, CHOOSE_MENU_ID, SEPARATOR_MENU_ID, INBOX_MENU_ID,
 } from './lib/capture.js';
 import { assertCaptureTab, captureRateLimiter, captureFullPagePixels, checkCaptureCancelled, pngDataUrlBlob } from './lib/full-page-capture.js';
+import { configureSnapshotWorker, handleSnapshotRequest, isSnapshotKey, SNAPSHOT_ALARM, SNAPSHOT_MESSAGE } from './lib/storage/snapshots.js';
+import { LIBRARY_SCHEMA_VERSION, libraryVersion } from './lib/storage/migrations.js';
 
-configureStoreWorker();
+// The worker owns snapshots and the library. Store operations wait for the startup snapshot gate (set below once the
+// extension APIs exist); a failed snapshot is logged and never blocks the library.
+const snapshots = configureSnapshotWorker();
+let startupGate = Promise.resolve(null);
+const warnSnapshot = error => console.warn('Still snapshot:', error?.message || String(error));
+configureStoreWorker({
+  ready: () => startupGate,
+  onCommit: () => { snapshots.markDirty().catch(warnSnapshot); },
+  beforeMigration: () => snapshots.create('before-migration'),
+});
 
 const api = globalThis.chrome;
 let visibleScreenshotJobs = 0;
@@ -70,7 +88,7 @@ const MENU_ITEMS = [
 ];
 const SAVE_TO_MENUS = { page: 'still-save-page-to', link: 'still-save-link-to', image: 'still-save-image-to' };
 const CAPTURE_MESSAGES = ['captureCurrent', 'saveCurrentTab', 'still:capture-current'];
-const MESSAGE_TYPES = ['still:store', ...CAPTURE_MESSAGES, 'captureScreenshot', 'still:capture-screenshot', 'captureFullPage',
+const MESSAGE_TYPES = ['still:store', SNAPSHOT_MESSAGE, ...CAPTURE_MESSAGES, 'captureScreenshot', 'still:capture-screenshot', 'captureFullPage',
   'cancelFullPageCapture', 'getFullPageCaptureJob', 'openLibrary', 'still:open-library', 'openSidePanel', 'still:open-sidepanel',
   'newNote', 'still:new-note', 'importBrowserBookmarks', 'saveTabs', 'getActiveTab', 'getPageContext', 'listTabs'];
 
@@ -86,6 +104,7 @@ function later(task, delay) {
 }
 
 const wait = delay => new Promise(resolve => setTimeout(resolve, delay));
+const STARTUP_GATE_MS = 20000;
 
 function reportError(error) {
   console.error('Still:', error?.message || String(error));
@@ -603,15 +622,26 @@ export async function handleAlarm(alarm) {
     }
     return;
   }
+  if (alarm.name === SNAPSHOT_ALARM) { await startupGate; await snapshots.daily(); return; }
   if (!alarm.name.startsWith(REMINDER_PREFIX)) return;
   const id = alarm.name.slice(REMINDER_PREFIX.length);
-  const state = await loadLibrary();
-  const item = state.items.find(value => value.id === id);
+  // Read storage directly: a seedless loadLibrary() would persist an empty library when none exists yet.
+  const state = api?.storage?.local ? (await api.storage.local.get(STORAGE_KEY))[STORAGE_KEY] : libraryCache;
+  // A library from a newer build cannot record the notification here, so it would repeat on every start: leave it.
+  if (!state || libraryVersion(state) > LIBRARY_SCHEMA_VERSION) return;
+  const item = Array.isArray(state.items) ? state.items.find(value => value?.id === id) : null;
   if (!item || item.deletedAt || !item.reminderAt || item.reminderNotifiedAt) return;
   if (new Date(item.reminderAt).getTime() > Date.now() + 1000) return;
   await api.notifications.create(`still:item:${id}`, { type: 'basic', iconUrl: 'icons/icon128.png', title: item.title,
     message: item.excerpt || 'A little reminder from your Still library.', priority: 1 });
   await updateItem(id, { reminderNotifiedAt: new Date().toISOString() });
+}
+
+// A periodic alarm keeps its schedule across worker restarts; re-creating it would restart the 24 h countdown.
+async function ensureSnapshotAlarm() {
+  if (!api?.alarms?.create) return;
+  const alarms = (await api.alarms.getAll?.()) || [];
+  if (!alarms.some(alarm => alarm?.name === SNAPSHOT_ALARM)) await api.alarms.create(SNAPSHOT_ALARM, { periodInMinutes: 1440 });
 }
 
 async function importBrowserBookmarks() {
@@ -638,6 +668,7 @@ export async function handleMessage(message, sender) {
   if (!message || typeof message !== 'object') throw new Error('Invalid request.');
   const input = messageInput(message);
   if (message.type === 'still:store') return handleStoreOperation(input.operation, input.args);
+  if (message.type === SNAPSHOT_MESSAGE) return handleSnapshotRequest(input.op, input.args, snapshots);
   if (CAPTURE_MESSAGES.includes(message.type)) return captureCurrentTab(input);
   if (['captureScreenshot', 'still:capture-screenshot'].includes(message.type)) return captureScreenshot(await targetTab(input));
   if (message.type === 'captureFullPage') return captureFullPage(targetTab(input), { jobId: input.jobId });
@@ -690,10 +721,20 @@ if (api?.runtime?.onMessage) {
     handleMessage(message, sender).then(result => respond({ ok: true, result }), error => respond({ ok: false, error: error.message }));
     return true;
   });
-  api.runtime.onInstalled.addListener(() => {
+  // Snapshot gate first: nothing below may change data before an update snapshot exists. Bounded, so a stalled
+  // IndexedDB can delay the library by at most STARTUP_GATE_MS, never lock it.
+  startupGate = Promise.race([snapshots.startup(), new Promise((resolve, reject) => {
+    later(() => reject(new Error('the update snapshot is taking too long')), STARTUP_GATE_MS);
+  })]).catch(error => { warnSnapshot(error); return null; });
+  ensureSnapshotAlarm().catch(warnSnapshot);
+  api.runtime.onInstalled.addListener(details => {
     installMenus().then(readLibrary).then(library => installCollectionMenus(library, { force: true })).catch(reportError);
     Promise.resolve(api.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })).catch(reportError);
-    // The UI seeds a new library; installing does not overwrite existing captures.
+    // The UI seeds a new library; installing does not overwrite existing captures. An update's previousVersion is added
+    // to the snapshot the gate took for it.
+    if (details?.reason === 'update' && details.previousVersion) {
+      startupGate.then(summary => snapshots.annotate(summary?.id, { previousVersion: details.previousVersion })).catch(warnSnapshot);
+    }
   });
   api.runtime.onStartup.addListener(() => {
     Promise.resolve(api.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })).catch(reportError);
@@ -708,6 +749,10 @@ if (api?.runtime?.onMessage) {
     api.notifications.clear(id);
   });
   api.storage?.onChanged?.addListener((changes, area) => { if (area === 'local' && changes[RECENT_COLLECTIONS_KEY]) scheduleLibraryRefresh(); });
+  // Dashboard, AI and other Still keys change outside the library store: they also make the next daily snapshot due.
+  api.storage?.onChanged?.addListener((changes, area) => {
+    if (area === 'local' && Object.keys(changes).some(isSnapshotKey)) snapshots.markDirty().catch(warnSnapshot);
+  });
   api.permissions?.onAdded?.addListener(change => { if (change?.permissions?.includes('tabs')) startTabTracking(); });
   api.permissions?.onRemoved?.addListener(change => { if (change?.permissions?.includes('tabs')) stopTabTracking(); });
   subscribe(state => {

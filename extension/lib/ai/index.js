@@ -11,6 +11,7 @@ import { createVectorStore } from './vector-store.js';
 import { createIndexer } from './indexer.js';
 import { createSearch } from './search.js';
 import { createAssistant } from './assistant.js';
+import { undoChanges } from './tools.js';
 import { createTransforms } from './transforms.js';
 import { createConversationStore } from './conversations.js';
 import { createImports } from './imports.js';
@@ -23,21 +24,20 @@ export { listConnections, saveConnection, deleteConnection, testConnection, list
 export { streamChat } from './chat.js';
 export { handoffUrl, buildHandoffPrompt, handoffPlan, HANDOFF_TARGETS } from './handoff.js';
 
-const runtime = { store: libraryStore, getLibrary: null, snapshot: null, requestBridge, dispose: null };
+const runtime = { store: libraryStore, getLibrary: null, snapshot: null, requestBridge, dispose: null, dashboard: null };
 let services = null;
 
 async function currentLibrary() {
   if (runtime.getLibrary) return runtime.getLibrary();
   return runtime.snapshot ||= await runtime.store.loadLibrary();
 }
-// Resolved at call time so init() can swap in the app's store (ctx.store) after the engine was created.
-const store = {
-  bulkUpdateItems: (...args) => runtime.store.bulkUpdateItems(...args),
-  createCollection: (...args) => runtime.store.createCollection(...args),
-  saveItem: (...args) => runtime.store.saveItem(...args),
-  deleteItem: (...args) => runtime.store.deleteItem(...args),
-  deleteCollection: (...args) => runtime.store.deleteCollection(...args),
-};
+// Resolved at call time so init() can swap in the app's store (ctx.store) after the engine was created. These are the
+// lib/store.js operations the assistant's proposals apply and undo with; loadLibrary is the worker's authoritative copy,
+// read while the app's snapshot still lags behind a change the assistant just applied.
+const STORE_METHODS = ['bulkUpdateItems', 'createCollection', 'saveItem', 'deleteItem', 'deleteCollection', 'updateItem', 'restoreItem', 'permanentlyDeleteItem',
+  'updateCollection', 'moveCollection', 'mutateTags', 'loadLibrary'];
+const store = Object.fromEntries(STORE_METHODS.map(name => [name, (...args) => runtime.store[name](...args)]));
+const dashboardAdapter = value => value && typeof value.describe === 'function' && typeof value.addCollectionWidget === 'function' ? value : null;
 const aiSettings = () => connections.getAiSettings();
 
 function engine() {
@@ -48,7 +48,7 @@ function engine() {
   const indexer = createIndexer({ vectorStore, embedder, getLibrary: currentLibrary, getSettings: aiSettings });
   const search = createSearch({ getLibrary: currentLibrary, vectorStore, isSemanticReady: () => indexer.isReady(), embedQuery: (query, options) => indexer.embedQuery(query, options) });
   const assistant = createAssistant({ streamChat: chatStream, resolveConnection: connections.resolveConnection, modelInfo: connections.modelInfo, getAiSettings: aiSettings,
-    getLibrary: currentLibrary, store, searchLibrary: search.searchLibrary, conversations });
+    getLibrary: currentLibrary, store, searchLibrary: search.searchLibrary, conversations, dashboard: () => runtime.dashboard });
   const transforms = createTransforms({ streamChat: chatStream, resolveConnection: connections.resolveConnection, resolveChatTarget: connections.resolveChatTarget,
     getAiSettings: aiSettings, getLibrary: currentLibrary });
   const imports = createImports({ streamChat: chatStream, resolveChatTarget: connections.resolveChatTarget, resolveConnection: connections.resolveConnection, getProvider: catalogProvider });
@@ -64,6 +64,8 @@ export async function setAiSettings(patch) {
 }
 
 export const runAssistant = options => engine().assistant.runAssistant(options);
+/** Undoes an applied proposal from its saved plain-data record (proposal.undo), e.g. after a reload lost the live undo. */
+export const undoProposal = undo => undoChanges(store, undo, { dashboard: runtime.dashboard });
 export const transformText = options => engine().transforms.transformText(options);
 export const suggestForSave = input => engine().transforms.suggestForSave(input);
 export const searchLibrary = (query, options) => engine().search.searchLibrary(query, options);
@@ -104,12 +106,15 @@ export async function semanticSearchAvailable() {
 }
 
 /**
- * Called once from app.js: init({ store, getLibrary, integrations, onLibraryChange }).
+ * Called once from app.js: init({ store, getLibrary, integrations, onLibraryChange, dashboard }).
  * onLibraryChange(listener) -> unsubscribe defaults to store.subscribe. Indexing starts shortly after boot when enabled.
+ * dashboard (optional): { describe(), addCollectionWidget({ collectionId, boardId }), removeWidget(widgetId) }; it lets the
+ * assistant see the dashboard and show a collection on it. Without it those tools are not offered.
  */
-export function init({ store: appStore, getLibrary, integrations, onLibraryChange } = {}) {
+export function init({ store: appStore, getLibrary, integrations, onLibraryChange, dashboard } = {}) {
   runtime.dispose?.();
   if (appStore) runtime.store = appStore;
+  if (dashboard !== undefined) runtime.dashboard = dashboardAdapter(dashboard);
   if (typeof getLibrary === 'function') runtime.getLibrary = getLibrary;
   if (typeof integrations?.requestBridge === 'function') runtime.requestBridge = integrations.requestBridge;
   if (integrations) connections.configureConnections({ integrations });

@@ -12,7 +12,8 @@ import { registerActions, registerShortcuts, registerMount, listShortcuts } from
 import { renderCollectionPickerTrigger } from './pickers.js';
 import { navToggle } from './sidebar.js';
 import * as integrations from '../lib/integrations.js';
-import { createFullBackup, importPortableFile, exportBookmarkHtml, exportNotesMarkdown } from '../lib/portability.js';
+import { createFullBackup, serializeBackup, importPortableFile, exportBookmarkHtml, exportNotesMarkdown, exportItemsCsv, exportChatsMarkdown } from '../lib/portability.js';
+import { listSnapshots, createSnapshot, restoreSnapshot, deleteSnapshot } from '../lib/storage/snapshots.js';
 import { REFERENCE_ASSETS } from '../lib/references.js';
 import { SETTINGS_SECTIONS, normalizeSection, isSection, sectionById, sectionFromView, settingsView, groupSections, adjacentSections,
   searchTerms, matchSections } from './settings/catalog.js';
@@ -292,6 +293,8 @@ const data = {
   connections: null, aiSettings: null, bridge: null, aiError: '', index: null,
   clients: null, clientsError: '',
   importJob: null, raindrop: null, login: null,
+  // snapshots: { list, error } once loaded; backupJob: { warnings } after a backup that left something out.
+  snapshots: null, backupJob: null,
 };
 const drafts = { bridgeUrl: null, bridgeToken: '', raindropToken: '' };
 let connectDraft = { apiKey: '', baseUrl: '', label: '', workspaceId: '', defaultModel: '' };
@@ -368,8 +371,15 @@ async function loadClients(ctx) {
   ctx.render();
 }
 
+/** Loads the automatic snapshot list (newest first) for Library & backup; re-renders when Settings is on screen. */
+export async function loadSnapshots(ctx) {
+  try { data.snapshots = { list: await listSnapshots(), error: '' }; }
+  catch (error) { data.snapshots = { list: data.snapshots?.list || [], error: error.message || 'Snapshots could not load.' }; }
+  if (ctx && live.mounted) ctx.render();
+}
+
 async function refresh(ctx, { bridge = false } = {}) {
-  await Promise.allSettled([loadIntegration(ctx), loadStorage(), loadCommands(), loadAi(ctx, { refresh: bridge })]);
+  await Promise.allSettled([loadIntegration(ctx), loadStorage(), loadCommands(), loadSnapshots(), loadAi(ctx, { refresh: bridge })]);
   await loadClients(ctx);
   ctx.render();
 }
@@ -530,7 +540,7 @@ function renderHeader(ctx, { surface, state, section }) {
       <div class="search-field settings-search" role="search">
         ${icon('search', { size: 16, className: 'search-field-icon' })}
         <input class="search-field-input" type="search" id="settings-search" data-focus-key="settings-search" value="${ui.query}" placeholder="Search settings"
-          aria-label="Search settings" aria-controls="settings-content" autocomplete="off" spellcheck="false" data-view-search
+          aria-label="Search settings" aria-controls="settings-content" aria-keyshortcuts="/" autocomplete="off" spellcheck="false" data-view-search
           data-input="settings.search" data-keydown="settings.search-key">
         ${ui.query ? iconButton({ icon: 'x', label: 'Clear search', action: 'settings.search-clear', size: 'sm', className: 'search-field-clear' }) : surface === 'full' ? kbd('/') : ''}
       </div>
@@ -661,6 +671,9 @@ function renderGeneral(ctx) {
 
 /* ------------------------------------------------------------------ Library & backup */
 
+// Library & backup is exported for tests (tests/settings-ui.test.mjs renders it with a stub ctx).
+export function renderLibrarySection(ctx) { return renderLibrary(ctx); }
+
 function renderLibrary(ctx) {
   const library = ctx.library || { items: [] };
   const counts = ctx.select?.counts?.() || {};
@@ -670,9 +683,11 @@ function renderLibrary(ctx) {
   const job = data.importJob;
   return html`
     ${group({ title: 'Backup', body: () => card([
-      row({ label: 'Full backup', keywords: 'export download json', description: 'Items, collections, notes, highlights and files in one JSON file. AI keys, accounts and device settings are not included.',
+      row({ label: 'Full backup', keywords: 'export download json everything settings dashboard wallpaper chats conversations ai connections',
+        description: 'Everything in one JSON file: items, notes, highlights, collections and files, your settings and wallpaper, dashboards and widgets, assistant chats and AI connections. API keys, account tokens and passwords are never included.',
         control: button({ label: 'Download backup', icon: 'download', size: 'sm', action: 'settings.backup', loading: isBusy('backup') }) }),
-      row({ label: 'Restore or bring in a file', keywords: 'import upload html csv bookmarks', description: 'A Still backup, a bookmarks HTML file from any browser or Raindrop, or a CSV with a url column. Items in the file are added; items that already exist are replaced by the file’s copy.',
+      data.backupJob && !isSearching() ? backupStatus(data.backupJob) : '',
+      row({ label: 'Restore or bring in a file', keywords: 'import upload html csv bookmarks restore', description: 'A Still backup, a bookmarks HTML file from any browser or Raindrop, or a CSV with a url column. Nothing on this device is deleted: where the file and this device have the same item, the newer copy is kept. Still saves a snapshot first, so you can go back.',
         control: button({ label: 'Choose file', icon: 'upload', size: 'sm', action: 'settings.import-choose', loading: !!job?.running }) }),
       job && !isSearching() ? importStatus(job) : '',
     ]) })}
@@ -681,7 +696,12 @@ function renderLibrary(ctx) {
         control: button({ label: 'Export HTML', icon: 'file-down', size: 'sm', action: 'settings.export-html', loading: isBusy('export-html') }) }),
       row({ label: 'Notes and highlights', keywords: 'markdown export', description: 'Every note, personal note and highlight in one Markdown file.',
         control: button({ label: 'Export Markdown', icon: 'file-down', size: 'sm', action: 'settings.export-notes', loading: isBusy('export-notes') }) }),
+      row({ label: 'Spreadsheet', keywords: 'csv excel sheets numbers export', description: 'Every item with its link, title, tags, note, type, collection and dates in a CSV file. Still can bring the file back in.',
+        control: button({ label: 'Export CSV', icon: 'file-spreadsheet', size: 'sm', action: 'settings.export-csv', loading: isBusy('export-csv') }) }),
+      row({ label: 'Assistant chats', keywords: 'ai conversations chat history markdown export', description: 'Every assistant conversation in one Markdown file.',
+        control: button({ label: 'Export chats', icon: 'messages-square', size: 'sm', action: 'settings.export-chats', loading: isBusy('export-chats') }) }),
     ]) })}
+    ${renderSnapshots(ctx)}
     ${group({ title: 'Bring in from other apps', keywords: 'import', body: () => card([
       row({ lead: providerMark('chrome', 32), label: 'Chrome bookmarks', keywords: 'import browser', description: ctx.env.isExtension
         ? 'Copies your Chrome bookmarks into Still and keeps folders as collections. Chrome asks for access first.'
@@ -698,6 +718,33 @@ function renderLibrary(ctx) {
     ]) })}`;
 }
 
+/** What an import did, in words: { title, lines, notes, summary } for the status callout (lines, notes) and the toast. */
+export function importReport(result = {}, name = 'the file') {
+  const lines = [];
+  const items = result.library?.items;
+  if (items) {
+    if (items.added) lines.push(`${plural(items.added, 'item')} added.`);
+    if (items.updated) lines.push(`${plural(items.updated, 'item')} updated to the file’s newer copy.`);
+    if (items.kept) lines.push(`${plural(items.kept, 'item')} already here kept as ${items.kept === 1 ? 'it is' : 'they are'}: this device’s copy is the same or newer.`);
+    if (items.tombstoned) lines.push(`${plural(items.tombstoned, 'item')} you deleted forever stayed deleted.`);
+  } else if (result.items) lines.push(`${plural(result.items, 'item')} added.`);
+  if (result.files) lines.push(`${plural(result.files, 'file')} restored.`);
+  if (result.settings) lines.push('Settings restored.');
+  if (result.boards) lines.push(`${plural(result.boards, 'dashboard')} restored.`);
+  const chats = (result.conversations?.added || 0) + (result.conversations?.updated || 0);
+  if (chats) lines.push(`${plural(chats, 'assistant chat')} restored.`);
+  if (result.aiConnections) lines.push(`${plural(result.aiConnections, 'AI connection')} added.`);
+  if (!lines.length && !(result.warnings || []).length) lines.push('Nothing new: everything in the file is already here.');
+  const notes = [...(result.notes || [])];
+  if (result.snapshotId) notes.push('A snapshot of your data from just before is listed under Automatic snapshots, if you want to go back.');
+  const parts = [plural(result.items || 0, 'item'), result.files && plural(result.files, 'file'), result.boards && plural(result.boards, 'dashboard'),
+    chats && plural(chats, 'chat')].filter(Boolean);
+  return { title: `Brought in ${name}`, lines, notes, summary: `Brought in ${parts.join(', ')}` };
+}
+
+const dismiss = action => button({ label: 'Dismiss', size: 'sm', variant: 'ghost', action });
+const bulletList = lines => html`<ul class="settings-list">${lines.map(line => html`<li>${line}</li>`)}</ul>`;
+
 function importStatus(job) {
   if (job.running) {
     return html`<div class="settings-row is-stacked settings-job" role="status">
@@ -705,13 +752,62 @@ function importStatus(job) {
   }
   if (job.error) {
     return html`<div class="settings-row is-stacked settings-job">${callout({ tone: 'danger', title: `${job.name} was not brought in`, body: job.error, live: true,
-      actions: button({ label: 'Dismiss', size: 'sm', variant: 'ghost', action: 'settings.import-dismiss' }) })}</div>`;
+      actions: dismiss('settings.import-dismiss') })}</div>`;
   }
   const result = job.result || {};
+  const report = importReport(result, job.name);
   return html`<div class="settings-row is-stacked settings-job">${callout({ tone: result.warnings?.length ? 'warning' : 'success', live: true,
-    title: `Added ${plural(result.items || 0, 'item')}${result.files ? ` and ${plural(result.files, 'file')}` : ''} from ${job.name}`,
-    body: result.warnings?.length ? html`<ul class="settings-list">${result.warnings.map(warning => html`<li>${warning}</li>`)}</ul>` : '',
-    actions: button({ label: 'Dismiss', size: 'sm', variant: 'ghost', action: 'settings.import-dismiss' }) })}</div>`;
+    title: report.title, body: bulletList([...report.lines, ...(result.warnings || []), ...report.notes]), actions: dismiss('settings.import-dismiss') })}</div>`;
+}
+
+function backupStatus(job) {
+  return html`<div class="settings-row is-stacked settings-job">${callout({ tone: 'warning', live: true, title: 'Backup downloaded, with these notes',
+    body: bulletList(job.warnings), actions: dismiss('settings.backup-dismiss') })}</div>`;
+}
+
+// Automatic snapshots (lib/storage/snapshots.js): device-local copies the service worker keeps; listing never loads data.
+const SNAPSHOT_PREVIEW = 5;
+const SNAPSHOT_KINDS = { update: 'Update', daily: 'Daily', manual: 'Manual', 'before-restore': 'Before restore', 'before-import': 'Before import', 'before-migration': 'Before upgrade' };
+const snapshotWhen = iso => {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? 'Unknown date' : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+};
+/** One line about why a snapshot was taken and what it holds. */
+export function snapshotDetails(snapshot = {}) {
+  const c = snapshot.counts || {};
+  const why = { update: `Still updated${snapshot.previousVersion ? ` from ${snapshot.previousVersion}` : ''}${snapshot.extensionVersion ? ` to ${snapshot.extensionVersion}` : ''}`,
+    daily: 'Daily copy', manual: 'Taken by you', 'before-restore': 'Taken before a restore', 'before-import': 'Taken before an import',
+    'before-migration': 'Taken before a data upgrade' }[snapshot.reason] || 'Snapshot';
+  const version = snapshot.reason !== 'update' && snapshot.extensionVersion ? ` · Still ${snapshot.extensionVersion}` : '';
+  return `${why}${version} · ${plural(c.items || 0, 'item')}, ${plural(c.collections || 0, 'collection')}, ${plural(c.boards || 0, 'dashboard')}, ${plural(c.conversations || 0, 'chat')}${snapshot.bytes ? ` · ${fileSize(snapshot.bytes)}` : ''}`;
+}
+
+function snapshotRow(snapshot) {
+  const when = snapshotWhen(snapshot.createdAt);
+  return row({ className: 'settings-snapshot', keywords: 'snapshot restore', description: snapshotDetails(snapshot),
+    label: html`${when}${badge({ label: SNAPSHOT_KINDS[snapshot.reason] || 'Snapshot', tone: snapshot.reason === 'manual' ? 'accent' : 'neutral' })}`,
+    control: html`${button({ label: 'Restore', icon: 'rotate-ccw', size: 'sm', action: 'settings.snapshot-restore', data: { id: snapshot.id }, loading: isBusy(`snapshot:${snapshot.id}`) })}
+      ${iconButton({ icon: 'trash-2', label: `Delete the snapshot from ${when}`, size: 'sm', variant: 'danger', action: 'settings.snapshot-delete', data: { id: snapshot.id } })}` });
+}
+
+function renderSnapshots(ctx) {
+  const state = data.snapshots;
+  const list = state?.list || [];
+  const open = disclosed(ctx, 'snapshots');
+  // The newest few show; older ones open under a disclosure (search shows every match).
+  const shown = isSearching() ? list : list.slice(0, SNAPSHOT_PREVIEW), older = isSearching() ? [] : list.slice(SNAPSHOT_PREVIEW);
+  return group({ title: 'Automatic snapshots', keywords: 'snapshot restore undo history rollback version update copy',
+    description: 'Still saves a copy of your data on this device when it updates, once a day when something changed, and before every restore or import. Snapshots stay on this device only: removing Still or clearing its data deletes them, so keep a downloaded full backup somewhere else too.',
+    actions: button({ label: 'Take a snapshot now', icon: 'camera', size: 'sm', action: 'settings.snapshot-create', loading: isBusy('snapshot-create') }),
+    body: () => card([
+      state?.error && !isSearching() ? html`<div class="settings-row is-stacked">${callout({ tone: 'danger', title: 'Snapshots could not load', body: state.error })}</div>` : '',
+      !state && !isSearching() ? html`<div class="settings-row settings-snapshot-loading" role="status">${spinner({ size: 14 })}<span class="settings-row-desc">Loading snapshots</span></div>` : '',
+      state && !list.length && !state.error ? row({ label: 'No snapshots yet', keywords: 'snapshot', description: 'Still takes the first one at its next update or within a day. Take one now to start.' }) : '',
+      ...shown.map(snapshotRow),
+      older.length && open ? html`<div class="settings-snapshot-older" id="settings-more-snapshots">${older.map(snapshotRow)}</div>` : '',
+      older.length ? html`<div class="settings-row settings-snapshot-more">${disclosure(ctx, 'snapshots',
+        open ? 'Show fewer snapshots' : `Show ${plural(older.length, 'older snapshot')}`)}</div>` : '',
+    ], 'settings-snapshots') });
 }
 
 function raindropStatus(info) {
@@ -1360,7 +1456,10 @@ async function runImport(ctx, file) {
   try {
     const result = await importPortableFile(file, ctx.store);
     data.importJob = { name: file.name || 'the file', result };
-    ctx.toast(`Added ${plural(result.items, 'item')}${result.files ? ` and ${plural(result.files, 'file')}` : ''}${result.boards ? `. Restored ${plural(result.boards, 'dashboard')}` : ''}`, { tone: 'success' });
+    ctx.toast(importReport(result, file.name || 'the file').summary, { tone: result.warnings?.length ? 'warning' : 'success' });
+    // The 'before-import' snapshot joins the list; restored AI connections join AI models.
+    loadSnapshots(ctx);
+    if (result.aiConnections) loadAi(ctx).catch(() => {});
   } catch (error) {
     data.importJob = { name: file.name || 'the file', error: error.message || 'The file could not be read.' };
   }
@@ -1453,10 +1552,17 @@ registerActions({
 
   // Library & backup
   'settings.backup': ({ ctx }) => withBusy(ctx, 'backup', async () => {
-    const snapshot = await createFullBackup(ctx.store);
-    download(JSON.stringify(snapshot, null, 2), `still-backup-${today()}.json`, 'application/json');
-    ctx.toast(`Backup downloaded: ${plural(snapshot.items.length, 'item')}${snapshot.attachments.length ? `, ${plural(snapshot.attachments.length, 'file')}` : ''}`, { tone: 'success' });
+    data.backupJob = null;
+    const backup = await createFullBackup(ctx.store);
+    // The size limit is checked on exactly this text, so the downloaded file can always be restored.
+    download(serializeBackup(backup).text, `still-backup-${today()}.json`, 'application/json');
+    const { counts, warnings } = backup.manifest;
+    data.backupJob = warnings.length ? { warnings } : null;
+    const parts = [plural(counts.items, 'item'), counts.attachments && plural(counts.attachments, 'file'), counts.boards && plural(counts.boards, 'dashboard'),
+      counts.conversations && plural(counts.conversations, 'chat')].filter(Boolean);
+    ctx.toast(`Backup downloaded: ${parts.join(', ')}`, { tone: warnings.length ? 'warning' : 'success' });
   }),
+  'settings.backup-dismiss': ({ ctx }) => { data.backupJob = null; ctx.render(); },
   'settings.import-choose': () => {
     const picker = document.getElementById('import-input');
     if (!picker) throw new Error('The file picker is not available here.');
@@ -1471,6 +1577,46 @@ registerActions({
     download(exportNotesMarkdown(await ctx.store.exportLibrary()), `still-notes-${today()}.md`, 'text/markdown');
     ctx.toast('Notes exported', { tone: 'success' });
   }),
+  'settings.export-csv': ({ ctx }) => withBusy(ctx, 'export-csv', async () => {
+    download(exportItemsCsv(await ctx.store.exportLibrary()), `still-items-${today()}.csv`, 'text/csv');
+    ctx.toast('Items exported as CSV', { tone: 'success' });
+  }),
+  'settings.export-chats': ({ ctx }) => withBusy(ctx, 'export-chats', async () => {
+    const { markdown, count } = await exportChatsMarkdown();
+    if (!count) { ctx.toast('There are no assistant chats to export yet.'); return; }
+    download(markdown, `still-assistant-chats-${today()}.md`, 'text/markdown');
+    ctx.toast(`Exported ${plural(count, 'assistant chat')}`, { tone: 'success' });
+  }),
+  'settings.snapshot-create': ({ ctx }) => withBusy(ctx, 'snapshot-create', async () => {
+    await createSnapshot('manual');
+    await loadSnapshots(ctx);
+    ctx.toast('Snapshot saved on this device', { tone: 'success' });
+  }),
+  'settings.snapshot-restore': async ({ ctx, data: payload }) => {
+    const snapshot = data.snapshots?.list.find(entry => entry.id === payload.id);
+    if (!snapshot) return;
+    const ok = await ctx.confirm({ title: 'Restore this snapshot?', confirmLabel: 'Restore snapshot',
+      body: `Your library, settings, dashboards, assistant chats and AI connections go back to how they were on ${snapshotWhen(snapshot.createdAt)}. Still first saves a snapshot of everything as it is now, so you can switch back from this list.` });
+    if (!ok) return;
+    await withBusy(ctx, `snapshot:${snapshot.id}`, async () => {
+      await restoreSnapshot(snapshot.id);
+      await loadSnapshots(ctx);
+      ctx.toast('Snapshot restored. Reloading Still…', { tone: 'success' });
+      // This page reloads to read the restored data fresh (in the preview build it does not see its own storage
+      // writes); other open Still pages follow storage changes.
+      setTimeout(() => globalThis.location?.reload?.(), 900);
+    });
+  },
+  'settings.snapshot-delete': async ({ ctx, data: payload }) => {
+    const snapshot = data.snapshots?.list.find(entry => entry.id === payload.id);
+    if (!snapshot) return;
+    const ok = await ctx.confirm({ title: 'Delete this snapshot?', confirmLabel: 'Delete snapshot', tone: 'danger',
+      body: `The snapshot from ${snapshotWhen(snapshot.createdAt)} is removed from this device. This cannot be undone.` });
+    if (!ok) return;
+    await deleteSnapshot(snapshot.id);
+    await loadSnapshots(ctx);
+    ctx.toast('Snapshot deleted');
+  },
   'settings.import-chrome': ({ ctx }) => {
     if (!ctx.env.isExtension) throw new Error('Bringing in Chrome bookmarks needs Still installed as an extension.');
     const granted = requestAccess({ permissions: ['bookmarks'] });

@@ -9,7 +9,7 @@ function adapter(seed = { schemaVersion: 1, items: [], collections: [], settings
   const core = createLibraryStore({ read: async () => library, write: async value => { library = value; writes++; } });
   return {
     store: {
-      exportLibrary: () => core.dispatch('exportLibrary'), importLibrary: value => core.dispatch('importLibrary', [value]),
+      exportLibrary: () => core.dispatch('exportLibrary'), importLibrary: (value, options) => core.dispatch('importLibrary', [value, options]),
       async getAttachment(id) { return attachments.get(id); },
       async saveAttachment(file) {
         fileWrites++;
@@ -28,6 +28,8 @@ const fixture = () => ({ schemaVersion: 1, items: [
   { id: 'note', type: 'note', title: 'My thoughts', content: '- [ ] Come back to this', collectionId: 'root', relatedIds: ['source', 'document'] },
   { id: 'document', type: 'file', title: 'Source file', attachmentId: 'original_file', fileName: 'evidence.bin', mime: 'application/octet-stream', size: 6, content: 'A binary source', relatedIds: ['note'] },
 ], collections: [{ id: 'root', name: 'Research & ideas', parentId: '' }, { id: 'nested', name: 'Deeper', parentId: 'root' }], settings: { theme: 'dark', apiToken: 'secret', nested: { credential: 'secret', density: 'compact' }, extras: [{ password: 'secret', label: 'safe' }] } });
+// The library-only parts of a backup: other stores, snapshots and the device id are covered in tests/backup-*.test.mjs.
+const isolated = { dashboard: null, conversations: null, aiConfig: null, snapshot: null, deviceId: null };
 const jsonFile = value => new File([typeof value === 'string' ? value : JSON.stringify(value)], 'still-backup.json', { type: 'application/json' });
 function portableFixture() {
   const value = fixture();
@@ -40,15 +42,19 @@ test('complete backup round-trips binary files, nested collections, notes, highl
   const source = adapter(fixture());
   const bytes = new Uint8Array([0, 1, 255, 127, 10, 13]);
   source.attachments.set('original_file', { blob: new Blob([bytes], { type: 'application/octet-stream' }), name: 'evidence.bin', mime: 'application/octet-stream' });
-  const backup = await createFullBackup(source.store);
+  const backup = await createFullBackup(source.store, isolated);
+  assert.equal(backup.backupVersion, 2);
   assert.equal(backup.attachments.length, 1);
   assert.equal(backup.settings.apiToken, undefined);
   assert.deepEqual(backup.settings.nested, { density: 'compact' });
   assert.deepEqual(backup.settings.extras, [{ label: 'safe' }]);
   assert.equal(backup.items[0].highlights[0].note, 'A personal annotation');
   const target = adapter({ schemaVersion: 1, items: [{ id: 'existing', type: 'note', title: 'Keep me', content: 'Existing local work' }], collections: [], settings: { theme: 'light' } });
-  const result = await importPortableFile(jsonFile(backup), target.store);
-  assert.deepEqual(result, { items: 3, files: 1, warnings: [] });
+  const result = await importPortableFile(jsonFile(backup), target.store, isolated);
+  assert.equal(result.items, 3);
+  assert.equal(result.files, 1);
+  assert.deepEqual(result.warnings, []);
+  assert.deepEqual(result.library.items, { added: 3, updated: 0, kept: 0, tombstoned: 0 });
   assert.equal(target.library.items.find(item => item.id === 'existing').content, 'Existing local work');
   assert.equal(target.library.items.find(item => item.id === 'source').content, 'A note\nwith two lines');
   assert.equal(target.library.items.find(item => item.id === 'source').highlights[0].note, 'A personal annotation');
@@ -57,7 +63,11 @@ test('complete backup round-trips binary files, nested collections, notes, highl
   assert.equal(document.attachmentId, 'restored_1');
   assert.deepEqual(new Uint8Array(await target.attachments.get(document.attachmentId).blob.arrayBuffer()), bytes);
   assert.equal(target.library.collections.find(collection => collection.id === 'nested').parentId, 'root');
-  assert.equal(target.library.settings.theme, 'light');
+  // A full backup brings its settings back (secret-like keys never travel).
+  assert.equal(result.settings, true);
+  assert.equal(target.library.settings.theme, 'dark');
+  assert.equal(target.library.settings.apiToken, undefined);
+  assert.deepEqual(target.library.settings.nested, { density: 'compact' });
 });
 
 test('malformed IDs, URLs, prototype keys, MIME/base64, metadata sizes and cycles fail before any writes', async () => {
@@ -80,11 +90,11 @@ test('malformed IDs, URLs, prototype keys, MIME/base64, metadata sizes and cycle
   for (const mutate of mutations) {
     const data = portableFixture(); mutate(data);
     const target = adapter();
-    await assert.rejects(importPortableFile(jsonFile(data), target.store));
+    await assert.rejects(importPortableFile(jsonFile(data), target.store, isolated));
     assert.equal(target.fileWrites, 0); assert.equal(target.writes, 0); assert.equal(target.attachments.size, 0);
   }
   const target = adapter();
-  await assert.rejects(importPortableFile(jsonFile('{"schemaVersion":1,"items":[],"collections":[],"settings":{"__proto__":{"polluted":true}}}'), target.store), /unsafe object key/);
+  await assert.rejects(importPortableFile(jsonFile('{"schemaVersion":1,"items":[],"collections":[],"settings":{"__proto__":{"polluted":true}}}'), target.store, isolated), /unsafe object key/);
   assert.equal({}.polluted, undefined);
   assert.equal(target.writes, 0);
 });
@@ -97,40 +107,48 @@ test('import rolls back newly restored blobs when a later attachment or final li
   let saves = 0;
   const save = target.store.saveAttachment;
   target.store.saveAttachment = async file => { if (++saves === 2) throw new Error('Disk quota exceeded'); return save(file); };
-  await assert.rejects(importPortableFile(jsonFile(data), target.store), /Disk quota/);
+  await assert.rejects(importPortableFile(jsonFile(data), target.store, isolated), /Disk quota/);
   assert.equal(target.attachments.size, 0); assert.equal(target.writes, 0);
   const original = adapter(fixture());
   const before = structuredClone(original.library);
   original.store.importLibrary = async () => { throw new Error('Library write failed'); };
-  await assert.rejects(importPortableFile(jsonFile(portableFixture()), original.store), /Library write failed/);
+  await assert.rejects(importPortableFile(jsonFile(portableFixture()), original.store, isolated), /Library write failed/);
   assert.equal(original.attachments.size, 0);
   assert.deepEqual(original.library, before);
 });
 
-test('legacy metadata-only imports explain missing bytes and never link to an unrelated local file by ID', async () => {
+test('legacy metadata-only imports explain missing bytes, never link to an unrelated local file by ID, and still back up', async () => {
   const target = adapter();
   target.attachments.set('original_file', { blob: new Blob(['Unrelated existing data']) });
-  const result = await importPortableFile(jsonFile(fixture()), target.store);
+  const result = await importPortableFile(jsonFile(fixture()), target.store, isolated);
   assert.equal(result.files, 0);
   assert.match(result.warnings[0], /metadata only/);
   const document = target.library.items.find(item => item.id === 'document');
   assert.match(document.attachmentId, /^missing_/);
   assert.notEqual(document.attachmentId, 'original_file');
   assert.equal(target.attachments.size, 1);
-  await assert.rejects(createFullBackup(target.store), /original file.*missing/);
+  // The missing file no longer blocks a full backup: the item travels without it and the manifest says so.
+  const backup = await createFullBackup(target.store, isolated);
+  assert.equal(backup.attachments.length, 0);
+  assert.equal(backup.items.find(item => item.id === 'document').attachmentId, document.attachmentId);
+  assert.match(backup.manifest.warnings.join(' '), /1 file could not be found/);
+  const again = adapter();
+  const restored = await importPortableFile(jsonFile(backup), again.store, isolated);
+  assert.equal(restored.items, 3);
+  assert.match(restored.warnings[0], /metadata only/);
 });
 
 test('CSV handles BOM, escaped quotes, commas and multiline notes; invalid later rows leave the library intact', async () => {
   const source = '\uFEFFurl,title,tags,note,excerpt\r\nhttps://example.com,"A ""quoted"", title","design; ideas","Line one\nLine two","An excerpt"\r\n';
   const target = adapter();
-  const result = await importPortableFile(new File([source], 'bookmarks.csv'), target.store);
+  const result = await importPortableFile(new File([source], 'bookmarks.csv'), target.store, isolated);
   assert.equal(result.items, 1);
   assert.equal(target.library.items[0].title, 'A "quoted", title');
   assert.equal(target.library.items[0].content, 'Line one\nLine two');
   assert.deepEqual(target.library.items[0].tags, ['design', 'ideas']);
   assert.equal(target.library.items[0].excerpt, 'An excerpt');
   const before = structuredClone(target.library);
-  await assert.rejects(importPortableFile(new File(['url,title\nhttps://valid.example,Good\njavascript:alert(1),Bad'], 'bad.csv'), target.store), /CSV row 3/);
+  await assert.rejects(importPortableFile(new File(['url,title\nhttps://valid.example,Good\njavascript:alert(1),Bad'], 'bad.csv'), target.store, isolated), /CSV row 3/);
   assert.deepEqual(target.library, before);
   assert.throws(() => parseCsv('url,title\nhttps://example.com,"Unclosed'), /unclosed/);
   assert.throws(() => parseCsv('url,title\nhttps://example.com,"Closed"bad'), /closing quote/);
@@ -143,7 +161,7 @@ test('Netscape HTML preserves folders, URLs, tags and notes without importing sc
   assert.match(html, /Research &amp; ideas/);
   assert.match(html, /x=1&amp;y=2/);
   const target = adapter();
-  const result = await importPortableFile(new File([html + '<script><a href="https://evil.example">Ignore</a></script><a href="javascript:alert(1)">Bad</a>'], 'bookmarks.html'), target.store);
+  const result = await importPortableFile(new File([html + '<script><a href="https://evil.example">Ignore</a></script><a href="javascript:alert(1)">Bad</a>'], 'bookmarks.html'), target.store, isolated);
   assert.equal(result.items, 1);
   assert.match(result.warnings[0], /Skipped 1/);
   assert.equal(target.library.items[0].title, 'Useful & lovely');

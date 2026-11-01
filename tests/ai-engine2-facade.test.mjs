@@ -13,7 +13,7 @@ test('the facade exposes the SPEC 7.2 API (plus pauseIndexing and the semanticSe
   assert.deepEqual(Object.keys(ai).filter(name => !SPEC_EXPORTS.includes(name)).sort(), ['ANTHROPIC_EFFORTS', 'DEFAULT_AI_SETTINGS', 'EFFORT_LABELS', 'EFFORT_LEVELS',
     'HANDOFF_TARGETS', 'cancelChatGptSignIn', 'chatGptSignInStatus', 'chatProviders', 'cliSignInStatus', 'embeddingProviders', 'ensureHostPermission', 'getBridgeStatus',
     'getProvider', 'handoffPlan', 'hostPermissionOrigins', 'importDocument', 'importTarget', 'onConnectionsChanged', 'pairBridge', 'pauseIndexing', 'resolveChatTarget', 'semanticSearch',
-    'semanticSearchAvailable', 'startChatGptSignIn']);
+    'semanticSearchAvailable', 'startChatGptSignIn', 'undoProposal']);
   assert.ok(Array.isArray(ai.CATALOG) && ai.CATALOG.length > 5);
   for (const name of SPEC_EXPORTS.filter(name => name !== 'CATALOG')) assert.equal(typeof ai[name], 'function', name);
   const source = await readFile(new URL('../extension/lib/ai/index.js', import.meta.url), 'utf8');
@@ -73,4 +73,33 @@ test('init hands the semanticSearch adapter to the bridge client and removes it 
   assert.equal(hooks[0].available, ai.semanticSearchAvailable);
   handle.dispose();
   assert.equal(hooks.at(-1).search, null);
+});
+
+test('undoProposal undoes a saved proposal record through the app store and the dashboard adapter passed to init', async () => {
+  const calls = [];
+  const library = { updatedAt: '1', collections: [{ id: 'c1', name: 'C1', parentId: '' }, { id: 'new', name: 'New', parentId: '' }],
+    items: [{ id: 'kept', collectionId: '' }, { id: 'link', collectionId: 'new', updatedAt: '2026-10-30T00:00:00.000Z' }] };
+  const record = (name, result) => async (...args) => { calls.push([name, ...args]); return result; };
+  // Deleting the created link for good empties the created collection, so undo may then remove that collection too.
+  const deleteForever = record('permanentlyDeleteItem');
+  const store = { loadLibrary: async () => library, bulkUpdateItems: record('bulkUpdateItems'), deleteItem: record('deleteItem'),
+    permanentlyDeleteItem: async (id, ...rest) => { await deleteForever(id, ...rest); library.items = library.items.filter(item => item.id !== id); },
+    deleteCollection: record('deleteCollection'), updateCollection: record('updateCollection'), moveCollection: record('moveCollection'), createCollection: record('createCollection') };
+  const removed = [];
+  const dashboard = { describe: async () => ({ activeBoardId: 'main', boards: [] }), addCollectionWidget: async () => ({ widgetId: 'w', boardId: 'main' }), removeWidget: async id => { removed.push(id); } };
+  const handle = ai.init({ store, getLibrary: () => library, onLibraryChange: () => () => {}, dashboard });
+  await handle.ready;
+  // The plain shape a proposal record keeps in the saved conversation (no functions).
+  await ai.undoProposal(JSON.parse(JSON.stringify({ patches: [{ id: 'kept', patch: { favorite: false } }], createdCollections: ['new'], createdNotes: [],
+    createdItems: [{ id: 'link', updatedAt: '2026-10-30T00:00:00.000Z' }], collectionPatches: [{ id: 'c1', patch: { name: 'C1' }, parentId: '', beforeId: 'new' }], deletedCollections: [], widgets: ['w9'] })));
+  assert.deepEqual(removed, ['w9']);
+  assert.deepEqual(calls, [
+    ['moveCollection', 'c1', { parentId: '', beforeId: 'new' }],
+    ['updateCollection', 'c1', { name: 'C1' }],
+    ['bulkUpdateItems', [{ id: 'kept', patch: { favorite: false } }]],
+    ['permanentlyDeleteItem', 'link', { expectedUpdatedAt: '2026-10-30T00:00:00.000Z' }],
+    ['deleteCollection', 'new'],
+  ]);
+  await ai.undoProposal(null);
+  handle.dispose();
 });

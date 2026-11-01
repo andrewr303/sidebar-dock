@@ -356,7 +356,8 @@ async function boot() {
 
   try {
     const ai = await import('./lib/ai/index.js');
-    ai.init?.({ store, getLibrary: () => library, integrations, onLibraryChange: fn => store.subscribe(fn) });
+    // dashboard: lets the assistant see the boards and show a collection on them (it loads the dashboard on first use).
+    ai.init?.({ store, getLibrary: () => library, integrations, onLibraryChange: fn => store.subscribe(fn), dashboard: dashboard.assistantDashboard?.() });
     ctx.ai = ai;
   } catch (error) { console.warn('[still] AI engine unavailable', error); }
 

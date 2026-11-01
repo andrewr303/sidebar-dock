@@ -59,7 +59,7 @@ The note editor supports slash commands, tasks, headings, callouts, code, lists,
 
 ## Backups and external integrations
 
-Use **Settings & backup** for full backups and supported bookmark imports. Full backups include original attached bytes, notes, highlights, links and collection metadata. HTML bookmarks and Markdown notes are also exportable. Browser-bookmark permission is requested only when importing from Chrome.
+Use **Settings & backup** for full backups and supported bookmark imports. Full backups include original attached bytes, notes, highlights, links, collection metadata, dashboards, assistant chats and AI settings without keys. HTML bookmarks, Markdown notes, CSV items and assistant chats are also exportable. Automatic snapshots on this device can be restored from the same section. Browser-bookmark permission is requested only when importing from Chrome.
 
 Keep a backup before moving profiles or uninstalling Still. Uninstalling an extension removes its local data. Backups do not include account credentials. A legacy metadata-only backup cannot restore missing original files.
 

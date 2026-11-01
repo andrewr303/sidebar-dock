@@ -1,5 +1,10 @@
 // AI connections and settings. Direct connections (keys on this device) live in chrome.storage.local['still.ai.v2'];
 // bridge providers and CLI agents are discovered from the local bridge and listed alongside them.
+//
+// Durability rules: a stored state this build does not understand (a newer version, or another shape) is never
+// rewritten: reads get a blank state in memory and every write refuses with a "newer version" error. Connections whose
+// provider this build does not know stay stored (they are only hidden from lists and resolution). Writes from every
+// view take one Web Lock and re-read the state inside it.
 
 import { EFFORT_LEVELS, getProvider, hostOf, modelFromCatalog, normalizeBaseUrl, originPattern, requireProvider } from './catalog.js';
 import { SECRETS_KEY, connectionIdsWithKeys, deleteApiKey, getApiKey, setApiKey, validateApiKey } from './secrets.js';
@@ -12,6 +17,7 @@ import * as geminiTransport from './transports/gemini.js';
 import * as ollamaTransport from './transports/ollama.js';
 
 export const AI_STORE_KEY = 'still.ai.v2';
+export const AI_STATE_VERSION = 2;
 export const LEGACY_PREFS_KEY = 'still.ai.preferences.v1';
 export const MODEL_CACHE_MS = 24 * 60 * 60 * 1000;
 const BRIDGE_CACHE_MS = 30000;
@@ -54,12 +60,15 @@ const randomId = () => (globalThis.crypto?.randomUUID?.() || `${Date.now().toStr
 
 function area() { return globalThis.chrome?.storage?.local || null; }
 
+// A preview-storage value that is not JSON: present but unreadable, so it is never treated as missing and overwritten.
+const UNREADABLE = Symbol('unreadable');
+
 async function readKey(key) {
   const local = area();
   if (local) return (await local.get(key))?.[key];
   const raw = globalThis.localStorage?.getItem(key);
   if (!raw) return undefined;
-  try { return JSON.parse(raw); } catch { return undefined; }
+  try { return JSON.parse(raw); } catch { return UNREADABLE; }
 }
 
 async function writeKey(key, value) {
@@ -75,10 +84,14 @@ function blankState() {
 
 function normalizeState(value) {
   const state = { ...blankState(), ...(isObject(value) ? value : {}) };
-  state.connections = Array.isArray(state.connections) ? state.connections.filter(entry => isObject(entry) && typeof entry.id === 'string' && getProvider(entry.providerId)) : [];
+  // Connections for a provider this build does not know (renamed, or added by a newer build) are kept, so an unrelated
+  // write never deletes them; knownConnections() hides them from lists and resolution.
+  state.connections = Array.isArray(state.connections) ? state.connections.filter(entry => isObject(entry) && typeof entry.id === 'string') : [];
   for (const key of ['overlays', 'settings', 'modelCache']) if (!isObject(state[key])) state[key] = {};
   return state;
 }
+
+const knownConnections = state => state.connections.filter(entry => getProvider(entry.providerId));
 
 const legacyEffort = value => EFFORT_LEVELS.includes(value) ? value : '';
 
@@ -99,25 +112,59 @@ export function migrateLegacyPreferences(prefs, now = nowIso()) {
   return state;
 }
 
-async function loadState() {
+function newerStateError() {
+  return aiError('Your AI settings were saved by a newer version of Still, or in a form this version cannot read. Update Still to change them; nothing was changed.', { code: 'newer_version' });
+}
+
+// One writer at a time: the queue orders this view's writes, a Web Lock orders them across views (side panel, tabs).
+function exclusive(task) {
+  const run = queue.then(() => {
+    const locks = globalThis.navigator?.locks;
+    return typeof locks?.request === 'function' ? locks.request(AI_STORE_KEY, () => task()) : task();
+  });
+  queue = run.catch(() => {});
+  return run;
+}
+
+const isMissing = value => value === undefined || value === null;
+
+// { kind, state }: 'missing' (first run: the legacy preferences migrated, or blank), 'ok' (version 2), or 'foreign'
+// (a newer version or a shape this build does not understand; state is a blank stand-in that is never saved).
+async function readState() {
   const stored = await readKey(AI_STORE_KEY);
-  if (isObject(stored) && stored.version === 2) return normalizeState(stored);
-  const legacy = await readKey(LEGACY_PREFS_KEY);
-  const state = legacy ? migrateLegacyPreferences(legacy) : blankState();
-  await writeKey(AI_STORE_KEY, state);
-  return state;
+  if (isMissing(stored)) {
+    const legacy = await readKey(LEGACY_PREFS_KEY);
+    return { kind: 'missing', state: legacy ? migrateLegacyPreferences(legacy) : blankState() };
+  }
+  if (isObject(stored) && stored.version === AI_STATE_VERSION) return { kind: 'ok', state: normalizeState(stored) };
+  return { kind: 'foreign', state: blankState() };
+}
+
+async function loadState() {
+  const { kind, state } = await readState();
+  if (kind !== 'missing') return state;
+  // First run saves the migrated (or blank) state once, unless another view saved one in the meantime.
+  return exclusive(async () => {
+    const current = await readState();
+    if (current.kind !== 'missing') return current.state;
+    await writeKey(AI_STORE_KEY, current.state);
+    return current.state;
+  });
 }
 
 function update(mutator, { notify: shouldNotify = true } = {}) {
-  const run = queue.then(async () => {
-    const state = await loadState();
+  return exclusive(async () => {
+    const { kind, state } = await readState();
+    if (kind === 'foreign') throw newerStateError();
     const result = await mutator(state);
     await writeKey(AI_STORE_KEY, state);
     return result;
-  });
-  queue = run.catch(() => {});
-  return run.then(result => { if (shouldNotify) scheduleNotify(); return result; });
+  }).then(result => { if (shouldNotify) scheduleNotify(); return result; });
 }
+
+// For bookkeeping writes (model lists, bridge listing, sign-in and test status): when the stored state belongs to a
+// newer build they are skipped instead of failing the read or test that triggered them.
+const cacheUpdate = (mutator, options) => update(mutator, options).catch(error => { if (error?.code !== 'newer_version') throw error; });
 
 // ---------- change notifications ----------
 
@@ -287,7 +334,7 @@ async function bridgeSnapshot({ refresh = false } = {}) {
     const agents = (Array.isArray(data?.agents) ? data.agents : []).filter(entry => entry?.id in AGENT_IDS).map(compactAgent);
     bridgeMemory = { checkedAt: Date.now(), paired: true, reachable: true, error: null, providers, agents, auth: stored.auth || {}, runtime: data?.runtime || null };
     if (JSON.stringify({ providers, agents }) !== JSON.stringify({ providers: stored.providers || [], agents: stored.agents || [] })) {
-      await update(next => { next.bridge = { ...(next.bridge || {}), providers, agents, seenAt: nowIso() }; }, { notify: false });
+      await cacheUpdate(next => { next.bridge = { ...(next.bridge || {}), providers, agents, seenAt: nowIso() }; }, { notify: false });
     }
   } catch (error) {
     bridgeMemory = { checkedAt: Date.now(), paired: true, reachable: false, error: error.message || 'The local bridge is not running.', providers: stored.providers || [], agents: stored.agents || [], auth: stored.auth || {}, runtime: null };
@@ -312,7 +359,7 @@ export async function pairBridge({ url, token }) {
 }
 
 async function recordAuth(agents) {
-  await update(state => {
+  await cacheUpdate(state => {
     const auth = { ...(state.bridge?.auth || {}) };
     for (const [id, value] of Object.entries(agents || {})) if (id in AGENT_IDS && isObject(value)) auth[id] = { status: value.status || 'unknown', method: value.method || null, checkedAt: nowIso() };
     state.bridge = { ...(state.bridge || {}), auth };
@@ -435,13 +482,13 @@ function bridgedConnections(state, snapshot) {
 export async function listConnections({ refresh = false } = {}) {
   const [snapshot, keyIds] = await Promise.all([bridgeSnapshot({ refresh }), connectionIdsWithKeys().then(ids => new Set(ids))]);
   const state = await loadState();
-  return [...state.connections.map(record => publicDirect(record, state, keyIds)), ...bridgedConnections(state, snapshot)];
+  return [...knownConnections(state).map(record => publicDirect(record, state, keyIds)), ...bridgedConnections(state, snapshot)];
 }
 
 // ---------- resolution ----------
 
 function pickDefaultConnection(state, keyIds, snapshot) {
-  for (const record of state.connections) {
+  for (const record of knownConnections(state)) {
     const provider = getProvider(record.providerId);
     if (record.enabled !== false && provider.chat && (!provider.needsKey || keyIds.has(record.id))) return record.id;
   }
@@ -466,6 +513,7 @@ export async function resolveConnection(id, { allowDisabled = false } = {}) {
   const record = state.connections.find(entry => entry.id === connectionId);
   if (!record) throw aiError('That AI connection no longer exists. Connect an AI provider in Settings.', { code: 'no_connection' });
   const provider = getProvider(record.providerId);
+  if (!provider) throw aiError('That AI connection uses a provider this version of Still does not support. Update Still to use it.', { code: 'no_connection' });
   if (record.enabled === false && !allowDisabled) throw aiError(`${record.label || provider.name} is turned off. Turn it on in AI settings.`, { code: 'disabled' });
   const apiKey = await getApiKey(record.id);
   if (provider.needsKey && !apiKey) throw aiError(`Add your ${provider.name} API key in AI settings.`, { code: 'auth' });
@@ -637,6 +685,113 @@ export async function deleteConnection(id) {
   return { deleted: true, id: connectionId };
 }
 
+// ---------- backup ----------
+
+// Fields of a direct connection that travel in a backup. API keys live in secrets.js and never leave this device; bridge
+// and agent connections (and the bridge's sign-in state) belong to this computer's bridge, so they stay here too.
+const PORTABLE_CONNECTION_FIELDS = ['id', 'providerId', 'label', 'baseUrl', 'defaultModel', 'enabled', 'workspaceId', 'createdAt', 'updatedAt'];
+const SECRET_FIELD = /token|secret|password|passphrase|credential|api[-_]?key|authorization|cookie|bearer/i;
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const CONNECTION_ID = /^[\w.-]{1,200}$/;
+const MAX_IMPORTED_CONNECTIONS = 200;
+
+function withoutSecrets(value, depth = 0) {
+  if (depth > 8) return null;
+  if (Array.isArray(value)) return value.map(entry => withoutSecrets(entry, depth + 1));
+  if (!isObject(value)) return ['string', 'number', 'boolean'].includes(typeof value) || value === null ? value : null;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !SECRET_FIELD.test(key) && !UNSAFE_KEYS.has(key)).map(([key, entry]) => [key, withoutSecrets(entry, depth + 1)]));
+}
+
+function portableConnection(record) {
+  const output = {};
+  for (const key of PORTABLE_CONNECTION_FIELDS) if (typeof record[key] === 'string' || typeof record[key] === 'boolean') output[key] = record[key];
+  return output;
+}
+
+/**
+ * The AI configuration for a backup: { version: 2, settings, connections }. Connections carry only non-secret fields
+ * (no API keys, tokens or bridge sign-in state), including ones for providers this build does not know. Throws (code
+ * 'newer_version') when the stored state belongs to a newer build, rather than exporting a blank stand-in.
+ */
+export async function exportAiConfig() {
+  const { kind, state } = await readState();
+  if (kind === 'foreign') throw newerStateError();
+  return { version: AI_STATE_VERSION, settings: withoutSecrets(state.settings), connections: state.connections.filter(entry => !isBridgedId(entry.id)).map(portableConnection) };
+}
+
+// A backed-up connection, checked as if it were typed in: a direct provider (or one this build does not know, which
+// stays hidden), a valid address where the provider takes one, and only the portable fields. Null for anything else.
+function importableConnection(entry, now) {
+  if (!isObject(entry) || typeof entry.id !== 'string' || !CONNECTION_ID.test(entry.id) || isBridgedId(entry.id)) return null;
+  if (typeof entry.providerId !== 'string' || !/^[\w:.-]{1,100}$/.test(entry.providerId)) return null;
+  const provider = getProvider(entry.providerId);
+  if (provider && provider.via !== 'direct') return null;
+  let baseUrl = '';
+  if (typeof entry.baseUrl === 'string' && entry.baseUrl) {
+    try { baseUrl = normalizeBaseUrl(entry.baseUrl, provider); } catch { return null; }
+    if (provider && baseUrl === provider.baseUrl) baseUrl = '';
+    if (provider && baseUrl && !provider.editableBaseUrl) return null;
+  }
+  if (provider && !baseUrl && !provider.baseUrl) return null;
+  const field = clean => { try { return clean() || ''; } catch { return ''; } };
+  const label = field(() => cleanLabel(typeof entry.label === 'string' ? entry.label : undefined));
+  const defaultModel = field(() => cleanModel(typeof entry.defaultModel === 'string' ? entry.defaultModel : undefined));
+  const workspaceId = typeof entry.workspaceId === 'string' && /^[\w-]{1,120}$/.test(entry.workspaceId) ? entry.workspaceId : '';
+  const time = value => typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : now;
+  return {
+    // Always off until the person turns it on in AI settings (which also asks for the server's host permission): a file
+    // must never be able to route library data to a server the person did not choose on this device.
+    id: entry.id, providerId: entry.providerId, label, baseUrl, defaultModel, enabled: false,
+    ...((provider ? provider.transport === 'anthropic' : workspaceId) ? { workspaceId } : {}),
+    status: 'untested', lastError: null, lastTestedAt: null, createdAt: time(entry.createdAt), updatedAt: time(entry.updatedAt),
+  };
+}
+
+/**
+ * Restores a backup's AI configuration without touching what this device already has: connections are added when their
+ * id is new here (never overwritten, never with a key, and turned off until the person turns them on), and settings this
+ * device has never saved are filled in when valid and pointing at a connection it already had.
+ * Returns { connectionsAdded, settingsAdded: [setting names] }.
+ */
+export async function importAiConfig(data) {
+  if (!isObject(data)) throw aiError('This file has no AI settings to restore.', { code: 'bad_request' });
+  if (Number(data.version) > AI_STATE_VERSION) throw aiError('These AI settings come from a newer version of Still. Update Still to restore them; nothing was changed.', { code: 'newer_version' });
+  if (data.version !== AI_STATE_VERSION || (data.connections !== undefined && !Array.isArray(data.connections))) throw aiError('These AI settings are in a form Still cannot read.', { code: 'bad_request' });
+  const now = nowIso();
+  const incoming = (data.connections || []).slice(0, MAX_IMPORTED_CONNECTIONS).map(entry => importableConnection(entry, now)).filter(Boolean);
+  const settings = {};
+  if (isObject(data.settings)) for (const [key, value] of Object.entries(data.settings)) {
+    if (UNSAFE_KEYS.has(key)) continue;
+    try { checkSettingsValue(key, value); } catch { continue; }
+    settings[key] = structuredClone(value);
+  }
+  return update(state => {
+    const ids = new Set(state.connections.map(entry => entry.id));
+    // Only connections this device already had: a restored chat or embeddings choice never points at one this file adds.
+    const local = new Set(ids);
+    let connectionsAdded = 0;
+    for (const record of incoming) {
+      if (ids.has(record.id)) continue;
+      ids.add(record.id);
+      state.connections.push(record);
+      connectionsAdded++;
+    }
+    // A model choice is only restored when its connection exists here (or comes from the bridge, which resolves later).
+    const reachable = id => !id || isBridgedId(id) || local.has(id);
+    const settingsAdded = [];
+    let next = { ...state.settings };
+    for (const [key, value] of Object.entries(settings)) {
+      if (Object.hasOwn(next, key) || (isObject(value) && typeof value.connectionId === 'string' && !reachable(value.connectionId))) continue;
+      const candidate = { ...next, [key]: value };
+      try { validateSettings(mergeSettings(candidate)); } catch { continue; }
+      next = candidate;
+      settingsAdded.push(key);
+    }
+    state.settings = next;
+    return { connectionsAdded, settingsAdded };
+  });
+}
+
 // ---------- models ----------
 
 function mergeWithCatalog(provider, listed) {
@@ -693,7 +848,7 @@ export async function listModels(id, { refresh = false, kind = 'chat', signal } 
     models = await fetchModels(resolved, { signal });
     if (!models) return catalogModels(provider, kind);
     const compact = models.map(compactModel);
-    await update(next => { next.modelCache[connection.id] = { at: nowIso(), models: compact }; });
+    await cacheUpdate(next => { next.modelCache[connection.id] = { at: nowIso(), models: compact }; });
     models = compact;
   }
   const normalized = models.map(model => ({ description: '', contextWindow: null, maxOutput: null, efforts: [], defaultEffort: null, ...model, capabilities: { tools: null, images: null, reasoning: null, embeddings: false, ...(model.capabilities || {}) } }));
@@ -738,7 +893,7 @@ async function keyCheck({ provider, baseUrl, apiKey }, { signal }) {
 }
 
 async function recordStatus(id, patch) {
-  await update(state => {
+  await cacheUpdate(state => {
     if (isBridgedId(id)) state.overlays[id] = { ...(state.overlays[id] || {}), ...patch };
     else state.connections = state.connections.map(entry => entry.id === id ? { ...entry, ...patch } : entry);
   });

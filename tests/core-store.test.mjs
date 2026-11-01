@@ -118,3 +118,14 @@ test('article snapshots remain searchable and separate from editable notes', asy
   assert.equal(queryItems(await call('loadLibrary'), { query: 'echolocation' }).length, 1);
   assert.equal(normalizeItem({ type: 'article', articleContent: 'a'.repeat(260000) }).articleContent.length, 250000);
 });
+
+test('imports keep the file timestamps so an older backup cannot overwrite newer local edits', async () => {
+  const { call } = fixture();
+  const local = await call('saveItem', { id: 'shared', type: 'note', title: 'Edited today', content: 'Newest' });
+  await call('importLibrary', { schemaVersion: 1, items: [{ id: 'shared', type: 'note', title: 'From an old backup', updatedAt: '2020-01-02T00:00:00.000Z' },
+    { id: 'old', type: 'note', title: 'Only in the backup', createdAt: '2020-01-01T00:00:00.000Z', updatedAt: '2020-01-02T00:00:00.000Z' }], collections: [] });
+  const state = await call('loadLibrary');
+  assert.equal(state.items.find(i => i.id === 'shared').title, 'Edited today');
+  assert.equal(state.items.find(i => i.id === 'shared').updatedAt, local.updatedAt);
+  assert.equal(state.items.find(i => i.id === 'old').updatedAt, '2020-01-02T00:00:00.000Z');
+});

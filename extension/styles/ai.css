@@ -344,6 +344,8 @@ button.ai-thought-toggle:hover:not(:disabled), button.ai-tool-row:hover { backgr
 .ai-change-body { display: flex; flex-direction: column; gap: var(--space-1); flex: 1; min-width: 0; padding-block-start: 1px; }
 .ai-change-label { font-size: var(--text-sm); line-height: var(--lh-sm); overflow-wrap: anywhere; }
 .ai-change-sub { color: var(--fg-subtle); font-size: var(--text-xs); line-height: var(--lh-xs); overflow-wrap: anywhere; }
+/* Trash and collection deletes: the icon says the change removes something (undoable, but worth a second look). */
+.ai-change.is-destructive .ai-change-icon { color: var(--danger); }
 .ai-change.is-skipped :is(.ai-change-label, .ai-change-icon) { color: var(--fg-disabled); }
 .ai-change.is-skipped .ai-change-label { text-decoration: line-through; text-decoration-color: var(--fg-faint); }
 .ai-pill { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; vertical-align: -3px; font-weight: var(--weight-medium); }

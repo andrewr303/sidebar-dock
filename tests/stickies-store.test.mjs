@@ -88,3 +88,15 @@ test('imports keep sticky placements and normalize broken ones', async () => {
   assert.equal(byId.n2.sticky.x, 1);
   assert.equal(byId.l1.sticky, null);
 });
+
+test('placement keys written by another build survive moves and edits; keys sent only by the UI do not', async () => {
+  let value = { schemaVersion: 1, settings: {}, collections: [], items: [{ id: 's', type: 'note', title: 'S', content: 'S',
+    sticky: { color: 'pink', x: 0.3, y: 10, w: 200, h: 160, z: 1, hidden: false, rotation: 4 } }] };
+  const store = createLibraryStore({ read: async () => structuredClone(value), write: async state => { value = structuredClone(state); } });
+  const moved = await store.dispatch('updateItem', ['s', { sticky: { x: 0.6, dragGhost: true } }]);
+  assert.equal(moved.sticky.rotation, 4);
+  assert.equal(moved.sticky.x, 0.6);
+  assert.equal(moved.sticky.dragGhost, undefined);
+  assert.equal((await store.dispatch('updateItem', ['s', { content: 'Edited' }])).sticky.rotation, 4);
+  assert.equal(normalizeSticky({ color: 'blue', rotation: 9 }).rotation, undefined, 'without a stored placement nothing unknown is kept');
+});

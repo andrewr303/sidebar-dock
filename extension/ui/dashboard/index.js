@@ -2,7 +2,8 @@
 // sticky notes layer and the empty-board state. The new tab page shows this view, so it renders from stored data
 // only (dashboard store + widget cache, both preloaded beside the library) and never waits on the network.
 //
-// Exports used elsewhere: renderDashboard(ctx), init(ctx), preload(), openWidgetGallery(ctx), openWidgetSettings(ctx, id).
+// Exports used elsewhere: renderDashboard(ctx), init(ctx), preload(), openWidgetGallery(ctx), openWidgetSettings(ctx, id),
+// assistantDashboard() (the assistant engine's dashboard adapter, see assistant-adapter.js).
 // Actions: 'dashboard.add-widget', 'dashboard.edit' and the other 'dashboard.*' actions registered by the modules below.
 import { html, cx } from '../html.js';
 import { icon } from '../icons.js';
@@ -24,6 +25,7 @@ import { renderFrame, highlight, openWidgetSettings } from './frame.js';
 import { initEdit } from './edit.js';
 import { initMotion, dragVisual } from './motion.js';
 import { openWidgetGallery } from './gallery.js';
+import { createAssistantDashboard } from './assistant-adapter.js';
 import './widget-settings.js';
 
 export { openWidgetGallery, openWidgetSettings };
@@ -50,6 +52,19 @@ export function preload() {
     }
   })();
   return preloading;
+}
+
+/**
+ * The dashboard adapter the assistant engine gets from app.js (ai.init({ dashboard })): describe(), addCollectionWidget()
+ * and removeWidget() on this view's dashboard store. It preloads first, so it also works in the side panel, which never
+ * shows the dashboard and so never loads it otherwise.
+ */
+export function assistantDashboard() {
+  return createAssistantDashboard({
+    ready: preload,
+    store: { get: dashboardStore.getDashboard, addWidget: dashboardStore.addWidget, findWidget: dashboardStore.findWidget, removeWidget: dashboardStore.removeWidget },
+    getWidget, clampSize,
+  });
 }
 
 // ------------------------------------------------------------------ rendering
