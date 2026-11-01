@@ -13,6 +13,8 @@ import { createSearch } from './search.js';
 import { createAssistant } from './assistant.js';
 import { createTransforms } from './transforms.js';
 import { createConversationStore } from './conversations.js';
+import { createImports } from './imports.js';
+import { getProvider as catalogProvider } from './catalog.js';
 
 export { CATALOG, EFFORT_LEVELS, ANTHROPIC_EFFORTS, EFFORT_LABELS, getProvider, chatProviders, embeddingProviders } from './catalog.js';
 export { listConnections, saveConnection, deleteConnection, testConnection, listModels, getAiSettings, onConnectionsChanged, ensureHostPermission,
@@ -49,7 +51,8 @@ function engine() {
     getLibrary: currentLibrary, store, searchLibrary: search.searchLibrary, conversations });
   const transforms = createTransforms({ streamChat: chatStream, resolveConnection: connections.resolveConnection, resolveChatTarget: connections.resolveChatTarget,
     getAiSettings: aiSettings, getLibrary: currentLibrary });
-  services = { conversations, indexer, search, assistant, transforms };
+  const imports = createImports({ streamChat: chatStream, resolveChatTarget: connections.resolveChatTarget, resolveConnection: connections.resolveConnection, getProvider: catalogProvider });
+  services = { conversations, indexer, search, assistant, transforms, imports };
   return services;
 }
 
@@ -64,6 +67,9 @@ export const runAssistant = options => engine().assistant.runAssistant(options);
 export const transformText = options => engine().transforms.transformText(options);
 export const suggestForSave = input => engine().transforms.suggestForSave(input);
 export const searchLibrary = (query, options) => engine().search.searchLibrary(query, options);
+/** The fast model file imports use (or null when no AI is connected), and the import itself; see imports.js. */
+export const importTarget = () => engine().imports.importTarget();
+export const importDocument = (converted, options) => engine().imports.importDocument(converted, options);
 export const relatedItems = (itemId, options) => engine().search.relatedItems(itemId, options);
 
 export const getIndexStatus = () => engine().indexer.getIndexStatus();

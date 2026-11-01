@@ -30,7 +30,7 @@ export const COMMANDS = [
   { id: 'new-collection', label: 'New collection', icon: 'folder-plus', keywords: 'folder create group', action: 'collections.new', pinned: true },
   { id: 'go-dashboard', label: 'Go to Dashboard', icon: 'layout-dashboard', keywords: 'home start page new tab widgets', view: 'dashboard' },
   { id: 'assistant', label: 'Open AI Assistant', icon: 'bot-message-square', keywords: 'full screen chat conversations history', view: 'assistant' },
-  { id: 'go-all', label: 'Go to All items', icon: 'library', keywords: 'everything library', view: 'all' },
+  { id: 'go-all', label: 'Go to All items', icon: 'book-open-text', keywords: 'everything library', view: 'all' },
   { id: 'go-inbox', label: 'Go to Inbox', icon: 'inbox', keywords: 'unsorted', view: 'inbox' },
   { id: 'go-favorites', label: 'Go to Favorites', icon: 'star', keywords: 'starred', view: 'favorites' },
   { id: 'go-notes', label: 'Go to Notes', icon: 'sticky-note', keywords: 'writing', view: 'notes' },

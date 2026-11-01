@@ -544,7 +544,7 @@ function renderSideList(ctx) {
   return html`<div class="side-notes" data-key="side-notes">
     <div class="side-notes-top">
       ${segmented({ name: 'notes-scope', value: scope, action: 'notes.scope', ariaLabel: 'Show notes', className: 'is-block side-notes-scope',
-        options: [{ value: 'page', label: 'This page', icon: 'globe', count: url ? pageNotes.length : undefined }, { value: 'all', label: 'All notes', icon: 'layers', count: all.length }] })}
+        options: [{ value: 'page', label: 'This page', icon: 'app-window', count: url ? pageNotes.length : undefined }, { value: 'all', label: 'All notes', icon: 'layers', count: all.length }] })}
       <div class="side-notes-tools">
         <button type="button" class="side-notes-filter" data-action="notes.filter-menu" aria-haspopup="menu" aria-expanded="${popOpen ? 'true' : 'false'}" aria-label="Collection: ${filterName}. Change">
           ${s.collectionId === NO_COLLECTION ? icon('inbox', { size: 14 }) : s.collectionId ? dot(filterColor) : icon('layers', { size: 14 })}<span class="side-notes-filter-label">${filterName}</span>${icon('chevron-down', { size: 14, className: 'side-notes-filter-chevron' })}</button>

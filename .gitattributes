@@ -11,3 +11,10 @@
 *.woff2 -text
 *.webp -text
 *.svg text eol=lf
+*.pdf -text
+*.docx -text
+*.xlsx -text
+*.pptx -text
+*.odt -text
+*.epub -text
+*.rtf -text

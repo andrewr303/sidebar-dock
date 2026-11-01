@@ -2,6 +2,7 @@
 // Tables store Markdown cell strings. Untouched imported blocks retain their raw source (_raw), so a note
 // re-serializes byte for byte until one of its blocks is edited. No raw HTML is ever rendered and images
 // are never fetched: ![label](url) renders as a link.
+import {describeEmbed,embedUrl,embedKindLabel} from './embeds.js';
 const uid=()=>globalThis.crypto?.randomUUID?.()||Math.random().toString(36).slice(2);
 export const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const punctuation=/[!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~]/;
@@ -170,9 +171,24 @@ const LIST_ITEM=/^([ \t]*)(?:([-*]) \[([ xX])\](?: ([\s\S]*)|\r?$)|([-*]) ([\s\S
 const ALERT=/^> \[!(note|tip|important|warning|caution)\](?:[ \t]*\r?$| ([\s\S]*)$)/i,QUOTE_CONT=/^>(?: |\r?$)/;
 const columns=lead=>{let w=0;for(const ch of lead)w=ch==='\t'?w+4-(w%4):w+1;return w;};
 const hardBreak=line=>{const value=line.replace(/\r$/,'');return value.endsWith('\\')&&!escapedAt(value,value.length-1);};
-const startsBlock=line=>/^\s*$/.test(line)||LIST_ITEM.test(line)||/^(?:#{1,3} |>|`{3,}|~{3,}|:{3,}toggle|---\s*$)/.test(line);
+const startsBlock=line=>/^\s*$/.test(line)||LIST_ITEM.test(line)||/^(?:#{1,3} |>|`{3,}|~{3,}|:{3,}toggle|---\s*$)/.test(line)||!!parseEmbed(line);
 // A line that ends a table (anything else right after a table is read as one more row).
 const endsTable=line=>!String(line).trim()||/^\s*(?:>|#{1,6}\s|`{3,}|~{3,}|:{3,}|[-*+]\s|\d+\.\s)/.test(line)||/^\s*([-*_])\1\1+\s*$/.test(line);
+// Embeds take a whole line: ::embed[Label](https://…) frames a web page or PDF and ![[id|Label]] shows a library item
+// (an uploaded PDF, image or video) in place; either may end in {height=480}. Other Markdown tools read them as a link.
+const EMBED_WEB=/^::embed\[((?:\\[\s\S]|[^\]\\\n])*)\]\((?:<([^<>\n]+)>|([^()<>\s]+))\)(?:\{height=(\d{2,4})\})?[ \t]*\r?$/;
+const EMBED_ITEM=/^!\[\[([^[\]\n|]{1,200})(?:\|([^[\]\n]{1,200}))?\]\](?:\{height=(\d{2,4})\})?[ \t]*\r?$/;
+/** { url, label, height } for a web embed line, { target, label, height } for a library item, else null. */
+export function parseEmbed(line){
+ const web=EMBED_WEB.exec(line);if(web){const url=embedUrl(web[2]??web[3]);return url&&/^https?:\/\//i.test(String(web[2]??web[3]).trim())?{url,label:web[1].replace(/\\([\s\S])/g,'$1'),height:Number(web[4])||0}:null;}
+ const item=EMBED_ITEM.exec(line);return item&&item[1].trim()?{target:item[1].trim(),label:(item[2]||'').trim(),height:Number(item[3])||0}:null;
+}
+export function serializeEmbed(b){
+ const height=Number(b.height)>0?`{height=${Math.round(b.height)}}`:'';
+ if(b.target)return `![[${String(b.target).replace(/[[\]|\n]/g,' ').trim()}${b.label&&b.label!==b.target?'|'+String(b.label).replace(/[[\]|\n]/g,' ').trim():''}]]${height}`;
+ const url=String(b.url||''),label=String(b.label||'').replace(/\r?\n/g,' ').replace(/[\\\]]/g,'\\$&');
+ return `::embed[${label}](${/[()<>\s]/.test(url)?`<${url}>`:url})${height}`;
+}
 function signature(block){const value={};for(const [key,entry] of Object.entries(block))if(key!=='id'&&!key.startsWith('_'))value[key]=entry;return JSON.stringify(value);}
 function remember(block,raw,start,end){block._raw=raw;block._lineStart=start;block._lineEnd=end;block._signature=signature(block);return block;}
 export function parseNoteBlocks(markdown=''){
@@ -198,6 +214,7 @@ export function parseNoteBlocks(markdown=''){
   }
   stack=[];
   if(/^---\s*$/.test(line)){add({...base,type:'divider',text:''},start,i);continue;}
+  const embed=parseEmbed(line);if(embed){add({...base,type:'embed',text:'',...embed},start,i);continue;}
   const heading=/^(#{1,3}) /.exec(line);if(heading){add({...base,type:'h'+heading[1].length,text:line.slice(heading[0].length)},start,i);continue;}
   const alert=ALERT.exec(line);
   if(alert||/^> /.test(line)){const body=alert?alert[2]!==undefined?[alert[2]]:[]:[line.slice(2)];while(i+1<lines.length&&QUOTE_CONT.test(lines[i+1])&&!ALERT.test(lines[i+1]))body.push(lines[++i].replace(/^> ?/,''));add(alert?{...base,type:'callout',text:body.join('\n'),kind:alert[1].toLowerCase()}:{...base,type:'quote',text:body.join('\n')},start,i);continue;}
@@ -232,7 +249,7 @@ function escapeLineStart(line){
  const [,ws,rest]=/^([ \t]*)([\s\S]*)$/.exec(line);
  if(/^[-*] /.test(rest))return ws+'\\'+rest;
  const number=/^(\d+)\. /.exec(rest);if(number)return ws+number[1]+'\\'+rest.slice(number[1].length);
- if(!ws&&/^(?:#{1,6} |>|`{3,}|~{3,}|:{3,}|---\s*$)/.test(rest))return '\\'+rest;
+ if(!ws&&(/^(?:#{1,6} |>|`{3,}|~{3,}|:{3,}|---\s*$)/.test(rest)||parseEmbed(rest)))return '\\'+rest;
  return line;
 }
 // Newlines inside a text block become CommonMark hard breaks (a trailing backslash); continuation lines that
@@ -247,7 +264,7 @@ export function serializeBlockParts(blocks){
  const layout=listLayout(blocks);
  const body=(b,index)=>{
   if(typeof b._raw==='string'&&b._signature===signature(b))return b._raw;
-  if(b.type==='table')return serializeTable(b);if(b.type==='toggle')return serializeToggle(b);if(b.type==='divider')return '---';
+  if(b.type==='table')return serializeTable(b);if(b.type==='toggle')return serializeToggle(b);if(b.type==='divider')return '---';if(b.type==='embed')return serializeEmbed(b);
   if(b.type==='code'){let count=3;for(const line of String(b.text||'').split('\n')){const m=/^(`+)/.exec(line);if(m)count=Math.max(count,m[1].length+1);}const fence='`'.repeat(count);return fence+(b.language||'')+'\n'+(b.text||'')+'\n'+fence;}
   if(['h1','h2','h3'].includes(b.type))return '#'.repeat(Number(b.type[1]))+' '+String(b.text||'').replace(/\n+$/,'').replace(/\n/g,' ');
   if(b.type==='quote')return quoteLines(b.text).join('\n');
@@ -272,6 +289,19 @@ export function serializeNoteBlocks(blocks){return serializeBlockParts(blocks).j
 function decodeCellPipes(text){return text.replace(/(\\+)\|/g,(full,slashes)=>slashes.length%2?'\\'.repeat(slashes.length-1)+'|':full);}
 export function renderTableCell(value,options={}){const source=decodeCellPipes(String(value??''));let out='',chunk='',code='';for(let i=0;i<source.length;i++){if(source[i]==='`'&&(code||!escapedAt(source,i))){const run=source.slice(i).match(/^`+/)[0];if(code===run)code='';else if(!code&&codeEnd(source,run,i+run.length)>=0)code=run;chunk+=run;i+=run.length-1;continue;}const br=!code&&source.slice(i).match(/^<br\s*\/?>/i);if(br){out+=renderInline(chunk,options)+'<br>';chunk='';i+=br[0].length-1;continue;}if(source[i]==='\n'&&!code){out+=renderInline(chunk,options)+'<br>';chunk='';continue;}chunk+=source[i];}return out+renderInline(chunk,options);}
 function renderTable(block,compact,options){const width=tableWidth(block),align=i=>['left','right','center'].includes(block.alignments?.[i])?` style="text-align:${block.alignments[i]}"`:'';return `<div class="markdown-table-wrap"><table class="markdown-table"><thead><tr>${Array.from({length:width},(_,i)=>`<th scope="col"${align(i)}>${renderTableCell(block.headers[i]||'',options)}</th>`).join('')}</tr></thead><tbody>${(compact?block.rows.slice(0,3):block.rows).map(row=>'<tr>'+Array.from({length:width},(_,i)=>`<td${align(i)}>${renderTableCell(row[i]||'',options)}</td>`).join('')+'</tr>').join('')}</tbody></table></div>`;}
+const EMBED_ICONS={site:'<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',video:'<path d="m16 13 5.2 3.5a.5.5 0 0 0 .8-.4V7.9a.5.5 0 0 0-.8-.4L16 11"/><rect x="2" y="6" width="14" height="12" rx="2"/>',file:'<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>'};
+// Cards, previews and exports show an embed as a labelled link; only the block editor loads the frame.
+function renderEmbed(b,o){
+ const icon=kind=>svg(EMBED_ICONS[kind]||EMBED_ICONS.site,'markdown-embed-icon');
+ if(b.target){
+  let hit=null;try{hit=o.resolveLink?.(b.target)||null;}catch{hit=null;}
+  const label=b.label||hit?.title||b.target,id=hit&&hit.id!=null?String(hit.id):'';
+  const title=id?`<a class="note-link markdown-embed-title" href="#" data-id="${escapeHtml(id)}"${hit.type?` data-type="${escapeHtml(hit.type)}"`:''} data-target="${escapeHtml(b.target)}" title="${escapeHtml(hit.title||label)}">${escapeHtml(label)}</a>`:`<span class="markdown-embed-title is-missing" title="No matching item">${escapeHtml(label)}</span>`;
+  return `<div class="markdown-embed" data-kind="file">${icon('file')}${title}<span class="markdown-embed-meta">Embedded file</span></div>`;
+ }
+ const info=describeEmbed(b.url);if(!info)return `<p>${escapeHtml(b.label||b.url)}</p>`;
+ return `<div class="markdown-embed" data-kind="${escapeHtml(info.kind)}">${icon(info.kind==='video'?'video':info.kind==='pdf'?'file':'site')}<a class="markdown-link markdown-embed-title" href="${escapeHtml(info.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(b.label||info.label)}</a><span class="markdown-embed-meta">${escapeHtml(info.kind==='site'?info.host:`${embedKindLabel(info.kind)} · ${info.provider}`)}</span></div>`;
+}
 export function renderCallout(kind,body){const entry=CALLOUT_KINDS[kind]||CALLOUT_KINDS.note;return `<div class="markdown-callout" data-kind="${CALLOUT_KINDS[kind]?kind:'note'}" role="note"><p class="markdown-callout-title">${svg(entry.icon,'markdown-callout-icon')}<span>${entry.label}</span></p><div class="markdown-callout-body">${body}</div></div>`;}
 // options: interactiveTasks, compact (cards: first 12 blocks, closed toggles, 3 table rows), citations (AI answers),
 // resolveLink(title) -> { id, title, type } | null and linkClass (string or (link) => string) for [[wiki links]].
@@ -300,6 +330,7 @@ export function renderMarkdown(markdown,{interactiveTasks=false,compact=false,ci
    if(b.type==='code'){out+=`<pre class="markdown-code"><code${b.language?` data-language="${escapeHtml(b.language.trim())}"`:''}>${escapeHtml(b.text)}</code></pre>`;continue;}
    if(['h1','h2','h3'].includes(b.type)){const tag=compact?'h3':b.type;out+=`<${tag}>${render(b.text)}</${tag}>`;continue;}
    if(b.type==='divider'){out+='<hr class="markdown-divider">';continue;}
+   if(b.type==='embed'){out+=renderEmbed(b,o);continue;}
    if(b.type==='quote'){out+='<blockquote>'+render(b.text)+'</blockquote>';continue;}
    if(b.type==='callout'){out+=renderCallout(b.kind,render(b.text));continue;}
    out+=b.text.trim()?'<p>'+render(b.text)+'</p>':'<div class="paragraph-space"></div>';
@@ -309,6 +340,6 @@ export function renderMarkdown(markdown,{interactiveTasks=false,compact=false,ci
 }
 // Plain text of a whole note (excerpts, word counts, search snippets).
 export function plainText(markdown){
- const walk=(text,depth)=>depth>16?'':parseNoteBlocks(text).map(b=>b.type==='code'?b.text:b.type==='table'?[b.headers,...b.rows].map(row=>row.map(cell=>inlineText(decodeCellPipes(String(cell)).replace(/<br\s*\/?>/gi,' '))).join(' ')).join('\n'):b.type==='toggle'?[inlineText(b.title),walk(b.text,depth+1)].filter(Boolean).join('\n'):b.type==='divider'?'':inlineText(b.text)).join('\n');
+ const walk=(text,depth)=>depth>16?'':parseNoteBlocks(text).map(b=>b.type==='code'?b.text:b.type==='table'?[b.headers,...b.rows].map(row=>row.map(cell=>inlineText(decodeCellPipes(String(cell)).replace(/<br\s*\/?>/gi,' '))).join(' ')).join('\n'):b.type==='toggle'?[inlineText(b.title),walk(b.text,depth+1)].filter(Boolean).join('\n'):b.type==='divider'?'':b.type==='embed'?b.label||b.target||b.url:inlineText(b.text)).join('\n');
  return walk(String(markdown??''),0);
 }

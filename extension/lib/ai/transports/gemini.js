@@ -3,7 +3,7 @@
 import { clampEffort } from '../catalog.js';
 import { aiError, authHeaders, providerFetch, readJsonBody, streamError } from '../http.js';
 import { parseEventData, readSse } from '../stream.js';
-import { STOP_NOTICES, compactUsage, imageSource, incompleteError, partsOf, refusalError, toolNameFor, toolResultText, toolSchema, uniqueTag } from './shared.js';
+import { STOP_NOTICES, compactUsage, documentSource, imageSource, incompleteError, partsOf, refusalError, toolNameFor, toolResultText, toolSchema, uniqueTag } from './shared.js';
 
 const SYNTHETIC_ID = 'gemini_call_';
 const DEFAULT_LEVELS = ['low', 'medium', 'high'];
@@ -50,6 +50,7 @@ export function toGeminiContents(messages) {
     for (const part of partsOf(message.content)) {
       if (part?.type === 'text') { if (part.text) parts.push({ text: part.text }); }
       else if (part?.type === 'image') { const { mediaType, data } = imageSource(part); parts.push({ inlineData: { mimeType: mediaType, data } }); }
+      else if (part?.type === 'document') { const { mediaType, data } = documentSource(part); parts.push({ inlineData: { mimeType: mediaType, data } }); }
       else if (part?.type === 'tool_use') parts.push({ functionCall: { name: part.name, args: part.input || {}, ...(part.id && !part.id.startsWith(SYNTHETIC_ID) ? { id: part.id } : {}) } });
       else if (part?.type === 'tool_result') {
         const text = toolResultText(part.content);

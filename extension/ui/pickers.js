@@ -2,7 +2,7 @@
 // with an autocomplete listbox ('pick.tag-suggest'), the icon and color picker ('pick.icon') and the reminder picker
 // ('pick.reminder'). Pure helpers are exported for tests; nothing here touches the DOM at import time.
 import { html, cx } from './html.js';
-import { icon, iconNames, COLLECTION_ICONS, COLLECTION_COLORS } from './icons.js';
+import { icon, iconChoices, COLLECTION_COLORS } from './icons.js';
 import { collectionIcon, colorName, kbd } from './components.js';
 import { registerActions } from './runtime.js';
 import { registerPopover } from './overlay.js';
@@ -421,25 +421,21 @@ function renderTagSuggest(ctx, { key, items = [], active = -1 }) {
 
 /* ------------------------------------------------------------------ icon + color picker */
 
-function iconChoices(query) {
-  const q = lower(query).trim();
-  if (!q) return COLLECTION_ICONS;
-  const names = [...new Set([...COLLECTION_ICONS, ...iconNames()])];
-  return names.filter(name => name.includes(q)).slice(0, 96);
-}
-
 function renderIconPopover(ctx, props) {
   const current = String(props.icon || 'folder');
   const isEmoji = EMOJI.test(current);
   const hue = colorName(props.color) || 'gray';
-  const choices = iconChoices(props.query);
-  const focusIndex = Math.max(0, choices.indexOf(current));
+  const sections = iconChoices(props.query, isEmoji ? '' : current);
+  const names = sections.flatMap(([, list]) => list);
+  const focusIndex = Math.max(0, names.indexOf(current));
+  let index = 0;
+  const cell = name => html`<button type="button" role="radio" class="pick-icon-cell" aria-checked="${!isEmoji && name === current ? 'true' : 'false'}" tabindex="${index++ === focusIndex ? '0' : '-1'}"
+        aria-label="${name.replace(/-/g, ' ')}" title="${name.replace(/-/g, ' ')}" data-action="pick.icon-choose" data-icon="${name}">${icon(name, { size: 18 })}</button>`;
   return html`<div class="pick-icon" role="dialog" aria-label="Icon and color" style="--pick-hue:var(--c-${hue});--pick-hue-soft:var(--c-${hue}-soft)" data-key="pick-icon">
     <div class="pick-search">${icon('search', { size: 16 })}<input class="pick-search-input" type="text" id="pick-icon-search" data-focus-key="pick-icon-search"
       aria-label="Search icons" placeholder="Search icons" value="${props.query || ''}" data-input="pick.icon-query" data-keydown="pick.icon-search-key" data-autofocus autocomplete="off" spellcheck="false"></div>
-    ${choices.length ? html`<div class="pick-icon-grid" role="radiogroup" aria-label="Icon" data-keydown="pick.icon-grid-key">
-      ${choices.map((name, i) => html`<button type="button" role="radio" class="pick-icon-cell" aria-checked="${!isEmoji && name === current ? 'true' : 'false'}" tabindex="${i === focusIndex ? '0' : '-1'}"
-        aria-label="${name.replace(/-/g, ' ')}" title="${name.replace(/-/g, ' ')}" data-action="pick.icon-choose" data-icon="${name}">${icon(name, { size: 18 })}</button>`)}
+    ${names.length ? html`<div class="pick-icon-grid" role="radiogroup" aria-label="Icon" data-keydown="pick.icon-grid-key">
+      ${sections.map(([label, list]) => html`${label ? html`<div class="pick-icon-heading">${label}</div>` : ''}${list.map(cell)}`)}
     </div>` : html`<p class="pick-empty">No icons match “${props.query}”</p>`}
     <div class="pick-section-label" id="pick-color-label">Color</div>
     <div class="pick-swatches" role="radiogroup" aria-labelledby="pick-color-label" data-keydown="pick.icon-swatch-key">
@@ -475,6 +471,27 @@ function moveRoving(container, selector, event, columns = 1) {
   else if (event.key === 'End') next = cells.length - 1;
   else return false;
   event.preventDefault();
+  cells.forEach((cell, i) => cell.setAttribute('tabindex', i === next ? '0' : '-1'));
+  cells[next].focus();
+  return true;
+}
+
+/** Roving focus for a grid broken by section headings: up and down move to the nearest cell in the row above or below. */
+function moveGrid(container, selector, event) {
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return moveRoving(container, selector, event, 1);
+  const cells = [...container.querySelectorAll(selector)];
+  const index = cells.indexOf(document.activeElement);
+  if (index < 0) return false;
+  const from = cells[index].getBoundingClientRect();
+  const down = event.key === 'ArrowDown';
+  const rows = cells.map(c => c.getBoundingClientRect()).map((rect, i) => ({ i, rect }))
+    .filter(({ rect }) => down ? rect.top > from.top + 1 : rect.top < from.top - 1);
+  event.preventDefault();
+  if (!rows.length) return true;
+  const rowTop = down ? Math.min(...rows.map(r => r.rect.top)) : Math.max(...rows.map(r => r.rect.top));
+  const centre = from.left + from.width / 2;
+  const next = rows.filter(r => Math.abs(r.rect.top - rowTop) < 1)
+    .reduce((best, r) => Math.abs(r.rect.left + r.rect.width / 2 - centre) < Math.abs(best.rect.left + best.rect.width / 2 - centre) ? r : best).i;
   cells.forEach((cell, i) => cell.setAttribute('tabindex', i === next ? '0' : '-1'));
   cells[next].focus();
   return true;
@@ -652,7 +669,7 @@ registerActions({
     const cell = document.querySelector('#still-popover .pick-icon-cell[tabindex="0"]') || document.querySelector('#still-popover .pick-icon-cell');
     if (cell) { event.preventDefault(); cell.focus(); }
   },
-  'pick.icon-grid-key': ({ el, event }) => { moveRoving(el, '.pick-icon-cell', event, 8); },
+  'pick.icon-grid-key': ({ el, event }) => { moveGrid(el, '.pick-icon-cell', event); },
   'pick.icon-swatch-key': ({ el, event }) => { moveRoving(el, '.pick-swatch', event, 1); },
   'pick.icon-choose': ({ ctx, data }) => applyIcon(ctx, { icon: data.icon }),
   'pick.icon-color': ({ ctx, data }) => applyIcon(ctx, { color: data.color }),
