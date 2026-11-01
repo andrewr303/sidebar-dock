@@ -73,6 +73,18 @@ Choose **Send to Raindrop** on a selected item to upload its URL, title, descrip
 
 Raindrop's own remote MCP server is separate from the included local Still bridge. Its official address is `https://api.raindrop.io/rest/v2/ai/mcp`, using Streamable HTTP with OAuth. Its access and search capabilities depend on the Raindrop account and plan. [Raindrop's MCP documentation](https://help.raindrop.io/integrations/mcp), [Claude connection guide](https://help.raindrop.io/integrations/claude).
 
+## GitHub and Linear for dashboard widgets
+
+The GitHub and Linear widgets use accounts connected in **Settings → Connected accounts** or from the widget's own Connect button. Credentials are stored under their own key in `chrome.storage.local` on this device, never in the library, portable backups, exports, widget settings, the widget cache or bridge snapshots. Chrome asks for optional access to `https://api.github.com/` (plus `https://github.com/` for device sign-in) or `https://api.linear.app/` when you connect.
+
+GitHub widget: personal access token, OAuth device flow with your own OAuth app, or the GitHub CLI / `GITHUB_TOKEN` through the local bridge (`GET /github/token`, pairing token required).
+
+- **Personal access token:** a classic token with `repo`, `read:org`, `workflow` and `notifications` unlocks every feature. Fine-grained tokens work for pull requests in the repositories you choose.
+- **Sign in (OAuth device flow):** create an OAuth app in GitHub's developer settings (any homepage and callback URL), turn on **Enable Device Flow** and paste its client ID. Still shows a code to enter on GitHub and asks for `repo`, `read:org`, `workflow` and `notifications`. The client ID is not a secret, and Still ships no client secret.
+- **GitHub CLI through the local bridge:** with the bridge paired, Still calls `GET /github/token` on the loopback bridge with the pairing token. The bridge runs `gh auth token`, or reads `GITHUB_TOKEN` or `GH_TOKEN` from its own environment when the CLI is not signed in, and answers 404 when it finds neither. When the token changes, Still reads it again.
+
+Linear widget: a personal API key from Linear's security settings, checked against Linear's viewer query before it is saved. Disconnect removes the key and cached issues from this device; revoke the key in Linear to stop it working everywhere.
+
 ## Other services
 
 The integration directory links to official Raindrop guides for Notion, Readwise, Zapier, Make, n8n and RSS. These open the relevant setup documentation; they are not native Still connections and are not marked connected. Drive and Dropbox are manual backup destinations: export a Still JSON backup, then store that file using your own account. No background cloud upload runs.

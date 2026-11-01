@@ -10,6 +10,16 @@
                                        other value falls back to blue)
      data-density  comfortable (default) | compact
      data-surface  full | side         (side panel)
+     data-font-size sm | md (default) | lg | xl   (type scale + control
+                                       and row heights via --ui-bump)
+     data-radius   sharp | default | round       (--radius-k)
+     data-motion   system (default) | reduced    (same as the OS setting)
+     data-sidebar-width narrow | default | wide  (--sidebar-w)
+     data-skin     still (these tokens) | white | glass | midnight | nord |
+                   paper | rose        (styles/skins.css, linked last)
+     data-transparency full | reduced  (skins.css: no backdrop blur)
+     data-wallpaper on | off, data-wallpaper-scope dashboard | app
+                                       (skins.css wallpaper layer)
 
    Tiers
      1. Scales      theme-independent: --font-*, --text-*, --lh-*,
@@ -20,12 +30,13 @@
                     --info + -soft), --hl-* (text highlights), --c-<hue> and
                     --c-<hue>-soft (collection palette), --shadow-*,
                     --media-*, --toast-*, --tooltip-*
-     3. Component   sizes that density and surface may change: --control-h-*,
-                    --row-h, --list-row-h, --thumb-*, --item-row-pad,
-                    --sidebar-w, --panel-w, --topbar-h, --side-header-h,
-                    --tabbar-h
+     3. Component   sizes that density, surface and font size may change:
+                    --control-h-*, --row-h, --list-row-h, --thumb-*,
+                    --item-row-pad, --sidebar-w, --panel-w, --topbar-h,
+                    --side-header-h, --tabbar-h
    Feature CSS uses tiers 2 and 3 (and the scales); it never contains a color
-   literal. Density changes tier 3 only, never --space-*.
+   literal. Density changes tier 3 only, never --space-*. --radius-2xl is the
+   large-pane step (floating panels, dashboard widgets).
 
    Naming: --bg-* fills, --fg-* text and icons, --border-* edges.
    --border-subtle / --border-default are alpha hairlines for dividers only;
@@ -77,12 +88,15 @@
   --space-9: 24px;
   --space-10: 32px;
 
-  /* Radius: modest and concentric (card 10 = inner 6 + 4 inset). */
-  --radius-xs: 4px;   /* checkboxes, kbd, tag chips inside inputs, small tiles */
-  --radius-sm: 6px;   /* buttons, rows, icon tiles, segmented items, tooltips */
-  --radius-md: 8px;   /* inputs, menus, segmented track, thumbnails, toasts */
-  --radius-lg: 10px;  /* cards, popovers */
-  --radius-xl: 12px;  /* dialogs, sheets, composer */
+  /* Radius: modest and concentric (card 10 = inner 6 + 4 inset). data-radius
+     scales every step through --radius-k; skins may change the base steps. */
+  --radius-k: 1;
+  --radius-xs: calc(4px * var(--radius-k));   /* checkboxes, kbd, tag chips inside inputs, small tiles */
+  --radius-sm: calc(6px * var(--radius-k));   /* buttons, rows, icon tiles, segmented items, tooltips */
+  --radius-md: calc(8px * var(--radius-k));   /* inputs, menus, segmented track, thumbnails, toasts */
+  --radius-lg: calc(10px * var(--radius-k));  /* cards, popovers */
+  --radius-xl: calc(12px * var(--radius-k));  /* dialogs, sheets, composer */
+  --radius-2xl: calc(16px * var(--radius-k)); /* large floating panels, dashboard widgets */
   --radius-full: 999px;
 
   /* Icons */
@@ -116,13 +130,15 @@
   --z-toast: 70;
   --z-tooltip: 80;
 
-  /* 3. Component sizes (comfortable) */
-  --control-h-xs: 24px;   /* row action buttons, chip actions: the 24px target floor */
-  --control-h-sm: 26px;
-  --control-h-md: 32px;
-  --control-h-lg: 36px;
-  --row-h: 30px;          /* tree, nav and menu rows */
-  --list-row-h: 76px;     /* library list row: 8 + 20 + 2 + 18 + 2 + 2 + 16 + 8 */
+  /* 3. Component sizes (comfortable). --ui-bump follows data-font-size so
+     controls and rows keep their padding as the type grows or shrinks. */
+  --ui-bump: 0px;
+  --control-h-xs: calc(24px + max(0px, var(--ui-bump) / 2));   /* row action buttons, chip actions: the 24px target floor */
+  --control-h-sm: calc(26px + var(--ui-bump));
+  --control-h-md: calc(32px + var(--ui-bump));
+  --control-h-lg: calc(36px + var(--ui-bump));
+  --row-h: calc(30px + var(--ui-bump));          /* tree, nav and menu rows */
+  --list-row-h: calc(76px + var(--ui-bump) * 3); /* library list row: 8 + 20 + 2 + 18 + 2 + 2 + 16 + 8 (three text lines) */
   --item-row-pad: 8px;    /* block padding of list rows */
   --thumb-w: 64px;
   --thumb-h: 48px;
@@ -130,9 +146,9 @@
   --sidebar-w: 248px;
   --panel-w: 400px;
   --detail-w: var(--panel-w);
-  --topbar-h: 48px;
-  --side-header-h: 44px;
-  --tabbar-h: 56px;
+  --topbar-h: calc(48px + var(--ui-bump));
+  --side-header-h: calc(44px + var(--ui-bump));
+  --tabbar-h: calc(56px + var(--ui-bump));
   --section-gap: 20px;    /* between stacked sections (side panel) */
   --gutter: 16px;         /* page side padding */
   --hl-rule-w: 0px;       /* bottom rule under highlighted text (dark: 2px) */
@@ -549,19 +565,61 @@
    DENSITY: component sizes only.
    --------------------------------------------------------------------- */
 [data-density="compact"] {
-  --control-h-sm: 24px;
-  --control-h-md: 28px;
-  --control-h-lg: 32px;
-  --row-h: 26px;
-  --list-row-h: 60px;
+  --control-h-sm: calc(24px + max(0px, var(--ui-bump)));
+  --control-h-md: calc(28px + var(--ui-bump));
+  --control-h-lg: calc(32px + var(--ui-bump));
+  --row-h: calc(26px + var(--ui-bump));
+  --list-row-h: calc(60px + var(--ui-bump) * 3);
   --item-row-pad: 6px;
   --thumb-w: 48px;
   --thumb-h: 36px;
   --thumb-size: 40px;
-  --topbar-h: 44px;
-  --side-header-h: 40px;
-  --tabbar-h: 52px;
+  --topbar-h: calc(44px + var(--ui-bump));
+  --side-header-h: calc(40px + var(--ui-bump));
+  --tabbar-h: calc(52px + var(--ui-bump));
   --section-gap: 12px;
+}
+
+/* ---------------------------------------------------------------------
+   FONT SIZE (Settings > Appearance). md is the scale at the top of this
+   file. Small never goes under 12px; large adds 1px a step, extra large
+   3px. Line heights are ratios, so they follow. --ui-bump grows controls,
+   rows and bars with the text (see component sizes). The sidebar's +2px
+   rows (calc(var(--text-sm) + 2px)) compose with every step.
+   --------------------------------------------------------------------- */
+[data-font-size="sm"] {
+  --text-xs: 12px; --text-sm: 12px; --text-md: 13px; --text-lg: 15px; --text-xl: 18px; --text-2xl: 22px;
+  --ui-bump: -2px;
+}
+[data-font-size="lg"] {
+  --text-xs: 13px; --text-sm: 14px; --text-md: 15px; --text-lg: 17px; --text-xl: 21px; --text-2xl: 25px;
+  --ui-bump: 2px;
+  --icon-md: 17px;
+}
+[data-font-size="xl"] {
+  --text-xs: 15px; --text-sm: 16px; --text-md: 17px; --text-lg: 19px; --text-xl: 23px; --text-2xl: 27px;
+  --lh-sm: 1.5; --lh-md: 1.42; --lh-prose: 1.6;
+  --ui-bump: 4px;
+  --icon-sm: 15px; --icon-md: 18px; --icon-lg: 20px; --icon-tile: 22px;
+}
+
+/* RADIUS (Settings > Appearance > Corners): scales every --radius-* step. */
+[data-radius="sharp"] { --radius-k: 0.4; }
+[data-radius="round"] { --radius-k: 1.5; }
+
+/* SIDEBAR WIDTH (Settings > Layout). */
+[data-sidebar-width="narrow"] { --sidebar-w: 220px; }
+[data-sidebar-width="wide"] { --sidebar-w: 288px; }
+
+/* MOTION: "Reduce motion" in Settings matches the OS setting below;
+   skins.css also shortens animations for it as base.css does. */
+[data-motion="reduced"] {
+  --dur-fast: 0ms;
+  --dur-base: 80ms;
+  --dur-slow: 120ms;
+  --press-scale: 1;
+  --enter-scale: 1;
+  --enter-shift: 0px;
 }
 
 /* SURFACE: the side panel keeps the type scale, tightens the frame. */

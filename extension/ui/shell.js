@@ -14,10 +14,14 @@ import { renderNotesWorkspace, renderTasks, renderSideNotes, createNote } from '
 import { renderAiPanel, askAi } from './ai-panel.js';
 import { openCommandPalette } from './command.js';
 import { openAdd } from './quick-add.js';
-import { openSettings } from './settings.js';
+import { openSettings, renderSettingsPage } from './settings.js';
 import { openCollectionEditor } from './collections.js';
 import { SORT_OPTIONS } from './selectors.js';
 import { dailyNoteTitle } from '../lib/notes.js';
+import { renderDashboard } from './dashboard/index.js';
+import { renderAssistantPage } from './assistant-page.js';
+import { renderStickiesView } from './stickies.js';
+import { ownsHeader, isSettingsView } from './routes.js';
 
 const SIDE_TABS = [
   { id: 'library', label: 'Library', icon: 'book-open-text' },
@@ -35,7 +39,9 @@ const SEARCH_TOKENS = [
   { token: 'site:', label: 'site:example.com', hint: 'Website' },
   { token: '"', label: '"exact phrase"', hint: 'Phrase' },
 ];
-const NON_ITEM_VIEWS = ['notes', 'tasks', 'map'];
+const NON_ITEM_VIEWS = ['notes', 'tasks', 'map', 'dashboard', 'assistant', 'stickies'];
+// Panels the full tab shows beside the main view (settings are a view there; the side panel shows them as a covering panel).
+const FULL_PANELS = ['item', 'ai'];
 const PANEL = { min: 340, max: 640, fallback: 400, step: 16 };
 const WIDE = '(min-width: 1100px)';
 
@@ -57,10 +63,12 @@ const nextTheme = () => (document.documentElement.dataset.theme === 'dark' ? 'li
 const dispatchOr = (ctx, name, fallback) => (hasAction(name) ? ctx.dispatch(name, {}) : fallback());
 
 export function viewTitle(ctx, view = ctx.state.view) {
+  if (isSettingsView(view)) return 'Settings';
   if (view.startsWith('collection:')) return ctx.select.collection(view.slice(11))?.name || 'Collection';
   if (view.startsWith('tag:')) return `#${view.slice(4)}`;
   if (view.startsWith('type:')) return { bookmark: 'Links', article: 'Articles', image: 'Images', video: 'Videos', file: 'Files' }[view.slice(5)] || 'Items';
-  return { all: 'All items', inbox: 'Inbox', favorites: 'Favorites', notes: 'Notes', tasks: 'Tasks', highlights: 'Highlights', map: 'Knowledge map',
+  return { dashboard: 'Dashboard', assistant: 'AI Assistant', stickies: 'Sticky notes',
+    all: 'All items', inbox: 'Inbox', favorites: 'Favorites', notes: 'Notes', tasks: 'Tasks', highlights: 'Highlights', map: 'Knowledge map',
     archive: 'Archive', trash: 'Trash', duplicates: 'Duplicates', untagged: 'Untagged', reminders: 'Reminders' }[view] || 'All items';
 }
 
@@ -106,6 +114,10 @@ function renderTopbar(ctx, docked) {
 
 function renderMain(ctx) {
   const view = ctx.state.view;
+  if (isSettingsView(view)) return renderSettingsPage(ctx, { surface: 'full' });
+  if (view === 'dashboard') return renderDashboard(ctx);
+  if (view === 'assistant') return renderAssistantPage(ctx);
+  if (view === 'stickies') return renderStickiesView(ctx);
   if (view === 'notes') return renderNotesWorkspace(ctx);
   if (view === 'tasks') return renderTasks(ctx);
   if (view === 'map') return renderMap(ctx);
@@ -114,7 +126,7 @@ function renderMain(ctx) {
 
 function renderPanel(ctx, { inert }) {
   const panel = ctx.state.panel;
-  if (!panel) return '';
+  if (!FULL_PANELS.includes(panel?.kind)) return '';
   return html`<div class="panel-scrim" data-key="panel-scrim" data-action="app.close-panel" aria-hidden="true"></div>
     <aside class="${cx('panel', `panel-${panel.kind}`)}" id="panel" aria-label="${panel.kind === 'ai' ? 'Assistant' : 'Item details'}" data-key="panel" ${inert ? raw('inert') : ''}>
       ${panel.kind === 'ai' ? renderAiPanel(ctx, { surface: 'full' }) : renderDetail(ctx, panel.id, { surface: 'full' })}
@@ -129,12 +141,15 @@ function renderFull(ctx) {
   ui.docked = docked;
   if (docked) ui.navOpen = false;
   const navOpen = !docked && ui.navOpen;
-  return html`<div class="${cx('app-frame', 'is-full', docked ? 'has-sidebar' : 'is-nav-collapsed', navOpen && 'is-nav-open', ctx.state.panel && 'has-panel')}"
+  // The dashboard, the assistant and settings draw their own header (with navToggle from sidebar.js) instead of the top bar.
+  const topbar = !ownsHeader(ctx.state.view);
+  const panel = FULL_PANELS.includes(ctx.state.panel?.kind);
+  return html`<div class="${cx('app-frame', 'is-full', docked ? 'has-sidebar' : 'is-nav-collapsed', navOpen && 'is-nav-open', panel && 'has-panel', !topbar && 'has-own-header')}"
     data-key="frame-full" style="--shell-panel-w:${panelWidth(ctx)}px">
     <nav class="sidebar" id="sidebar" aria-label="Library" data-key="sidebar" data-keydown="shell.nav-key" ${!docked && !navOpen ? raw('inert') : ''}>${renderSidebar(ctx)}</nav>
     ${docked ? '' : html`<div class="nav-scrim" data-key="nav-scrim" data-action="shell.close-nav" aria-hidden="true"></div>`}
     <div class="main-column" data-key="main-column" ${navOpen ? raw('inert') : ''}>
-      ${renderTopbar(ctx, docked)}
+      ${topbar ? renderTopbar(ctx, docked) : ''}
       <main id="main" class="main" tabindex="-1" data-view="${ctx.state.view}" data-drop-zone="main">${renderMain(ctx)}</main>
     </div>
     ${renderPanel(ctx, { inert: navOpen })}
@@ -167,6 +182,7 @@ function renderSideHeader(ctx, tab) {
 
 function renderSideContent(ctx) {
   const { state } = ctx;
+  if (state.panel?.kind === 'settings') return renderSettingsPage(ctx, { surface: 'side' });
   if (state.panel?.kind === 'item') return renderDetail(ctx, state.panel.id, { surface: 'side' });
   if (state.panel?.kind === 'ai' || state.sideTab === 'ask') return renderAiPanel(ctx, { surface: 'side' });
   if (state.sideTab === 'page') return renderPageTab(ctx);
@@ -178,11 +194,11 @@ function renderSide(ctx) {
   const tab = ctx.state.panel?.kind === 'ai' ? 'ask' : ctx.state.sideTab;
   // A Library drill-down brings its own header (back, title, layout, search, menu with Open in full tab), as in the
   // mock's side-library screen; stacking the app header above it would show two header rows.
-  // Item detail draws its own back header too.
-  const drill = ctx.state.panel?.kind === 'item' || (!ctx.state.panel && tab === 'library' && ctx.state.sideStack.length > 0);
+  // Item detail and settings draw their own back header too.
+  const drill = ['item', 'settings'].includes(ctx.state.panel?.kind) || (!ctx.state.panel && tab === 'library' && ctx.state.sideStack.length > 0);
   return html`<div class="app-frame is-side" data-key="frame-side">
     ${drill ? '' : renderSideHeader(ctx, tab)}
-    <main id="main" class="side-main" tabindex="-1" data-tab="${tab}" data-drop-zone="side">${renderSideContent(ctx)}</main>
+    <main id="main" class="side-main" tabindex="-1" data-tab="${ctx.state.panel?.kind === 'settings' ? 'settings' : tab}" data-drop-zone="side">${renderSideContent(ctx)}</main>
     <nav class="tabbar" aria-label="Sections"><div class="tabbar-inner">
       ${SIDE_TABS.map(t => html`<button type="button" class="tabbar-tab" ${t.id === tab ? raw('aria-current="page"') : ''} data-action="shell.side-tab" data-tab="${t.id}">
         ${icon(t.icon, { size: 18 })}<span class="tabbar-label">${t.label}</span></button>`)}
@@ -344,9 +360,11 @@ registerActions({
   'shell.focus-search': ({ ctx }) => {
     if (ctx.env.isSidepanel) return openCommandPalette(ctx, {});
     if (!shell(ctx).docked && shell(ctx).navOpen) setNav(ctx, false);
-    const el = document.getElementById('search');
-    el?.focus();
-    el?.select();
+    // Views without the top bar may mark their own search field (the dashboard's, settings') with data-view-search.
+    const el = [document.getElementById('search'), ...document.querySelectorAll('#main [data-view-search]')].find(node => node?.getClientRects().length);
+    if (!el) return openCommandPalette(ctx, {});
+    el.focus();
+    el.select?.();
   },
   'shell.toggle-nav': ({ ctx }) => (shell(ctx).wide ? toggleSidebar(ctx) : setNav(ctx, !shell(ctx).navOpen)),
   'shell.close-nav': ({ ctx }) => setNav(ctx, false),

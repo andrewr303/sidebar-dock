@@ -1,0 +1,275 @@
+/* Most visited widget (.w-most-visited-*): Chrome's top sites as white icon tiles with a label, or as a list with the
+   site's address; the Allow access, empty, all-hidden, error and preview states; the settings body (hidden sites).
+
+   States (tiles, rows and their ⋯ buttons):
+     default   tiles on an always-light plate (favicons are drawn for light backgrounds); rows show title and host
+     hover     the tile plate lifts slightly; rows tint with --bg-hover; the ⋯ button fades in (hover devices only)
+     focus     2px --focus-ring around the tile plate (offset) or inside the row; ⋯ is visible while focused
+     active    press scale (--press-scale) on the plate; rows darken to --bg-active
+     disabled  N/A: a site is either listed or hidden; nothing is shown disabled
+     loading   skeleton tiles or rows in the final geometry (aria-busy, a polite "Loading" status)
+     error     empty state with "Try again"; missing permission: "Allow access" (the one primary action)
+     selected  N/A: sites open on click; there is no selection */
+
+.w-most-visited {
+  --mv-tile: 52px;
+  --mv-tile-radius: 14px;
+  --mv-cell: 76px;
+  --mv-tile-bg: #ffffff;
+  --mv-tile-ring: rgb(20 24 32 / 0.08);
+  --mv-tile-shadow: 0 1px 2px rgb(20 24 32 / 0.08), 0 2px 6px -2px rgb(20 24 32 / 0.10);
+  --mv-plate-dark: #24272d;   /* behind light glyph favicons (white logos, dark-mode icons) */
+  block-size: 100%;
+  min-block-size: 0;
+}
+[data-theme="dark"] .w-most-visited {
+  /* Favicons are drawn for light backgrounds: keep the plates light, a step below pure white. */
+  --mv-tile-bg: #eceef1;
+  --mv-tile-ring: rgb(255 255 255 / 0.10);
+  --mv-tile-shadow: 0 1px 2px rgb(0 0 0 / 0.35), 0 4px 10px -4px rgb(0 0 0 / 0.45);
+}
+.w-most-visited.is-state { display: grid; place-items: center; }
+.w-most-visited.is-state .empty-state { padding: var(--space-4) 0; }
+@container widget (max-height: 120px) {
+  .w-most-visited.is-state .empty-state-icon { display: none; }
+  .w-most-visited.is-state .empty-state { padding-block: 0; }
+  .w-most-visited.is-state .empty-state-body { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+}
+
+/* ---------- Tiles ---------- */
+.w-most-visited-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--mv-cell), 1fr));
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: var(--space-4) 0;
+  margin: 0;
+  /* Room for the hover lift and the focus ring, which sits 3px outside the plate. */
+  padding: var(--space-2) 0 var(--space-3);
+  list-style: none;
+}
+.w-most-visited-cell { position: relative; display: flex; justify-content: center; min-inline-size: 0; }
+.w-most-visited-link {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  inline-size: 100%;
+  min-inline-size: 0;
+  padding: var(--space-2) var(--space-2);
+  border-radius: var(--radius-lg);
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  -webkit-user-drag: element;
+}
+.w-most-visited-link:hover { text-decoration: none; }
+.w-most-visited-link:focus-visible { outline: none; }
+.w-most-visited-link:focus-visible .w-most-visited-tile { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+.w-most-visited-tile {
+  display: grid;
+  place-items: center;
+  flex: none;
+  inline-size: var(--mv-tile);
+  block-size: var(--mv-tile);
+  border-radius: var(--mv-tile-radius);
+  background: var(--mv-tile-bg);
+  box-shadow: 0 0 0 1px var(--mv-tile-ring), var(--mv-tile-shadow);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.w-most-visited-tile > .site-icon { border-radius: var(--radius-sm); overflow: hidden; }
+.w-most-visited-tile:has(> .w-links-icon.is-light), .w-most-visited-row-icon:has(> .w-links-icon.is-light) { background: var(--mv-plate-dark); }
+@media (hover: hover) {
+  .w-most-visited-link:hover .w-most-visited-tile { transform: scale(1.05); }
+}
+.w-most-visited-link:active .w-most-visited-tile { transform: scale(var(--press-scale)); }
+.w-most-visited-label {
+  max-inline-size: 100%;
+  overflow: hidden;
+  color: var(--fg-default);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  line-height: var(--lh-xs);
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Per-tile ⋯: appears on hover or focus beside the plate's corner, never over the tile's own click target. */
+.w-most-visited-more {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-end: max(0px, calc(50% - var(--mv-tile) / 2 - 10px));
+  display: grid;
+  place-items: center;
+  inline-size: 22px;
+  block-size: 22px;
+  border-radius: var(--radius-full);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-sm);
+  color: var(--fg-muted);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+/* 22px visual, 30px target. */
+.w-most-visited-more::before { content: ''; position: absolute; inset: -4px; }
+.w-most-visited-more:focus-visible { opacity: 1; outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.w-most-visited-more:active { scale: var(--press-scale); }
+@media (hover: hover) {
+  .w-most-visited-more:hover { color: var(--fg-default); }
+  .w-most-visited-cell:hover > .w-most-visited-more { opacity: 1; }
+}
+@media (hover: none) { .w-most-visited-more { opacity: 1; } }
+
+/* Small cards: no labels (names stay in the tooltip and the accessible name), smaller plates. */
+@container widget (max-height: 104px) {
+  .w-most-visited { --mv-tile: 44px; --mv-tile-radius: 12px; --mv-cell: 58px; }
+  .w-most-visited-label { display: none; }
+  .w-most-visited-more { inset-block-start: -2px; }
+}
+@container widget (max-width: 200px) {
+  .w-most-visited { --mv-tile: 44px; --mv-tile-radius: 12px; --mv-cell: 60px; }
+}
+/* Roomy cards: bigger plates. */
+@container widget (min-width: 520px) and (min-height: 220px) {
+  .w-most-visited { --mv-tile: 60px; --mv-tile-radius: 16px; --mv-cell: 92px; }
+}
+
+/* ---------- List ---------- */
+.w-most-visited-list { display: grid; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
+.w-most-visited-row { position: relative; display: flex; align-items: center; min-inline-size: 0; }
+.w-most-visited-row-link {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-5);
+  min-inline-size: 0;
+  min-block-size: 40px;
+  padding: var(--space-3) calc(var(--space-4) + 28px) var(--space-3) var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--fg-default);
+  text-align: start;
+  text-decoration: none;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.w-most-visited-row-link:hover { text-decoration: none; }
+@media (hover: hover) { .w-most-visited-row-link:hover { background: var(--bg-hover); } }
+.w-most-visited-row-link:active { background: var(--bg-active); }
+.w-most-visited-row-link:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.w-most-visited-row-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  inline-size: 28px;
+  block-size: 28px;
+  border-radius: var(--radius-md);
+  background: var(--mv-tile-bg);
+  box-shadow: 0 0 0 1px var(--mv-tile-ring);
+}
+.w-most-visited-row-text { display: flex; flex-direction: column; min-inline-size: 0; }
+.w-most-visited-row-title, .w-most-visited-row-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.w-most-visited-row-title { font-size: var(--text-sm); font-weight: var(--weight-medium); line-height: var(--lh-sm); }
+.w-most-visited-row-host { color: var(--fg-muted); font-size: var(--text-xs); line-height: var(--lh-xs); }
+.w-most-visited-row-more {
+  position: absolute;
+  inset-inline-end: var(--space-3);
+  display: grid;
+  place-items: center;
+  inline-size: var(--control-h-xs);
+  block-size: var(--control-h-xs);
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
+}
+.w-most-visited-row-more:focus-visible { opacity: 1; outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.w-most-visited-row-more:active { scale: var(--press-scale); }
+@media (hover: hover) {
+  .w-most-visited-row-more:hover { background: var(--bg-active); color: var(--fg-default); }
+  .w-most-visited-row:hover > .w-most-visited-row-more { opacity: 1; }
+}
+@media (hover: none) { .w-most-visited-row-more { opacity: 1; } }
+/* Wide lists: the address sits beside the title. */
+@container widget (min-width: 440px) {
+  .w-most-visited-row-text { flex-direction: row; align-items: baseline; gap: var(--space-5); flex: 1; }
+  .w-most-visited-row-title { flex: 0 1 auto; }
+  .w-most-visited-row-host { flex: 1 1 0; min-inline-size: 6ch; }
+}
+/* Short lists: single-line rows. */
+@container widget (max-height: 104px) {
+  .w-most-visited-row-link { min-block-size: 32px; padding-block: var(--space-2); }
+  .w-most-visited-row-icon { inline-size: 24px; block-size: 24px; border-radius: var(--radius-sm); }
+  .w-most-visited-row-host { display: none; }
+}
+
+.dashboard.is-editing :is(.w-most-visited-more, .w-most-visited-row-more) { display: none; }
+/* Chrome's order is fixed: no drop cue when a tile is dragged within its own widget (it can still go to a links folder). */
+.w-most-visited [data-links-grid].is-drop-active { background: none; }
+.w-most-visited-cell.is-dragging, .w-most-visited-row.is-dragging { opacity: 0.35; }
+
+/* ---------- Loading skeleton ---------- */
+.w-most-visited.is-loading .w-most-visited-tile { box-shadow: none; }
+.w-most-visited-bone { block-size: 10px; inline-size: 9em; max-inline-size: 100%; border-radius: var(--radius-xs); }
+.w-most-visited-bone.is-short { inline-size: 6em; margin-block-start: var(--space-2); }
+.w-most-visited-bone.is-label { inline-size: 70%; block-size: 8px; }
+.w-most-visited-row.is-skeleton .w-most-visited-row-icon { box-shadow: none; }
+
+/* ---------- Settings ---------- */
+.w-most-visited-settings { display: flex; flex-direction: column; gap: var(--space-8); }
+.w-most-visited-settings-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: var(--space-7); }
+.w-most-visited-settings-access {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4) var(--space-6);
+  padding: var(--space-5) var(--space-6);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+}
+.w-most-visited-settings-access p { flex: 1 1 16em; margin: 0; color: var(--fg-default); font-size: var(--text-sm); line-height: var(--lh-sm); text-wrap: pretty; }
+.w-most-visited-hidden { display: flex; flex-direction: column; gap: var(--space-3); min-inline-size: 0; margin: 0; padding: 0; border: 0; }
+.w-most-visited-hidden-title {
+  float: inline-start;
+  inline-size: 100%;
+  margin-block-end: var(--space-3);
+  padding: 0;
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+.w-most-visited-hidden-title + * { clear: both; }
+.w-most-visited-hidden-count {
+  display: inline-block;
+  min-inline-size: 18px;
+  margin-inline-start: var(--space-2);
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--bg-sunken);
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.w-most-visited-hidden-list { display: grid; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
+.w-most-visited-hidden-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  min-block-size: 36px;
+  padding-inline: var(--space-4) var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+}
+.w-most-visited-hidden-icon { display: grid; place-items: center; flex: none; }
+.w-most-visited-hidden-label { flex: 1; min-inline-size: 0; overflow: hidden; font-size: var(--text-sm); text-overflow: ellipsis; white-space: nowrap; }
+.w-most-visited-hidden-empty { margin: 0; color: var(--fg-muted); font-size: var(--text-xs); line-height: var(--lh-xs); text-wrap: pretty; }
+
+@media (forced-colors: active) {
+  .w-most-visited-tile, .w-most-visited-row-icon { border: 1px solid CanvasText; }
+  .w-most-visited-more { border: 1px solid ButtonText; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .w-most-visited-tile { transition: none; }
+}
+[data-motion="reduced"] .w-most-visited-tile { transition: none; }

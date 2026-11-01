@@ -43,9 +43,36 @@ function normalizeHighlight(value) {
     createdAt: text(value.createdAt) || now(), url: safeUrl(value.url) };
 }
 
+// Sticky notes are notes with a `sticky` placement: { color, board, x, y, w, h, z, hidden }. board is a dashboard board id
+// ('' = every board); x is a 0..1 fraction of the dashboard width; y, w and h are pixels; z orders overlapping notes.
+export const STICKY_COLORS = Object.freeze(['yellow', 'orange', 'pink', 'purple', 'blue', 'green', 'gray']);
+export const STICKY_LIMITS = Object.freeze({ minW: 160, maxW: 520, minH: 120, maxH: 520, maxY: 100000, maxZ: 1000000 });
+export const STICKY_DEFAULTS = Object.freeze({ color: 'yellow', board: '', x: 0.72, y: 24, w: 240, h: 220, z: 0, hidden: false });
+const finite = (value, fallback) => { const n = Number(value); return value !== null && value !== '' && Number.isFinite(n) ? n : fallback; };
+const within = (value, min, max) => Math.min(max, Math.max(min, value));
+
+/** The stored sticky placement for an item type ('note' only), or null. Missing or invalid fields take the defaults. */
+export function normalizeSticky(value, type = 'note') {
+  if (type !== 'note' || !value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const L = STICKY_LIMITS, D = STICKY_DEFAULTS;
+  return {
+    color: STICKY_COLORS.includes(value.color) ? value.color : D.color,
+    board: typeof value.board === 'string' ? value.board.trim().slice(0, 120) : D.board,
+    x: Math.round(within(finite(value.x, D.x), 0, 1) * 10000) / 10000,
+    y: Math.round(within(finite(value.y, D.y), 0, L.maxY)),
+    w: Math.round(within(finite(value.w, D.w), L.minW, L.maxW)),
+    h: Math.round(within(finite(value.h, D.h), L.minH, L.maxH)),
+    z: Math.round(within(finite(value.z, D.z), 0, L.maxZ)),
+    hidden: value.hidden === true,
+  };
+}
+
 export function normalizeItem(input, existing = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Item must be an object.');
   const merged = { ...existing, ...input };
+  // A partial sticky patch ({ sticky: { x, y } }) updates the stored placement; null turns the sticky back into a plain note.
+  const stickyPatch = input.sticky && typeof input.sticky === 'object' && !Array.isArray(input.sticky) && existing.sticky && typeof existing.sticky === 'object';
+  if (stickyPatch) merged.sticky = { ...existing.sticky, ...input.sticky };
   const type = merged.type || 'bookmark';
   if (!ITEM_TYPES.includes(type)) throw new Error('Unknown item type.');
   const url = safeUrl(merged.url);
@@ -69,6 +96,7 @@ export function normalizeItem(input, existing = {}) {
     attachmentId: text(merged.attachmentId), fileName: text(merged.fileName), mime: text(merged.mime),
     size: Number.isFinite(merged.size) && merged.size >= 0 ? merged.size : 0,
     pinned: merged.pinned === true, read: merged.read === true,
+    sticky: normalizeSticky(merged.sticky, type),
   };
   return item;
 }

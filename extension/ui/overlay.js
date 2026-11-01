@@ -10,6 +10,8 @@ const popovers = new Map();
 let ctx = null;
 let runtime = null;
 const restoreFocus = new WeakMap();
+// The menu's anchor while one of its items runs: the item goes away with the menu, so what it opens returns focus here.
+let menuOrigin = null;
 
 /** Register a dialog body: render(ctx, props) returns the dialog's inner markup (use dialogFrame from components). */
 export const registerDialog = (name, render, options = {}) => dialogs.set(name, { render, ...options });
@@ -18,10 +20,43 @@ export const registerPopover = (name, render, options = {}) => popovers.set(name
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
 const focusables = el => [...el.querySelectorAll(FOCUSABLE)].filter(n => n.offsetParent !== null || n === document.activeElement);
+const MENU_ITEMS = '[role^="menuitem"]:not([aria-disabled="true"]), [role="option"]:not([aria-disabled="true"])';
+
+/**
+ * The element focus should go back to when something opened now closes: the focused element, or, when that goes away
+ * with a menu or popover (or focus is already lost), the anchor of the menu whose item runs or of the open popover.
+ */
+export function focusOrigin() {
+  const active = document.activeElement;
+  const inPopover = !!active?.closest?.('#still-popover');
+  if (active && active !== document.body && active.isConnected && !inPopover) return active;
+  const pop = inPopover ? ctx?.state.popover : null;
+  return menuOrigin || (pop && (pop.anchorEl || pop.opener)) || active;
+}
+
+/**
+ * Focuses el, or the one element a re-render put in its place (same id, or the same data-* attributes).
+ * Returns false when neither is there.
+ */
+export function refocus(el) {
+  if (!el || el === document.body) return false;
+  let target = el.isConnected ? el : null;
+  if (!target && el.nodeType === 1) {
+    const data = [...el.attributes].filter(a => a.name.startsWith('data-')).map(a => `[${a.name}="${CSS.escape(a.value)}"]`).join('');
+    const selector = el.id ? `#${CSS.escape(el.id)}` : data && `${el.localName}${data}`;
+    const matches = selector ? [...document.querySelectorAll(selector)].filter(n => n.getClientRects().length) : [];
+    target = matches.length === 1 ? matches[0] : null;
+  }
+  if (!target) return false;
+  target.focus({ preventScroll: true });
+  // A control shown only on hover (a row's … button once the pointer has left) cannot take focus: the row around it can.
+  if (document.activeElement !== target) target.parentElement?.closest('[tabindex], a[href], button:not([disabled])')?.focus({ preventScroll: true });
+  return true;
+}
 
 export function openDialog(name, props = {}) {
   if (!dialogs.has(name)) throw new Error(`Unknown dialog: ${name}`);
-  const opener = document.activeElement;
+  const opener = focusOrigin();
   closePopover();
   const entry = { name, props, id: `dialog-${name}-${ctx.state.dialogs.length}` };
   restoreFocus.set(entry, opener);
@@ -46,7 +81,7 @@ export function closeDialog(name) {
   ctx.state.dialogs = stack.filter((_, i) => i !== index);
   entry.props.onClose?.();
   const opener = restoreFocus.get(entry);
-  runtime.nextFrame(() => { if (opener?.isConnected) opener.focus({ preventScroll: true }); });
+  runtime.nextFrame(() => refocus(opener));
   return true;
 }
 export const isDialogOpen = name => ctx.state.dialogs.some(d => !name || d.name === name);
@@ -69,7 +104,7 @@ export function openPopover(name, anchor, props = {}, { placement = 'bottom-star
   runtime.nextFrame(() => {
     const el = document.getElementById('still-popover');
     if (!el || !focus) return;
-    const target = el.querySelector('[autofocus], [data-autofocus]') || el.querySelector('[role="menuitem"]:not([aria-disabled="true"]), [role="option"]') || focusables(el)[0];
+    const target = el.querySelector('[autofocus], [data-autofocus]') || el.querySelector(MENU_ITEMS) || focusables(el)[0];
     target?.focus({ preventScroll: true });
   });
 }
@@ -196,7 +231,7 @@ function syncIndeterminate() {
 }
 
 function moveMenuFocus(menu, delta, absolute) {
-  const items = [...menu.querySelectorAll('[role^="menuitem"]:not([aria-disabled="true"]), [role="option"]:not([aria-disabled="true"])')];
+  const items = [...menu.querySelectorAll(MENU_ITEMS)];
   if (!items.length) return;
   const index = items.indexOf(document.activeElement);
   const next = absolute !== undefined ? (absolute < 0 ? items.length - 1 : 0) : (index + delta + items.length) % items.length;
@@ -226,9 +261,12 @@ export function initOverlays(appCtx, appRuntime) {
       const item = pop?.props.items?.[Number(data.index)];
       if (!item || item.disabled) return;
       const anchor = pop.anchorEl;
+      menuOrigin = anchor || pop.opener;
       closePopover({ restore: !item.keepFocus });
-      if (item.run) await item.run(event);
-      else if (item.action) await ctx.dispatch(item.action, { el: anchor || document.body, event, ctx, data: { ...(item.data || {}) } });
+      try {
+        if (item.run) await item.run(event);
+        else if (item.action) await ctx.dispatch(item.action, { el: anchor || document.body, event, ctx, data: { ...(item.data || {}) } });
+      } finally { menuOrigin = null; }
     },
   });
 

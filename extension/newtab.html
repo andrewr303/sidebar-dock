@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en" data-entry="newtab" data-theme="light" data-accent="blue" data-density="comfortable">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="still-build" content="still-0.4.0">
+  <title>New Tab</title>
+  <link rel="icon" href="icons/icon48.png">
+  <script src="theme-boot.js"></script>
+  <link rel="stylesheet" href="styles/tokens.css">
+  <link rel="stylesheet" href="styles/base.css">
+  <link rel="stylesheet" href="styles/components.css">
+  <link rel="stylesheet" href="styles/shell.css">
+  <link rel="stylesheet" href="styles/library.css">
+  <link rel="stylesheet" href="styles/detail.css">
+  <link rel="stylesheet" href="styles/capture.css">
+  <link rel="stylesheet" href="styles/notes.css">
+  <link rel="stylesheet" href="styles/editor.css">
+  <link rel="stylesheet" href="styles/ai.css">
+  <link rel="stylesheet" href="styles/settings.css">
+  <link rel="stylesheet" href="styles/map.css">
+  <link rel="stylesheet" href="styles/dashboard.css">
+  <link rel="stylesheet" href="styles/widgets.css">
+  <link rel="stylesheet" href="styles/stickies.css">
+  <link rel="stylesheet" href="styles/assistant.css">
+  <link rel="stylesheet" href="styles/skins.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div id="app" aria-busy="true"><div class="boot" role="status"><span class="boot-mark" aria-hidden="true"></span><span class="sr-only">Loading Still</span></div></div>
+  <div id="toast-root" class="toast-root" aria-live="polite"></div>
+  <input id="file-input" type="file" multiple hidden>
+  <input id="import-input" type="file" accept=".json,.html,.htm,.csv" hidden>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

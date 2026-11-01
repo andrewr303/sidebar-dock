@@ -14,7 +14,10 @@ const WEB_URL = /^https?:\/\/\S+\.\S+$/i;
 const ext = ctx => ctx.env.isExtension;
 const full = ctx => !ctx.env.isSidepanel;
 
-/** Every command: label (string or ctx => string), icon, keywords, action (+ data) or view, shortcut, when(ctx), pinned (shown with an empty query). */
+/**
+ * Every command: label (string or ctx => string), icon, keywords, action (+ data) and/or view (a view with an action
+ * goes there first, then runs the action), shortcut, when(ctx), pinned (shown with an empty query).
+ */
 export const COMMANDS = [
   { id: 'add', label: 'Add link', icon: 'link', keywords: 'save bookmark url new paste', shortcut: 'a', action: 'shell.add', pinned: true },
   { id: 'note', label: 'New note', icon: 'square-pen', keywords: 'write create document', shortcut: 'n', action: 'shell.new-note', pinned: true },
@@ -25,10 +28,18 @@ export const COMMANDS = [
   { id: 'save-tabs', label: 'Save all tabs', icon: 'layers', keywords: 'window session collection', action: 'add.save-tabs', when: ctx => ext(ctx) && hasAction('add.save-tabs') },
   { id: 'upload', label: 'Upload files', icon: 'upload', keywords: 'pdf image attach', action: 'add.upload', when: () => hasAction('add.upload') },
   { id: 'new-collection', label: 'New collection', icon: 'folder-plus', keywords: 'folder create group', action: 'collections.new', pinned: true },
+  { id: 'go-dashboard', label: 'Go to Dashboard', icon: 'layout-dashboard', keywords: 'home start page new tab widgets', view: 'dashboard' },
+  { id: 'assistant', label: 'Open AI Assistant', icon: 'bot-message-square', keywords: 'full screen chat conversations history', view: 'assistant' },
   { id: 'go-all', label: 'Go to All items', icon: 'book-open-text', keywords: 'everything library', view: 'all' },
   { id: 'go-inbox', label: 'Go to Inbox', icon: 'inbox', keywords: 'unsorted', view: 'inbox' },
   { id: 'go-favorites', label: 'Go to Favorites', icon: 'star', keywords: 'starred', view: 'favorites' },
   { id: 'go-notes', label: 'Go to Notes', icon: 'sticky-note', keywords: 'writing', view: 'notes' },
+  { id: 'go-stickies', label: 'Go to Sticky notes', icon: 'sticker', keywords: 'post-it memo board', view: 'stickies' },
+  { id: 'new-sticky', label: 'New sticky note', icon: 'sticker', keywords: 'post-it memo quick jot', action: 'stickies.new', when: () => hasAction('stickies.new') },
+  { id: 'add-widget', label: 'Add widget', icon: 'layout-grid', keywords: 'dashboard gallery clock weather github linear kanban', view: 'dashboard', action: 'dashboard.add-widget',
+    when: ctx => full(ctx) && hasAction('dashboard.add-widget') },
+  { id: 'edit-dashboard', label: 'Edit dashboard layout', icon: 'move-diagonal-2', keywords: 'arrange resize move widgets', view: 'dashboard', action: 'dashboard.edit',
+    when: ctx => full(ctx) && hasAction('dashboard.edit') },
   { id: 'go-tasks', label: 'Go to Tasks', icon: 'list-checks', keywords: 'todo checklist', view: 'tasks', when: full },
   { id: 'go-highlights', label: 'Go to Highlights', icon: 'highlighter', keywords: 'quotes marks', view: 'highlights' },
   { id: 'go-map', label: 'Go to Knowledge map', icon: 'waypoints', keywords: 'graph links connections', view: 'map' },
@@ -38,6 +49,12 @@ export const COMMANDS = [
   { id: 'sidebar', label: 'Show or hide the sidebar', icon: 'panel-left', keywords: 'toggle navigation', shortcut: 'mod+\\', action: 'shell.toggle-sidebar', when: full },
   { id: 'theme', label: ctx => (document.documentElement.dataset.theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'), icon: 'sun-moon', keywords: 'appearance mode dark light', action: 'shell.toggle-theme' },
   { id: 'settings', label: 'Open settings', icon: 'settings', keywords: 'preferences options', action: 'shell.settings', data: { section: 'general' } },
+  { id: 'appearance', label: 'Appearance & themes', icon: 'palette', keywords: 'skin liquid glass white midnight nord paper rose font size text corners density',
+    action: 'shell.settings', data: { section: 'appearance' } },
+  { id: 'newtab', label: 'New tab & dashboard', icon: 'app-window', keywords: 'start page wallpaper background search engine greeting',
+    action: 'shell.settings', data: { section: 'newtab' } },
+  { id: 'accounts', label: 'Connected accounts', icon: 'key-round', keywords: 'github linear product hunt token sign in oauth',
+    action: 'shell.settings', data: { section: 'accounts' } },
   { id: 'ai-models', label: 'AI models', icon: 'bot', keywords: 'settings provider api key anthropic claude openai ollama', action: 'shell.settings', data: { section: 'ai' } },
   { id: 'semantic', label: 'Semantic search settings', icon: 'brain', keywords: 'embeddings index voyage', action: 'shell.settings', data: { section: 'search' } },
   { id: 'agents', label: 'Connect Claude Code or Codex', icon: 'terminal', keywords: 'mcp agents bridge desktop', action: 'shell.settings', data: { section: 'agents' } },
@@ -192,8 +209,12 @@ function commandOption(ctx, command) {
     leading: html`<span class="command-glyph">${icon(command.icon, { size: 16 })}</span>`,
     meta: command.shortcut ? kbd(command.shortcut) : '',
     run: ctx => {
-      if (command.view) return goToView(ctx, command.view);
-      return ctx.dispatch(command.action, { data: { ...(command.data || {}) } });
+      if (!command.action) return goToView(ctx, command.view);
+      const act = () => ctx.dispatch(command.action, { data: { ...(command.data || {}) } });
+      if (!command.view || ctx.state.view === command.view) return act();
+      // The action belongs to the view (e.g. Add widget on the dashboard): open the view, then run it once it renders.
+      goToView(ctx, command.view);
+      ctx.nextFrame(() => ctx.run(act));
     },
   };
 }

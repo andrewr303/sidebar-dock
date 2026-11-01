@@ -1,0 +1,424 @@
+/* Links folder widget (.w-links-folder-*): a panel of white rounded icon tiles with labels, or at 2×2 a folder whose
+   three site icons peek out of its pocket and which opens a popup grid. The tile grid (.w-links-grid, .w-links-cell,
+   .w-links-link, .w-links-tile, .w-links-label, .w-links-more), the link form popover (.w-links-form-*) and the
+   URL + title rows editor (.w-links-rows-*, .w-links-row-*) are shared with the quick links widget. */
+
+/* Brand-like tile colors live here as tokens (with dark values); everything else uses semantic tokens. */
+.w-links-folder, .w-links-folder-popup, .w-links-folder-xs, .w-quick-links {
+  --lf-tile: 56px;
+  --lf-tile-radius: 16px;
+  --lf-cell: 80px;
+  --lf-tile-bg: #ffffff;
+  --lf-tile-fg: #3d434d;        /* glyphs drawn on the always-light tile */
+  --lf-tile-ring: rgb(20 24 32 / 0.08);
+  --lf-tile-shadow: 0 1px 2px rgb(20 24 32 / 0.08), 0 2px 6px -2px rgb(20 24 32 / 0.10);
+  --lf-plate-dark: #24272d;   /* behind light glyph favicons (white logos, dark-mode icons) */
+}
+[data-theme="dark"] :is(.w-links-folder, .w-links-folder-popup, .w-links-folder-xs, .w-quick-links) {
+  /* Favicons are drawn for light backgrounds; keep the tiles light but a step below pure white. */
+  --lf-tile-bg: #eceef1;
+  --lf-tile-ring: rgb(255 255 255 / 0.10);
+  --lf-tile-shadow: 0 1px 2px rgb(0 0 0 / 0.35), 0 4px 10px -4px rgb(0 0 0 / 0.45);
+}
+:is(.w-links-folder, .w-links-folder-popup, .w-quick-links)[data-tiles="lg"] { --lf-tile: 68px; --lf-tile-radius: 18px; --lf-cell: 96px; }
+
+/* The widget body hosts the panel edge to edge (a bare frame already has no padding; a chosen card frame does). */
+.widget-body:has(> :is(.w-links-folder, .w-links-folder-xs)) { padding: 0; overflow: visible; }
+
+/* ---------- Panel ---------- */
+/* The same material as a widget card (dashboard.css .widget), drawn by the panel because the definition is bare. */
+.w-links-folder {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+  overflow: clip;
+  border: 1px solid var(--widget-border, var(--border-subtle));
+  border-radius: var(--widget-radius, var(--radius-2xl, 16px));
+  background: var(--widget-bg, var(--bg-surface));
+  box-shadow: var(--widget-rim, 0 0 0 0 transparent), var(--widget-shadow, var(--shadow-sm));
+  -webkit-backdrop-filter: blur(var(--widget-blur, 0px)) saturate(1.4);
+  backdrop-filter: blur(var(--widget-blur, 0px)) saturate(1.4);
+  color: var(--fg-default);
+  /* Bare widgets get a text halo over wallpapers; the panel and the folder bring their own backgrounds. */
+  text-shadow: none;
+}
+.w-links-folder-xs { text-shadow: none; }
+:root[data-skin="glass"] .widget.is-bare .w-links-folder { background-image: var(--glass-sheen); }
+/* A chosen frame (card, glass, flat) already paints the material; "No background" means none at all. */
+.widget:not(.is-bare) .w-links-folder, .widget[data-frame="none"] .w-links-folder {
+  border-color: transparent;
+  background: none;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.w-links-folder-head {
+  display: flex;
+  align-items: center;
+  flex: none;
+  min-block-size: 40px;
+  /* Lines up with the dashboard's card titles; the inline end keeps clear of the floating ⋯ button. */
+  padding: var(--space-3) calc(var(--space-3) + 36px) 0 var(--space-7);
+}
+.w-links-folder-title {
+  min-inline-size: 0;
+  overflow: hidden;
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  line-height: var(--lh-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.w-links-grid {
+  flex: 1;
+  min-block-size: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--lf-cell), 1fr));
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: var(--space-3) 0;
+  margin: 0;
+  padding: var(--space-3) var(--space-5) var(--space-7);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  list-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.w-links-folder.is-s .w-links-grid { padding-inline: var(--space-3); }
+
+.w-links-cell { position: relative; display: flex; justify-content: center; min-inline-size: 0; }
+.w-links-link {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  inline-size: 100%;
+  min-inline-size: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  -webkit-user-drag: element;
+}
+.w-links-link:hover { text-decoration: none; }
+.w-links-link:focus-visible { outline: none; }
+.w-links-link:focus-visible .w-links-tile { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+.w-links-tile {
+  display: grid;
+  place-items: center;
+  flex: none;
+  inline-size: var(--lf-tile);
+  block-size: var(--lf-tile);
+  border-radius: var(--lf-tile-radius);
+  background: var(--lf-tile-bg);
+  box-shadow: 0 0 0 1px var(--lf-tile-ring), var(--lf-tile-shadow);
+  color: var(--lf-tile-fg);
+  transition: transform var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out);
+}
+/* Tile icons (links/favicons.js): the favicon sits above the letter tile until the verdict is known, then only one shows. */
+.w-links-icon > .site-icon-img { z-index: 1; }
+.w-links-icon > .site-icon-img.is-probe { opacity: 0; }
+:is(.w-links-tile, .w-links-folder-peek-tile, .w-quick-links-row-icon):has(> .w-links-icon.is-light) { background: var(--lf-plate-dark); }
+.w-quick-links-chip > .w-links-icon.is-light { border-radius: var(--radius-xs); background: var(--lf-plate-dark); }
+.w-links-tile > .site-icon { border-radius: var(--radius-sm); overflow: hidden; }
+@media (hover: hover) {
+  .w-links-link:hover .w-links-tile { transform: scale(1.05); }
+}
+.w-links-link:active .w-links-tile { transform: scale(var(--press-scale)); transition-duration: var(--dur-fast); }
+.w-links-label {
+  max-inline-size: 100%;
+  overflow: hidden;
+  color: var(--fg-default);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  line-height: var(--lh-xs);
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The add tile: an outlined slot in the same geometry. */
+.w-links-link.is-add .w-links-tile {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--border-strong);
+  color: var(--fg-muted);
+}
+.w-links-link.is-add .w-links-label { color: var(--fg-muted); font-weight: var(--weight-regular); }
+@media (hover: hover) {
+  .w-links-link.is-add:hover .w-links-tile { background: var(--bg-hover); color: var(--fg-default); }
+}
+
+/* Per-tile ⋯: appears on hover or focus, never steals the tile's own click. */
+.w-links-more {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-end: max(0px, calc(50% - var(--lf-tile) / 2 - 10px));
+  display: grid;
+  place-items: center;
+  inline-size: 22px;
+  block-size: 22px;
+  border-radius: var(--radius-full);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-sm);
+  color: var(--fg-muted);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.w-links-more::before { content: ''; position: absolute; inset: -4px; }
+.w-links-more:hover { color: var(--fg-default); }
+.w-links-more:focus-visible { opacity: 1; }
+@media (hover: hover) {
+  .w-links-cell:hover > .w-links-more { opacity: 1; }
+}
+.dashboard.is-editing .w-links-more, .w-links-cell.is-dragging > .w-links-more { display: none; }
+
+/* Drag and drop cues: a bar where the link will land, the source faded. */
+.w-links-cell.is-dragging { opacity: 0.35; }
+.w-links-cell.is-drop-before::before, .w-links-cell.is-drop-after::after {
+  content: '';
+  position: absolute;
+  inset-block-start: var(--space-2);
+  block-size: var(--lf-tile);
+  inline-size: 3px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  pointer-events: none;
+}
+.w-links-cell.is-drop-before::before { inset-inline-start: -1.5px; }
+.w-links-cell.is-drop-after::after { inset-inline-end: -1.5px; }
+.w-links-grid.is-drop-active { background: color-mix(in oklab, var(--accent) 6%, transparent); }
+
+.w-links-folder-hint {
+  margin: calc(var(--space-4) * -1) var(--space-8) var(--space-7);
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  text-wrap: pretty;
+}
+
+/* Setup and missing-collection states. */
+.w-links-folder.is-setup { justify-content: center; padding: var(--space-6); }
+.w-links-folder.is-setup .empty-state { padding: 0; }
+.w-links-folder.is-setup .empty-state-actions { flex-wrap: wrap; justify-content: center; }
+
+/* ---------- Folder tile (2×2) ---------- */
+.w-links-folder-xs {
+  --lf-back-1: color-mix(in oklab, var(--accent) 38%, white);
+  --lf-back-2: color-mix(in oklab, var(--accent) 56%, white);
+  --lf-front-1: var(--accent);
+  --lf-front-2: color-mix(in oklab, var(--accent) 80%, black);
+  --lf-front-fg: var(--fg-on-accent);
+  display: grid;
+  block-size: 100%;
+}
+[data-theme="dark"] .w-links-folder-xs {
+  /* Quieter in the dark: slate tinted by the accent, like a lamp-lit folder rather than a neon one. The bases are opaque
+     on purpose (surface tokens are translucent in Liquid Glass and the pocket must hide the icons behind it). */
+  --lf-back-1: color-mix(in oklab, var(--accent) 26%, #2d323d);
+  --lf-back-2: color-mix(in oklab, var(--accent) 16%, #242832);
+  --lf-front-1: color-mix(in oklab, var(--accent) 18%, #1c1f27);
+  --lf-front-2: color-mix(in oklab, var(--accent) 10%, #16181e);
+  --lf-front-fg: #f2f4f7;
+}
+.w-links-folder-folder {
+  position: relative;
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  min-block-size: 96px;
+  overflow: hidden;
+  border-radius: 24px;
+  background: linear-gradient(to bottom, var(--lf-back-1), var(--lf-back-2));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.35), var(--shadow-sm);
+  text-align: start;
+  cursor: pointer;
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.w-links-folder-folder:active { transform: scale(var(--press-scale)); }
+.w-links-folder-folder:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+.w-links-folder-peek {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: calc(50% - 10px);
+  display: flex;
+  justify-content: center;
+  padding-inline: var(--space-4);
+  pointer-events: none;
+  transition: translate var(--dur-base) var(--ease-out);
+}
+@media (hover: hover) {
+  .w-links-folder-folder:hover .w-links-folder-peek { translate: 0 -5px; }
+}
+.w-links-folder-peek-tile {
+  display: grid;
+  place-items: center;
+  flex: none;
+  inline-size: 42px;
+  block-size: 42px;
+  border-radius: 11px;
+  background: var(--lf-tile-bg);
+  box-shadow: 0 0 0 1px var(--lf-tile-ring), var(--lf-tile-shadow);
+}
+.w-links-folder-peek[data-count="2"] .w-links-folder-peek-tile[data-i="0"],
+.w-links-folder-peek[data-count="3"] .w-links-folder-peek-tile[data-i="0"] { rotate: -12deg; }
+.w-links-folder-peek-tile[data-i="1"] { margin-inline-start: -16px; rotate: 6deg; }
+.w-links-folder-peek[data-count="3"] .w-links-folder-peek-tile[data-i="1"] { margin-block-start: -6px; }
+.w-links-folder-peek-tile[data-i="2"] { margin-inline-start: -16px; rotate: 12deg; }
+.w-links-folder-front {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  block-size: 50%;
+  min-block-size: 44px;
+  padding: var(--space-4) var(--space-7);
+  border-start-start-radius: 0;
+  border-start-end-radius: 14px;
+  border-end-start-radius: 24px;
+  border-end-end-radius: 24px;
+  background: linear-gradient(to bottom, var(--lf-front-1), var(--lf-front-2));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.22), 0 -6px 14px -6px rgb(0 0 0 / 0.25);
+  color: var(--lf-front-fg);
+}
+.w-links-folder-name {
+  overflow: hidden;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  line-height: var(--lh-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.w-links-folder-count { font-size: var(--text-xs); line-height: 1; opacity: 0.86; font-variant-numeric: tabular-nums; }
+
+/* ---------- Folder popup ---------- */
+/* The popover box itself stays invisible (id selector: skins restyle .popover); the popup inside carries the material. */
+#still-popover.w-links-folder-popover {
+  min-width: 0;
+  max-width: none;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.w-links-folder-popup {
+  --lf-popup-bg: var(--bg-raised);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  inline-size: 288px;
+  max-block-size: min(400px, calc(100vh - 32px));
+  padding: var(--space-7) var(--space-4) var(--space-4);
+  border-radius: 18px;
+  background: var(--lf-popup-bg);
+  box-shadow: var(--shadow-lg);
+}
+:root[data-skin="glass"] .w-links-folder-popup {
+  border: 1px solid var(--glass-border);
+  border-block-start-color: var(--glass-rim);
+  background: var(--glass-sheen), var(--lf-popup-bg);
+  box-shadow: inset 0 1px 0 var(--glass-rim), var(--glass-shadow-lg, var(--shadow-lg));
+  -webkit-backdrop-filter: var(--glass-blur-strong);
+  backdrop-filter: var(--glass-blur-strong);
+}
+:root[data-skin="glass"] .w-links-folder-arrow {
+  background: var(--lf-popup-bg);
+  -webkit-backdrop-filter: var(--glass-blur-strong);
+  backdrop-filter: var(--glass-blur-strong);
+}
+:root[data-skin="glass"] .w-links-folder-popup[data-edge="top"] .w-links-folder-arrow { top: -7px; box-shadow: -1px -1px 0 var(--glass-rim); }
+:root[data-skin="glass"] .w-links-folder-popup[data-edge="bottom"] .w-links-folder-arrow { bottom: -7px; box-shadow: 1px 1px 0 var(--glass-border); }
+.w-links-folder-popup[data-edge="top"] { translate: 0 6px; }
+.w-links-folder-popup[data-edge="bottom"] { translate: 0 -6px; }
+.w-links-folder-arrow {
+  position: absolute;
+  left: calc(var(--arrow-x, 50%) - 8px);
+  inline-size: 16px;
+  block-size: 16px;
+  border-radius: 3px;
+  background: var(--lf-popup-bg);
+  rotate: 45deg;
+  pointer-events: none;
+}
+.w-links-folder-popup:not([data-edge]) .w-links-folder-arrow { display: none; }
+.w-links-folder-popup[data-edge="top"] .w-links-folder-arrow { top: -6px; box-shadow: -1px -1px 0 var(--border-subtle); }
+.w-links-folder-popup[data-edge="bottom"] .w-links-folder-arrow { bottom: -6px; box-shadow: 1px 1px 0 var(--border-subtle); }
+.w-links-folder-popup-head { display: flex; align-items: baseline; gap: var(--space-4); padding: 0 var(--space-4) var(--space-6); }
+.w-links-folder-popup-title {
+  flex: 1;
+  min-inline-size: 0;
+  overflow: hidden;
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  line-height: var(--lh-md);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.w-links-folder-popup-count { flex: none; color: var(--fg-muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.w-links-grid.is-popup { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-6) 0; padding: var(--space-2) 0 var(--space-3); }
+
+/* ---------- Add / edit link popover (shared with quick links) ---------- */
+.popover.w-links-form-popover { min-width: 0; }
+.w-links-form { inline-size: min(320px, calc(100vw - 32px)); padding: var(--space-7); }
+.w-links-form > form { display: grid; gap: var(--space-6); }
+.w-links-form-heading { font-size: var(--text-md); font-weight: var(--weight-semibold); line-height: var(--lh-md); text-wrap: balance; }
+.w-links-form-actions { display: flex; justify-content: flex-end; gap: var(--space-4); margin-block-start: var(--space-2); }
+
+/* ---------- Settings: fields and the URL + title rows editor (shared with quick links) ---------- */
+.w-links-settings { display: grid; gap: var(--space-8); }
+.w-links-settings-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: var(--space-7); align-items: start; }
+.w-links-settings-fields.is-pair { grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
+.w-links-settings-picker, .w-links-settings-picker > .pick-trigger { display: flex; inline-size: 100%; }
+.w-links-settings-switches { display: grid; gap: var(--space-6); }
+
+.w-links-rows { display: grid; gap: var(--space-4); min-inline-size: 0; margin: 0; padding: 0; border: 0; container: links-rows / inline-size; }
+.w-links-rows-legend { padding: 0; margin-block-end: var(--space-2); color: var(--fg-default); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
+.w-links-rows-count { margin-inline-start: var(--space-2); color: var(--fg-muted); font-weight: var(--weight-regular); font-variant-numeric: tabular-nums; }
+.w-links-rows-hint, .w-links-rows-empty { color: var(--fg-subtle); font-size: var(--text-xs); line-height: var(--lh-xs); text-wrap: pretty; }
+.w-links-rows-head, .w-links-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 3fr) minmax(0, 2fr) 28px;
+  grid-template-areas: "icon url title remove" ". error error .";
+  align-items: center;
+  column-gap: var(--space-4);
+}
+.w-links-rows-head { color: var(--fg-muted); font-size: var(--text-xs); font-weight: var(--weight-medium); }
+.w-links-rows-head > :first-child { grid-area: url; }
+.w-links-rows-head > :last-child { grid-area: title; }
+.w-links-rows-list { display: grid; gap: var(--space-4); margin: 0; padding: 0; list-style: none; }
+.w-links-row-icon { grid-area: icon; display: grid; place-items: center; color: var(--fg-faint); }
+.w-links-row-url { grid-area: url; min-inline-size: 0; }
+.w-links-row-title { grid-area: title; min-inline-size: 0; }
+.w-links-row-remove { grid-area: remove; }
+.w-links-row-error { grid-area: error; margin-block-start: var(--space-2); }
+.w-links-rows-add { justify-self: start; }
+@container links-rows (max-width: 440px) {
+  .w-links-rows-head { display: none; }
+  .w-links-row {
+    grid-template-columns: 20px minmax(0, 1fr) 28px;
+    grid-template-areas: "icon url remove" ". title ." ". error .";
+    row-gap: var(--space-3);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .w-links-tile, .w-links-folder-peek, .w-links-folder-folder { transition: none; }
+  .w-links-link:hover .w-links-tile, .w-links-folder-folder:hover .w-links-folder-peek { transform: none; translate: none; }
+}
+[data-motion="reduced"] :is(.w-links-tile, .w-links-folder-peek, .w-links-folder-folder) { transition: none; }
+[data-motion="reduced"] .w-links-link:hover .w-links-tile { transform: none; }
+[data-motion="reduced"] .w-links-folder-folder:hover .w-links-folder-peek { translate: none; }
+@media (forced-colors: active) {
+  .w-links-tile, .w-links-folder-peek-tile { border: 1px solid CanvasText; }
+  .w-links-cell.is-drop-before::before, .w-links-cell.is-drop-after::after { background: Highlight; }
+}

@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
+import { execFile as nodeExecFile } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.mjs';
 import { createBridgeState } from './protocol.mjs';
@@ -30,7 +31,31 @@ async function readJson(request, { maximum = MAX_BODY } = {}) {
   }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw Object.assign(new Error('Request must contain valid JSON.'), { status: 400 }); }
 }
-export function createBridgeServer({ token, state = createBridgeState(), ai = createAiRouter(), connections = createConnectionsService(), extensionIds = [] }) {
+const GITHUB_TOKEN_RE = /^[A-Za-z0-9_.-]{20,255}$/;
+/**
+ * The GitHub credential this computer already uses, for Still's GitHub widget: `gh auth token` (no shell, bounded time and
+ * output), then GITHUB_TOKEN / GH_TOKEN from the bridge's environment. Resolves { token, source } or null. Never logged.
+ */
+export function createGitHubTokenSource({ execFile = nodeExecFile, env = process.env, timeout = 5000 } = {}) {
+  const fromCli = () => new Promise(resolve => {
+    try {
+      execFile('gh', ['auth', 'token'], { timeout, windowsHide: true, maxBuffer: 16 * 1024, env: { ...env, GH_PROMPT_DISABLED: '1', NO_COLOR: '1' } }, (error, stdout) => {
+        const value = String(stdout || '').trim();
+        resolve(!error && GITHUB_TOKEN_RE.test(value) ? value : '');
+      });
+    } catch { resolve(''); }
+  });
+  return async () => {
+    const cli = await fromCli();
+    if (cli) return { token: cli, source: 'gh' };
+    for (const name of ['GITHUB_TOKEN', 'GH_TOKEN']) {
+      const value = String(env?.[name] || '').trim();
+      if (GITHUB_TOKEN_RE.test(value)) return { token: value, source: name };
+    }
+    return null;
+  };
+}
+export function createBridgeServer({ token, state = createBridgeState(), ai = createAiRouter(), connections = createConnectionsService(), extensionIds = [], githubToken = createGitHubTokenSource() }) {
   if (typeof token !== 'string' || token.length < 24) throw new Error('A strong bridge token is required.');
   return createServer(async (request, response) => {
     const origin = request.headers.origin;
@@ -51,6 +76,12 @@ export function createBridgeServer({ token, state = createBridgeState(), ai = cr
     if (path === '/health' && request.method === 'GET') return reply(200, { name: 'still-library', requiresAuth: true });
     if (!authorized(request.headers.authorization, token)) return reply(401, { error: 'Invalid bridge token.' });
     try {
+      if (path === '/github/token') {
+        if (request.method !== 'GET') { response.setHeader('Allow', 'GET'); return reply(405, { error: 'Use GET to read the GitHub token.' }); }
+        const found = await githubToken();
+        if (!found) return reply(404, { error: 'No GitHub sign-in found on this computer. Run gh auth login, or start the bridge with GITHUB_TOKEN set, then try again.' });
+        return reply(200, { token: found.token, source: found.source });
+      }
       if (await ai.handle(request, response, { readJson, reply })) return;
       const connectionRoute = /^\/connections(?:\/([a-z][a-z-]{0,40})\/(preview|connect|disconnect|skills))?$/.exec(path);
       if (connectionRoute) {

@@ -1,0 +1,1353 @@
+/* =====================================================================
+   Still skins (Settings > Appearance > Theme). Linked last, after every
+   feature stylesheet, so a skin wins without !important.
+
+   <html data-skin="still|white|glass|midnight|nord|paper|rose"
+         data-theme="light|dark">   (resolved; single-mode skins force
+                                     their mode, see ui/themes.js)
+   still is tokens.css unchanged. Every other skin redefines the tier-2
+   semantic tokens for each mode it supports, so feature CSS keeps using
+   tokens only. Tokens a skin does not list (text highlight fills, the
+   collection palette, media card scrims) come from the Still tokens of
+   the resolved mode.
+
+   Accents: each skin's own accent is its "Blue" (the default). Other
+   accent presets keep their tokens.css fills; their soft tints are mixed
+   into the skin's surface (section 8). fg-on-accent is only set beside an
+   accent so presets with dark text on the fill (gold, graphite) keep it.
+
+   Sections
+     1. White            5. Rosé              9. Liquid Glass surfaces
+     2. Midnight         6. Liquid Glass      10. Wallpaper layer
+     3. Nord             7. Contrast boost    11. Dashboard widget material
+     4. Paper            8. Accent tints      12. Reduced transparency
+                                              13. Reduced motion
+   Contrast notes are WCAG 2.x ratios on the named surface (tests/themes-
+   skins.test.mjs recomputes them, including glass over its ambient).
+   ===================================================================== */
+
+/* ---------------------------------------------------------------------
+   1. WHITE (light only): pure white surfaces, crisp neutral hairlines.
+   --------------------------------------------------------------------- */
+:root[data-skin="white"] {
+  color-scheme: light;
+
+  --bg-app: #ffffff;
+  --bg-sidebar: #ffffff;
+  --bg-surface: #ffffff;
+  --bg-raised: #ffffff;
+  --bg-sunken: #f4f4f5;
+  --bg-field: #ffffff;
+  --bg-control: #ffffff;
+  --bg-disabled: #f0f0f1;
+  --bg-tag: rgb(24 24 27 / 0.055);
+  --bg-skeleton: #f0f0f1;
+  --bg-hover: rgb(24 24 27 / 0.045);
+  --bg-active: rgb(24 24 27 / 0.085);
+  --bg-scrim: rgb(9 9 11 / 0.32);
+  --bg-inverse: #18181b;
+
+  --fg-default: #18181b;   /* 17.7 on #fff */
+  --fg-muted: #52525b;     /* 7.7 on #fff */
+  --fg-subtle: #61616a;    /* 6.1 on #fff, 5.6 on sunken */
+  --fg-faint: #a1a1aa;
+  --fg-disabled: #a1a1aa;
+  --fg-inverse: #fafafa;
+  --fg-inverse-muted: #c4c4c9;
+  --fg-on-tile: #ffffff;
+  --switch-thumb: #ffffff;
+
+  --border-subtle: rgb(24 24 27 / 0.07);
+  --border-default: rgb(24 24 27 / 0.1);
+  --border-strong: rgb(24 24 27 / 0.2);
+  --border-input: #8b8b94;   /* 3.4 on #fff, 3.1 on sunken */
+  --border-input-hover: #61616a;
+  --border-control: #8b8b94;
+
+  --focus-ring: #0d6fc4;
+  --focus-ring-soft: rgb(13 111 196 / 0.2);
+
+  --danger: #c9342a;
+  --danger-hover: #b22c23;
+  --danger-solid: #c9342a;
+  --danger-solid-hover: #b22c23;
+  --danger-soft: #fdeeec;
+  --success: #17733f;
+  --success-soft: #e7f5ec;
+  --warning: #955700;
+  --warning-soft: #fdf3e2;
+  --info: #0a5ca8;
+  --info-soft: #e9f2fc;
+  --star: #ad7300;
+
+  --shadow-xs: 0 1px 2px rgb(9 9 11 / 0.05);
+  --shadow-sm: 0 0 0 1px rgb(9 9 11 / 0.08), 0 1px 2px rgb(9 9 11 / 0.05);
+  --shadow-md: 0 0 0 1px rgb(9 9 11 / 0.08), 0 4px 12px -2px rgb(9 9 11 / 0.08), 0 12px 28px -8px rgb(9 9 11 / 0.1);
+  --shadow-lg: 0 0 0 1px rgb(9 9 11 / 0.08), 0 10px 24px -6px rgb(9 9 11 / 0.1), 0 32px 64px -16px rgb(9 9 11 / 0.2);
+  --image-outline: rgb(0 0 0 / 0.1);
+
+  --tooltip-bg: #18181b;
+  --tooltip-fg: #fafafa;
+  --toast-bg: #18181b;
+  --toast-fg: #fafafa;
+  --toast-fg-muted: #b4b4bb;
+  --toast-hover: rgb(255 255 255 / 0.12);
+  --toast-active: rgb(255 255 255 / 0.2);
+  --toast-success: #5fcf8a;
+  --toast-danger: #ff8a82;
+  --toast-warning: #f2b441;
+  --toast-action: #8cc2f5;
+  --toast-focus: #8cc2f5;
+  --skeleton-shine: rgb(255 255 255 / 0.7);
+}
+:root[data-skin="white"][data-accent="blue"] {
+  --accent: #0d6fc4;           /* white 5.1 */
+  --accent-hover: #0b63b0;
+  --accent-active: #0a589c;
+  --accent-soft: #e9f2fc;
+  --accent-soft-strong: #d6e7fa;
+  --accent-soft-fg: #0a5ca8;   /* 5.9 on soft */
+  --fg-on-accent: #ffffff;
+}
+
+/* ---------------------------------------------------------------------
+   2. MIDNIGHT (dark only): true black for OLED, periwinkle accent.
+   --------------------------------------------------------------------- */
+:root[data-skin="midnight"] {
+  color-scheme: dark;
+
+  --bg-app: #000000;
+  --bg-sidebar: #000000;
+  --bg-surface: #0c0c0e;
+  --bg-raised: #16161a;
+  --bg-sunken: #141418;
+  --bg-field: #0c0c0e;
+  --bg-control: #1d1d22;
+  --bg-disabled: #18181c;
+  --bg-tag: rgb(255 255 255 / 0.08);
+  --bg-skeleton: rgb(255 255 255 / 0.07);
+  --bg-hover: rgb(255 255 255 / 0.065);
+  --bg-active: rgb(255 255 255 / 0.11);
+  --bg-scrim: rgb(0 0 0 / 0.72);
+  --bg-inverse: #f2f2f3;
+
+  --fg-default: #f2f2f3;   /* 19.4 on #000 */
+  --fg-muted: #b8b8bf;     /* 10.6 on #000, 9.0 on raised */
+  --fg-subtle: #9a9aa2;    /* 7.6 on #000, 6.5 on raised */
+  --fg-faint: #5c5c64;
+  --fg-disabled: #5c5c64;
+  --fg-inverse: #0c0c0e;
+  --fg-inverse-muted: #55555c;
+  --fg-on-tile: #0c0c0e;
+  --switch-thumb: #f2f2f3;
+
+  --border-subtle: rgb(255 255 255 / 0.075);
+  --border-default: rgb(255 255 255 / 0.115);
+  --border-strong: rgb(255 255 255 / 0.2);
+  --border-input: #6c6c75;   /* 4.0 on #000, 3.4 on raised */
+  --border-input-hover: #8e8e97;
+  --border-control: #75757e;
+
+  --focus-ring: #7aa2ff;     /* 8.4 on #000 */
+  --focus-ring-soft: rgb(122 162 255 / 0.28);
+
+  --danger: #ff7a70;
+  --danger-hover: #ff8f87;
+  --danger-solid: #c9342a;
+  --danger-solid-hover: #b52e25;
+  --danger-soft: #2b100e;
+  --success: #5fd08e;
+  --success-soft: #0c2617;
+  --warning: #f0b44c;
+  --warning-soft: #2b1e08;
+  --info: #9dbbff;
+  --info-soft: #111a30;
+  --star: #f2c15a;
+
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.6);
+  --shadow-sm: 0 0 0 1px rgb(255 255 255 / 0.08), 0 1px 3px rgb(0 0 0 / 0.6);
+  --shadow-md: 0 0 0 1px rgb(255 255 255 / 0.1), 0 10px 30px -6px rgb(0 0 0 / 0.9);
+  --shadow-lg: 0 0 0 1px rgb(255 255 255 / 0.12), 0 24px 64px -12px rgb(0 0 0 / 0.95);
+  --image-outline: rgb(255 255 255 / 0.1);
+  --favicon-ring: rgb(255 255 255 / 0.16);
+
+  --media-bg: #000000;
+  --media-scrim-start: rgb(0 0 0 / 0.94);
+  --media-scrim-mid: rgb(0 0 0 / 0.82);
+  --media-scrim-end: rgb(0 0 0 / 0.3);
+
+  --tooltip-bg: #f2f2f3;
+  --tooltip-fg: #0c0c0e;
+  --toast-bg: #f2f2f3;
+  --toast-fg: #0c0c0e;
+  --toast-fg-muted: #55555c;
+  --toast-hover: rgb(0 0 0 / 0.07);
+  --toast-active: rgb(0 0 0 / 0.12);
+  --toast-success: #17733f;
+  --toast-danger: #c9342a;
+  --toast-warning: #955700;
+  --toast-action: #2350c2;
+  --toast-focus: #2350c2;
+  --skeleton-shine: rgb(255 255 255 / 0.05);
+}
+:root[data-skin="midnight"][data-accent="blue"] {
+  --accent: #7aa2ff;           /* fill with dark text: 8.0 */
+  --accent-hover: #8fb1ff;
+  --accent-active: #6993f5;
+  --accent-soft: #111a30;
+  --accent-soft-strong: #1a2645;
+  --accent-soft-fg: #a3bfff;   /* 9.4 on soft */
+  --fg-on-accent: #000b24;
+}
+
+/* ---------------------------------------------------------------------
+   3. NORD: polar night and snow storm neutrals, frost accent.
+   --------------------------------------------------------------------- */
+:root[data-skin="nord"][data-theme="light"] {
+  color-scheme: light;
+
+  --bg-app: #f4f6f9;
+  --bg-sidebar: #eaeef3;
+  --bg-surface: #fbfcfd;
+  --bg-raised: #ffffff;
+  --bg-sunken: #e5e9f0;
+  --bg-field: #ffffff;
+  --bg-control: #fbfcfd;
+  --bg-disabled: #e5e9f0;
+  --bg-tag: rgb(46 52 64 / 0.07);
+  --bg-skeleton: #e5e9f0;
+  --bg-hover: rgb(46 52 64 / 0.06);
+  --bg-active: rgb(46 52 64 / 0.1);
+  --bg-scrim: rgb(36 41 51 / 0.42);
+  --bg-inverse: #2e3440;
+
+  --fg-default: #2e3440;   /* 11.4 on app */
+  --fg-muted: #434c5e;     /* 8.3 on app, 7.3 on sidebar */
+  --fg-subtle: #515c73;    /* 6.3 on app, 5.6 on sunken */
+  --fg-faint: #9aa3b3;
+  --fg-disabled: #9aa3b3;
+  --fg-inverse: #eceff4;
+  --fg-inverse-muted: #c0c8d6;
+  --fg-on-tile: #ffffff;
+  --switch-thumb: #ffffff;
+
+  --border-subtle: rgb(46 52 64 / 0.08);
+  --border-default: rgb(46 52 64 / 0.13);
+  --border-strong: rgb(46 52 64 / 0.24);
+  --border-input: #7b8598;   /* 3.7 on #fff, 3.1 on sunken */
+  --border-input-hover: #5f6a80;
+  --border-control: #7b8598;
+
+  --focus-ring: #4b6d9a;     /* 5.2 on app */
+  --focus-ring-soft: rgb(75 109 154 / 0.22);
+
+  --danger: #b0404c;
+  --danger-hover: #9c3843;
+  --danger-solid: #b0404c;
+  --danger-solid-hover: #9c3843;
+  --danger-soft: #f6e5e7;
+  --success: #3d6b2c;
+  --success-soft: #e6eee0;
+  --warning: #84570e;
+  --warning-soft: #f5ecda;
+  --info: #3b5c88;
+  --info-soft: #e2e9f3;
+  --star: #9f6c10;
+
+  --shadow-xs: 0 1px 2px rgb(46 52 64 / 0.07);
+  --shadow-sm: 0 0 0 1px rgb(46 52 64 / 0.08), 0 1px 2px -1px rgb(46 52 64 / 0.1), 0 2px 4px rgb(46 52 64 / 0.05);
+  --shadow-md: 0 0 0 1px rgb(46 52 64 / 0.09), 0 4px 10px -2px rgb(46 52 64 / 0.1), 0 12px 24px -6px rgb(46 52 64 / 0.12);
+  --shadow-lg: 0 0 0 1px rgb(46 52 64 / 0.09), 0 8px 20px -4px rgb(46 52 64 / 0.12), 0 28px 56px -12px rgb(46 52 64 / 0.26);
+  --image-outline: rgb(0 0 0 / 0.1);
+
+  --tooltip-bg: #2e3440;
+  --tooltip-fg: #eceff4;
+  --toast-bg: #2e3440;
+  --toast-fg: #eceff4;
+  --toast-fg-muted: #c0c8d6;
+  --toast-hover: rgb(236 239 244 / 0.12);
+  --toast-active: rgb(236 239 244 / 0.2);
+  --toast-success: #a3be8c;
+  --toast-danger: #e3959c;
+  --toast-warning: #ebcb8b;
+  --toast-action: #88c0d0;
+  --toast-focus: #88c0d0;
+  --skeleton-shine: rgb(255 255 255 / 0.6);
+}
+:root[data-skin="nord"][data-theme="light"][data-accent="blue"] {
+  --accent: #4b6d9a;           /* white 5.2 */
+  --accent-hover: #425f88;
+  --accent-active: #395377;
+  --accent-soft: #d9e3f0;
+  --accent-soft-strong: #c9d7ea;
+  --accent-soft-fg: #34557f;   /* 5.9 on soft */
+  --fg-on-accent: #ffffff;
+}
+
+:root[data-skin="nord"][data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-app: #2e3440;
+  --bg-sidebar: #2a2f3a;
+  --bg-surface: #333a47;
+  --bg-raised: #3b4252;
+  --bg-sunken: #272c36;
+  --bg-field: #272c36;
+  --bg-control: #434c5e;
+  --bg-disabled: #353c4a;
+  --bg-tag: rgb(236 239 244 / 0.07);
+  --bg-skeleton: rgb(236 239 244 / 0.06);
+  --bg-hover: rgb(236 239 244 / 0.06);
+  --bg-active: rgb(236 239 244 / 0.1);
+  --bg-scrim: rgb(15 18 24 / 0.6);
+  --bg-inverse: #eceff4;
+
+  --fg-default: #eceff4;   /* 11.0 on app */
+  --fg-muted: #ccd3de;     /* 8.5 on app, 7.0 on raised */
+  --fg-subtle: #aeb7c6;    /* 6.2 on app, 5.1 on raised */
+  --fg-faint: #6b7488;
+  --fg-disabled: #6b7488;
+  --fg-inverse: #2e3440;
+  --fg-inverse-muted: #4c566a;
+  --fg-on-tile: #2e3440;
+  --switch-thumb: #eceff4;
+
+  --border-subtle: rgb(236 239 244 / 0.07);
+  --border-default: rgb(236 239 244 / 0.11);
+  --border-strong: rgb(236 239 244 / 0.2);
+  --border-input: #838da0;   /* 3.4 on raised, 4.0 on field */
+  --border-input-hover: #9aa3b5;
+  --border-control: #8a94a7;
+
+  --focus-ring: #88c0d0;     /* 6.4 on app */
+  --focus-ring-soft: rgb(136 192 208 / 0.26);
+
+  --danger: #eda0a7;          /* 4.9 on raised */
+  --danger-hover: #f2b1b6;
+  --danger-solid: #b0404c;
+  --danger-solid-hover: #9c3843;
+  --danger-soft: #4a3439;
+  --success: #a8c493;
+  --success-soft: #38443a;
+  --warning: #ebcb8b;
+  --warning-soft: #4a4437;
+  --info: #88c0d0;
+  --info-soft: #364856;
+  --star: #ebcb8b;
+
+  --shadow-xs: 0 1px 2px rgb(10 12 16 / 0.35);
+  --shadow-sm: 0 0 0 1px rgb(236 239 244 / 0.06), 0 1px 3px rgb(10 12 16 / 0.35);
+  --shadow-md: 0 0 0 1px rgb(236 239 244 / 0.08), 0 8px 24px -4px rgb(10 12 16 / 0.5);
+  --shadow-lg: 0 0 0 1px rgb(236 239 244 / 0.09), 0 24px 64px -12px rgb(10 12 16 / 0.65);
+  --image-outline: rgb(255 255 255 / 0.1);
+  --favicon-ring: rgb(236 239 244 / 0.16);
+
+  --media-bg: #242933;
+  --media-scrim-start: rgb(36 41 51 / 0.94);
+  --media-scrim-mid: rgb(36 41 51 / 0.82);
+  --media-scrim-end: rgb(36 41 51 / 0.3);
+
+  --tooltip-bg: #eceff4;
+  --tooltip-fg: #2e3440;
+  --toast-bg: #eceff4;
+  --toast-fg: #2e3440;
+  --toast-fg-muted: #4c566a;
+  --toast-hover: rgb(46 52 64 / 0.08);
+  --toast-active: rgb(46 52 64 / 0.14);
+  --toast-success: #3d6b2c;
+  --toast-danger: #b0404c;
+  --toast-warning: #84570e;
+  --toast-action: #34557f;
+  --toast-focus: #4b6d9a;
+  --skeleton-shine: rgb(255 255 255 / 0.05);
+}
+:root[data-skin="nord"][data-theme="dark"][data-accent="blue"] {
+  --accent: #88c0d0;           /* fill with dark text: 7.6 */
+  --accent-hover: #98cad8;
+  --accent-active: #79b3c4;
+  --accent-soft: #364856;
+  --accent-soft-strong: #3e5464;
+  --accent-soft-fg: #a2d2df;   /* 6.6 on soft */
+  --fg-on-accent: #242933;
+}
+
+/* ---------------------------------------------------------------------
+   4. PAPER: warm sepia for long reading, sienna ink.
+   --------------------------------------------------------------------- */
+:root[data-skin="paper"][data-theme="light"] {
+  color-scheme: light;
+
+  --bg-app: #f7f1e3;
+  --bg-sidebar: #efe6d3;
+  --bg-surface: #fbf7ee;
+  --bg-raised: #fffcf5;
+  --bg-sunken: #ebe2cd;
+  --bg-field: #fffcf5;
+  --bg-control: #fffcf5;
+  --bg-disabled: #e9e0cc;
+  --bg-tag: rgb(91 62 26 / 0.07);
+  --bg-skeleton: #ebe2cd;
+  --bg-hover: rgb(91 62 26 / 0.06);
+  --bg-active: rgb(91 62 26 / 0.1);
+  --bg-scrim: rgb(43 31 16 / 0.4);
+  --bg-inverse: #3b2f22;
+
+  --fg-default: #33281c;   /* 12.6 on app */
+  --fg-muted: #5a4a37;     /* 7.8 on app, 7.0 on sidebar */
+  --fg-subtle: #685744;    /* 6.4 on app, 5.5 on sunken */
+  --fg-faint: #ab9b82;
+  --fg-disabled: #ab9b82;
+  --fg-inverse: #f7f1e3;
+  --fg-inverse-muted: #cdbfa5;
+  --fg-on-tile: #ffffff;
+  --switch-thumb: #fffcf5;
+
+  --border-subtle: rgb(91 62 26 / 0.09);
+  --border-default: rgb(91 62 26 / 0.14);
+  --border-strong: rgb(91 62 26 / 0.26);
+  --border-input: #8b7960;   /* 4.0 on raised, 3.3 on sunken */
+  --border-input-hover: #685744;
+  --border-control: #8b7960;
+
+  --focus-ring: #9a5b2d;     /* 5.1 on app */
+  --focus-ring-soft: rgb(154 91 45 / 0.22);
+
+  --danger: #b3361f;
+  --danger-hover: #9e2f1b;
+  --danger-solid: #b3361f;
+  --danger-solid-hover: #9e2f1b;
+  --danger-soft: #f6e0d6;
+  --success: #3d6823;
+  --success-soft: #e6ecd5;
+  --warning: #855300;
+  --warning-soft: #f4e6c8;
+  --info: #2f5d8a;
+  --info-soft: #e1e7ec;
+  --star: #965f00;
+
+  --shadow-xs: 0 1px 2px rgb(60 40 15 / 0.07);
+  --shadow-sm: 0 0 0 1px rgb(60 40 15 / 0.08), 0 1px 2px -1px rgb(60 40 15 / 0.1), 0 2px 4px rgb(60 40 15 / 0.05);
+  --shadow-md: 0 0 0 1px rgb(60 40 15 / 0.09), 0 4px 10px -2px rgb(60 40 15 / 0.1), 0 12px 24px -6px rgb(60 40 15 / 0.12);
+  --shadow-lg: 0 0 0 1px rgb(60 40 15 / 0.09), 0 8px 20px -4px rgb(60 40 15 / 0.12), 0 28px 56px -12px rgb(60 40 15 / 0.26);
+  --image-outline: rgb(0 0 0 / 0.1);
+
+  --tooltip-bg: #3b2f22;
+  --tooltip-fg: #f7f1e3;
+  --toast-bg: #3b2f22;
+  --toast-fg: #f7f1e3;
+  --toast-fg-muted: #cdbfa5;
+  --toast-hover: rgb(247 241 227 / 0.12);
+  --toast-active: rgb(247 241 227 / 0.2);
+  --toast-success: #a8d08a;
+  --toast-danger: #f4a08c;
+  --toast-warning: #f0c46c;
+  --toast-action: #f0c48f;
+  --toast-focus: #f0c48f;
+  --skeleton-shine: rgb(255 252 245 / 0.6);
+}
+:root[data-skin="paper"][data-theme="light"][data-accent="blue"] {
+  --accent: #9a5b2d;           /* white 5.4 */
+  --accent-hover: #874f27;
+  --accent-active: #754421;
+  --accent-soft: #eed8c0;
+  --accent-soft-strong: #e6c9aa;
+  --accent-soft-fg: #7a431b;   /* 5.8 on soft */
+  --fg-on-accent: #ffffff;
+}
+
+:root[data-skin="paper"][data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-app: #1f1a14;
+  --bg-sidebar: #1a1611;
+  --bg-surface: #251f18;
+  --bg-raised: #2c251d;
+  --bg-sunken: #17130e;
+  --bg-field: #17130e;
+  --bg-control: #352d23;
+  --bg-disabled: #29231b;
+  --bg-tag: rgb(234 223 203 / 0.07);
+  --bg-skeleton: rgb(234 223 203 / 0.06);
+  --bg-hover: rgb(234 223 203 / 0.06);
+  --bg-active: rgb(234 223 203 / 0.1);
+  --bg-scrim: rgb(10 8 5 / 0.6);
+  --bg-inverse: #ebe0cc;
+
+  --fg-default: #ebe0cc;   /* 13.4 on app */
+  --fg-muted: #c8b9a1;     /* 9.3 on app, 7.8 on raised */
+  --fg-subtle: #ab9c85;    /* 6.8 on app, 5.7 on raised */
+  --fg-faint: #6d6152;
+  --fg-disabled: #6d6152;
+  --fg-inverse: #1f1a14;
+  --fg-inverse-muted: #5a4a37;
+  --fg-on-tile: #1f1a14;
+  --switch-thumb: #ebe0cc;
+
+  --border-subtle: rgb(234 223 203 / 0.07);
+  --border-default: rgb(234 223 203 / 0.11);
+  --border-strong: rgb(234 223 203 / 0.2);
+  --border-input: #877a6b;   /* 3.5 on raised, 4.2 on field */
+  --border-input-hover: #a3958a;
+  --border-control: #8e8172;
+
+  --focus-ring: #d9a066;     /* 7.6 on app */
+  --focus-ring-soft: rgb(217 160 102 / 0.26);
+
+  --danger: #ef8c76;
+  --danger-hover: #f3a090;
+  --danger-solid: #b5432f;
+  --danger-solid-hover: #a33b29;
+  --danger-soft: #43271f;
+  --success: #a2c780;
+  --success-soft: #2c3320;
+  --warning: #e6b45a;
+  --warning-soft: #3d311b;
+  --info: #98badd;
+  --info-soft: #233040;
+  --star: #e6b45a;
+
+  --shadow-xs: 0 1px 2px rgb(5 3 0 / 0.4);
+  --shadow-sm: 0 0 0 1px rgb(234 223 203 / 0.06), 0 1px 3px rgb(5 3 0 / 0.4);
+  --shadow-md: 0 0 0 1px rgb(234 223 203 / 0.08), 0 8px 24px -4px rgb(5 3 0 / 0.55);
+  --shadow-lg: 0 0 0 1px rgb(234 223 203 / 0.09), 0 24px 64px -12px rgb(5 3 0 / 0.7);
+  --image-outline: rgb(255 255 255 / 0.1);
+  --favicon-ring: rgb(234 223 203 / 0.16);
+
+  --media-bg: #15110c;
+  --media-scrim-start: rgb(21 17 12 / 0.94);
+  --media-scrim-mid: rgb(21 17 12 / 0.82);
+  --media-scrim-end: rgb(21 17 12 / 0.3);
+
+  --tooltip-bg: #ebe0cc;
+  --tooltip-fg: #1f1a14;
+  --toast-bg: #ebe0cc;
+  --toast-fg: #1f1a14;
+  --toast-fg-muted: #5a4a37;
+  --toast-hover: rgb(31 26 20 / 0.08);
+  --toast-active: rgb(31 26 20 / 0.14);
+  --toast-success: #3d6823;
+  --toast-danger: #a8321c;
+  --toast-warning: #7d4e00;
+  --toast-action: #7a431b;
+  --toast-focus: #9a5b2d;
+  --skeleton-shine: rgb(255 255 255 / 0.05);
+}
+:root[data-skin="paper"][data-theme="dark"][data-accent="blue"] {
+  --accent: #d9a066;           /* fill with dark text: 8.4 */
+  --accent-hover: #e2b07c;
+  --accent-active: #cc9255;
+  --accent-soft: #3a2e20;
+  --accent-soft-strong: #4a3a27;
+  --accent-soft-fg: #e8b986;   /* 7.9 on soft */
+  --fg-on-accent: #23170a;
+}
+
+/* ---------------------------------------------------------------------
+   5. ROSÉ: blush neutrals, raspberry accent; plum at night.
+   --------------------------------------------------------------------- */
+:root[data-skin="rose"][data-theme="light"] {
+  color-scheme: light;
+
+  --bg-app: #fcf7f8;
+  --bg-sidebar: #f6edf0;
+  --bg-surface: #fffbfc;
+  --bg-raised: #ffffff;
+  --bg-sunken: #f2e6ea;
+  --bg-field: #ffffff;
+  --bg-control: #fffbfc;
+  --bg-disabled: #f0e5e9;
+  --bg-tag: rgb(92 38 62 / 0.06);
+  --bg-skeleton: #f2e6ea;
+  --bg-hover: rgb(92 38 62 / 0.05);
+  --bg-active: rgb(92 38 62 / 0.09);
+  --bg-scrim: rgb(46 20 33 / 0.4);
+  --bg-inverse: #3a2530;
+
+  --fg-default: #36222d;   /* 14.0 on app */
+  --fg-muted: #5f4553;     /* 8.4 on app */
+  --fg-subtle: #6f5262;    /* 6.8 on app, 5.8 on sunken */
+  --fg-faint: #b59ca9;
+  --fg-disabled: #b59ca9;
+  --fg-inverse: #fcf2f5;
+  --fg-inverse-muted: #d4bcc8;
+  --fg-on-tile: #ffffff;
+  --switch-thumb: #ffffff;
+
+  --border-subtle: rgb(92 38 62 / 0.08);
+  --border-default: rgb(92 38 62 / 0.12);
+  --border-strong: rgb(92 38 62 / 0.23);
+  --border-input: #957a87;   /* 3.7 on #fff, 3.1 on sunken */
+  --border-input-hover: #6f5262;
+  --border-control: #957a87;
+
+  --focus-ring: #bd3f73;     /* 4.9 on app */
+  --focus-ring-soft: rgb(189 63 115 / 0.2);
+
+  --danger: #c2362a;
+  --danger-hover: #ad2f24;
+  --danger-solid: #c2362a;
+  --danger-solid-hover: #ad2f24;
+  --danger-soft: #fbe8e6;
+  --success: #2c7448;
+  --success-soft: #e5f3ea;
+  --warning: #8f5a00;
+  --warning-soft: #fbf0dd;
+  --info: #6747ab;
+  --info-soft: #efe9fa;
+  --star: #a26b06;
+
+  --shadow-xs: 0 1px 2px rgb(70 25 45 / 0.06);
+  --shadow-sm: 0 0 0 1px rgb(70 25 45 / 0.07), 0 1px 2px -1px rgb(70 25 45 / 0.08), 0 2px 4px rgb(70 25 45 / 0.04);
+  --shadow-md: 0 0 0 1px rgb(70 25 45 / 0.08), 0 4px 10px -2px rgb(70 25 45 / 0.08), 0 12px 24px -6px rgb(70 25 45 / 0.1);
+  --shadow-lg: 0 0 0 1px rgb(70 25 45 / 0.08), 0 8px 20px -4px rgb(70 25 45 / 0.1), 0 28px 56px -12px rgb(70 25 45 / 0.22);
+  --image-outline: rgb(0 0 0 / 0.1);
+
+  --tooltip-bg: #3a2530;
+  --tooltip-fg: #fcf2f5;
+  --toast-bg: #3a2530;
+  --toast-fg: #fcf2f5;
+  --toast-fg-muted: #d4bcc8;
+  --toast-hover: rgb(252 242 245 / 0.12);
+  --toast-active: rgb(252 242 245 / 0.2);
+  --toast-success: #7fd1a0;
+  --toast-danger: #ff9b92;
+  --toast-warning: #f2c069;
+  --toast-action: #f5a3c6;
+  --toast-focus: #f5a3c6;
+  --skeleton-shine: rgb(255 255 255 / 0.6);
+}
+:root[data-skin="rose"][data-theme="light"][data-accent="blue"] {
+  --accent: #b83c70;           /* white 5.2 */
+  --accent-hover: #a63564;
+  --accent-active: #942f59;
+  --accent-soft: #f8d9e6;
+  --accent-soft-strong: #f2c6d8;
+  --accent-soft-fg: #9c2f5a;   /* 5.4 on soft */
+  --fg-on-accent: #ffffff;
+}
+
+:root[data-skin="rose"][data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-app: #1c161c;
+  --bg-sidebar: #181318;
+  --bg-surface: #221b22;
+  --bg-raised: #2a222a;
+  --bg-sunken: #141014;
+  --bg-field: #141014;
+  --bg-control: #332a33;
+  --bg-disabled: #261f26;
+  --bg-tag: rgb(241 228 234 / 0.07);
+  --bg-skeleton: rgb(241 228 234 / 0.06);
+  --bg-hover: rgb(241 228 234 / 0.06);
+  --bg-active: rgb(241 228 234 / 0.1);
+  --bg-scrim: rgb(8 4 8 / 0.6);
+  --bg-inverse: #f1e4ea;
+
+  --fg-default: #f1e4ea;   /* 14.6 on app */
+  --fg-muted: #cfbac5;     /* 9.8 on app, 8.3 on raised */
+  --fg-subtle: #b29ca8;    /* 7.2 on app, 6.1 on raised */
+  --fg-faint: #6f5e68;
+  --fg-disabled: #6f5e68;
+  --fg-inverse: #1c161c;
+  --fg-inverse-muted: #5f4553;
+  --fg-on-tile: #1c161c;
+  --switch-thumb: #f1e4ea;
+
+  --border-subtle: rgb(241 228 234 / 0.07);
+  --border-default: rgb(241 228 234 / 0.11);
+  --border-strong: rgb(241 228 234 / 0.2);
+  --border-input: #87747f;   /* 3.4 on raised, 4.1 on field */
+  --border-input-hover: #a38f9a;
+  --border-control: #8d7a85;
+
+  --focus-ring: #eb8fb5;     /* 7.7 on app */
+  --focus-ring-soft: rgb(235 143 181 / 0.26);
+
+  --danger: #ff8a85;
+  --danger-hover: #ff9f9a;
+  --danger-solid: #c2362a;
+  --danger-solid-hover: #ad2f24;
+  --danger-soft: #45232a;
+  --success: #7fd1a0;
+  --success-soft: #1f3328;
+  --warning: #eebc63;
+  --warning-soft: #3d301c;
+  --info: #bba6f5;
+  --info-soft: #2d2640;
+  --star: #eebc63;
+
+  --shadow-xs: 0 1px 2px rgb(4 0 4 / 0.4);
+  --shadow-sm: 0 0 0 1px rgb(241 228 234 / 0.06), 0 1px 3px rgb(4 0 4 / 0.4);
+  --shadow-md: 0 0 0 1px rgb(241 228 234 / 0.08), 0 8px 24px -4px rgb(4 0 4 / 0.55);
+  --shadow-lg: 0 0 0 1px rgb(241 228 234 / 0.09), 0 24px 64px -12px rgb(4 0 4 / 0.7);
+  --image-outline: rgb(255 255 255 / 0.1);
+  --favicon-ring: rgb(241 228 234 / 0.16);
+
+  --media-bg: #140f14;
+  --media-scrim-start: rgb(20 15 20 / 0.94);
+  --media-scrim-mid: rgb(20 15 20 / 0.82);
+  --media-scrim-end: rgb(20 15 20 / 0.3);
+
+  --tooltip-bg: #f1e4ea;
+  --tooltip-fg: #1c161c;
+  --toast-bg: #f1e4ea;
+  --toast-fg: #1c161c;
+  --toast-fg-muted: #5f4553;
+  --toast-hover: rgb(28 22 28 / 0.08);
+  --toast-active: rgb(28 22 28 / 0.14);
+  --toast-success: #2c7448;
+  --toast-danger: #b5322a;
+  --toast-warning: #835300;
+  --toast-action: #9c2f5a;
+  --toast-focus: #b83c70;
+  --skeleton-shine: rgb(255 255 255 / 0.05);
+}
+:root[data-skin="rose"][data-theme="dark"][data-accent="blue"] {
+  --accent: #eb8fb5;           /* fill with dark text: 8.5 */
+  --accent-hover: #f0a3c3;
+  --accent-active: #e27ca7;
+  --accent-soft: #3d2533;
+  --accent-soft-strong: #4d2d40;
+  --accent-soft-fg: #f4adca;   /* 8.2 on soft */
+  --fg-on-accent: #2a0e1b;
+}
+
+/* ---------------------------------------------------------------------
+   6. LIQUID GLASS: frosted, translucent panes over an ambient gradient
+   (the Aurora wallpaper preset) or the user's wallpaper. The --glass-*
+   material is used by section 9; the semantic tokens below are tuned for
+   text on a pane over the ambient (glass-surface over every stop).
+   --------------------------------------------------------------------- */
+:root[data-skin="glass"][data-theme="light"] {
+  color-scheme: light;
+
+  --glass-base: #e9eef6;
+  --glass-ambient: radial-gradient(ellipse at 0% 0%, #d2ebef 0, transparent 55%), radial-gradient(ellipse at 100% 90%, #ddd5ef 0, transparent 55%), linear-gradient(135deg, #e5edf7, #edf0f8 55%, #eee6f4);
+  --glass-surface: rgb(255 255 255 / 0.58);    /* sidebar, main and side panes, widgets */
+  --glass-panel: rgb(248 251 255 / 0.9);       /* drawers and overlays that cover content */
+  --glass-bar: rgb(255 255 255 / 0.4);         /* sticky bars, side header, tab bar (with blur) */
+  --glass-border: rgb(52 72 109 / 0.14);
+  --glass-rim: rgb(255 255 255 / 0.9);         /* top edge light */
+  --glass-sheen: linear-gradient(135deg, rgb(255 255 255 / 0.5), transparent 48%);
+  --glass-shadow: 0 16px 38px -22px rgb(38 56 97 / 0.34);
+  --glass-shadow-lg: 0 28px 90px -22px rgb(3 8 25 / 0.4);
+  --glass-blur: blur(30px) saturate(160%);
+  --glass-blur-strong: blur(34px) saturate(160%);
+
+  --bg-app: rgb(246 249 253 / 0.74);
+  --bg-sidebar: rgb(255 255 255 / 0.34);
+  --bg-surface: rgb(255 255 255 / 0.6);
+  --bg-raised: rgb(250 252 255 / 0.92);
+  --bg-sunken: rgb(64 88 130 / 0.08);
+  --bg-field: rgb(255 255 255 / 0.72);
+  --bg-control: rgb(255 255 255 / 0.74);
+  --bg-disabled: rgb(64 88 130 / 0.1);
+  --bg-tag: rgb(64 88 130 / 0.08);
+  --bg-skeleton: rgb(64 88 130 / 0.1);
+  --bg-hover: rgb(64 88 130 / 0.08);
+  --bg-active: rgb(64 88 130 / 0.14);
+  --bg-scrim: rgb(7 12 27 / 0.28);
+  --bg-inverse: #182236;
+
+  --fg-default: #182236;   /* 13.9 on a pane over the darkest ambient stop */
+  --fg-muted: #3d4a62;     /* 8.4 */
+  --fg-subtle: #4a5872;    /* 6.7, 5.6 on sunken */
+  --fg-faint: #8a95a8;
+  --fg-disabled: #8a95a8;
+  --fg-inverse: #f5f7fb;
+  --fg-inverse-muted: #b0bdd0;
+  --fg-on-tile: #ffffff;
+  --switch-thumb: #ffffff;
+
+  --border-subtle: rgb(52 72 109 / 0.1);
+  --border-default: rgb(52 72 109 / 0.15);
+  --border-strong: rgb(52 72 109 / 0.26);
+  --border-input: #7b869c;
+  --border-input-hover: #5a6780;
+  --border-control: #7b869c;
+
+  --focus-ring: #2463bd;
+  --focus-ring-soft: rgb(36 99 189 / 0.22);
+
+  --danger: #b02f27;
+  --danger-hover: #9a2922;
+  --danger-solid: #c2352b;
+  --danger-solid-hover: #a82d24;
+  --danger-soft: rgb(201 52 42 / 0.1);
+  --success: #166c3b;
+  --success-soft: rgb(23 115 63 / 0.1);
+  --warning: #864f00;
+  --warning-soft: rgb(149 87 0 / 0.1);
+  --info: #1b4f9c;
+  --info-soft: rgb(36 99 189 / 0.1);
+  --star: #a86f00;
+
+  --shadow-xs: 0 1px 2px rgb(38 56 97 / 0.08);
+  --shadow-sm: inset 0 1px 0 rgb(255 255 255 / 0.7), 0 0 0 1px rgb(52 72 109 / 0.11), 0 1px 2px rgb(38 56 97 / 0.06), 0 4px 12px -6px rgb(38 56 97 / 0.18);
+  --shadow-md: 0 0 0 1px rgb(52 72 109 / 0.12), 0 10px 30px -12px rgb(38 56 97 / 0.3);
+  --shadow-lg: 0 0 0 1px rgb(52 72 109 / 0.12), 0 28px 90px -22px rgb(3 8 25 / 0.4);
+  --image-outline: rgb(0 0 0 / 0.1);
+
+  --tooltip-bg: #182236;
+  --tooltip-fg: #f5f7fb;
+  --toast-bg: rgb(250 252 255 / 0.92);
+  --toast-fg: #182236;
+  --toast-fg-muted: #4a5872;
+  --toast-hover: rgb(64 88 130 / 0.08);
+  --toast-active: rgb(64 88 130 / 0.14);
+  --toast-success: #166c3b;
+  --toast-danger: #b02f27;
+  --toast-warning: #864f00;
+  --toast-action: #1b4f9c;
+  --toast-focus: #2463bd;
+  --skeleton-shine: rgb(255 255 255 / 0.55);
+}
+:root[data-skin="glass"][data-theme="light"][data-accent="blue"] {
+  --accent: #2463bd;           /* white 5.8 */
+  --accent-hover: #1f57a8;
+  --accent-active: #1b4c93;
+  --accent-soft: rgb(36 99 189 / 0.12);
+  --accent-soft-strong: rgb(36 99 189 / 0.2);
+  --accent-soft-fg: #1b4f9c;
+  --fg-on-accent: #ffffff;
+}
+
+:root[data-skin="glass"][data-theme="dark"] {
+  color-scheme: dark;
+
+  --glass-base: #080e1c;
+  --glass-ambient: radial-gradient(ellipse at -8% -10%, rgba(38,104,120,.58), transparent 53%), radial-gradient(ellipse at 106% 106%, rgba(84,45,121,.56), transparent 57%), radial-gradient(ellipse at 54% 42%, rgba(33,49,103,.35), transparent 65%), linear-gradient(145deg, #101c2d, #0a1021 55%, #180f28);
+  --glass-surface: rgb(19 30 51 / 0.55);
+  --glass-panel: rgb(17 26 45 / 0.92);
+  --glass-bar: rgb(14 22 40 / 0.45);
+  --glass-border: rgb(202 222 255 / 0.13);
+  --glass-rim: rgb(221 238 255 / 0.2);
+  --glass-sheen: radial-gradient(120% 60% at 0 0, rgb(216 237 255 / 0.09), transparent 60%), linear-gradient(180deg, rgb(255 255 255 / 0.035), transparent 28%);
+  --glass-shadow: 0 18px 45px -22px rgb(0 3 16 / 0.8);
+  --glass-shadow-lg: 0 28px 90px -22px rgb(0 2 10 / 0.72);
+  --glass-blur: blur(30px) saturate(160%);
+  --glass-blur-strong: blur(34px) saturate(160%);
+
+  --bg-app: rgb(14 22 40 / 0.6);
+  --bg-sidebar: rgb(12 19 35 / 0.34);
+  --bg-surface: rgb(226 237 255 / 0.06);
+  --bg-raised: rgb(19 29 49 / 0.93);
+  --bg-sunken: rgb(2 6 16 / 0.28);
+  --bg-field: rgb(4 9 20 / 0.4);
+  --bg-control: rgb(226 237 255 / 0.1);
+  --bg-disabled: rgb(226 237 255 / 0.05);
+  --bg-tag: rgb(226 237 255 / 0.08);
+  --bg-skeleton: rgb(226 237 255 / 0.07);
+  --bg-hover: rgb(226 237 255 / 0.08);
+  --bg-active: rgb(226 237 255 / 0.13);
+  --bg-scrim: rgb(2 4 12 / 0.5);
+  --bg-inverse: #eef3fb;
+
+  --fg-default: #f5f7fb;   /* 11.6 on a pane over the brightest ambient glow */
+  --fg-muted: #c9d3e1;     /* 8.2 */
+  --fg-subtle: #b0bdd0;    /* 6.1, 5.4 on a control */
+  --fg-faint: #66758d;
+  --fg-disabled: #66758d;
+  --fg-inverse: #0b1426;
+  --fg-inverse-muted: #46546c;
+  --fg-on-tile: #0b1426;
+  --switch-thumb: #f5f7fb;
+
+  --border-subtle: rgb(202 222 255 / 0.08);
+  --border-default: rgb(202 222 255 / 0.13);
+  --border-strong: rgb(202 222 255 / 0.22);
+  --border-input: #8091ab;
+  --border-input-hover: #9eacc2;
+  --border-control: #8798b1;
+
+  --focus-ring: #9fd2ff;
+  --focus-ring-soft: rgb(159 210 255 / 0.28);
+
+  --danger: #ff9e96;
+  --danger-hover: #ffb2ab;
+  --danger-solid: #c63a30;
+  --danger-solid-hover: #b5332a;
+  --danger-soft: rgb(255 110 100 / 0.14);
+  --success: #7adca4;
+  --success-soft: rgb(95 207 138 / 0.13);
+  --warning: #f2bd62;
+  --warning-soft: rgb(240 180 70 / 0.13);
+  --info: #a9d6ff;
+  --info-soft: rgb(159 210 255 / 0.13);
+  --star: #f2c15a;
+
+  --shadow-xs: 0 1px 2px rgb(0 3 16 / 0.4);
+  --shadow-sm: inset 0 1px 0 rgb(221 238 255 / 0.1), 0 0 0 1px rgb(202 222 255 / 0.09), 0 2px 8px -2px rgb(0 3 16 / 0.5);
+  --shadow-md: 0 0 0 1px rgb(202 222 255 / 0.1), 0 14px 36px -10px rgb(0 3 16 / 0.7);
+  --shadow-lg: 0 0 0 1px rgb(202 222 255 / 0.12), 0 28px 90px -22px rgb(0 2 10 / 0.75);
+  --image-outline: rgb(255 255 255 / 0.1);
+  --favicon-ring: rgb(255 255 255 / 0.16);
+
+  --media-bg: #0b1222;
+  --media-scrim-start: rgb(8 14 28 / 0.94);
+  --media-scrim-mid: rgb(8 14 28 / 0.82);
+  --media-scrim-end: rgb(8 14 28 / 0.3);
+
+  --tooltip-bg: #eef3fb;
+  --tooltip-fg: #0b1426;
+  --toast-bg: rgb(19 29 49 / 0.93);
+  --toast-fg: #f5f7fb;
+  --toast-fg-muted: #b0bdd0;
+  --toast-hover: rgb(226 237 255 / 0.08);
+  --toast-active: rgb(226 237 255 / 0.13);
+  --toast-success: #7adca4;
+  --toast-danger: #ff9e96;
+  --toast-warning: #f2bd62;
+  --toast-action: #a9d6ff;
+  --toast-focus: #9fd2ff;
+  --skeleton-shine: rgb(255 255 255 / 0.05);
+}
+:root[data-skin="glass"][data-theme="dark"][data-accent="blue"] {
+  --accent: #9fd2ff;           /* fill with dark text: 11.0 */
+  --accent-hover: #b5dcff;
+  --accent-active: #8cc6f7;
+  --accent-soft: rgb(159 210 255 / 0.14);
+  --accent-soft-strong: rgb(159 210 255 / 0.22);
+  --accent-soft-fg: #b3dcff;
+  --fg-on-accent: #071a33;
+}
+
+/* Glass panes and material: radii grow (panels 24px, controls 10–12px), and data-radius still scales them. */
+:root[data-skin="glass"] {
+  --glass-gap: 10px;
+  --radius-xs: calc(6px * var(--radius-k));
+  --radius-sm: calc(10px * var(--radius-k));
+  --radius-md: calc(12px * var(--radius-k));
+  --radius-lg: calc(16px * var(--radius-k));
+  --radius-xl: calc(22px * var(--radius-k));
+  --radius-2xl: calc(24px * var(--radius-k));
+}
+
+/* Over a wallpaper the panes thicken and subtle text steps up to muted, so text keeps its contrast on busy photos. */
+:root[data-skin="glass"][data-wallpaper="on"] { --fg-subtle: var(--fg-muted); }
+:root[data-skin="glass"][data-theme="light"][data-wallpaper="on"] {
+  --glass-surface: rgb(255 255 255 / 0.72);
+  --glass-bar: rgb(255 255 255 / 0.55);
+  --bg-sidebar: rgb(255 255 255 / 0.5);
+}
+:root[data-skin="glass"][data-theme="dark"][data-wallpaper="on"] {
+  --glass-surface: rgb(16 25 43 / 0.68);
+  --glass-bar: rgb(12 19 35 / 0.6);
+  --bg-sidebar: rgb(12 19 35 / 0.5);
+}
+
+/* ---------------------------------------------------------------------
+   7. INCREASED CONTRAST (OS setting) for every skin but Still, which has
+   its own block in tokens.css: hairlines become visible edges, subtle
+   text steps up to muted and glass panes thicken.
+   --------------------------------------------------------------------- */
+@media (prefers-contrast: more) {
+  :root[data-skin]:not([data-skin="still"]) {
+    --border-subtle: color-mix(in srgb, var(--fg-default) 16%, transparent);
+    --border-default: color-mix(in srgb, var(--fg-default) 30%, transparent);
+    --border-strong: color-mix(in srgb, var(--fg-default) 48%, transparent);
+    --fg-subtle: var(--fg-muted);
+    --fg-faint: var(--fg-muted);
+    --border-input: var(--fg-muted);
+    --border-control: var(--fg-muted);
+  }
+  :root[data-skin="glass"][data-theme="light"] { --glass-surface: rgb(255 255 255 / 0.86); --glass-bar: rgb(255 255 255 / 0.8); }
+  :root[data-skin="glass"][data-theme="dark"] { --glass-surface: rgb(14 22 40 / 0.88); --glass-bar: rgb(12 19 35 / 0.86); }
+}
+
+/* ---------------------------------------------------------------------
+   8. ACCENT TINTS. A preset other than the skin's own accent keeps its
+   fill; its soft tint is mixed into the skin's surface so selection reads
+   as part of the skin. Dark skins fill controls with the preset's light
+   tint and dark text, as their own accents do.
+   --------------------------------------------------------------------- */
+:root[data-skin]:not([data-skin="still"]):not([data-accent="blue"]) {
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, var(--bg-surface));
+  --accent-soft-strong: color-mix(in srgb, var(--accent) 20%, var(--bg-surface));
+}
+:root[data-skin]:not([data-skin="still"])[data-theme="dark"]:not([data-accent="blue"]) {
+  --accent: var(--accent-soft-fg);
+  --accent-hover: color-mix(in srgb, var(--accent-soft-fg) 86%, #ffffff);
+  --accent-active: color-mix(in srgb, var(--accent-soft-fg) 88%, #000000);
+  --accent-soft: color-mix(in srgb, var(--accent-soft-fg) 11%, var(--bg-app));
+  --accent-soft-strong: color-mix(in srgb, var(--accent-soft-fg) 18%, var(--bg-app));
+  --fg-on-accent: #101216;
+}
+
+/* ---------------------------------------------------------------------
+   9. LIQUID GLASS SURFACES. The full tab becomes floating panes (sidebar,
+   main column, detail/AI panel) over the ambient; overlays, bars and the
+   side panel share the same material: translucent fill + sheen, a light
+   rim on the top edge, a soft lift and a backdrop blur. The dashboard
+   view drops its pane so widgets float on the ambient themselves.
+   Panes that may hold position: fixed content (the main column, the side
+   panel frame) blur through a ::before layer instead of their own
+   backdrop-filter, which would capture that content.
+   --------------------------------------------------------------------- */
+html[data-skin="glass"] { background: var(--glass-base); }
+:root[data-skin="glass"] :is(body, .app-frame) { background: transparent; }
+
+/* Full tab: floating panes */
+:root[data-skin="glass"] .app-frame.is-full { padding: var(--glass-gap); gap: var(--glass-gap); }
+:root[data-skin="glass"] .app-frame.is-full > :is(.sidebar, .main-column, .panel) {
+  border: 1px solid var(--glass-border);
+  border-block-start-color: var(--glass-rim);
+  border-radius: var(--radius-2xl);
+  background: var(--glass-sheen), var(--glass-surface);
+  box-shadow: inset 0 1px 0 var(--glass-rim), var(--glass-shadow);
+}
+:root[data-skin="glass"] .app-frame.is-full > :is(.sidebar, .panel) {
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+/* The main pane clips its corners itself (the panel scrolls, and a scroller clips to its rounded corners already). */
+:root[data-skin="glass"] .app-frame.is-full > .main-column { position: relative; isolation: isolate; overflow: hidden; background: none; }
+:root[data-skin="glass"] .app-frame.is-full > .main-column::before {
+  content: "";
+  position: absolute; inset: 0; z-index: -1;
+  border-radius: inherit;
+  background: var(--glass-sheen), var(--glass-surface);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  pointer-events: none;
+}
+/* Dashboard: no pane; the widgets carry the material. */
+:root[data-skin="glass"] .app-frame.is-full > .main-column:has(> .main[data-view="dashboard"]) {
+  overflow: visible;
+  border-color: transparent;
+  background: none;
+  box-shadow: none;
+}
+:root[data-skin="glass"] .app-frame.is-full > .main-column:has(> .main[data-view="dashboard"])::before { content: none; }
+/* The resize handle sits in the gap between the main pane and the panel. */
+:root[data-skin="glass"] .app-frame.is-full > .panel-resizer { inset-inline-end: calc(var(--panel-col) + var(--glass-gap) * 1.5 - 4px); }
+
+/* Sidebar drawer (narrow windows or hidden sidebar) and the overlay panel: thicker glass, inset from the edges. */
+:root[data-skin="glass"] .app-frame.is-full.is-nav-collapsed > .sidebar {
+  inset-block: var(--glass-gap);
+  inset-inline-start: var(--glass-gap);
+  background: var(--glass-sheen), var(--glass-panel);
+  box-shadow: inset 0 1px 0 var(--glass-rim), var(--glass-shadow-lg);
+  -webkit-backdrop-filter: var(--glass-blur-strong);
+  backdrop-filter: var(--glass-blur-strong);
+}
+:root[data-skin="glass"] .app-frame.is-full.is-nav-collapsed:not(.is-nav-open) > .sidebar { translate: calc(-100% - var(--glass-gap) * 3) 0; }
+@media (max-width: 1199px) {
+  :root[data-skin="glass"] .app-frame.is-full > .panel {
+    inset-block: var(--glass-gap);
+    inset-inline-end: var(--glass-gap);
+    max-width: calc(100vw - var(--glass-gap) * 2);
+    background: var(--glass-sheen), var(--glass-panel);
+    box-shadow: inset 0 1px 0 var(--glass-rim), var(--glass-shadow-lg);
+  }
+}
+:root[data-skin="glass"] :is(.nav-scrim, .panel-scrim) {
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+/* Views that fill a pane let the glass show; sticky bars frost what scrolls under them. */
+:root[data-skin="glass"] :is(.lib-view, .map-view, .notes-ws, .notes-list-pane, .notes-rail, .side-note, .tasks-view, .detail, .ai-panel, .settings-page) { background: transparent; }
+:root[data-skin="glass"] :is(.lib-top, .lib-group-head, .ne-side .ne-toolbar, .ne-side .ne-foot, .side-notes-top, .side-note-head, .tasks-head, .detail-foot) {
+  background: var(--glass-bar);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
+}
+:root[data-skin="glass"] :is(.lib-top, .side-notes-top, .side-note-head, .tasks-head) { border-block-end-color: var(--glass-border); }
+/* Date group labels: a lighter frost (the :is() list above carries a two-class selector, hence the extra class). */
+:root[data-skin="glass"] .lib-view .lib-group-head { background: color-mix(in srgb, var(--glass-bar) 45%, transparent); }
+
+/* Side panel: one frosted sheet with glass bars at the top and bottom. */
+:root[data-skin="glass"] .app-frame.is-side { isolation: isolate; }
+:root[data-skin="glass"] .app-frame.is-side::before {
+  content: "";
+  position: absolute; inset: 0; z-index: -1;
+  background: var(--glass-sheen), var(--glass-surface);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  pointer-events: none;
+}
+:root[data-skin="glass"] :is(.side-header, .tabbar) {
+  border-color: var(--glass-border);
+  background: var(--glass-bar);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
+}
+:root[data-skin="glass"] .tabbar { box-shadow: inset 0 1px 0 var(--glass-rim); }
+
+/* Overlays: near-opaque glass so dialogs and menus read over anything. */
+:root[data-skin="glass"] :is(.dialog, .popover, .block-editor-float) {
+  border: 1px solid var(--glass-border);
+  border-block-start-color: var(--glass-rim);
+  background: var(--glass-sheen), var(--bg-raised);
+  box-shadow: inset 0 1px 0 var(--glass-rim), var(--glass-shadow-lg);
+  -webkit-backdrop-filter: var(--glass-blur-strong);
+  backdrop-filter: var(--glass-blur-strong);
+}
+:root[data-skin="glass"] .popover { box-shadow: inset 0 1px 0 var(--glass-rim), var(--shadow-md); }
+:root[data-skin="glass"] .dialog-backdrop {
+  -webkit-backdrop-filter: blur(7px);
+  backdrop-filter: blur(7px);
+}
+:root[data-skin="glass"] .toast {
+  border: 1px solid var(--glass-border);
+  border-block-start-color: var(--glass-rim);
+  border-radius: var(--radius-lg);
+  box-shadow: inset 0 1px 0 var(--glass-rim), var(--glass-shadow);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+:root[data-skin="glass"] .command-footer { background: transparent; }
+
+/* Controls pick up the rim light so they read as pressed glass, not flat paint. */
+:root[data-skin="glass"] :is(.btn-primary, .icon-btn-primary) { box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.22), 0 6px 16px -8px var(--accent); }
+/* (A focused search field keeps its focus ring from components.css.) */
+:root[data-skin="glass"] :is(.search-field:not(:focus-within), .segmented) { box-shadow: inset 0 1px 1px rgb(0 0 0 / 0.04); }
+:root[data-skin="glass"] .segmented-option[aria-checked="true"] { box-shadow: var(--shadow-sm); }
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root[data-skin="glass"] { --glass-surface: var(--glass-panel); --glass-bar: var(--glass-panel); }
+}
+
+/* ---------------------------------------------------------------------
+   10. WALLPAPER LAYER. One fixed pseudo-element under the app paints the
+   glass ambient or the user's wallpaper, so its blur never touches
+   content. app.js sets on <html>: --wallpaper-image (a background-image
+   value), --wallpaper-dim (0..0.8) and --wallpaper-blur (px).
+   Scope "dashboard": only while the dashboard is the main view, with the
+   dashboard's own backgrounds cleared. Scope "app" (and Liquid Glass,
+   always): behind the whole full tab; in the other skins the sidebar and
+   top bar turn into frosted panes and the main view lets a hint through.
+   --------------------------------------------------------------------- */
+:root:is([data-skin="glass"], [data-wallpaper="on"]) body { background: transparent; }
+
+:root[data-skin="glass"] body::before,
+:root[data-wallpaper="on"][data-wallpaper-scope="app"][data-surface="full"] body::before,
+:root[data-wallpaper="on"] body:has(> #app > .app-frame > .main-column > .main[data-view="dashboard"])::before {
+  content: "";
+  position: fixed; inset: 0; z-index: -1;
+  background: var(--glass-ambient, none), var(--glass-base, var(--bg-app));
+  pointer-events: none;
+}
+:root[data-wallpaper="on"]:is([data-skin="glass"], [data-wallpaper-scope="app"][data-surface="full"]) body::before,
+:root[data-wallpaper="on"] body:has(> #app > .app-frame > .main-column > .main[data-view="dashboard"])::before {
+  /* Bleed past the edges by twice the blur so the blurred border never fades in. */
+  inset: calc(var(--wallpaper-blur, 0px) * -2);
+  background:
+    linear-gradient(rgb(0 0 0 / var(--wallpaper-dim, 0)), rgb(0 0 0 / var(--wallpaper-dim, 0))),
+    var(--wallpaper-image, none) center / cover no-repeat,
+    var(--glass-base, var(--bg-app));
+  filter: blur(var(--wallpaper-blur, 0px));
+}
+
+/* Forced colors repaint every pane with system colors; the decorative layer would only add noise behind them. */
+@media (forced-colors: active) {
+  body::before { display: none !important; }
+}
+
+/* Dashboard scope: the frame and the dashboard become see-through while it shows. */
+:root[data-wallpaper="on"] .app-frame:has(> .main-column > .main[data-view="dashboard"]) { background: transparent; }
+:root[data-wallpaper="on"] .main[data-view="dashboard"],
+:root[data-wallpaper="on"] .main[data-view="dashboard"] > .dashboard { background: transparent; }
+
+/* App scope in the opaque skins: frosted sidebar and top bar, a hint of the wallpaper through the main view, solid
+   overlays. Subtle text steps up to muted on these panes so it keeps 4.5:1 over busy photos. */
+:root[data-wallpaper="on"][data-wallpaper-scope="app"][data-surface="full"]:not([data-skin="glass"]) {
+  --wp-app: var(--bg-app);
+  --wp-sidebar: var(--bg-sidebar);
+}
+:root[data-wallpaper="on"][data-wallpaper-scope="app"][data-surface="full"]:not([data-skin="glass"]) .app-frame { background: transparent; }
+:root[data-wallpaper="on"][data-wallpaper-scope="app"][data-surface="full"]:not([data-skin="glass"]) .app-frame.is-full > .sidebar {
+  --fg-subtle: var(--fg-muted);
+  background: color-mix(in srgb, var(--wp-sidebar) 86%, transparent);
+  border-inline-end-color: var(--border-subtle);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  backdrop-filter: blur(28px) saturate(150%);
+}
+:root[data-wallpaper="on"][data-wallpaper-scope="app"][data-surface="full"]:not([data-skin="glass"]) .app-frame.is-full.is-nav-collapsed > .sidebar { background: color-mix(in srgb, var(--wp-sidebar) 94%, transparent); }
+:root[data-wallpaper="on"][data-wallpaper-scope="app"][data-surface="full"]:not([data-skin="glass"]) .app-frame.is-full > .main-column {
+  --fg-subtle: var(--fg-muted);
+  --bg-app: color-mix(in srgb, var(--wp-app) 92%, transparent);
+  position: relative;
+  isolation: isolate;
+}
+:root[data-wallpaper="on"][data-wallpaper-scope="app"][data-surface="full"]:not([data-skin="glass"]) .app-frame.is-full > .main-column::before {
+  content: "";
+  position: absolute; inset: 0; z-index: -1;
+  background: color-mix(in srgb, var(--wp-app) 70%, transparent);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  backdrop-filter: blur(28px) saturate(150%);
+  pointer-events: none;
+}
+:root[data-wallpaper="on"][data-wallpaper-scope="app"][data-surface="full"]:not([data-skin="glass"]) .app-frame.is-full > .main-column:has(> .main[data-view="dashboard"])::before { content: none; }
+:root[data-wallpaper="on"][data-wallpaper-scope="app"][data-surface="full"]:not([data-skin="glass"]) .app-frame.is-full > .panel {
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  backdrop-filter: blur(28px) saturate(150%);
+}
+
+/* ---------------------------------------------------------------------
+   11. DASHBOARD WIDGET MATERIAL. dashboard.css sets the --widget-* tokens
+   on .dashboard per widget style (card, glass, flat) and on a widget for
+   its own Background choice ([data-frame]); skins adjust them here.
+   Liquid Glass makes cards glass (flat stays a lighter frost); White uses
+   white cards with hairlines and a soft shadow; Midnight near-black cards
+   with a hairline (shadows vanish on black).
+   --------------------------------------------------------------------- */
+:root[data-skin="glass"] .dashboard,
+:root[data-skin="glass"] .dashboard[data-widget-style],
+:root[data-skin="glass"] .dashboard .widget:is([data-frame="card"], [data-frame="glass"]) {
+  --widget-bg: var(--glass-surface);
+  --widget-border: var(--glass-border);
+  --widget-rim: inset 0 1px 0 var(--glass-rim);
+  --widget-shadow: var(--glass-shadow);
+  --widget-blur: 28px;
+}
+:root[data-skin="glass"] .dashboard[data-widget-style="flat"],
+:root[data-skin="glass"] .dashboard .widget[data-frame="flat"] {
+  --widget-bg: color-mix(in srgb, var(--glass-surface) 55%, transparent);
+  --widget-border: var(--glass-border);
+  --widget-rim: 0 0 0 0 transparent;
+  --widget-shadow: 0 0 0 0 transparent;
+  --widget-blur: 20px;
+}
+:root[data-skin="glass"] .dashboard .widget:not(.is-bare, [data-frame="flat"]),
+:root[data-skin="glass"] .dashboard:not([data-widget-style="flat"]) .dash-search-field { background-image: var(--glass-sheen); }
+
+:root[data-skin="white"] .dashboard:not([data-widget-style="glass"], [data-widget-style="flat"]),
+:root[data-skin="white"] .dashboard .widget[data-frame="card"] {
+  --widget-border: rgb(24 24 27 / 0.08);
+  --widget-shadow: 0 1px 2px rgb(9 9 11 / 0.04), 0 10px 28px -14px rgb(9 9 11 / 0.16);
+}
+:root[data-skin="white"] .dashboard[data-widget-style="flat"],
+:root[data-skin="white"] .dashboard .widget[data-frame="flat"] { --widget-bg: #fafafa; --widget-border: rgb(24 24 27 / 0.08); }
+
+:root[data-skin="midnight"] .dashboard:not([data-widget-style="glass"], [data-widget-style="flat"]),
+:root[data-skin="midnight"] .dashboard .widget[data-frame="card"] {
+  --widget-bg: var(--bg-surface);
+  --widget-border: rgb(255 255 255 / 0.08);
+  --widget-shadow: 0 0 0 0 transparent;
+}
+:root[data-skin="midnight"] .dashboard[data-widget-style="glass"],
+:root[data-skin="midnight"] .dashboard .widget[data-frame="glass"] { --widget-border: rgb(255 255 255 / 0.1); --widget-rim: inset 0 1px 0 rgb(255 255 255 / 0.08); }
+
+:root:is([data-skin="nord"], [data-skin="paper"], [data-skin="rose"])[data-theme="dark"] .dashboard:not([data-widget-style="glass"], [data-widget-style="flat"]),
+:root:is([data-skin="nord"], [data-skin="paper"], [data-skin="rose"])[data-theme="dark"] .dashboard .widget[data-frame="card"] {
+  --widget-border: var(--border-subtle);
+}
+
+/* The Glass widget style of the opaque skins thickens over a wallpaper, with subtle text stepped up to muted. */
+:root[data-wallpaper="on"]:not([data-skin="glass"]) .dashboard[data-widget-style="glass"],
+:root[data-wallpaper="on"]:not([data-skin="glass"]) .dashboard .widget[data-frame="glass"] {
+  --widget-bg: color-mix(in srgb, var(--bg-surface) 80%, transparent);
+  --fg-subtle: var(--fg-muted);
+}
+
+/* Dashboard rows follow the text size so widget bodies keep their content (md keeps dashboard.css's rows). */
+:root:not([data-font-size="md"]) .dashboard { --dash-row: calc(72px + var(--ui-bump) * 3); }
+:root[data-density="compact"]:not([data-font-size="md"]) .dashboard { --dash-row: calc(64px + var(--ui-bump) * 3); }
+
+/* Over the glass ambient or a wallpaper the header becomes a frosted bar, as in the widgets, so the greeting and the
+   board controls read over any image. */
+:root:is([data-skin="glass"], [data-wallpaper="on"]) .main[data-view="dashboard"] .dash-header {
+  padding: var(--space-5) var(--space-5) var(--space-5) var(--space-8);
+  border: 1px solid var(--widget-border, var(--border-subtle));
+  border-radius: calc(var(--widget-radius, var(--radius-2xl)) + 4px);
+  background: var(--widget-bg, var(--bg-surface));
+  box-shadow: var(--widget-rim, 0 0 0 0 transparent), var(--widget-shadow, var(--shadow-sm));
+  -webkit-backdrop-filter: blur(var(--widget-blur, 0px)) saturate(1.4);
+  backdrop-filter: blur(var(--widget-blur, 0px)) saturate(1.4);
+}
+:root[data-skin="glass"] .main[data-view="dashboard"] .dash-header { background-image: var(--glass-sheen); }
+:root:is([data-skin="glass"], [data-wallpaper="on"]) .main[data-view="dashboard"] .dash-header .dash-search-field { background: var(--bg-field); box-shadow: inset 0 0 0 1px var(--border-default); }
+:root:is([data-skin="glass"], [data-wallpaper="on"]) .main[data-view="dashboard"] .dash-header .dash-search-field:focus-within { box-shadow: inset 0 0 0 1px var(--border-default), 0 0 0 2px var(--focus-ring); }
+/* The suggestions open inside the frosted header, whose blur keeps theirs from reaching the widgets below: lay the
+   raised fill over the opaque glass base so the list reads over any widget. */
+:root[data-skin="glass"] .dash-search-pop { background: var(--glass-sheen), linear-gradient(var(--bg-raised), var(--bg-raised)), var(--glass-base); }
+/* The edit-mode hint sits under the header on the bare image: give it the same frosted pane. */
+:root:is([data-skin="glass"], [data-wallpaper="on"]) .main[data-view="dashboard"] .dash-edit-hint {
+  inline-size: fit-content;
+  padding: var(--space-3) var(--space-6);
+  border: 1px solid var(--widget-border, var(--border-subtle));
+  border-radius: var(--radius-lg);
+  background: var(--widget-bg, var(--bg-surface));
+  box-shadow: var(--widget-rim, 0 0 0 0 transparent), var(--widget-shadow, var(--shadow-sm));
+  -webkit-backdrop-filter: blur(var(--widget-blur, 0px)) saturate(1.4);
+  backdrop-filter: blur(var(--widget-blur, 0px)) saturate(1.4);
+}
+:root[data-skin="glass"] .main[data-view="dashboard"] .dash-edit-hint { background-image: var(--glass-sheen); }
+/* Bare widgets (a big clock, a folder tile) have no card: give their text a halo of the canvas color. */
+:root[data-wallpaper="on"][data-theme="light"] .main[data-view="dashboard"] .widget.is-bare { text-shadow: 0 0 2px rgb(255 255 255 / 0.85), 0 0 14px rgb(255 255 255 / 0.75); }
+:root[data-wallpaper="on"][data-theme="dark"] .main[data-view="dashboard"] .widget.is-bare { text-shadow: 0 1px 2px rgb(0 0 0 / 0.6), 0 0 14px rgb(0 0 0 / 0.5); }
+
+/* ---------------------------------------------------------------------
+   12. REDUCED TRANSPARENCY (Settings > Comfort, or the OS setting): no
+   backdrop blur anywhere; glass panes become opaque surfaces of the same
+   hue (the ambient stays behind them), and wallpaper panes turn solid.
+   --------------------------------------------------------------------- */
+:root[data-skin="glass"][data-theme="light"][data-transparency="reduced"] {
+  --glass-surface: #f3f6fb;
+  --glass-panel: #f8fafd;
+  --glass-bar: #f3f6fb;
+  --glass-sheen: linear-gradient(transparent, transparent);
+  --bg-app: #f3f6fb;
+  --bg-sidebar: #eef2f8;
+  --bg-surface: #ffffff;
+  --bg-raised: #fbfcfe;
+  --bg-field: #ffffff;
+  --bg-control: #ffffff;
+  --toast-bg: #fbfcfe;
+}
+:root[data-skin="glass"][data-theme="dark"][data-transparency="reduced"] {
+  --glass-surface: #111a2c;
+  --glass-panel: #142036;
+  --glass-bar: #111a2c;
+  --glass-sheen: linear-gradient(transparent, transparent);
+  --bg-app: #111a2c;
+  --bg-sidebar: #0e1626;
+  --bg-surface: #18233a;
+  --bg-raised: #17233b;
+  --bg-field: #0c1424;
+  --bg-control: #212d47;
+  --toast-bg: #17233b;
+}
+:root[data-transparency="reduced"] *,
+:root[data-transparency="reduced"] *::before,
+:root[data-transparency="reduced"] *::after {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+:root[data-transparency="reduced"][data-wallpaper="on"][data-wallpaper-scope="app"][data-surface="full"]:not([data-skin="glass"]) .app-frame.is-full > .sidebar { background: var(--wp-sidebar); }
+:root[data-transparency="reduced"][data-wallpaper="on"][data-wallpaper-scope="app"][data-surface="full"]:not([data-skin="glass"]) .app-frame.is-full > .main-column { --bg-app: var(--wp-app); }
+:root[data-transparency="reduced"][data-wallpaper="on"][data-wallpaper-scope="app"][data-surface="full"]:not([data-skin="glass"]) .app-frame.is-full > .main-column::before { background: var(--wp-app); }
+
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-skin="glass"][data-theme="light"] {
+    --glass-surface: #f3f6fb; --glass-panel: #f8fafd; --glass-bar: #f3f6fb;
+    --bg-app: #f3f6fb; --bg-sidebar: #eef2f8; --bg-surface: #ffffff; --bg-raised: #fbfcfe; --bg-field: #ffffff; --bg-control: #ffffff; --toast-bg: #fbfcfe;
+  }
+  :root[data-skin="glass"][data-theme="dark"] {
+    --glass-surface: #111a2c; --glass-panel: #142036; --glass-bar: #111a2c;
+    --bg-app: #111a2c; --bg-sidebar: #0e1626; --bg-surface: #18233a; --bg-raised: #17233b; --bg-field: #0c1424; --bg-control: #212d47; --toast-bg: #17233b;
+  }
+  *, *::before, *::after { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+}
+
+/* ---------------------------------------------------------------------
+   13. REDUCED MOTION (Settings > Comfort): the same treatment as the OS
+   setting in base.css and components.css. tokens.css shortens the
+   durations; overlays keep a short fade instead of scale or slide.
+   --------------------------------------------------------------------- */
+:root[data-motion="reduced"] *,
+:root[data-motion="reduced"] *::before,
+:root[data-motion="reduced"] *::after {
+  animation-duration: 1ms !important;
+  animation-iteration-count: 1 !important;
+  transition-property: opacity, color, background-color, border-color, box-shadow !important;
+  scroll-behavior: auto !important;
+}
+:root[data-motion="reduced"] .boot-mark { animation-duration: 1.2s !important; animation-iteration-count: infinite !important; }
+:root[data-motion="reduced"] :is(.dialog-backdrop, .dialog, .popover, .toast) { animation-name: overlay-fade !important; animation-duration: var(--dur-base) !important; }
+:root[data-motion="reduced"] .toast[data-state="closing"] { animation: toast-fade-out var(--dur-base) linear forwards !important; }
+:root[data-motion="reduced"] .skeleton-bone::after { display: none; }
+@keyframes toast-fade-out { to { opacity: 0; } }

@@ -640,6 +640,8 @@
 .note-card.is-clamped .note-card-body { -webkit-mask-image: linear-gradient(to bottom, black calc(100% - var(--card-line) * 1.5), transparent); mask-image: linear-gradient(to bottom, black calc(100% - var(--card-line) * 1.5), transparent); }
 .note-card.is-expanded .note-card-body { max-height: none; }
 .note-card-empty { margin: 0; color: var(--fg-subtle); font-size: var(--text-sm); }
+/* A note whose only line is its title (a one-line sticky note) leaves the body empty: no gap for it. */
+.note-card-body:empty { display: none; }
 .note-card-more {
   align-self: flex-start;
   height: var(--control-h-xs);

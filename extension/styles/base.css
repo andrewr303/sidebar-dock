@@ -201,7 +201,10 @@ html.theme-switching *, html.theme-switching *::before, html.theme-switching *::
   display: grid;
   place-items: center;
   min-height: 100dvh;
+  /* Hidden for the first moments: a new tab usually loads faster than that and should not flash a loading mark. */
+  animation: boot-reveal 0s linear 400ms both;
 }
+@keyframes boot-reveal { from { opacity: 0; } to { opacity: 1; } }
 .boot-mark {
   position: relative;
   width: 28px; height: 28px;
@@ -321,6 +324,16 @@ html.theme-switching *, html.theme-switching *::before, html.theme-switching *::
 .tabbar-tab[aria-selected="true"] { color: var(--fg-default); }
 .tabbar-tab[aria-selected="true"] .icon { color: var(--accent-soft-fg); }
 .tabbar-tab:focus-visible { outline-offset: -2px; }
+
+/* ---------- Click safety ---------- */
+/* Links that navigate inside Still (sidebar rows, the brand, settings sections) and pictures inside controls never start
+   a native drag: Chrome picks them up after ~4px of movement, and a slightly shaky click then does nothing. Web links
+   and anything marked draggable="true" keep dragging (ui/dnd.js turns a tiny drag of those back into a click). */
+a[data-action]:not([draggable="true"]),
+:is(button, a, label, [data-action], [role="button"], [role="tab"], [role="menuitem"]) img:not([draggable="true"]) { -webkit-user-drag: none; }
+/* Text-sized link buttons get a 24px-tall pointer target without changing their layout. */
+.btn-link { position: relative; }
+.btn-link::before { content: ""; position: absolute; inset: -4px; }
 
 /* ---------- Motion preferences ---------- */
 @media (prefers-reduced-motion: reduce) {

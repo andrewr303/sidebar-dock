@@ -1,6 +1,7 @@
-// Library navigation: the full-tab sidebar (views, collection tree, filters, tags, footer) and the side panel's
-// Library root. Collection rows carry a hover + (save the current tab in the side panel, Add dialog in the full tab)
-// and a … menu; the tree follows the ARIA tree pattern with a roving tabindex.
+// Library navigation: the full-tab sidebar (Dashboard and AI Assistant, views, collection tree, filters, tags, footer)
+// and the side panel's Library root. Collection rows carry a hover + (save the current tab in the side panel, Add dialog
+// in the full tab) and a … menu; the tree follows the ARIA tree pattern with a roving tabindex. In the side panel the
+// full-screen rows hand off: AI Assistant switches to the Ask tab, Dashboard and Sticky notes open in a tab.
 import { html, cx, raw, plural } from './html.js';
 import { icon, COLLECTION_COLORS } from './icons.js';
 import { iconButton, collectionIcon } from './components.js';
@@ -13,6 +14,8 @@ import { initDnd } from './dnd.js';
 import { exportBookmarkHtml } from '../lib/portability.js';
 
 const TOP = [
+  { view: 'dashboard', label: 'Dashboard', icon: 'layout-dashboard', opensTab: true },
+  { view: 'assistant', label: 'AI Assistant', icon: 'sparkles' },
   { view: 'all', label: 'All items', icon: 'book-open-text', count: c => c.all },
   { view: 'inbox', label: 'Inbox', icon: 'inbox', count: c => c.inbox, drop: '' },
   { view: 'favorites', label: 'Favorites', icon: 'star', count: c => c.favorites, filter: 'favorite' },
@@ -20,6 +23,7 @@ const TOP = [
 // Optional filters only appear when they have something to show.
 const FILTERS = [
   { view: 'notes', label: 'Notes', icon: 'sticky-note', count: c => c.notes, always: true },
+  { view: 'stickies', label: 'Sticky notes', icon: 'sticker', count: c => c.stickies || null, always: true, opensTab: true },
   // Tasks is a full-tab screen (notes.js renderTasks); the side panel's Library drill-down only lists items.
   { view: 'tasks', label: 'Tasks', icon: 'list-checks', count: c => c.tasksOpen, fullOnly: true },
   { view: 'highlights', label: 'Highlights', icon: 'highlighter', count: c => c.highlights },
@@ -47,7 +51,9 @@ let typed = { text: '', at: 0 };
 const ui = ctx => (ctx.state.sidebar ||= { renamingId: '', allTags: false });
 const fmt = n => Number(n || 0).toLocaleString();
 const isOpen = (ctx, section) => !ctx.prefs.get('collapsedSections', []).includes(section);
-const viewHref = view => `?libraryView=${encodeURIComponent(view)}`;
+// Rows are real links so Cmd/Ctrl/middle-click open a view in a tab; index.html always names the view (the new tab
+// page and a bare index.html open the start page instead).
+const viewHref = view => `index.html?libraryView=${encodeURIComponent(view)}`;
 const modified = event => !!event && (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button > 0);
 // Closing the overlay drawer makes it inert, which would drop focus on the page body: move it to the new view instead.
 const closeNav = ctx => {
@@ -56,6 +62,14 @@ const closeNav = ctx => {
   ctx.nextFrame(() => document.getElementById('main')?.focus({ preventScroll: true }));
 };
 const parentKey = row => (row.depth > 0 ? row.parentId || '' : '');
+// Sticky notes are notes with a sticky field; counted once per library snapshot.
+let stickyMemo = { library: null, count: 0 };
+function navCounts(ctx) {
+  if (stickyMemo.library !== ctx.library) {
+    stickyMemo = { library: ctx.library, count: ctx.select.live().reduce((n, item) => n + (item.type === 'note' && item.sticky ? 1 : 0), 0) };
+  }
+  return { ...ctx.select.counts(), stickies: stickyMemo.count };
+}
 
 /**
  * Navigates to a main view from the sidebar, the side panel Library root or the palette. In the side panel, Notes is
@@ -79,13 +93,15 @@ export function brandMark({ size = 22, className } = {}) {
     fill="currentColor"><path d="M5 3h6v10l-3-2.8L5 13z"/></svg></span>`;
 }
 
-function navRow(ctx, { view, label, icon: ico, count, drop, filter }, counts, surface) {
+function navRow(ctx, { view, label, icon: ico, count, drop, filter, opensTab }, counts, surface) {
   const current = surface === 'full' && ctx.state.view === view;
   const n = count ? count(counts) : null;
+  const leavesPanel = opensTab && surface === 'side';
   return html`<a class="${cx('tree-row', 'nav-row', current && 'is-current')}" href="${viewHref(view)}" data-action="sidebar.navigate" data-view="${view}"
     ${current ? raw('aria-current="page"') : ''} ${drop != null ? html`data-drop-collection="${drop}"` : ''} ${filter ? html`data-drop-filter="${filter}"` : ''}>
-    <span class="tree-chev is-leaf" aria-hidden="true"></span>${icon(ico, { size: 16, className: 'nav-icon' })}<span class="tree-name">${label}</span>
-    ${n != null ? html`<span class="tree-count">${fmt(n)}</span>` : ''}</a>`;
+    <span class="tree-chev is-leaf" aria-hidden="true"></span>${icon(ico, { size: 18, className: 'nav-icon' })}<span class="tree-name">${label}</span>
+    ${n != null ? html`<span class="tree-count">${fmt(n)}</span>` : ''}
+    ${leavesPanel ? html`${icon('arrow-up-right', { size: 14, className: 'nav-row-out' })}<span class="sr-only">(opens in a tab)</span>` : ''}</a>`;
 }
 
 function heading(ctx, section, label, { actions = '', count, attrs = '' } = {}) {
@@ -119,7 +135,7 @@ function treeRow(ctx, row, { counts, selectedId, focusId, surface }) {
     ${row.hasChildren
       ? html`<span class="${cx('tree-chev', row.expanded && 'is-open')}" data-action="sidebar.toggle" data-id="${row.id}" aria-hidden="true">${icon('chevron-right', { size: 12 })}</span>`
       : html`<span class="tree-chev is-leaf" aria-hidden="true"></span>`}
-    ${collectionIcon(row, { size: 20, className: 'tree-tile' })}
+    ${collectionIcon(row, { size: 22, className: 'tree-tile' })}
     ${renaming
       ? html`<input class="tree-rename" id="tree-rename" value="${row.name}" aria-label="Collection name" maxlength="500" autocomplete="off" spellcheck="false"
           data-keydown="sidebar.rename-key">`
@@ -146,7 +162,7 @@ function renderCollections(ctx, counts, surface) {
       ${rows.length
         ? html`<div class="tree" role="tree" aria-label="Collections" data-keydown="sidebar.tree-key">${rows.map(row => treeRow(ctx, row, { counts, selectedId, focusId, surface }))}</div>`
         : html`<p class="nav-empty">Group links and notes into collections.</p>`}
-      <button type="button" class="tree-row is-new" data-action="collections.new"><span class="tree-chev is-leaf" aria-hidden="true"></span>${icon('plus', { size: 16, className: 'nav-icon' })}<span class="tree-name">New collection</span></button>
+      <button type="button" class="tree-row is-new" data-action="collections.new"><span class="tree-chev is-leaf" aria-hidden="true"></span>${icon('plus', { size: 18, className: 'nav-icon' })}<span class="tree-name">New collection</span></button>
     </div>`;
 }
 
@@ -172,41 +188,43 @@ function renderTags(ctx, surface) {
           <span class="tree-count">${fmt(count)}</span></a>`;
       })}
       ${tags.length > TAG_LIMIT ? html`<button type="button" class="tree-row is-more" data-action="sidebar.all-tags" aria-expanded="${all ? 'true' : 'false'}">
-        <span class="tree-chev is-leaf" aria-hidden="true"></span>${icon(all ? 'chevron-up' : 'chevron-down', { size: 16, className: 'nav-icon' })}
+        <span class="tree-chev is-leaf" aria-hidden="true"></span>${icon(all ? 'chevron-up' : 'chevron-down', { size: 18, className: 'nav-icon' })}
         <span class="tree-name">${all ? 'Show fewer tags' : 'All tags'}</span>${all ? '' : html`<span class="tree-count">${fmt(tags.length - TAG_LIMIT)} more</span>`}</button>` : ''}
     </div>`;
 }
 
 function renderNav(ctx, counts, surface) {
-  return html`<div class="nav-section">${TOP.map(row => navRow(ctx, row, counts, surface))}</div>
+  return html`<div class="nav-section nav-top">${TOP.map(row => navRow(ctx, row, counts, surface))}</div>
     ${renderCollections(ctx, counts, surface)}${renderFilters(ctx, counts, surface)}${renderTags(ctx, surface)}`;
 }
 
 /** Full-tab left navigation (inside <nav class="sidebar">, rendered by the shell). */
 export function renderSidebar(ctx) {
-  const counts = ctx.select.counts();
+  const counts = navCounts(ctx);
   const overlay = ctx.state.shell?.docked === false;
   const footLink = ({ view, label, icon: ico, filter }) => {
     const current = ctx.state.view === view;
     return html`<a class="${cx('btn', 'btn-ghost', 'sidebar-foot-link', current && 'is-current')}" href="${viewHref(view)}" data-action="sidebar.navigate"
-      data-view="${view}" data-drop-filter="${filter}" ${current ? raw('aria-current="page"') : ''}>${icon(ico, { size: 16 })}<span class="btn-label">${label}</span></a>`;
+      data-view="${view}" data-drop-filter="${filter}" data-tooltip="${label}" data-tooltip-pos="start" ${current ? raw('aria-current="page"') : ''}>${icon(ico, { size: 16 })}<span class="btn-label">${label}</span></a>`;
   };
+  const home = ctx.startView?.() || 'dashboard';
+  const inSettings = /^settings(?::|$)/.test(ctx.state.view);
   return html`<div class="sidebar-head">
-      <a class="brand" href="?" data-action="sidebar.navigate" data-view="all" aria-label="Still, all items">${brandMark()}<span class="brand-name">Still</span></a>
+      <a class="brand" href="${viewHref(home)}" data-action="sidebar.navigate" data-view="${home}" aria-label="Still, start page">${brandMark()}<span class="brand-name">Still</span></a>
       ${overlay ? iconButton({ icon: 'x', label: 'Close sidebar', action: 'shell.close-nav' })
         : iconButton({ icon: 'panel-left', label: 'Hide sidebar', action: 'shell.hide-sidebar', attrs: { 'aria-keyshortcuts': ctx.env.isMac ? 'Meta+\\' : 'Control+\\' } })}
     </div>
     <div class="sidebar-scroll">${renderNav(ctx, counts, 'full')}</div>
     <div class="sidebar-foot">
       ${END.map(footLink)}
-      ${iconButton({ icon: 'settings', label: 'Settings', action: 'sidebar.settings' })}
+      ${iconButton({ icon: 'settings', label: 'Settings', action: 'sidebar.settings', className: inSettings && 'is-current', attrs: inSettings ? { 'aria-current': 'page' } : undefined })}
       ${iconButton({ icon: 'circle-help', label: 'Help', action: 'sidebar.help' })}
     </div>`;
 }
 
 /** Side panel Library tab root: views, collection tree, filters, tags, Archive and Trash. */
 export function renderLibraryRoot(ctx) {
-  const counts = ctx.select.counts();
+  const counts = navCounts(ctx);
   return html`<div class="library-root" data-key="library-root">
     ${renderNav(ctx, counts, 'side')}
     <div class="nav-section library-root-end">${END.map(row => navRow(ctx, row, counts, 'side'))}</div>
@@ -507,4 +525,15 @@ export function init(ctx) {
     treeFocusId = row.dataset.id;
     row.focus({ preventScroll: true });
   });
+}
+
+/**
+ * The "Show sidebar" button for views that draw their own header instead of the top bar (dashboard, assistant,
+ * settings). Empty while the sidebar is docked or in the side panel.
+ */
+export function navToggle(ctx) {
+  if (ctx.env.isSidepanel || ctx.state.shell?.docked !== false) return '';
+  const open = !!ctx.state.shell?.navOpen;
+  return iconButton({ icon: 'panel-left', label: 'Show sidebar', action: 'shell.toggle-nav', controls: 'sidebar', className: 'topbar-nav-toggle', id: 'nav-toggle',
+    attrs: { 'aria-expanded': open ? 'true' : 'false', 'aria-keyshortcuts': ctx.env.isMac ? 'Meta+\\' : 'Control+\\' } });
 }

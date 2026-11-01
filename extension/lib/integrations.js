@@ -236,7 +236,7 @@ export const syncBridgeOnce = (...args) => client.syncBridgeOnce(...args);
 export const startBridgeSync = (...args) => client.startBridgeSync(...args);
 export const setBridgeSearch = (...args) => client.setSearch(...args);
 export async function requestBridge(path, { method = 'GET', body, signal, onEvent } = {}) {
-  if (typeof path !== 'string' || !/^\/(?:ai|connections)(?:\/|$)/.test(path) || path.includes('..') || /[\r\n#]/.test(path)) throw new Error('Unsupported bridge route.');
+  if (typeof path !== 'string' || !/^\/(?:ai|connections|github)(?:\/|$)/.test(path) || path.includes('..') || /[\r\n#]/.test(path)) throw new Error('Unsupported bridge route.');
   const settings = await defaultStorage.read();
   if (!settings.bridgeToken) throw new Error('Pair the local bridge first to connect your AI tools.');
   const response = await fetch(bridgeUrl(settings.bridgeUrl) + path, { method, signal: signal || AbortSignal.timeout(300000), cache: 'no-store', redirect: 'error', headers: { Authorization: `Bearer ${settings.bridgeToken}`, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });

@@ -1,3 +1,5 @@
+import { dashboardBackupSource } from './dashboard-store.js';
+
 const MAX_BACKUP_BYTES = 200 * 1024 * 1024;
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
 const TYPES = new Set(['bookmark', 'article', 'image', 'video', 'file', 'note']);
@@ -129,10 +131,35 @@ function validateLibrary(raw) {
   return snapshot;
 }
 
-export async function createFullBackup(store) {
+// Dashboard boards and widgets travel with a full backup. Widget config never holds credentials (lib/accounts.js keeps
+// them on the device) and the dashboard source strips credential-like keys anyway.
+const MAX_BOARDS = 100;
+const MAX_WIDGETS = 400;
+function validateDashboard(value) {
+  if (value === undefined || value === null) return null;
+  if (!isObject(value) || !Array.isArray(value.boards)) throw new Error('The backup dashboard must have a boards array.');
+  if (value.boards.length > MAX_BOARDS) throw new Error(`The backup has more than ${MAX_BOARDS} dashboards.`);
+  for (const board of value.boards) {
+    if (!isObject(board) || (board.widgets !== undefined && !Array.isArray(board.widgets))) throw new Error('Every dashboard in the backup needs a widgets array.');
+    if (board.id !== undefined) validId(board.id, 'Dashboard');
+    if ((board.widgets || []).length > MAX_WIDGETS) throw new Error(`A dashboard in the backup has more than ${MAX_WIDGETS} widgets.`);
+    for (const widget of board.widgets || []) {
+      if (!isObject(widget) || typeof widget.type !== 'string' || !/^[a-z0-9-]{1,60}$/.test(widget.type)) throw new Error('A dashboard widget in the backup has an invalid type.');
+      if (widget.id !== undefined) validId(widget.id, 'Widget');
+      if (widget.config !== undefined && !isObject(widget.config)) throw new Error('A dashboard widget in the backup has invalid settings.');
+    }
+  }
+  return value;
+}
+const defaultDashboard = options => (Object.prototype.hasOwnProperty.call(options, 'dashboard') ? options.dashboard : dashboardBackupSource());
+
+/** Full backup: library, original file bytes and (when a dashboard source is available) dashboard boards and widgets. */
+export async function createFullBackup(store, options = {}) {
   const snapshot = validateLibrary(await store.exportLibrary());
   snapshot.backupVersion = 1;
   snapshot.exportedAt = new Date().toISOString();
+  const dashboard = defaultDashboard(options);
+  if (dashboard?.exportDashboard) snapshot.dashboard = await dashboard.exportDashboard();
   snapshot.attachments = [];
   for (const id of new Set(snapshot.items.map(item => item.attachmentId).filter(Boolean))) {
     const record = await store.getAttachment(id);
@@ -228,7 +255,11 @@ function htmlLibrary(source) {
   return { library: { schemaVersion: 1, items, collections, settings: {} }, warnings: skipped ? [`Skipped ${skipped} bookmark${skipped === 1 ? '' : 's'} with unsupported or invalid URLs.`] : [] };
 }
 
-export async function importPortableFile(file, store) {
+/**
+ * Imports a Still JSON backup, bookmark HTML or CSV file. A backup's dashboard is validated with everything else and
+ * merged into the current dashboard after the library import succeeds (result.boards says how many boards came back).
+ */
+export async function importPortableFile(file, store, options = {}) {
   if (!file || typeof file.text !== 'function') throw new Error('Choose a backup, bookmark HTML or CSV file.');
   if (!Number.isFinite(file.size) || file.size < 0 || file.size > MAX_BACKUP_BYTES) throw new Error('This import exceeds the 200 MB limit.');
   const source = await file.text();
@@ -239,6 +270,8 @@ export async function importPortableFile(file, store) {
   else if (/\.csv$/i.test(file.name || '')) raw = csvLibrary(source);
   else throw new Error('Choose a Still JSON backup, bookmark HTML, or CSV file.');
   const snapshot = validateLibrary(raw);
+  const backupDashboard = validateDashboard(snapshot.dashboard);
+  delete snapshot.dashboard;
   const records = snapshot.attachments ?? [];
   if (!Array.isArray(records)) throw new Error('The backup attachments must be an array.');
   const attachmentIds = new Set();
@@ -281,7 +314,13 @@ export async function importPortableFile(file, store) {
     if (failed.length) throw new AggregateError([error, ...failed], `${error.message} Import failed; ${failed.length} newly written file record${failed.length === 1 ? '' : 's'} could not be cleaned up.`);
     throw error;
   }
-  return { items: snapshot.items.length, files: written.length, warnings };
+  const result = { items: snapshot.items.length, files: written.length, warnings };
+  const dashboard = backupDashboard && defaultDashboard(options);
+  if (dashboard?.importDashboard) {
+    try { result.boards = (await dashboard.importDashboard(backupDashboard))?.boards ?? backupDashboard.boards.length; }
+    catch (error) { console.error(error); warnings.push('Your library was restored, but the dashboard in this backup could not be. Your current dashboard is unchanged.'); }
+  }
+  return result;
 }
 
 export function exportBookmarkHtml(library) {

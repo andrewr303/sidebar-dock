@@ -1,0 +1,544 @@
+/* Product Hunt widget (.w-ph-*) and its account card. Layouts follow data-layout: top (the top three with big rank
+   numbers, small widgets), list (medium and large) and cards (extra large). The widget body is a size container, so
+   every breakpoint below is a container query on the widget, never the window.
+
+   Component states (rows, cards, action buttons, toolbar controls, notices):
+     default   rank, image, name, tagline, meta; votes in a quiet outlined box
+     hover     row/card tint (--bg-hover); row actions appear as a raised pill (gated by @media (hover: hover))
+     focus     2px --focus-ring on the stretched row link (inset), on action buttons and controls
+     active    action buttons and the footer button press to --press-scale
+     disabled  N/A: every control here is always available; unavailable actions are left out instead
+     loading   skeleton rows in the final geometry (aria-busy); a refresh keeps the list and spins the header icon
+     error     warning notice above a cached list, or an empty state with "Try again" / "Reconnect" / "Allow access"
+     selected  N/A: rows are links, not a selection; the active launch day is the checked segmented option */
+.w-ph,
+.w-ph-account,
+.w-ph-connect-dialog {
+  --w-ph-brand: #da552f;          /* Product Hunt orange, for the brand tile only */
+  --w-ph-brand-fg: #ffffff;       /* 3.9:1 on the brand tile (a graphic, not text) */
+  --w-ph-plate: #ffffff;          /* light plate under product images: their logos are drawn for white */
+  --w-ph-image-ring: oklch(0 0 0 / 0.1);
+}
+[data-theme="dark"] :is(.w-ph, .w-ph-account, .w-ph-connect-dialog) {
+  --w-ph-plate: #ececea;          /* a little dimmer than white so images do not glare on dark surfaces */
+  --w-ph-image-ring: oklch(1 0 0 / 0.1);
+}
+
+.w-ph {
+  --w-ph-inset: var(--space-3);
+  --w-ph-inner-radius: max(var(--radius-sm), calc(var(--widget-radius, 16px) - var(--space-6)));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  block-size: 100%;
+  min-block-size: 0;
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+}
+.w-ph > .sr-only:empty { display: none; }
+
+/* ---------- glyphs and images ---------- */
+.w-ph-mark {
+  display: grid; flex: none; place-items: center;
+  inline-size: var(--size); block-size: var(--size);
+  border-radius: clamp(var(--radius-sm), calc(var(--size) / 4), var(--radius-md));
+  background: var(--w-ph-brand);
+  color: var(--w-ph-brand-fg);
+}
+.w-ph-thumb {
+  position: relative;
+  display: inline-grid;
+  flex: none;
+  inline-size: var(--size);
+  block-size: var(--size);
+  border-radius: clamp(var(--radius-xs), calc(var(--size) / 5), var(--radius-md));
+}
+.w-ph-thumb.has-image { background: var(--w-ph-plate); }
+.w-ph-thumb-img {
+  inline-size: 100%;
+  block-size: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+  outline: 1px solid var(--w-ph-image-ring);
+  outline-offset: -1px;
+}
+/* Without an image, the product site's icon sits centred on the same plate. */
+.w-ph-thumb.has-site { place-items: center; background: var(--w-ph-plate); box-shadow: inset 0 0 0 1px var(--w-ph-image-ring); }
+.w-ph-thumb-site { border-radius: var(--radius-xs); }
+.w-ph-thumb-tile { --size: inherit; inline-size: 100%; block-size: 100%; border-radius: inherit; font-size: calc(var(--size) * 0.42); font-weight: var(--weight-semibold); }
+
+/* ---------- toolbar ---------- */
+.w-ph-toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  min-inline-size: 0;
+}
+.w-ph-ranges { display: flex; min-inline-size: 0; }
+.w-ph-range-btn { display: none; }
+.w-ph-toolbar-end { display: inline-flex; align-items: center; gap: var(--space-2); flex: none; margin-inline-start: auto; }
+.w-ph-scope { display: inline-flex; align-items: center; gap: var(--space-3); min-inline-size: 0; color: var(--fg-muted); font-size: var(--text-xs); font-weight: var(--weight-medium); white-space: nowrap; }
+.w-ph-scope > span { overflow: hidden; text-overflow: ellipsis; }
+.w-ph-topic-btn { max-inline-size: 18ch; }
+.w-ph-topic-btn .btn-label, .w-ph-range-btn .btn-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.w-ph-options-btn[aria-expanded="true"] { background: var(--bg-active); }
+/* Narrow widgets swap the day switcher for a menu button and drop the extra buttons (both stay in the options menu). */
+@container widget (max-width: 339px) {
+  .w-ph-range-seg { display: none; }
+  .w-ph-range-btn { display: inline-flex; }
+}
+@container widget (max-width: 519px) { .w-ph-topic-btn { display: none; } }
+@container widget (max-width: 299px) { .w-ph-rankings-btn { display: none; } }
+
+/* ---------- scroll area ---------- */
+.w-ph-scroll {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  margin-inline: calc(var(--w-ph-inset) * -1);
+  padding-inline: var(--w-ph-inset);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scroll-padding-block: var(--space-2);
+}
+.w-ph-scroll:has(> .empty-state) { display: grid; place-items: center; }
+/* While more rows sit below the fold, the last visible row fades out as a cue; the fade lifts at the end of the list. */
+@property --w-ph-fade { syntax: '<length>'; inherits: false; initial-value: 0px; }
+@supports (animation-timeline: scroll()) {
+  .w-ph-scroll {
+    mask-image: linear-gradient(to bottom, #000 calc(100% - var(--w-ph-fade)), transparent);
+    animation: w-ph-fade linear both;
+    animation-timeline: scroll(self);
+  }
+  @keyframes w-ph-fade { from, 96% { --w-ph-fade: 24px; } to { --w-ph-fade: 0px; } }
+}
+
+/* ---------- list rows ---------- */
+.w-ph-list,
+.w-ph-top,
+.w-ph-cards { margin: 0; padding: 0; list-style: none; }
+.w-ph-list { display: flex; flex-direction: column; gap: var(--space-1); }
+.w-ph-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  min-block-size: 56px;
+  padding: var(--space-3) var(--w-ph-inset);
+  margin-inline: calc(var(--w-ph-inset) * -1);
+  border-radius: var(--w-ph-inner-radius);
+  color: var(--fg-default);
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.w-ph-row:has(.w-ph-link:focus-visible, .w-ph-act:focus-visible),
+.w-ph-row:has([aria-expanded="true"]) { background: var(--bg-hover); }
+@media (hover: hover) { .w-ph-row:hover { background: var(--bg-hover); } }
+
+.w-ph-rank {
+  flex: none;
+  inline-size: 2ch;
+  text-align: end;
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The row link covers the whole row; the action buttons sit above it. */
+.w-ph-link {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-inline-size: 0;
+  color: inherit;
+  text-decoration: none;
+  outline: none;
+}
+.w-ph-link::after { content: ''; position: absolute; inset: 0; z-index: 0; border-radius: inherit; }
+.w-ph-row .w-ph-link::after { border-radius: var(--w-ph-inner-radius); }
+.w-ph-list .w-ph-link { flex: 1 1 auto; }
+.w-ph-link:hover { text-decoration: none; }
+.w-ph-link:focus-visible::after { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+/* Names and taglines take their own direction (dir="auto") but keep the widget's alignment. */
+.w-ph-link:dir(rtl) > :is(.w-ph-name, .w-ph-tagline) { text-align: right; }
+.w-ph-name {
+  overflow: hidden;
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  line-height: var(--lh-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.w-ph-tagline {
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.w-ph-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2) var(--space-5);
+  min-inline-size: 0;
+  margin-block-start: var(--space-1);
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  white-space: nowrap;
+}
+.w-ph-topics, .w-ph-by { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; }
+.w-ph-meta-item { display: inline-flex; align-items: center; gap: var(--space-2); flex: none; font-variant-numeric: tabular-nums; }
+@container widget (max-width: 300px) { .w-ph-when { display: none; } }
+/* Narrow lists give the name more room: a smaller image and a slimmer upvote box. */
+@container widget (max-width: 319px) {
+  .w-ph-list .w-ph-row { gap: var(--space-4); }
+  .w-ph-list .w-ph-thumb { inline-size: 32px; block-size: 32px; }
+  .w-ph-list .w-ph-votes { min-inline-size: 38px; block-size: 40px; }
+  .w-ph-list .w-ph-row:has(.w-ph-votes) > .w-ph-actions { inset-inline-end: calc(var(--w-ph-inset) + 38px + var(--space-4)); }
+}
+/* The narrowest lists drop the image so names keep their room (the rank and upvotes stay). */
+@container widget (max-width: 259px) { .w-ph-list .w-ph-thumb { display: none; } }
+/* Roomy lists let taglines wrap to two lines. */
+@container widget (min-width: 520px) {
+  .w-ph-list .w-ph-tagline { display: -webkit-box; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; text-wrap: pretty; }
+}
+
+/* Upvotes: a quiet outlined box like Product Hunt's own, for reading only (the API cannot vote). */
+.w-ph-votes {
+  position: relative;
+  z-index: 0;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  min-inline-size: 44px;
+  block-size: 44px;
+  padding-inline: var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--fg-default);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.w-ph-votes > .icon { color: var(--fg-muted); }
+.w-ph-votes-n { white-space: nowrap; }
+
+/* Row actions: a raised pill over the row's trailing edge on hover and keyboard focus. Touch screens get the menu button
+   in the row instead. */
+.w-ph-actions {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-end: var(--w-ph-inset);
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-sm);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.w-ph-row:has(.w-ph-votes) > .w-ph-actions { inset-inline-end: calc(var(--w-ph-inset) + 44px + var(--space-5)); }
+.w-ph-row:focus-within > .w-ph-actions,
+.w-ph-row:has([aria-expanded="true"]) > .w-ph-actions { opacity: 1; pointer-events: auto; }
+@media (hover: hover) { .w-ph-row:hover > .w-ph-actions { opacity: 1; pointer-events: auto; } }
+/* Touch screens: list rows show ⋯ in line (it opens every action); the glanceable top three opens launches only. */
+@media (hover: none) {
+  .w-ph-top-item > .w-ph-actions { display: none; }
+  .w-ph-row > .w-ph-actions { position: static; padding: 0; background: none; box-shadow: none; opacity: 1; pointer-events: auto; transform: none; }
+  .w-ph-row > .w-ph-actions > .w-ph-act:not(.w-ph-more) { display: none; }
+}
+.w-ph-act {
+  position: relative;
+  display: grid;
+  place-items: center;
+  inline-size: 28px;
+  block-size: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.w-ph-act:active { transform: scale(var(--press-scale)); }
+.w-ph-act:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.w-ph-act[aria-expanded="true"] { background: var(--bg-active); color: var(--fg-default); }
+.w-ph-act.is-saved { color: var(--accent-soft-fg); }
+a.w-ph-act:hover { text-decoration: none; }
+/* The "visit website" link joins the row pill only where the row has room to spare; it is always in the ⋯ menu. */
+.w-ph-list .w-ph-act-alt { display: none; }
+@container widget (min-width: 440px) { .w-ph-list .w-ph-act-alt { display: grid; } }
+@media (hover: hover) { .w-ph-act:hover { background: var(--bg-hover); color: var(--fg-default); } }
+
+/* ---------- top three (small widgets) ---------- */
+.w-ph-top { display: flex; flex-direction: column; justify-content: space-evenly; gap: var(--space-1); block-size: 100%; min-block-size: 0; }
+.w-ph-top-item {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-areas: "rank thumb text votes";
+  column-gap: var(--space-5);
+  flex: 1 1 0;
+  min-block-size: 0;
+  max-block-size: 76px;
+  padding-block: var(--space-2);
+}
+.w-ph[data-thumbs="off"] .w-ph-top-item { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "rank text votes"; }
+.w-ph-top-item > .w-ph-top-rank { grid-area: rank; }
+.w-ph-top-item > .w-ph-top-thumb { grid-area: thumb; }
+.w-ph-top-item > .w-ph-link { grid-area: text; }
+.w-ph-top-item > .w-ph-top-votes { grid-area: votes; }
+.w-ph-top-rank {
+  min-inline-size: 1ch;
+  color: var(--fg-subtle);
+  font-size: 30px;
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: var(--tracking-title);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.w-ph-top-item:first-child .w-ph-top-rank { color: var(--fg-default); font-weight: 400; }
+.w-ph-top-votes {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  line-height: var(--lh-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.w-ph-top-item > .w-ph-actions { inset-inline-end: var(--w-ph-inset); }
+@container widget (max-height: 150px) { .w-ph-top .w-ph-tagline { display: none; } .w-ph-top-rank { font-size: 28px; } }
+/* Narrow, or wide and short with the three side by side: upvotes move under the name so names keep their room. */
+@container widget (max-width: 219px) {
+  .w-ph-top-item { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "rank text"; }
+  .w-ph-top-item:has(> .w-ph-top-votes) { grid-template-areas: "rank text" "rank votes"; }
+  .w-ph-top-item > .w-ph-top-thumb { display: none; }
+  /* Without counts (the public feed) the tagline takes the second line instead. */
+  .w-ph-top-item:has(> .w-ph-top-votes) .w-ph-tagline { display: none; }
+}
+/* The smallest widgets keep one line per launch: rank and name (the count is in the row's tooltip and label). */
+@container widget (max-width: 219px) and (max-height: 150px) {
+  .w-ph-top-item { grid-template-areas: "rank text"; }
+  .w-ph-top-item > .w-ph-top-votes { display: none; }
+}
+/* Tall, narrow widgets with the automatic layout reveal more of the ranking as their height allows. */
+.w-ph-top[data-more="on"] > .w-ph-top-item:nth-child(n+4) { display: none; }
+@container widget (min-height: 250px) { .w-ph-top[data-more="on"] > .w-ph-top-item:nth-child(4) { display: grid; } }
+@container widget (min-height: 310px) { .w-ph-top[data-more="on"] > .w-ph-top-item:nth-child(5) { display: grid; } }
+@container widget (min-height: 370px) { .w-ph-top[data-more="on"] > .w-ph-top-item:nth-child(6) { display: grid; } }
+@container widget (min-height: 430px) { .w-ph-top[data-more="on"] > .w-ph-top-item:nth-child(7) { display: grid; } }
+@container widget (min-height: 490px) { .w-ph-top[data-more="on"] > .w-ph-top-item:nth-child(8) { display: grid; } }
+@container widget (min-width: 520px) and (max-height: 180px) {
+  .w-ph-top { flex-direction: row; align-items: center; gap: var(--space-4); }
+  .w-ph-top-item { flex: 1 1 0; min-inline-size: 0; max-block-size: none; margin-inline: 0; grid-template-columns: auto auto minmax(0, 1fr); grid-template-areas: "rank thumb text"; }
+  .w-ph-top-item:has(> .w-ph-top-votes) { grid-template-areas: "rank thumb text" "rank thumb votes"; }
+  .w-ph[data-thumbs="off"] .w-ph-top-item { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "rank text"; }
+  .w-ph[data-thumbs="off"] .w-ph-top-item:has(> .w-ph-top-votes) { grid-template-areas: "rank text" "rank votes"; }
+  .w-ph-top-item > :is(.w-ph-top-rank, .w-ph-top-thumb) { align-self: center; }
+  .w-ph-top-item:not(:has(> .w-ph-top-votes)) .w-ph-tagline { display: block; }
+}
+
+/* ---------- cards (extra large widgets) ---------- */
+.w-ph-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+  gap: var(--space-6);
+  padding-block: var(--space-1) var(--space-6);
+}
+.w-ph-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-4);
+  min-block-size: 0;
+  margin: 0;
+  padding: var(--space-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--w-ph-inner-radius);
+  background: color-mix(in oklab, var(--fg-default) 2.5%, transparent);
+}
+@media (hover: hover) { .w-ph-card:hover { border-color: var(--border-default); } }
+.w-ph-card-head { display: flex; align-items: flex-start; gap: var(--space-5); }
+.w-ph-card-rank {
+  flex: 1;
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  font-variant-numeric: tabular-nums;
+}
+.w-ph-card-rank::before { content: '#'; }
+.w-ph-card-link { gap: var(--space-2); }
+.w-ph-card .w-ph-name { font-size: var(--text-md); line-height: var(--lh-md); white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; text-wrap: balance; }
+.w-ph-card .w-ph-tagline { display: -webkit-box; white-space: normal; font-size: var(--text-sm); line-height: var(--lh-sm); -webkit-box-orient: vertical; -webkit-line-clamp: 3; text-wrap: pretty; }
+.w-ph-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.w-ph-chip {
+  max-inline-size: 100%;
+  overflow: hidden;
+  padding: 1px var(--space-4);
+  border-radius: var(--radius-full);
+  background: var(--bg-tag);
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.w-ph-card-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); margin-block-start: auto; min-inline-size: 0; }
+.w-ph-card-foot > .w-ph-meta { margin: 0; }
+.w-ph-card > .w-ph-card-foot > .w-ph-actions,
+.w-ph-card .w-ph-actions { position: relative; inset: auto; margin-inline-start: auto; padding: 0; background: none; box-shadow: none; opacity: 1; pointer-events: auto; transform: none; }
+.w-ph-card .w-ph-link::after { border-radius: var(--w-ph-inner-radius); }
+.w-ph-card:has(.w-ph-link:focus-visible) { background: var(--bg-hover); }
+/* A grid of cards keeps only ⋯ in view; the other actions fade in with hover or focus (their space stays reserved, so
+   nothing shifts). Touch screens always show them. */
+@media (hover: hover) {
+  .w-ph-card .w-ph-act:not(.w-ph-more) { opacity: 0; transition: opacity var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
+  .w-ph-card:is(:hover, :focus-within, :has([aria-expanded="true"])) .w-ph-act { opacity: 1; }
+}
+
+/* ---------- footer and notices ---------- */
+.w-ph-foot {
+  display: flex; flex: none; align-items: center; justify-content: space-between; gap: var(--space-4); min-inline-size: 0;
+  color: var(--fg-muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.w-ph-foot > span { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; }
+.w-ph-foot-status { flex: none; }
+.w-ph-foot-btn {
+  position: relative;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-xs);
+  color: var(--fg-default);
+  font-weight: var(--weight-medium);
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 2px;
+  cursor: pointer;
+  transition: text-decoration-color var(--dur-fast) var(--ease-out);
+}
+.w-ph-foot-btn::before { content: ''; position: absolute; inset: -5px -2px; }   /* 24px target */
+.w-ph-foot-btn:hover { text-decoration-color: currentColor; }
+.w-ph-foot-btn:active { transform: scale(var(--press-scale)); }
+@container widget (max-width: 260px) { .w-ph-foot-status { display: none; } }
+
+.w-ph-notice {
+  display: flex; flex: none; align-items: center; gap: var(--space-3); min-inline-size: 0;
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4); border-radius: var(--w-ph-inner-radius);
+  background: var(--warning-soft); color: var(--fg-default); font-size: var(--text-xs);
+}
+.w-ph-notice > .icon { flex: none; color: var(--warning); }
+@container widget (max-width: 439px) { .w-ph-notice-more { display: none; } }
+.w-ph-notice-text { display: -webkit-box; flex: 1 1 auto; min-inline-size: 0; overflow: hidden; line-height: var(--lh-xs); -webkit-box-orient: vertical; -webkit-line-clamp: 2; text-wrap: pretty; }
+.w-ph-notice-action {
+  flex: none; min-block-size: 24px; padding-inline: var(--space-3); border-radius: var(--radius-xs); color: var(--fg-default);
+  font-weight: var(--weight-semibold); white-space: nowrap; cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out);
+}
+.w-ph-notice-action:hover { background: var(--bg-active); }
+.w-ph-notice-action:active { transform: scale(var(--press-scale)); }
+
+/* ---------- setup, loading and empty states ---------- */
+.w-ph > .empty-state,
+.w-ph-scroll > .empty-state { block-size: auto; margin-block: auto; padding: var(--space-6) var(--space-4); }
+.w-ph-setup {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-4);
+  block-size: 100%; padding: var(--space-4); text-align: center;
+}
+.w-ph-setup-title { margin: var(--space-2) 0 0; font-size: var(--text-md); font-weight: var(--weight-semibold); line-height: var(--lh-md); text-wrap: balance; }
+.w-ph-setup-text { max-inline-size: 42ch; margin: 0; color: var(--fg-muted); font-size: var(--text-xs); line-height: var(--lh-xs); text-wrap: pretty; }
+.w-ph-setup-icon { color: var(--warning); }
+.w-ph-setup-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-4); margin-block-start: var(--space-2); }
+.w-ph-setup.is-compact { gap: var(--space-3); padding: var(--space-2); }
+@container widget (max-height: 150px) { .w-ph-setup.is-compact .w-ph-setup-text { display: none; } }
+@container widget (max-height: 100px) { .w-ph-setup.is-compact .w-ph-mark { display: none; } }
+/* Wide and short: mark, text and action in one row. */
+@container widget (min-width: 420px) and (max-height: 150px) {
+  .w-ph-setup.is-compact { flex-direction: row; gap: var(--space-6); text-align: start; }
+  .w-ph-setup.is-compact .w-ph-setup-text, .w-ph-setup.is-compact .w-ph-mark { display: revert; }
+  .w-ph-setup.is-compact .w-ph-mark { display: grid; }
+}
+.w-ph-loading { display: flex; flex: 1 1 auto; flex-direction: column; gap: var(--space-6); min-block-size: 0; overflow: hidden; }
+.w-ph-loading.is-top { justify-content: space-evenly; gap: var(--space-4); }
+.w-ph-bone-bar { display: flex; justify-content: space-between; gap: var(--space-4); }
+.w-ph-bone-bar > .skeleton-bone { block-size: var(--control-h-sm); border-radius: var(--radius-md); }
+.w-ph-bone-bar > .skeleton-bone:first-child { inline-size: min(60%, 240px); }
+.w-ph-bone-bar > .skeleton-bone:last-child { inline-size: var(--control-h-sm); }
+.w-ph-bone-row { display: flex; align-items: center; gap: var(--space-5); }
+.w-ph-bone-row > .skeleton-group { flex: 1; gap: var(--space-3); }
+.w-ph-bone-thumb { flex: none; inline-size: 40px; block-size: 40px; border-radius: var(--radius-md); }
+.w-ph-top-rank.is-bone { color: var(--fg-faint); }
+
+/* ---------- header controls ---------- */
+.w-ph-head-range { padding-inline: var(--space-3); }
+/* The frame header sits outside the widget's size container, so the day button reads the dashboard's width instead: a
+   three-column widget on a narrow 12-column (or 6-column) grid keeps its header for the title. The day stays in the
+   widget's ⋯ menu ("Launch day…"). */
+@container dashboard (max-width: 1119px) { .dashboard[data-cols="12"] .widget[data-w="3"] .w-ph-head-range { display: none; } }
+@container dashboard (max-width: 639px) { .dashboard[data-cols="6"] .widget[data-w="3"] .w-ph-head-range { display: none; } }
+.w-ph-refresh.is-spinning .icon { opacity: 0.7; }
+.w-ph-alert { display: inline-flex; }
+.w-ph-alert > .icon-btn.w-ph-alert-btn { color: var(--warning); }
+@keyframes w-ph-spin { to { rotate: 360deg; } }
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-motion="reduced"]) .w-ph-refresh.is-spinning .icon { animation: w-ph-spin 900ms linear infinite; }
+}
+
+/* ---------- account card (Settings > Connected accounts and the connect dialog) ---------- */
+.w-ph-account {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+  padding: var(--space-7);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+}
+.w-ph-account.is-bare { padding: 0; border: 0; background: none; }
+.w-ph-account-head { display: flex; align-items: flex-start; gap: var(--space-6); }
+.w-ph-account-heading { min-inline-size: 0; }
+.w-ph-account-title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4); margin: 0; font-size: var(--text-md); font-weight: var(--weight-semibold); line-height: var(--lh-md); }
+.w-ph-account-desc { max-inline-size: 62ch; margin: var(--space-2) 0 0; color: var(--fg-muted); font-size: var(--text-sm); line-height: var(--lh-sm); text-wrap: pretty; }
+.w-ph-account-who { display: flex; align-items: center; gap: var(--space-5); padding: var(--space-5) var(--space-6); border-radius: var(--radius-md); background: var(--bg-sunken); }
+.w-ph-account-avatar { flex: none; inline-size: 36px; block-size: 36px; border-radius: var(--radius-full); object-fit: cover; outline: 1px solid var(--w-ph-image-ring); outline-offset: -1px; }
+.w-ph-account-who-text { min-inline-size: 0; }
+.w-ph-account-person { margin: 0; font-weight: var(--weight-medium); }
+.w-ph-account-meta { margin: 0; color: var(--fg-muted); font-size: var(--text-xs); line-height: var(--lh-xs); overflow-wrap: anywhere; }
+.w-ph-account-alert {
+  display: flex; align-items: flex-start; gap: var(--space-3) var(--space-4); margin: 0;
+  padding: var(--space-4) var(--space-5); border-radius: var(--radius-md); background: var(--warning-soft); color: var(--fg-default); font-size: var(--text-sm);
+}
+.w-ph-account-alert > .icon { flex: none; margin-block-start: 3px; color: var(--warning); }
+.w-ph-account-form { display: flex; flex-direction: column; gap: var(--space-6); max-inline-size: 560px; }
+.w-ph-account-steps {
+  display: flex; flex-direction: column; gap: var(--space-3); margin: 0; padding-inline-start: var(--space-8); list-style: decimal outside;
+  color: var(--fg-muted); font-size: var(--text-sm); line-height: var(--lh-sm); text-wrap: pretty;
+}
+.w-ph-account-steps > li { display: list-item; padding-inline-start: var(--space-1); }
+.w-ph-account-steps > li::marker { color: var(--fg-subtle); font-weight: var(--weight-medium); font-variant-numeric: tabular-nums; }
+.w-ph-account-steps strong { color: var(--fg-default); font-weight: var(--weight-semibold); }
+.w-ph-account-steps code { padding: 0 var(--space-2); border-radius: var(--radius-xs); background: var(--bg-tag); color: var(--fg-default); font-family: var(--font-mono); font-size: 0.92em; overflow-wrap: anywhere; }
+.w-ph-account-submit { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) var(--space-6); }
+.w-ph-account-note { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--fg-muted); font-size: var(--text-xs); }
+.w-ph-account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4); }
+.w-ph-account-disconnect { margin-inline-start: auto; }
+
+@media (forced-colors: active) {
+  .w-ph-mark { border: 1px solid CanvasText; }
+  .w-ph-votes, .w-ph-card { border-color: CanvasText; }
+  :is(.w-ph-list, .w-ph-top) .w-ph-actions { border: 1px solid CanvasText; }
+  .w-ph-link:focus-visible::after { outline-color: Highlight; }
+  .w-ph-notice, .w-ph-account-alert { border: 1px solid CanvasText; }
+}

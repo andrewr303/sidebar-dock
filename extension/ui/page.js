@@ -7,6 +7,7 @@ import { registerActions } from './runtime.js';
 import { renderTagInput, openCollectionPicker } from './pickers.js';
 import { openAdd, ensureWindowId, requestPermission, defaultCollectionId, collectionLabel, saveCurrentTab, renderCaptureProgress } from './quick-add.js';
 import { renderPageNotes, createNote } from './notes.js';
+import { confirmTrash } from './note-editor.js';
 import { askAi } from './ai-panel.js';
 import { canonicalUrl } from '../lib/store.js';
 
@@ -407,7 +408,7 @@ registerActions({
   },
   'page.remove': async ({ ctx }) => {
     const item = savedItem(ctx);
-    if (!item) return;
+    if (!item || !(await confirmTrash(ctx, [item]))) return;
     await ctx.store.deleteItem(item.id);
     if (ctx.state.page) Object.assign(ctx.state.page, { saved: false, itemId: '' });
     ctx.toast('Moved to Trash', { action: { label: 'Undo', run: () => ctx.store.restoreItem(item.id) } });

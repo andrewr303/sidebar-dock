@@ -10,6 +10,7 @@ import { renderItem, watchBrokenCovers } from './cards.js';
 import { renderMap, setMapScope } from './map.js';
 import { openAdd } from './quick-add.js';
 import { createNote } from './notes.js';
+import { confirmTrash } from './note-editor.js';
 import { askAi } from './ai-panel.js';
 import { openCollectionEditor } from './collections.js';
 import { exportBookmarkHtml, exportNotesMarkdown } from '../lib/portability.js';
@@ -542,9 +543,14 @@ export async function setArchived(ctx, ids, archived) {
   clearSelectionOf(ctx, ids);
 }
 
+/** With "Confirm before moving items to Trash" on (Settings > General), asks first; resolves true to go ahead. */
+export { confirmTrash };
+
 export async function trashItems(ctx, ids) {
+  const items = ids.map(byId(ctx)).filter(item => item && !item.deletedAt);
+  if (!(await confirmTrash(ctx, items))) return;
   const at = nowIso();
-  const changes = ids.map(byId(ctx)).filter(item => item && !item.deletedAt).map(item => ({ id: item.id, patch: { deletedAt: at } }));
+  const changes = items.map(item => ({ id: item.id, patch: { deletedAt: at } }));
   await applyChanges(ctx, changes, `Moved ${label(changes.length)} to Trash`);
   clearSelectionOf(ctx, ids);
   if (ctx.state.panel?.kind === 'item' && ids.includes(ctx.state.panel.id)) ctx.closePanel();

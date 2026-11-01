@@ -28,7 +28,7 @@ with zipfile.ZipFile(temporary,'w',compression=zipfile.ZIP_DEFLATED,compressleve
     z.writestr('START.md','# Still runtime\n\nExtract this folder. Use Node.js 22 or later. No packages need installing.\n\n1. Load the extension subfolder with Chrome Load unpacked.\n2. From this folder run: node bridge/server.mjs\n3. Pair Still with the local address and private token from bridge/.local/config.json.\n4. Open Ask AI settings to choose a provider or CLI, or MCP & agents to review a client connection and install its skill.\n\nNo credentials, original third-party extension packages, test fixtures or research archives are included. Live accounts still require your authorization. Verification commands in the source README require the full source checkout.\n')
 with zipfile.ZipFile(temporary) as z:
     names=z.namelist()
-    for required in ['extension/manifest.json','bridge/server.mjs','bridge/ai/router.mjs','extension/lib/ai-prompts.js','agent-skills/still-workspace/SKILL.md','START.md']:
+    for required in ['extension/manifest.json','extension/newtab.html','bridge/server.mjs','bridge/ai/router.mjs','extension/lib/ai-prompts.js','agent-skills/still-workspace/SKILL.md','START.md']:
         if required not in names: raise ValueError('Missing runtime entry '+required)
     if any('/.local/' in n or '..' in pathlib.PurePosixPath(n).parts for n in names): raise ValueError('Unsafe runtime entry')
     if z.testzip() is not None: raise ValueError('Runtime ZIP integrity failure')

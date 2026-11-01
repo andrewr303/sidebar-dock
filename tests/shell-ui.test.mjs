@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSelectors } from '../extension/ui/selectors.js';
 import { visibleTree, parentChoices, descendantIds, collectionSubset } from '../extension/ui/collections.js';
-import { dropPlacement, collectionMove, droppedLinks } from '../extension/ui/dnd.js';
+import { dropPlacement, collectionMove, droppedLinks, isClickSlop, controlInside, CLICK_SLOP } from '../extension/ui/dnd.js';
 import { fuzzyScore, rankCommands, COMMANDS } from '../extension/ui/command.js';
 import { exportBookmarkHtml } from '../extension/lib/portability.js';
 
@@ -123,4 +123,32 @@ test('rankCommands orders commands by label first and keywords second', () => {
   assert.deepEqual(rankCommands(COMMANDS, 'zzzz', label), []);
   assert.ok(COMMANDS.every(command => command.view || command.action), 'every command does something');
   assert.equal(new Set(COMMANDS.map(command => command.id)).size, COMMANDS.length, 'ids are unique');
+});
+
+test('a tiny drag counts as a click; a real drag or a drop elsewhere does not', () => {
+  assert.equal(isClickSlop({ maxDistance: 5, ms: 200, dropEffect: 'none' }), true);
+  assert.equal(isClickSlop({ maxDistance: CLICK_SLOP, ms: 900, dropEffect: 'none' }), true);
+  assert.equal(isClickSlop({ maxDistance: CLICK_SLOP + 1, ms: 200, dropEffect: 'none' }), false, 'moved too far');
+  assert.equal(isClickSlop({ maxDistance: 4, ms: 4000, dropEffect: 'none' }), false, 'held too long');
+  assert.equal(isClickSlop({ maxDistance: 4, ms: 200, dropEffect: 'move' }), false, 'dropped on a target');
+  assert.equal(isClickSlop({ maxDistance: 4, ms: 200, dropEffect: 'move', droppedOnSource: true }), true, 'dropped back onto itself');
+  assert.equal(isClickSlop({ maxDistance: 4, ms: 200 }), true);
+});
+
+test('a press on a control inside a draggable row is found; the row itself is not', () => {
+  const node = (tag, attrs = {}, parent = null) => ({
+    tag, attrs, parent,
+    matches(sel) { return sel.split(',').map(s => s.trim()).some(s => s === tag || (s.startsWith('[data-action') && 'data-action' in attrs) || (s === 'a[href]' && tag === 'a' && 'href' in attrs)); },
+    closest(sel) { for (let n = this; n; n = n.parent) if (n.matches(sel)) return n; return null; },
+    contains(other) { for (let n = other; n; n = n.parent) if (n === this) return true; return false; },
+  });
+  const row = node('div', { 'data-action': 'sidebar.open' });
+  const name = node('span', {}, row);
+  const more = node('button', { 'data-action': 'sidebar.menu' }, row);
+  const glyph = node('svg', {}, more);
+  assert.equal(controlInside(glyph, row), more);
+  assert.equal(controlInside(more, row), more);
+  assert.equal(controlInside(name, row), null, 'the row body drags');
+  const handle = node('button', { draggable: 'true' });
+  assert.equal(controlInside(node('svg', {}, handle), handle), null, 'a draggable button drags from its own icon');
 });

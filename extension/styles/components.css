@@ -1095,3 +1095,8 @@
   /* Forced colors paint every border side alike, which would hide the spinner's turning arc. */
   .spinner { forced-color-adjust: none; border-color: GrayText; border-block-start-color: CanvasText; }
 }
+
+/* Site icon: a real favicon over its letter tile (ui/components.js siteIcon). */
+.site-icon { position: relative; display: inline-grid; place-items: center; inline-size: var(--size, 16px); block-size: var(--size, 16px); flex: none; }
+.site-icon > .favicon { inline-size: 100%; block-size: 100%; }
+.site-icon-img { position: absolute; inset: 0; inline-size: 100%; block-size: 100%; object-fit: contain; border-radius: inherit; }

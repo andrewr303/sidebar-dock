@@ -10,6 +10,7 @@ import { searchRows } from './selectors.js';
 import * as pickers from './pickers.js';
 import { renderNoteEditor, openNote, closeNote, createNoteItem, editorFor, latestItem, rememberItem, displayTitle, titleValue, noteResolver, openInFullTab } from './note-editor.js';
 import { renderMarkdown, renderInline } from '../lib/markdown.js';
+import { notePreviewSource as previewSource } from './cards.js';
 import { extractTasks, toggleTask, taskProgress, noteExcerpt, noteTitleFromContent, outline, wordCount, dailyNoteTitle, noteTemplates } from '../lib/notes.js';
 
 export const NO_COLLECTION = '__none';
@@ -51,13 +52,7 @@ export function collectionCounts(notes) {
   return { total: (notes || []).length, none, byId };
 }
 
-/** Drops a leading heading that only repeats the note title, so previews start with the body. */
-export function previewSource(content, title) {
-  const text = String(content || '');
-  const match = /^\s*#{1,3}[ \t]+(.+?)[ \t]*#*[ \t]*(?:\r?\n|$)/.exec(text);
-  if (match && match[1].trim().toLowerCase() === String(title || '').trim().toLowerCase()) return text.slice(match[0].length).replace(/^\s*\n/, '');
-  return text;
-}
+export { previewSource };
 
 const TASK_HINT = /\[[ xX]\]/;
 /** Tasks grouped by note for the Tasks view, newest edited note first. filter: 'open' | 'done' | 'all'. */
@@ -244,9 +239,9 @@ function noteCard(ctx, note, { clamp = 8, showPage = true, from = '' } = {}) {
   const collection = note.collectionId ? ctx.select.collection(note.collectionId) : null;
   const name = noteName(note);
   const reminder = note.reminderAt && !note.reminderNotifiedAt;
-  const body = String(note.content || '').trim()
-    ? raw(cardHtml(ctx, note, expanded))
-    : html`<p class="note-card-empty">Empty note</p>`;
+  // A note whose only line is its title (a one-line sticky note) has no body to preview.
+  const body = !String(note.content || '').trim() ? html`<p class="note-card-empty">Empty note</p>`
+    : previewSource(note.content, note.title).trim() ? raw(cardHtml(ctx, note, expanded)) : '';
   return html`<article class="${cx('note-card', expanded && 'is-expanded')}" data-key="nc:${from || 'notes'}:${note.id}" data-id="${note.id}" style="--clamp:${clamp}" aria-labelledby="nc-${from || 'n'}-${note.id}">
     <header class="note-card-head">
       <h3 class="note-card-title"><button type="button" class="note-card-open" id="nc-${from || 'n'}-${note.id}" data-action="notes.open" data-id="${note.id}" data-from="${from}">${name}</button></h3>
@@ -386,10 +381,11 @@ function noteRow(ctx, note, selectedId) {
     note.url ? html`<span class="notes-meta-item">${favicon(note.url, { size: 12 })}<span class="notes-meta-text">${domainOf(note.url)}</span></span>` : '',
     info.progress.total ? html`<span class="${cx('notes-meta-item', 'notes-meta-tasks', info.progress.done === info.progress.total && 'is-complete')}" title="${info.progress.done} of ${info.progress.total} tasks done">${icon('list-checks', { size: 12 })}${info.progress.done}/${info.progress.total}</span>` : '',
     reminder ? html`<span class="notes-meta-item" title="Reminder set">${icon('bell', { size: 12 })}<span class="sr-only">Reminder set</span></span>` : '',
+    note.sticky ? html`<span class="notes-meta-item" title="Sticky note">${icon('sticker', { size: 12 })}<span class="sr-only">Sticky note</span></span>` : '',
   ].filter(part => String(part));
   return html`<li data-key="nr:${note.id}"><button type="button" class="${cx('notes-row', selected && 'is-selected')}" data-action="notes.open" data-id="${note.id}" aria-current="${selected ? 'true' : 'false'}">
     <span class="notes-row-top">${note.pinned ? icon('pin', { size: 12, className: 'notes-row-pin' }) : ''}<span class="notes-row-title">${noteName(note)}</span><time class="notes-row-time" datetime="${note.updatedAt}" title="${shortDate(note.updatedAt)}">${shortAgo(note.updatedAt)}</time></span>
-    <span class="${cx('notes-row-preview', !info.preview && 'is-empty')}">${info.preview || 'No text yet'}</span>
+    ${info.preview || !String(note.content || '').trim() ? html`<span class="${cx('notes-row-preview', !info.preview && 'is-empty')}">${info.preview || 'No text yet'}</span>` : ''}
     ${meta.length ? html`<span class="notes-row-meta">${meta}</span>` : ''}
   </button></li>`;
 }
@@ -553,6 +549,7 @@ function renderSideList(ctx) {
         <button type="button" class="side-notes-filter" data-action="notes.filter-menu" aria-haspopup="menu" aria-expanded="${popOpen ? 'true' : 'false'}" aria-label="Collection: ${filterName}. Change">
           ${s.collectionId === NO_COLLECTION ? icon('inbox', { size: 14 }) : s.collectionId ? dot(filterColor) : icon('layers', { size: 14 })}<span class="side-notes-filter-label">${filterName}</span>${icon('chevron-down', { size: 14, className: 'side-notes-filter-chevron' })}</button>
         ${searchField({ value: s.query, placeholder: 'Search', action: 'notes.query', keydown: 'notes.search-key', id: 'notes-search', label: 'Search notes', clearAction: 'notes.clear-query', className: 'side-notes-search' })}
+        ${iconButton({ icon: 'sticker', label: 'Sticky notes', action: 'app.open-view', data: { view: 'stickies' }, tooltipPlacement: 'bottom end' })}
       </div>
     </div>
     <div class="side-notes-body">${body}</div>
@@ -611,6 +608,9 @@ function openCardMenu(ctx, anchor, id, from) {
     ...(ctx.env.isSidepanel ? [{ label: 'Open in full tab', icon: 'external-link', run: () => openInFullTab(ctx, id) }] : []),
     { separator: true },
     { label: 'Move to Trash', icon: 'trash-2', danger: true, run: async () => {
+      // "Confirm before moving items to Trash" (Settings > General) asks first, as library.js trashItems does.
+      if (ctx.library?.settings?.confirmDelete === true && !(await ctx.confirm({ title: `Move “${noteName(note)}” to Trash?`,
+        body: 'You can restore items from Trash until you empty it.', confirmLabel: 'Move to Trash' }))) return;
       rememberItem(await ctx.store.deleteItem(id));
       ctx.toast('Moved to Trash', { action: { label: 'Undo', run: async () => rememberItem(await ctx.store.restoreItem(id)) } });
     } },

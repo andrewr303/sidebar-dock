@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { hueForDomain, tileHue, notePreviewSource, readingMinutes } from '../extension/ui/cards.js';
-import { layoutFor, viewFacets, selectRange, dateGroupLabel, groupByDate, parseTags, unionTags, undoFor, planMerge } from '../extension/ui/library.js';
+import { layoutFor, viewFacets, selectRange, dateGroupLabel, groupByDate, parseTags, unionTags, undoFor, planMerge, confirmTrash, trashItems } from '../extension/ui/library.js';
 import { findHighlightRanges, readerSource, reminderPresets, reminderLabel, highlightColor } from '../extension/ui/detail.js';
 import { filterMapItems, similarEdges, relaxLayout, crowdedLabels, labelAnchor, nodeRadius, MAP_WIDTH, MAP_HEIGHT } from '../extension/ui/map.js';
 import { buildRelationshipGraph } from '../extension/lib/library-views.js';
@@ -183,4 +183,41 @@ test('map labels near the frame edge anchor inward', () => {
   assert.deepEqual(labelAnchor({ title: 'Centered label', x: 200, degree: 0 }, 400), { anchor: 'middle', x: 0 });
   assert.equal(labelAnchor({ title: 'A rather long label near the left', x: 20, degree: 0 }, 400).anchor, 'start');
   assert.equal(labelAnchor({ title: 'A rather long label near the right', x: 390, degree: 0 }, 400).anchor, 'end');
+});
+
+// A fake ctx for trashItems: two live items, recorded confirm prompts and writes.
+function trashCtx(settings, answer) {
+  const items = [{ id: 'a', title: 'Alpha' }, { id: 'b', title: '' }];
+  const seen = { asked: [], writes: [] };
+  const ctx = {
+    library: { settings, items }, state: { selection: new Set(), panel: null },
+    select: { byId: id => items.find(item => item.id === id) },
+    confirm: async options => { seen.asked.push(options); return answer; },
+    store: { bulkUpdateItems: async changes => { seen.writes.push(changes); return changes; } },
+    toast() {}, render() {}, closePanel() {},
+  };
+  return { ctx, seen };
+}
+
+test('moving to Trash asks first only when "Confirm before moving items to Trash" is on', async () => {
+  const off = trashCtx({}, false);
+  assert.equal(await confirmTrash(off.ctx, off.ctx.library.items), true);
+  await trashItems(off.ctx, ['a']);
+  assert.equal(off.seen.asked.length, 0);
+  assert.deepEqual(off.seen.writes[0].map(change => change.id), ['a']);
+
+  const declined = trashCtx({ confirmDelete: true }, false);
+  await trashItems(declined.ctx, ['a', 'b']);
+  assert.equal(declined.seen.asked[0].title, 'Move 2 items to Trash?');
+  assert.equal(declined.seen.asked[0].confirmLabel, 'Move to Trash');
+  assert.equal(declined.seen.writes.length, 0, 'nothing moves when the prompt is cancelled');
+
+  const accepted = trashCtx({ confirmDelete: true }, true);
+  await trashItems(accepted.ctx, ['a']);
+  assert.equal(accepted.seen.asked[0].title, 'Move “Alpha” to Trash?');
+  assert.deepEqual(accepted.seen.writes[0].map(change => change.id), ['a']);
+  const untitled = trashCtx({ confirmDelete: true }, true);
+  await confirmTrash(untitled.ctx, [untitled.ctx.library.items[1]]);
+  assert.equal(untitled.seen.asked[0].title, 'Move this item to Trash?');
+  assert.equal(await confirmTrash(untitled.ctx, []), true, 'no prompt when nothing would move');
 });

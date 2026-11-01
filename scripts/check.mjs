@@ -61,22 +61,45 @@ if (manifest.manifest_version !== 3) fail('Manifest must use version 3.');
 if (!/^\d+\.\d+\.\d+(?:\.\d+)?$/.test(manifest.version || '')) fail('Manifest version is invalid.');
 if (manifest.background?.type !== 'module') fail('Background must be a module service worker.');
 if (manifest.action?.default_popup) fail('Toolbar action must open the side panel.');
-const expectedPermissions = new Set(['storage', 'unlimitedStorage', 'sidePanel', 'activeTab', 'contextMenus', 'scripting', 'alarms', 'notifications']);
+// favicon (site icons), search (the browser's default engine) and declarativeNetRequestWithHostAccess (the embed widget's
+// per-site session rules, only effective on origins the user grants) add no install warning.
+const expectedPermissions = new Set(['storage', 'unlimitedStorage', 'sidePanel', 'activeTab', 'contextMenus', 'scripting', 'alarms', 'notifications',
+  'favicon', 'search', 'declarativeNetRequestWithHostAccess']);
 const actualPermissions = new Set(manifest.permissions || []);
 for (const permission of expectedPermissions) if (!actualPermissions.has(permission)) fail(`Manifest is missing ${permission} permission.`);
 for (const permission of actualPermissions) if (!expectedPermissions.has(permission)) fail(`Review unexpected required permission: ${permission}`);
 if ((manifest.host_permissions || []).length) fail('Host permissions must remain optional.');
 // Optional grants requested at the moment of use: bookmarks import, the active tab's address for "This page",
-// and per-origin host access for reading saved pages and calling AI providers the user connects.
-const allowedOptionalPermissions = new Set(['bookmarks', 'tabs']);
+// most visited sites for the dashboard, and per-origin host access for reading saved pages and calling services the user connects.
+const allowedOptionalPermissions = new Set(['bookmarks', 'tabs', 'topSites']);
 if ((manifest.optional_permissions || []).some(permission => !allowedOptionalPermissions.has(permission))) fail('Unexpected optional permission.');
 const allowedHosts = new Set(['http://127.0.0.1/*', 'http://localhost/*', 'https://api.raindrop.io/*', 'https://*/*', 'http://*/*']);
 for (const host of manifest.optional_host_permissions || []) if (!allowedHosts.has(host)) fail(`Review unexpected optional host: ${host}`);
 const csp = manifest.content_security_policy?.extension_pages || '';
 if (!/script-src\s+'self'\s*;/.test(csp) || /unsafe-eval|unsafe-inline|https?:|\*/.test(csp)) fail('Extension CSP must restrict scripts to self with no unsafe/remote execution.');
 
-for (const [name, path] of Object.entries({ background: manifest.background?.service_worker, sidebar: manifest.side_panel?.default_path })) {
+const overrides = manifest.chrome_url_overrides || {};
+if (Object.keys(overrides).some(key => key !== 'newtab')) fail('Only the new tab page may be overridden.');
+for (const [name, path] of Object.entries({ background: manifest.background?.service_worker, sidebar: manifest.side_panel?.default_path, newtab: overrides.newtab })) {
   if (!path) fail(`Manifest ${name} entry is missing.`); else await localAsset(path, `Manifest ${name}`);
+}
+// The new tab is the full-tab app under another address: it must load exactly what index.html loads, in the same order,
+// and mark itself as the new tab entry (app.js keeps its address bar empty).
+const pageAssets = page => [...page.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)\s*=\s*['"]([^'"]+)['"][^>]*>/gi)]
+  .map(match => match[1]).filter(ref => /\.(?:m?js|css)(?:[?#]|$)/.test(ref));
+if (overrides.newtab) {
+  try {
+    const index = await readFile(resolve(extensionRoot, 'index.html'), 'utf8');
+    const newtab = await readFile(resolve(extensionRoot, overrides.newtab.split(/[?#]/)[0]), 'utf8');
+    const [want, got] = [pageAssets(index), pageAssets(newtab)];
+    if (want.join('\n') !== got.join('\n')) {
+      const missing = want.filter(ref => !got.includes(ref)), extra = got.filter(ref => !want.includes(ref));
+      fail(`${overrides.newtab} must load the same stylesheets and scripts as index.html, in order${missing.length ? `; missing ${missing.join(', ')}` : ''}${extra.length ? `; extra ${extra.join(', ')}` : ''}.`);
+    }
+    if (!/<html\b[^>]*\bdata-entry\s*=\s*['"]newtab['"]/i.test(newtab)) fail(`${overrides.newtab} must declare <html data-entry="newtab">.`);
+    if (/<html\b[^>]*\bdata-entry\s*=/i.test(index)) fail('index.html must not declare a data-entry.');
+    if (!/<title>\s*New Tab\s*<\/title>/i.test(newtab)) fail(`${overrides.newtab} must be titled "New Tab".`);
+  } catch (error) { fail(`New tab page: ${error.message}`); }
 }
 for (const [size, path] of Object.entries({ ...manifest.icons, ...manifest.action?.default_icon })) {
   await localAsset(path, `Manifest icon ${size}`);
