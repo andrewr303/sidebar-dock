@@ -88,3 +88,18 @@ test('selectors count descendants, survive cycles and memoize on updatedAt', () 
   lib = { ...lib, updatedAt: '2', items: lib.items.filter(i => i.id !== 'two') };
   assert.equal(select.counts().byCollectionDeep.root, 1, 'recomputed after a library change');
 });
+
+test('"/" typed into an empty, already-focused search field is the focus shortcut, not a query', async () => {
+  const { isSearchSlash } = await import('../extension/ui/runtime.js');
+  const field = (attrs = {}, value = '') => ({ tagName: 'INPUT', value, id: attrs.id || '',
+    hasAttribute: name => Object.hasOwn(attrs, name), getAttribute: name => attrs[name] ?? null });
+  const key = (target, extra = {}) => ({ key: '/', ctrlKey: false, metaKey: false, altKey: false, isComposing: false, target, ...extra });
+  assert.equal(isSearchSlash(key(field({ 'aria-keyshortcuts': '/' }))), true, 'dashboard search');
+  assert.equal(isSearchSlash(key(field({ id: 'search' }))), true, 'top bar search');
+  assert.equal(isSearchSlash(key(field({ 'data-view-search': '' }))), true, 'a view’s own search field');
+  assert.equal(isSearchSlash(key(field({ 'aria-keyshortcuts': '/' }, 'a'))), false, 'a slash after text is part of the query');
+  assert.equal(isSearchSlash(key(field({}))), false, 'other inputs keep their slash');
+  assert.equal(isSearchSlash(key(field({ 'aria-keyshortcuts': '/' }), { metaKey: true })), false);
+  assert.equal(isSearchSlash(key(field({ 'aria-keyshortcuts': '/' }), { key: '?' })), false);
+  assert.equal(isSearchSlash(key({ tagName: 'TEXTAREA', value: '', hasAttribute: () => true, getAttribute: () => '/' })), false);
+});

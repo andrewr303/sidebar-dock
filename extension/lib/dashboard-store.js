@@ -7,24 +7,67 @@
 // Board: { id, name, icon, widgets: [Widget] }
 // Widget: { id, type, x, y, w, h, title, style: { frame: 'default'|'card'|'glass'|'flat'|'none', hideTitle }, config: {} }
 // Coordinates are grid cells on the 12-column board grid (x 0..11, w 1..12, y >= 0, h >= 1).
+//
+// Durability rules: fields this build does not know (written by a newer or older build) ride along on every record, so
+// an edit here never deletes them. A document whose version is newer than DASHBOARD_VERSION is shown but never written
+// (every change throws a "newer version" error). Writes from every open view (new tabs, side panel, settings) take one
+// Web Lock and re-read storage inside it, so two views editing at once never lose each other's change.
 
 import { findFreeSpot } from '../ui/dashboard/grid.js';
 
 export const DASHBOARD_KEY = 'still.dashboard.v1';
+export const DASHBOARD_VERSION = 1;
 export const GRID_COLUMNS = 12;
 
 const uid = prefix => `${prefix}_${globalThis.crypto?.randomUUID?.().slice(0, 12) || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`}`;
 const clone = value => structuredClone(value);
 const isObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
+// Strictly after the previous stamp, so two saves in the same millisecond never look like the same version.
+const nextStamp = previous => new Date(Math.max(Date.now(), (Date.parse(previous) || 0) + 1)).toISOString();
 const int = (value, fallback, min, max) => {
   const n = Math.round(Number(value));
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
 };
 const FRAMES = ['default', 'card', 'glass', 'flat', 'none'];
+const WIDGET_KEYS = ['id', 'type', 'x', 'y', 'w', 'h', 'title', 'style', 'config'];
+const STYLE_KEYS = ['frame', 'hideTitle'];
+const BOARD_KEYS = ['id', 'name', 'icon', 'widgets'];
+const STATE_KEYS = ['version', 'activeBoardId', 'boards', 'prefs', 'updatedAt'];
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
-export function normalizeWidget(input = {}) {
+/** True when a stored dashboard was saved by a newer build; this build shows it but never writes it. */
+export const isNewerDashboard = value => isObject(value) && Number(value.version) > DASHBOARD_VERSION;
+
+function newerVersionError() {
+  const error = new Error('Your dashboard was saved by a newer version of Still. Update Still to keep editing it; nothing was changed.');
+  error.code = 'newer_version';
+  return error;
+}
+
+// Plain-data fields outside `known`, copied so a newer build's additions survive this build's edits. Functions and
+// other values that cannot be stored are dropped.
+function unknownFields(input, known) {
+  const output = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (known.includes(key) || UNSAFE_KEYS.has(key) || value === undefined || typeof value === 'function') continue;
+    try { output[key] = clone(value); } catch { /* not storable */ }
+  }
+  return output;
+}
+
+// A frame this build does not draw (a newer build's) is kept as written; the renderer's CSS falls back to the default
+// look for an unknown data-frame. Fresh widgets from the UI (strict) only get known frames.
+const frameOf = (frame, strict) => FRAMES.includes(frame) ? frame : !strict && typeof frame === 'string' && /^[\w-]{1,40}$/.test(frame) ? frame : 'default';
+
+/**
+ * Repairs a widget record. Stored widgets keep fields and style keys this build does not know; `strict` (a new widget
+ * built by the UI) keeps only the documented fields.
+ */
+export function normalizeWidget(input = {}, { strict = false } = {}) {
   const w = int(input.w, 3, 1, GRID_COLUMNS);
+  const style = isObject(input.style) ? input.style : {};
   return {
+    ...(strict ? {} : unknownFields(input, WIDGET_KEYS)),
     id: typeof input.id === 'string' && input.id ? input.id : uid('w'),
     type: String(input.type || 'unknown'),
     x: int(input.x, 0, 0, GRID_COLUMNS - w),
@@ -33,8 +76,9 @@ export function normalizeWidget(input = {}) {
     h: int(input.h, 2, 1, 40),
     title: typeof input.title === 'string' ? input.title.slice(0, 200) : '',
     style: {
-      frame: FRAMES.includes(input.style?.frame) ? input.style.frame : 'default',
-      hideTitle: input.style?.hideTitle === true,
+      ...(strict ? {} : unknownFields(style, STYLE_KEYS)),
+      frame: frameOf(style.frame, strict),
+      hideTitle: style.hideTitle === true,
     },
     config: isObject(input.config) ? clone(input.config) : {},
   };
@@ -42,12 +86,13 @@ export function normalizeWidget(input = {}) {
 
 export function normalizeBoard(input = {}) {
   const ids = new Set();
-  const widgets = (Array.isArray(input.widgets) ? input.widgets : []).filter(isObject).map(normalizeWidget).filter(widget => {
+  const widgets = (Array.isArray(input.widgets) ? input.widgets : []).filter(isObject).map(widget => normalizeWidget(widget)).filter(widget => {
     if (ids.has(widget.id)) return false;
     ids.add(widget.id);
     return true;
   });
   return {
+    ...unknownFields(input, BOARD_KEYS),
     id: typeof input.id === 'string' && input.id ? input.id : uid('board'),
     name: String(input.name || 'Main').trim().slice(0, 80) || 'Main',
     icon: typeof input.icon === 'string' && input.icon ? input.icon : 'layout-dashboard',
@@ -56,56 +101,119 @@ export function normalizeBoard(input = {}) {
 }
 
 export function normalizeDashboard(input) {
+  const source = isObject(input) ? input : {};
   const boardIds = new Set();
-  const boards = (isObject(input) && Array.isArray(input.boards) ? input.boards : []).filter(isObject).map(normalizeBoard).filter(board => {
+  const boards = (Array.isArray(source.boards) ? source.boards : []).filter(isObject).map(normalizeBoard).filter(board => {
     if (boardIds.has(board.id)) return false;
     boardIds.add(board.id);
     return true;
   });
   if (!boards.length) boards.push(normalizeBoard({ name: 'Main' }));
-  const activeBoardId = boards.some(b => b.id === input?.activeBoardId) ? input.activeBoardId : boards[0].id;
-  return { version: 1, activeBoardId, boards, prefs: isObject(input?.prefs) ? clone(input.prefs) : {}, updatedAt: input?.updatedAt || new Date().toISOString() };
+  const activeBoardId = boards.some(b => b.id === source.activeBoardId) ? source.activeBoardId : boards[0].id;
+  return {
+    ...unknownFields(source, STATE_KEYS),
+    // A newer build's version number is kept, so the state stays recognisably read-only wherever it travels.
+    version: isNewerDashboard(source) ? source.version : DASHBOARD_VERSION,
+    activeBoardId, boards, prefs: isObject(source.prefs) ? clone(source.prefs) : {}, updatedAt: source.updatedAt || new Date().toISOString(),
+  };
 }
 
-/** Storage-agnostic store (tests pass read/write). The module exports a default instance bound to extension storage. */
-export function createDashboardStore({ read, write, seed = () => null }) {
+/**
+ * Storage-agnostic store (tests pass read/write, and optionally locks). The module exports a default instance bound to
+ * extension storage. `locks` defaults to navigator.locks; pass null to rely on the per-store queue alone.
+ */
+export function createDashboardStore({ read, write, seed = () => null, locks }) {
   let state = null;
+  // The default board shown while nothing is stored and no seed is available (side panel, settings). It is never saved
+  // on its own, so the real first-run seed still happens when a view with a seed provider loads.
+  let placeholder = false;
+  // updatedAt of the value this view last read from or wrote to storage. A different stored stamp means another view
+  // saved (or a snapshot was restored) since, so storage wins.
+  let seen;
   let loading = null;
   let queue = Promise.resolve();
   const listeners = new Set();
   const emit = () => { for (const fn of listeners) { try { fn(state); } catch (error) { console.error(error); } } };
 
-  // One read per store, however many callers ask at once; a missing state is seeded and saved exactly once.
+  // `serial` orders this view's work; `exclusive` also holds the cross-view Web Lock for anything that writes.
+  const serial = task => {
+    const run = queue.then(task);
+    queue = run.catch(() => {});
+    return run;
+  };
+  const exclusive = task => serial(() => {
+    const api = locks === undefined ? globalThis.navigator?.locks : locks;
+    return typeof api?.request === 'function' ? api.request(DASHBOARD_KEY, () => task()) : task();
+  });
+  const adopt = stored => { state = normalizeDashboard(stored); placeholder = false; seen = stored.updatedAt; };
+  const save = async () => { await write(state); seen = state.updatedAt; };
+
+  // Brings this view in line with storage (call inside the lock). Nothing stored: seed and save the first-run board, or
+  // keep an unsaved placeholder when there is no seed. Returns true when the state changed.
+  async function sync() {
+    const stored = await read();
+    if (stored) {
+      if (state && !placeholder && stored.updatedAt === seen) return false;
+      adopt(stored);
+      return true;
+    }
+    if (state && !placeholder) return false;
+    let seeded = null;
+    try { seeded = await seed(); } catch (error) { console.error('[still] dashboard seed failed', error); }
+    if (!isObject(seeded)) {
+      if (state) return false;
+      state = normalizeDashboard(null);
+      placeholder = true;
+      return true;
+    }
+    state = normalizeDashboard(seeded);
+    placeholder = false;
+    await save();
+    return true;
+  }
+
+  // One read per store, however many callers ask at once; a missing state is seeded and saved exactly once, also when
+  // several views open at the same time (the seed runs inside the lock after a re-read).
   function load() {
-    if (state) return Promise.resolve(state);
+    if (state && !placeholder) return Promise.resolve(state);
     loading ||= (async () => {
-      const stored = await read();
-      if (stored) state = normalizeDashboard(stored);
-      else {
-        let seeded = null;
-        try { seeded = await seed(); } catch (error) { console.error('[still] dashboard seed failed', error); }
-        state = normalizeDashboard(seeded);
-        await write(state);
-      }
+      const shown = state;
+      await exclusive(sync);
+      if (shown && state !== shown) emit();
       return state;
     })().finally(() => { loading = null; });
     return loading;
   }
 
-  /** Applies mutator(draft) to a copy of the state and saves it. mutator may return a result value. */
+  /**
+   * Applies mutator(draft) to a copy of the state and saves it. mutator may return a result value. Runs under the
+   * cross-view lock after re-reading storage, so it always builds on the latest saved dashboard.
+   */
   function update(mutator) {
-    const run = queue.then(async () => {
-      await load();
-      const draft = clone(state);
-      const result = await mutator(draft);
-      draft.updatedAt = new Date().toISOString();
-      state = normalizeDashboard(draft);
+    return exclusive(async () => {
+      const adopted = await sync();
+      if (isNewerDashboard(state)) { if (adopted) emit(); throw newerVersionError(); }
+      const before = { state, placeholder };
+      let result;
+      try {
+        const draft = clone(state);
+        result = await mutator(draft);
+        draft.updatedAt = nextStamp(state.updatedAt);
+        state = normalizeDashboard(draft);
+        placeholder = false;
+      } catch (error) {
+        if (adopted) emit();
+        throw error;
+      }
       emit();
-      await write(state);
+      try { await save(); } catch (error) {
+        // Show what is really saved rather than a change that never reached storage.
+        ({ state, placeholder } = before);
+        emit();
+        throw error;
+      }
       return result;
     });
-    queue = run.catch(() => {});
-    return run;
   }
 
   const boardIn = (draft, boardId) => {
@@ -124,13 +232,40 @@ export function createDashboardStore({ read, write, seed = () => null }) {
   return {
     load,
     get: () => state,
+    /** True when the stored dashboard comes from a newer build: it is shown, but every change refuses. */
+    readOnly: () => isNewerDashboard(state),
+    /** True when nothing is saved yet and the board shown is the unsaved default (no seed was available). */
+    isPlaceholder: () => placeholder,
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
-    /** Replaces the whole state (another tab saved it, or a backup was restored). */
+    /**
+     * Replaces the whole state (a backup was restored). Queued behind this view's own updates; with persist it takes the
+     * cross-view lock and refuses to overwrite a dashboard a newer build saved.
+     */
     replace(next, { persist = false } = {}) {
-      state = normalizeDashboard(next);
-      emit();
-      return persist ? write(state) : Promise.resolve();
+      if (!persist) return serial(() => { state = normalizeDashboard(next); placeholder = false; emit(); });
+      return exclusive(async () => {
+        if (isNewerDashboard(await read()) || isNewerDashboard(next)) throw newerVersionError();
+        const before = { state, placeholder };
+        state = normalizeDashboard(next);
+        placeholder = false;
+        emit();
+        try { await save(); } catch (error) {
+          ({ state, placeholder } = before);
+          emit();
+          throw error;
+        }
+      });
     },
+    /**
+     * Adopts what storage holds now, after this view's queued writes: another view saved, or a snapshot was restored.
+     * Reading storage (rather than trusting an event's value) means a late event never rolls the view back.
+     */
+    refresh: () => serial(async () => {
+      if (!state) return state;
+      const stored = await read();
+      if (stored && (placeholder || stored.updatedAt !== seen)) { adopt(stored); emit(); }
+      return state;
+    }),
     update,
     activeBoard: () => state?.boards.find(b => b.id === state.activeBoardId) || state?.boards[0] || null,
     findWidget(widgetId) {
@@ -167,7 +302,7 @@ export function createDashboardStore({ read, write, seed = () => null }) {
     /** Adds a widget; without numeric x/y it goes to the first free spot that fits its size. */
     addWidget: (boardId, input = {}) => update(draft => {
       const board = boardIn(draft, boardId);
-      const widget = normalizeWidget(input);
+      const widget = normalizeWidget(input, { strict: true });
       if (!Number.isFinite(input.x) || !Number.isFinite(input.y)) Object.assign(widget, findFreeSpot(board.widgets, widget.w, widget.h, GRID_COLUMNS));
       board.widgets.push(widget);
       return widget;
@@ -260,19 +395,22 @@ const dashboard = createDashboardStore({
 export function setDashboardSeed(fn) { seedProvider = typeof fn === 'function' ? fn : () => null; }
 
 let followingChanges = false;
+// Another view saved (or a snapshot was restored): adopt it after this view's own queued writes. The view's own echo
+// (same updatedAt) is skipped without a read.
+const followStorage = next => {
+  if (!isObject(next) || (next.updatedAt && next.updatedAt === dashboard.get()?.updatedAt)) return;
+  dashboard.refresh().catch(error => console.error('[still] dashboard could not follow another view', error));
+};
 function followOtherViews() {
   if (followingChanges) return;
   followingChanges = true;
   const onChrome = (changes, areaName) => {
-    if (areaName !== 'local' || !changes[DASHBOARD_KEY]?.newValue) return;
-    const next = changes[DASHBOARD_KEY].newValue;
-    if (next.updatedAt && next.updatedAt === dashboard.get()?.updatedAt) return;
-    dashboard.replace(next);
+    if (areaName === 'local' && changes[DASHBOARD_KEY]?.newValue) followStorage(changes[DASHBOARD_KEY].newValue);
   };
   if (area()) globalThis.chrome.storage.onChanged.addListener(onChrome);
   else globalThis.addEventListener?.('storage', event => {
     if (event.key !== DASHBOARD_KEY || !event.newValue) return;
-    try { dashboard.replace(JSON.parse(event.newValue)); } catch { /* ignore malformed */ }
+    try { followStorage(JSON.parse(event.newValue)); } catch { /* ignore malformed */ }
   });
 }
 
@@ -282,6 +420,8 @@ export async function loadDashboard() {
   return state;
 }
 export const getDashboard = () => dashboard.get();
+/** True when the saved dashboard comes from a newer build of Still: it is shown, but changes are refused. */
+export const isDashboardReadOnly = () => dashboard.readOnly();
 export const subscribeDashboard = fn => dashboard.subscribe(fn);
 export const updateDashboard = mutator => dashboard.update(mutator);
 export const replaceDashboard = (next, options) => dashboard.replace(next, options);
@@ -320,37 +460,66 @@ function stripSecrets(value, depth = 0) {
  * "Allow embedding": it strips a site's framing protection, so it is only ever switched on by a person on this device.
  */
 export function portableDashboard(input) {
-  const state = normalizeDashboard(input);
-  for (const board of state.boards) for (const widget of board.widgets) {
-    widget.config = stripSecrets(widget.config);
-    if (widget.type === 'embed' && widget.config?.allowFraming) widget.config = { ...widget.config, allowFraming: false };
-  }
-  state.prefs = stripSecrets(state.prefs);
+  const { boards, prefs, ...rest } = normalizeDashboard(input);
+  // Fields this build does not know travel too, minus anything named like a credential.
+  const state = { ...stripSecrets(rest), boards, prefs: stripSecrets(prefs) };
+  state.boards = boards.map(({ widgets, ...board }) => ({ ...stripSecrets(board), widgets: widgets.map(({ config, ...widget }) => {
+    const portable = { ...stripSecrets(widget), config: stripSecrets(config) };
+    if (portable.type === 'embed' && portable.config?.allowFraming) portable.config = { ...portable.config, allowFraming: false };
+    return portable;
+  }) }));
   return state;
 }
 
 /**
  * Merges a backed-up dashboard into the current one: boards with matching IDs are replaced, new boards are added after
  * the existing ones, and the backup's active board becomes active. Returns the merged state and how many boards changed.
+ * Throws (code 'newer_version') when either side was saved by a newer build: merging would rewrite it in an older format.
  */
 export function mergeDashboards(current, incoming) {
+  if (isNewerDashboard(current) || isNewerDashboard(incoming)) throw newerVersionError();
   const base = normalizeDashboard(current);
   const next = portableDashboard(incoming);
-  const boards = base.boards.map(board => next.boards.find(b => b.id === board.id) || board);
+  // Boards and widgets carry no stamps of their own, so the dashboards' stamps decide: when this device's dashboard was
+  // saved after the backup, its boards stay as they are (an old backup never rolls back newer layouts or widget content).
+  // Otherwise the backup's board wins, and widgets added here since are kept on it, so a restore never deletes any.
+  // The stamps as saved (normalising fills a missing one with now, which would make any dashboard look newest).
+  const stamp = value => Date.parse(isObject(value) && typeof value.updatedAt === 'string' ? value.updatedAt : '');
+  const localNewer = Number.isFinite(stamp(current)) && Number.isFinite(stamp(incoming)) && stamp(current) >= stamp(incoming);
+  let kept = 0;
+  const boards = base.boards.map(board => {
+    const backup = next.boards.find(b => b.id === board.id);
+    if (!backup) return board;
+    if (localNewer) { kept++; return board; }
+    const widgets = backup.widgets.map(widget => ({ ...widget }));
+    for (const widget of board.widgets) {
+      if (widgets.some(w => w.id === widget.id)) continue;
+      widgets.push({ ...widget, ...findFreeSpot(widgets, widget.w, widget.h, GRID_COLUMNS) });
+    }
+    return { ...backup, widgets };
+  });
   for (const board of next.boards) if (!base.boards.some(b => b.id === board.id)) boards.push(board);
-  const merged = normalizeDashboard({ ...base, boards, activeBoardId: next.activeBoardId, prefs: { ...base.prefs, ...next.prefs }, updatedAt: new Date().toISOString() });
-  return { state: merged, boards: next.boards.length };
+  const merged = normalizeDashboard({ ...base, boards, activeBoardId: next.activeBoardId, prefs: { ...base.prefs, ...next.prefs }, updatedAt: nextStamp(base.updatedAt) });
+  return { state: merged, boards: next.boards.length - kept, kept };
 }
 
-/** Backup source for lib/portability.js bound to this view's dashboard (null outside extension or preview storage). */
+/**
+ * Backup source for lib/portability.js bound to this view's dashboard (null outside extension or preview storage).
+ * exportDashboard() resolves to null while nothing is saved yet (only the unsaved default board exists), so a backup
+ * never carries an empty placeholder board into another device. importDashboard() throws (code 'newer_version') when
+ * either dashboard comes from a newer build; nothing is written then.
+ */
 export function dashboardBackupSource() {
   if (!area() && !globalThis.localStorage) return null;
   return {
-    async exportDashboard() { return portableDashboard(await dashboard.load()); },
+    async exportDashboard() {
+      const state = await dashboard.load();
+      return dashboard.isPlaceholder() ? null : portableDashboard(state);
+    },
     async importDashboard(incoming) {
-      const { state, boards } = mergeDashboards(await dashboard.load(), incoming);
+      const { state, boards, kept } = mergeDashboards(await dashboard.load(), incoming);
       await dashboard.replace(state, { persist: true });
-      return { boards };
+      return { boards, kept };
     },
   };
 }

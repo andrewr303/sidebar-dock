@@ -17,6 +17,11 @@ function memoryStore(seed) {
     createCollection: input => call('createCollection', input),
     deleteItem: (id, options = {}) => call('deleteItem', id, options),
     deleteCollection: (id, options = {}) => call('deleteCollection', id, options),
+    restoreItem: (id, options = {}) => call('restoreItem', id, options),
+    permanentlyDeleteItem: (id, options = {}) => call('permanentlyDeleteItem', id, options),
+    updateCollection: (id, patch, options = {}) => call('updateCollection', id, patch, options),
+    moveCollection: (id, placement = {}) => call('moveCollection', id, placement),
+    mutateTags: input => call('mutateTags', input),
   };
 }
 const seed = () => ({
@@ -33,8 +38,22 @@ const seed = () => ({
 const call = (name, input, id = `call_${name}`) => ({ id, name, input });
 const parse = result => JSON.parse(result.content);
 
+// A closed object schema whose properties are simple types; arrays hold strings or (one level down) closed objects.
+function assertSimpleSchema(schema, where, nested = false) {
+  assert.equal(schema.type, 'object', where);
+  assert.equal(schema.additionalProperties, false, `${where} is closed`);
+  assert.ok(Array.isArray(schema.required), where);
+  for (const key of schema.required) assert.ok(Object.hasOwn(schema.properties, key), `${where}.${key} is declared`);
+  for (const [key, property] of Object.entries(schema.properties)) {
+    assert.ok(['string', 'integer', 'boolean', 'array'].includes(property.type), `${where}.${key} has a simple type`);
+    if (property.type === 'array' && property.items.type === 'object' && !nested) assertSimpleSchema(property.items, `${where}.${key}[]`, true);
+    else if (property.type === 'array') assert.equal(property.items.type, 'string', `${where}.${key} holds strings`);
+    for (const unsupported of ['minimum', 'maximum', 'maxItems', 'maxLength', 'minLength', 'pattern', 'format']) assert.ok(!(unsupported in property), `${where}.${key} avoids ${unsupported}`);
+  }
+}
+
 test('every tool schema is strict-compatible: an object with properties, additionalProperties false and required ⊆ properties', () => {
-  assert.equal(LIBRARY_TOOLS.length, 15);
+  assert.equal(LIBRARY_TOOLS.length, 29);
   const names = new Set();
   for (const tool of LIBRARY_TOOLS) {
     assert.match(tool.name, /^[a-z_]{3,40}$/);
@@ -42,23 +61,38 @@ test('every tool schema is strict-compatible: an object with properties, additio
     names.add(tool.name);
     assert.ok(tool.description.length > 20);
     assert.ok(['read', 'write'].includes(tool.access));
-    const schema = tool.inputSchema;
-    assert.equal(schema.type, 'object');
-    assert.equal(schema.additionalProperties, false);
-    assert.ok(Array.isArray(schema.required));
-    for (const key of schema.required) assert.ok(Object.hasOwn(schema.properties, key), `${tool.name}.${key} is declared`);
-    for (const [key, property] of Object.entries(schema.properties)) {
-      assert.ok(['string', 'integer', 'boolean', 'array'].includes(property.type), `${tool.name}.${key} has a simple type`);
-      if (property.type === 'array') assert.equal(property.items.type, 'string');
-      for (const unsupported of ['minimum', 'maximum', 'maxItems', 'maxLength', 'minLength', 'pattern', 'format']) assert.ok(!(unsupported in property), `${tool.name}.${key} avoids ${unsupported}`);
-    }
+    assertSimpleSchema(tool.inputSchema, tool.name);
     if (tool.access === 'write') assert.match(tool.description, /only after the user approves/);
   }
-  for (const expected of ['search_library', 'get_items', 'list_collections', 'list_tags', 'get_page', 'create_collection', 'move_items', 'add_tags', 'remove_tags', 'set_favorite', 'archive_items', 'trash_items', 'create_note', 'append_to_note', 'update_item']) assert.ok(names.has(expected), expected);
+  const reads = ['search_library', 'get_items', 'list_items', 'lookup_urls', 'list_collections', 'list_tags', 'get_page', 'get_dashboard'];
+  const writes = ['create_collection', 'update_collection', 'delete_collection', 'save_links', 'move_items', 'add_tags', 'remove_tags', 'rename_tag', 'delete_tag', 'set_favorite',
+    'archive_items', 'unarchive_items', 'trash_items', 'restore_items', 'convert_items', 'create_note', 'append_to_note', 'update_item', 'link_items', 'unlink_items', 'show_collection_on_dashboard'];
+  assert.deepEqual([...names].sort(), [...reads, ...writes].sort());
+  for (const name of reads) assert.equal(LIBRARY_TOOLS.find(tool => tool.name === name).access, 'read', name);
+  for (const name of writes) assert.equal(LIBRARY_TOOLS.find(tool => tool.name === name).access, 'write', name);
+  // save_links takes a list of closed { url, title?, description?, tags? } objects.
+  const links = LIBRARY_TOOLS.find(tool => tool.name === 'save_links').inputSchema.properties.links.items;
+  assert.deepEqual([Object.keys(links.properties), links.required], [['url', 'title', 'description', 'tags'], ['url']]);
   assert.ok(!toolDefinitions().some(tool => tool.name === 'get_page'), 'get_page is offered only with a page');
   assert.ok(toolDefinitions({ page: true }).some(tool => tool.name === 'get_page'));
+  assert.ok(!toolDefinitions().some(tool => ['get_dashboard', 'show_collection_on_dashboard'].includes(tool.name)), 'dashboard tools need a dashboard adapter');
+  assert.deepEqual(toolDefinitions({ dashboard: true }).filter(tool => /dashboard/.test(tool.name)).map(tool => tool.name), ['get_dashboard', 'show_collection_on_dashboard']);
   assert.ok(toolDefinitions({ write: false }).every(tool => LIBRARY_TOOLS.find(entry => entry.name === tool.name).access === 'read'));
   assert.deepEqual(Object.keys(toolDefinitions()[0]).sort(), ['description', 'inputSchema', 'name']);
+});
+
+test('nested link objects survive the Gemini schema conversion and count as closed for strict transports', async () => {
+  const { geminiSchema } = await import('../extension/lib/ai/transports/gemini.js');
+  const { isStrictSchema } = await import('../extension/lib/ai/transports/shared.js');
+  const schema = LIBRARY_TOOLS.find(tool => tool.name === 'save_links').inputSchema;
+  const converted = geminiSchema(schema);
+  assert.equal(converted.properties.links.type, 'array');
+  assert.deepEqual(Object.keys(converted.properties.links.items.properties), ['url', 'title', 'description', 'tags']);
+  assert.deepEqual(converted.properties.links.items.required, ['url']);
+  assert.equal(converted.properties.links.items.properties.tags.items.type, 'string');
+  // Optional properties keep every tool out of strict mode, the nested object included; closing it is still required.
+  assert.equal(isStrictSchema(schema.properties.links.items), false);
+  assert.equal(isStrictSchema({ ...schema.properties.links.items, required: ['url', 'title', 'description', 'tags'] }), true);
 });
 
 async function session(options = {}) {
@@ -155,12 +189,11 @@ test('write calls in one step become a single proposal with readable labels and 
   assert.equal(reverted.items.find(i => i.id === 'kyoto').collectionId, '');
   assert.deepEqual(reverted.items.find(i => i.id === 'kyoto').tags, ['Japan']);
   assert.equal(reverted.items.find(i => i.id === 'kyoto').favorite, false);
-  assert.ok(reverted.items.find(i => i.id === note.id).deletedAt, 'created notes move to Trash');
-  // Only one proposal per turn: later write calls are refused.
+  assert.ok(!reverted.items.some(i => i.id === note.id), 'a created note untouched since is removed for good');
+  // After an applied proposal a later step may propose again (it can build on what was applied).
   const [late] = await tools.execute([call('archive_items', { ids: ['osaka'] }, 'c6')]);
-  assert.equal(late.isError, true);
-  assert.match(parse(late).message, /already reviewed/);
-  assert.equal(proposals.length, 1);
+  assert.equal(parse(late).status, 'applied');
+  assert.equal(proposals.length, 2);
 });
 
 test('discarded proposals change nothing and tell the model the user declined', async () => {

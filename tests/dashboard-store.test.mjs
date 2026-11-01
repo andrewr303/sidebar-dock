@@ -30,11 +30,15 @@ test('normalizeDashboard repairs anything into a valid state with one board', ()
 });
 
 test('normalizeWidget clamps geometry, frames and config', () => {
-  const widget = normalizeWidget({ type: 'clock', x: 11, y: -2, w: 30, h: 0, style: { frame: 'neon', hideTitle: 'yes' }, config: [1, 2] });
+  const input = { type: 'clock', x: 11, y: -2, w: 30, h: 0, style: { frame: 'neon', hideTitle: 'yes' }, config: [1, 2] };
+  const widget = normalizeWidget(input, { strict: true });
   assert.deepEqual([widget.x, widget.y, widget.w, widget.h], [0, 0, 12, 1]);
-  assert.deepEqual(widget.style, { frame: 'default', hideTitle: false });
+  assert.deepEqual(widget.style, { frame: 'default', hideTitle: false }, 'a new widget from the UI only gets known frames');
   assert.deepEqual(widget.config, {});
   assert.match(widget.id, /^w_/);
+  // A stored widget keeps a frame this build does not draw (a newer build's); the renderer falls back to the default look.
+  assert.deepEqual(normalizeWidget(input).style, { frame: 'neon', hideTitle: false });
+  assert.equal(normalizeWidget({ type: 'clock', style: { frame: '<b>' } }).style.frame, 'default', 'only a plain frame name is kept');
 });
 
 test('first load seeds once even with concurrent callers, later loads read storage', async () => {
@@ -50,13 +54,15 @@ test('first load seeds once even with concurrent callers, later loads read stora
   assert.equal((await again.store.load()).boards[0].id, 'main');
 });
 
-test('a failing seed still yields an empty Main board', async () => {
+test('a failing seed still yields an empty Main board, kept unsaved so the seed can run again', async () => {
   const env = memory(null, async () => { throw new Error('boom'); });
   const original = console.error;
   console.error = () => {};
   try {
     const state = await env.store.load();
     assert.equal(state.boards[0].widgets.length, 0);
+    assert.equal(env.writes, 0, 'the empty board is not saved over a future first-run seed');
+    assert.equal(env.store.isPlaceholder(), true);
   } finally { console.error = original; }
 });
 
@@ -167,4 +173,23 @@ test('a backup never switches on website embedding', () => {
   assert.equal(notes.config.allowFraming, true, 'only website widgets are affected');
   const merged = mergeDashboards(normalizeDashboard({}), state).state;
   assert.equal(merged.boards.find(b => b.id === 'b').widgets.find(w => w.id === 'w1').config.allowFraming, false);
+});
+
+test('restoring an older backup never removes widgets or rolls back a dashboard saved since', () => {
+  const backup = { updatedAt: '2026-10-01T00:00:00.000Z', activeBoardId: 'main', boards: [{ id: 'main', name: 'Main', widgets: [{ id: 'w_clock', type: 'clock', x: 0, y: 0, w: 3, h: 2 }] }] };
+  const local = { updatedAt: '2026-10-20T00:00:00.000Z', activeBoardId: 'main', boards: [{ id: 'main', name: 'Main', widgets: [
+    { id: 'w_clock', type: 'clock', x: 0, y: 0, w: 3, h: 2 },
+    { id: 'w_links', type: 'quick-links', x: 3, y: 0, w: 4, h: 2, config: { links: [{ id: 'ql_1', title: 'Mine', url: 'https://example.com/' }] } }] }] };
+  const newer = mergeDashboards(local, backup);
+  assert.equal(newer.kept, 1);
+  assert.equal(newer.boards, 0);
+  assert.deepEqual(newer.state.boards[0].widgets.map(w => w.id), ['w_clock', 'w_links'], 'this device saved later: its board stays');
+  assert.equal(newer.state.boards[0].widgets[1].config.links[0].title, 'Mine');
+  // A backup newer than this device wins the board, but widgets only this device has stay, placed without overlap.
+  const older = mergeDashboards({ ...local, updatedAt: '2026-09-01T00:00:00.000Z' }, backup);
+  assert.equal(older.kept, 0);
+  const widgets = older.state.boards[0].widgets;
+  assert.deepEqual(widgets.map(w => w.id), ['w_clock', 'w_links']);
+  assert.equal(widgets[1].config.links[0].title, 'Mine');
+  assert.ok(widgets[1].y >= 2 || widgets[1].x >= 3, 'no overlap with the clock');
 });

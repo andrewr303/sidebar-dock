@@ -25,10 +25,20 @@ const COUNT_FROM = 28000;
 const EXPANDED_WIDTH = 640;
 const STICK_PX = 48;
 const TOOL_ROWS = 3;
-const WRITE_TOOLS = new Set(['create_collection', 'move_items', 'add_tags', 'remove_tags', 'set_favorite', 'archive_items', 'trash_items', 'create_note', 'append_to_note', 'update_item']);
-const ITEM_CHANGES = new Set(['move_items', 'add_tags', 'remove_tags', 'set_favorite', 'archive_items', 'trash_items', 'update_item']);
+// Write tools (lib/ai/tools.js): their calls are shown as proposal cards, never as tool-step rows.
+export const WRITE_TOOLS = new Set(['create_collection', 'move_items', 'add_tags', 'remove_tags', 'set_favorite', 'archive_items', 'trash_items', 'create_note',
+  'append_to_note', 'update_item', 'save_links', 'convert_items', 'restore_items', 'unarchive_items', 'update_collection', 'delete_collection', 'rename_tag',
+  'delete_tag', 'link_items', 'unlink_items', 'show_collection_on_dashboard']);
+// Proposal ops whose items can be left out in Review (their itemIds are existing items, or links still to be saved).
+const ITEM_CHANGES = new Set(['move_items', 'add_tags', 'remove_tags', 'set_favorite', 'archive_items', 'trash_items', 'update_item', 'save_links', 'convert_items',
+  'restore_items', 'unarchive_items', 'rename_tag', 'link_items', 'unlink_items']);
 const CHANGE_ICONS = { create_collection: 'folder-plus', move_items: 'folder-input', add_tags: 'hash', remove_tags: 'hash', set_favorite: 'star', archive_items: 'archive',
-  trash_items: 'trash-2', create_note: 'sticky-note', append_to_note: 'notebook-pen', update_item: 'pencil' };
+  trash_items: 'trash-2', create_note: 'sticky-note', append_to_note: 'notebook-pen', update_item: 'pencil', save_links: 'bookmark-plus', convert_items: 'repeat',
+  restore_items: 'rotate-ccw', unarchive_items: 'archive-restore', update_collection: 'folder-open', delete_collection: 'trash-2', rename_tag: 'tag', link_items: 'link',
+  unlink_items: 'unlink', add_dashboard_widget: 'layout-dashboard' };
+const DESTRUCTIVE = new Set(['trash_items', 'delete_collection']);
+/** The icon a proposal row shows for an op (a plain circle for an op this version does not know). */
+export const changeIcon = op => CHANGE_ICONS[op] || 'circle';
 const EFFORT_HINTS = { none: 'No extra reasoning', minimal: 'Fastest', low: 'Quick answers', medium: 'Balanced', high: 'More thorough', xhigh: 'Deep reasoning', max: 'Most thorough' };
 const HANDOFFS = [{ id: 'claude', label: 'Claude' }, { id: 'chatgpt', label: 'ChatGPT' }, { id: 'grok', label: 'Grok' }];
 const SETUP_PATHS = [
@@ -104,6 +114,8 @@ export function suggestionsFor(kind, { collectionName = 'this collection', count
   }
   return [
     { icon: 'search', label: 'What did I save about …', prompt: 'What did I save about …' },
+    // A template: name the collection, then paste the links on the next line.
+    { icon: 'bookmark-plus', label: 'Save these links into a collection', prompt: 'Save these links as separate links in a collection called …:\n' },
     { icon: 'folder-input', label: 'Find everything about … and move it to …', prompt: 'Find everything about … and move it to …' },
     { icon: 'inbox', label: 'Suggest tags for Inbox', prompt: 'Suggest tags for the items in my Inbox.' },
     { icon: 'tags', label: 'Tag untagged items', prompt: 'Find items without tags and propose tags for them.' },
@@ -170,61 +182,99 @@ export function classifyError({ code = '', message = '', aborted = false } = {})
   return 'other';
 }
 
-const PAST = [[/^Create /, 'Created '], [/^Move /, 'Moved '], [/^Add /, 'Added '], [/^Remove /, 'Removed '], [/^Archive /, 'Archived '],
-  [/^Append /, 'Appended '], [/^Rename /, 'Renamed '], [/^Update /, 'Updated ']];
-const pastTense = label => PAST.reduce((value, [from, to]) => value.replace(from, to), text(label));
+// Past tense for receipts; lib/ai/tools.js (labelFor) words its tool results the same way. Unknown verbs stay as they are.
+const PAST_VERBS = { Create: 'Created', Move: 'Moved', Add: 'Added', Remove: 'Removed', Archive: 'Archived', Unarchive: 'Unarchived', Append: 'Appended',
+  Rename: 'Renamed', Update: 'Updated', Save: 'Saved', Turn: 'Turned', Change: 'Changed', Convert: 'Converted', Restore: 'Restored', Delete: 'Deleted',
+  Link: 'Linked', Unlink: 'Unlinked', Replace: 'Replaced', Clear: 'Cleared', Mark: 'Marked', Pin: 'Pinned', Unpin: 'Unpinned', Merge: 'Merged' };
+const PAST_PHRASES = [[/^Show (.+) on the dashboard$/, 'Added $1 to the dashboard'], [/\bmoves? (to Inbox|up a level)\b/g, 'moved $1']];
+const pastTense = label => PAST_PHRASES.reduce((value, [from, to]) => value.replace(from, to), text(label))
+  .replace(/^([A-Z][a-z]+) /, (match, verb) => PAST_VERBS[verb] ? `${PAST_VERBS[verb]} ` : match);
 const changeCount = change => Number.isFinite(change?.count) ? change.count : (change?.itemIds || []).length;
+// "Save 17 links to …" with 2 left out reads "Save 15 links to …": the first count of what the change acts on is rewritten.
+const recount = (label, total, left) => text(label).replace(new RegExp(`\\b${total} (item|link|note|bookmark|article|image|video|file)s?\\b`), (match, noun) => plural(left, noun));
+const isSkipped = (change, out) => !!out?.size && changeCount(change) - out.size <= 0;
 
-/** One line per change that was applied, in the past tense, with counts that leave out excluded items. */
+/**
+ * Review exclusions as the engine applies them (lib/ai/tools.js): an excluded item id leaves every change it is part of,
+ * and a change left without items is dropped. excluded: item ids (array or Set) -> Map<changeIndex, Set<itemId>>.
+ */
+export function excludedByChange(proposal, excluded) {
+  const ids = excluded instanceof Set ? excluded : new Set(unique(excluded));
+  const byChange = new Map();
+  (proposal?.changes || []).forEach((change, index) => {
+    const out = new Set((change.itemIds || []).filter(id => ids.has(id)));
+    if (out.size) byChange.set(index, out);
+  });
+  return byChange;
+}
+
+/**
+ * What Apply answers the engine's onProposal: 'apply', { decision: 'apply', exclude: [ids] } when items were left out in
+ * Review, or 'discard' when nothing would be left to apply. excluded: item ids unchecked in Review (array or Set).
+ */
+export function proposalDecision(proposal, excluded = []) {
+  const changes = proposal?.changes || [];
+  const exclude = unique([...(excluded || [])]).filter(id => changes.some(change => (change.itemIds || []).includes(id)));
+  const byChange = excludedByChange(proposal, exclude);
+  if (!changes.some((change, index) => !isSkipped(change, byChange.get(index)))) return 'discard';
+  return exclude.length ? { decision: 'apply', exclude } : 'apply';
+}
+
+/**
+ * One line per change that was applied, in the past tense, with counts that leave out excluded items.
+ * excluded: the excluded item ids (array or Set), or a Map<changeIndex, Set<itemId>>.
+ */
 export function appliedLines(proposal, excluded = new Map()) {
+  const byChange = excluded instanceof Map ? excluded : excludedByChange(proposal, excluded);
   const lines = [];
   (proposal?.changes || []).forEach((change, index) => {
-    const out = excluded.get(index)?.size || 0;
-    let label = pastTense(change.label);
-    if (out && ITEM_CHANGES.has(change.op)) {
-      const total = changeCount(change);
-      const left = total - out;
-      if (left <= 0) return;
-      label = label.replace(new RegExp(`\\b${total} items?\\b`), plural(left, 'item'));
-    }
-    lines.push(label);
+    const out = byChange.get(index);
+    if (isSkipped(change, out)) return;
+    const label = pastTense(change.label);
+    lines.push(out?.size ? recount(label, changeCount(change), changeCount(change) - out.size) : label);
   });
   return lines;
 }
 
-const FIELDS = { move_items: ['collectionId'], add_tags: ['tags'], remove_tags: ['tags'], set_favorite: ['favorite'], archive_items: ['archived'], trash_items: ['deletedAt'] };
-const touchedFields = change => change.op === 'update_item' ? ['title', 'excerpt'].filter(key => key in change) : FIELDS[change.op] || [];
-function applyChange(state, change) {
-  if (change.op === 'move_items') state.collectionId = text(change.collectionId);
-  else if (change.op === 'add_tags') for (const tag of change.tags || []) { if (!state.tags.some(t => String(t).toLowerCase() === String(tag).toLowerCase())) state.tags.push(tag); }
-  else if (change.op === 'remove_tags') { const drop = (change.tags || []).map(tag => String(tag).toLowerCase()); state.tags = state.tags.filter(tag => !drop.includes(String(tag).toLowerCase())); }
-  else if (change.op === 'set_favorite') state.favorite = !!change.favorite;
-  else if (change.op === 'archive_items') state.archived = true;
-  else if (change.op === 'update_item') { if ('title' in change) state.title = change.title; if ('excerpt' in change) state.excerpt = change.excerpt; }
+// Web addresses in a preview are kept exactly as written; trailing sentence punctuation (and a closing bracket the
+// address did not open) is left outside them.
+function splitUrl(raw) {
+  let url = raw;
+  let tail = '';
+  for (;;) {
+    const last = url.at(-1);
+    const unbalanced = last === ')' && (url.match(/\(/g) || []).length < (url.match(/\)/g) || []).length;
+    if (!last || !(/[.,;:!?*~`'"]/.test(last) || unbalanced)) break;
+    tail = last + tail;
+    url = url.slice(0, -1);
+  }
+  return [url, tail];
 }
 
 /**
- * Patches that put items excluded during Review back after the whole proposal was applied: each excluded item gets the
- * fields its excluded changes touched, recomputed from its state before Apply plus the changes it stayed in.
- * excluded: Map<changeIndex, Set<itemId>>; before: Map<itemId, item> captured when Apply was clicked.
+ * A short plain-text preview of Markdown for a proposal row: headings, quotes, list marks, emphasis and citations are
+ * removed, links show their text, and web addresses stay whole and unchanged (never cut, never stripped of _ or #).
  */
-export function exclusionPatches(proposal, excluded, before) {
-  const ids = unique([...excluded.values()].flatMap(set => [...set]));
-  const patches = [];
-  for (const id of ids) {
-    const item = before.get(id);
-    if (!item) continue;
-    const state = { collectionId: text(item.collectionId), tags: [...(item.tags || [])], favorite: !!item.favorite, archived: !!item.archived,
-      deletedAt: item.deletedAt ?? null, title: text(item.title), excerpt: text(item.excerpt) };
-    const fields = new Set();
-    (proposal?.changes || []).forEach((change, index) => {
-      if (!ITEM_CHANGES.has(change.op) || !(change.itemIds || []).includes(id)) return;
-      if (excluded.get(index)?.has(id)) touchedFields(change).forEach(field => fields.add(field));
-      else applyChange(state, change);
-    });
-    if (fields.size) patches.push({ id, patch: Object.fromEntries([...fields].map(field => [field, state[field]])) });
+export function noteSnippet(markdown, max = 160) {
+  const urls = [];
+  const keep = url => `\u0000${urls.push(url) - 1}\u0000`;
+  const plain = text(markdown)
+    .replace(/\[\[[\w:.-]+\]\]/g, '')
+    .replace(/!?\[([^\]\n]*)\]\(\s*<?((?:[^\s()<>]|\([^\s()]*\))+)>?(?:\s+"[^"\n]*")?\s*\)/g, (match, label, url) => label.trim() || (/^https?:\/\//i.test(url) ? keep(url) : ''))
+    .replace(/<(https?:\/\/[^\s>]+)>/gi, (match, url) => keep(url))
+    .replace(/https?:\/\/[^\s<>]+/gi, match => { const [url, tail] = splitUrl(match); return keep(url) + tail; })
+    .replace(/^[ \t]{0,3}(?:#{1,6}[ \t]+|>[ \t]?|[-*+][ \t]+(?:\[[ xX]\][ \t]+)?|\d+[.)][ \t]+)/gm, '')
+    .replace(/(^|[\s(])[*_~`]+(?=\S)/gm, '$1')
+    .replace(/(\S)[*_~`]+(?=$|[\s).,;:!?])/gm, '$1')
+    .replace(/\s+/g, ' ').trim()
+    .replace(/\u0000(\d+)\u0000/g, (match, index) => urls[Number(index)]);
+  if (plain.length <= max) return plain;
+  let out = '';
+  for (const word of plain.split(' ')) {
+    if (out && out.length + 1 + word.length > max) return `${out}…`;
+    out = out ? `${out} ${word}` : word;
   }
-  return patches;
+  return out;
 }
 
 /** History list sections by last activity: Today, Yesterday, Previous 7 days, Previous 30 days, Older. */
@@ -578,9 +628,12 @@ function onEvent(ctx, run, event) {
   bump(ctx, { render });
 }
 
+// excluded: the item ids unchecked in Review. One id leaves every change it is in, as the engine applies it.
+const newProposalUi = () => ({ open: false, excluded: new Set() });
+
 function registerProposal(run, proposal) {
   if (!proposal?.id) return;
-  const ui = proposalUi.get(proposal.id) || { open: false, excluded: new Map() };
+  const ui = proposalUi.get(proposal.id) || newProposalUi();
   if (!Number.isFinite(ui.at)) ui.at = run.message.text.length;
   ui.status ||= 'pending';
   proposalUi.set(proposal.id, ui);
@@ -598,7 +651,7 @@ function onProposal(ctx, run, proposal) {
 }
 
 function proposalResult(ctx, run, event) {
-  const ui = proposalUi.get(event.proposalId) || { open: false, excluded: new Map() };
+  const ui = proposalUi.get(event.proposalId) || newProposalUi();
   proposalUi.set(event.proposalId, ui);
   ui.resolve = null;
   ui.status = event.status;
@@ -607,12 +660,11 @@ function proposalResult(ctx, run, event) {
   if (record) record.status = event.status;
   if (event.status === 'applied') {
     ui.undo = typeof event.undo === 'function' ? event.undo : null;
-    if (ui.restore?.length) {
-      // The engine applies whole proposals; items left out in Review are put back right after.
-      Promise.resolve(ctx.store.bulkUpdateItems(ui.restore)).catch(error => {
-        console.error(error);
-        ctx.toast('Some items you left out were changed anyway. Use Undo to revert everything.', { tone: 'danger' });
-      });
+    // The engine left the excluded items out before applying; the ids it reports are what the receipt counts.
+    if (Array.isArray(event.excluded)) {
+      const excluded = unique(event.excluded);
+      if (record) record.excluded = excluded;
+      ui.lines = excluded.length && record ? appliedLines(record, excluded) : null;
     }
     announce(ctx, 'Changes applied.');
   } else if (event.status === 'failed') announce(ctx, `Changes failed: ${ui.error || 'nothing was changed.'}`);
@@ -1276,9 +1328,14 @@ export function renderSourceRows(ctx, citations = []) {
 
 function proposalStatus(proposal) {
   const ui = proposalUi.get(proposal.id);
-  if (ui?.undone) return 'undone';
+  // Undone here or in another window (its saved conversation says so): that Undo is never offered again.
+  if (ui?.undone || proposal.status === 'undone') return 'undone';
   return ui?.status || proposal.status || 'pending';
 }
+
+// After a reload, or in another window, the live undo is gone; the undo record saved with the proposal still reverts it.
+const savedUndo = (ctx, proposal) => proposal?.status === 'applied' && !!proposal.undo && typeof proposal.undo === 'object'
+  && typeof ctx.ai?.undoProposal === 'function';
 
 function collectionPill(ctx, change, created) {
   if (!change.collectionId) return html`<span class="ai-pill">${collectionIcon(null, { size: 16 })}<span>Inbox</span></span>`;
@@ -1293,66 +1350,193 @@ function tagList(tags) {
   return html`${(tags || []).map(tag => html`<span class="ai-tag"><span class="ai-tag-hash">#</span>${tag}</span>`)}`;
 }
 
-function changeSub(ctx, change, out = new Set()) {
-  if (change.op === 'move_items') {
-    const counts = new Map();
-    for (const id of (change.itemIds || []).filter(entry => !out.has(entry))) {
-      const item = liveItem(ctx, id);
-      if (!item) continue;
-      const name = collectionName(ctx, item.collectionId || '');
-      counts.set(name, (counts.get(name) || 0) + 1);
-    }
-    return counts.size ? `From ${[...counts].sort((a, b) => b[1] - a[1]).map(([name, n]) => `${name} (${n})`).join(', ')}` : '';
+const listJoin = list => list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list.at(-1)}` : list[0] || '';
+const andMore = (shown, total) => shown.length ? `${shown.join(', ')}${total > shown.length ? ` and ${(total - shown.length).toLocaleString()} more` : ''}` : '';
+const capitalized = value => value ? value[0].toUpperCase() + value.slice(1) : value;
+
+function uniqueTags(lists) {
+  const seen = new Set();
+  const out = [];
+  for (const tag of lists.flat()) {
+    const key = text(tag).toLowerCase();
+    if (key && !seen.has(key)) { seen.add(key); out.push(text(tag)); }
   }
-  if (ITEM_CHANGES.has(change.op) && change.op !== 'update_item') {
-    const titles = (change.items || []).filter(item => !out.has(item.id)).slice(0, 3).map(item => item.title).filter(Boolean);
-    const rest = changeCount(change) - out.size - titles.length;
-    return titles.length ? `${titles.join(', ')}${rest > 0 ? ` and ${plural(rest, 'more')}` : ''}` : '';
-  }
-  if (change.op === 'create_note' && change.note?.markdown) return text(change.note.markdown).replace(/[#>*_`[\]]+/g, '').replace(/\s+/g, ' ').trim().slice(0, 120);
-  return '';
+  return out;
+}
+const taggedWith = tags => tags.length ? `Tagged ${tags.slice(0, 6).map(tag => `#${tag}`).join(' ')}${tags.length > 6 ? ` and ${tags.length - 6} more` : ''}` : '';
+
+// "Title (domain)" for a link to save; the domain alone when the title is missing or is just the domain.
+function linkLine(entry) {
+  const domain = domainOf(entry?.url);
+  const title = text(entry?.title).replace(/\s+/g, ' ').trim();
+  if (!title || title === domain) return domain || text(entry?.url);
+  return domain ? `${title} (${domain})` : title;
 }
 
-function changeLabel(ctx, change, included, createdIds) {
-  const items = plural(included, 'item');
+function collectionPathName(ctx, id, created) {
+  if (!id) return 'Inbox';
+  const path = ctx.select?.path?.(id) || [];
+  return path.length ? path.map(collection => collection.name).join(' › ') : created.get(id) || 'a new collection';
+}
+
+function reminderText(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? text(value) : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+// The engine's label names the fields an edit changes ("Update “A”: link and note"); this line adds the new values that
+// label leaves out: the address in full, exactly as it will be saved, a reminder's date, the new text.
+function itemPatchSub(change) {
+  const patch = change.patch && typeof change.patch === 'object' ? change.patch
+    : Object.fromEntries(['title', 'excerpt'].filter(key => key in change).map(key => [key, change[key]]));
+  const keys = Object.keys(patch);
+  const several = keys.length > 1 && !(keys.length === 2 && 'title' in patch && 'excerpt' in patch);
+  const parts = [];
+  if (several && typeof patch.title === 'string') parts.push(`Title “${patch.title}”`);
+  if (text(patch.url)) parts.push(patch.url);
+  if (several && 'pinned' in patch) parts.push(patch.pinned ? 'Pinned' : 'Not pinned');
+  if (several && 'read' in patch) parts.push(patch.read ? 'Read' : 'Unread');
+  if ('reminderAt' in patch && (patch.reminderAt || several)) parts.push(patch.reminderAt ? `Reminder ${reminderText(patch.reminderAt)}` : 'No reminder');
+  if (typeof patch.content === 'string') parts.push(noteSnippet(patch.content, 120));
+  return parts.filter(Boolean).join(' · ');
+}
+
+// Likewise for a collection: the label names the fields (or says the one change); this line gives the new values.
+function collectionPatchSub(ctx, change, created) {
+  const patch = change.patch && typeof change.patch === 'object' ? change.patch : {};
+  const several = Object.keys(patch).length > 1;
+  const parts = [];
+  if (several && typeof patch.name === 'string') parts.push(`Name “${patch.name}”`);
+  if (several && 'parentId' in patch) parts.push(patch.parentId ? `Moves into ${collectionPathName(ctx, patch.parentId, created)}` : 'Moves to the top level');
+  if (text(patch.icon)) parts.push(`Icon ${patch.icon}`);
+  if (text(patch.color)) parts.push(`Color ${patch.color}`);
+  if (several && 'pinned' in patch) parts.push(patch.pinned ? 'Pinned' : 'Not pinned');
+  if (typeof patch.description === 'string') parts.push(patch.description.trim() ? `Description “${noteSnippet(patch.description, 80)}”` : 'No description');
+  return parts.join(' · ');
+}
+
+// What deleting a collection does to what it holds (lib/store.js deleteCollection): its items go to the Inbox and its
+// sub-collections move up one level.
+function deleteCollectionSub(ctx, change) {
+  const id = text(change.collectionId);
+  const counted = Number.isFinite(change.itemCount) && Number.isFinite(change.childCount);
+  if (!id || (!counted && !ctx.library)) return '';
+  // The engine counts when it stages the change; an older record is counted from the library as it is now.
+  const items = counted ? change.itemCount : (ctx.library.items || []).filter(item => item.collectionId === id && !item.deletedAt).length;
+  const children = counted ? change.childCount : (ctx.library.collections || []).filter(collection => collection.parentId === id).length;
+  const verb = count => count === 1 ? 'moves' : 'move';
+  return [items ? `${plural(items, 'item')} ${verb(items)} to Inbox` : 'It holds no items',
+    children ? `${plural(children, 'sub-collection')} ${verb(children)} up a level` : ''].filter(Boolean).join(' · ');
+}
+
+/**
+ * The second line of a proposal row: the items, links or fields a change touches. Web addresses are shown whole.
+ * out: item ids left out in Review; created: ids of collections this proposal creates -> their names.
+ */
+export function changeSub(ctx, change, out = new Set(), { created = new Map() } = {}) {
+  const kept = list => (Array.isArray(list) ? list : []).filter(entry => entry && !out.has(entry.id));
   switch (change.op) {
-    case 'move_items': return html`Move ${items} to ${collectionPill(ctx, change, createdIds.has(change.collectionId))}`;
+    case 'move_items': {
+      const counts = new Map();
+      for (const id of (change.itemIds || []).filter(entry => !out.has(entry))) {
+        const item = liveItem(ctx, id);
+        if (!item) continue;
+        const name = collectionName(ctx, item.collectionId || '');
+        counts.set(name, (counts.get(name) || 0) + 1);
+      }
+      return counts.size ? `From ${[...counts].sort((a, b) => b[1] - a[1]).map(([name, n]) => `${name} (${n})`).join(', ')}` : '';
+    }
+    case 'save_links': {
+      const links = kept(change.items?.length ? change.items : change.links);
+      const tags = uniqueTags([change.tags || [], ...kept(change.links).map(link => link.tags || [])]);
+      return [andMore(links.slice(0, 3).map(linkLine).filter(Boolean), changeCount(change) - out.size), taggedWith(tags)].filter(Boolean).join(' · ');
+    }
+    case 'update_item': return itemPatchSub(change);
+    case 'link_items':
+    case 'unlink_items': {
+      const related = change.relatedIds || [];
+      const titles = new Map((change.related || []).map(entry => [entry.id, text(entry.title)]));
+      return andMore(related.slice(0, 3).map(id => text(liveItem(ctx, id)?.title) || titles.get(id) || '').filter(Boolean), related.length);
+    }
+    case 'update_collection': return collectionPatchSub(ctx, change, created);
+    case 'delete_collection': return deleteCollectionSub(ctx, change);
+    case 'add_dashboard_widget': return `Adds a links widget to ${text(change.boardName) ? `the ${change.boardName} board` : 'your dashboard'}`;
+    case 'create_note': {
+      const note = change.note || {};
+      const sticky = note.sticky || change.sticky;
+      const color = typeof sticky === 'string' ? sticky : text(sticky?.color);
+      return [sticky ? `${color ? `${capitalized(color)} sticky` : 'Sticky'} note on the dashboard` : '', taggedWith(uniqueTags([note.tags || change.tags || []])),
+        noteSnippet(note.markdown)].filter(Boolean).join(' · ');
+    }
+    case 'append_to_note': return noteSnippet(change.note?.markdown);
+    default:
+      if (!ITEM_CHANGES.has(change.op)) return '';
+      return andMore(kept(change.items).slice(0, 3).map(item => text(item.title)).filter(Boolean), changeCount(change) - out.size);
+  }
+}
+
+/**
+ * The first line of a proposal row, with collection pills and tag chips. included: the items left after Review (counts
+ * in the engine's wording are rewritten to it); createdIds / created: collections this proposal creates (id -> name).
+ */
+export function changeLabel(ctx, change, included, createdIds = new Set(), created = new Map()) {
+  const items = plural(included, 'item');
+  const pill = () => collectionPill(ctx, change, createdIds.has(change.collectionId));
+  switch (change.op) {
+    case 'move_items': return html`Move ${items} to ${pill()}`;
     case 'add_tags': return html`Add ${tagList(change.tags)} to ${items}`;
     case 'remove_tags': return html`Remove ${tagList(change.tags)} from ${items}`;
     case 'create_collection': return html`Create collection ${collectionPill(ctx, change, true)}`;
     case 'set_favorite': return change.favorite ? `Add ${items} to favorites` : `Remove ${items} from favorites`;
     case 'archive_items': return `Archive ${items}`;
     case 'trash_items': return `Move ${items} to Trash`;
-    default: return change.label;
+    case 'save_links': return html`Save ${plural(included, 'link')} to ${pill()}`;
+    case 'update_collection': {
+      const patch = change.patch || {};
+      const only = Object.keys(patch).length === 1 ? Object.keys(patch)[0] : '';
+      if (only === 'name') return html`Rename ${pill()} to “${patch.name}”`;
+      if (only === 'parentId') return patch.parentId ? html`Move ${pill()} into ${collectionPill(ctx, { collectionId: patch.parentId, collectionName: created.get(patch.parentId) || '' }, createdIds.has(patch.parentId))}` : html`Move ${pill()} to the top level`;
+      if (only === 'pinned') return html`${patch.pinned ? 'Pin' : 'Unpin'} ${pill()}`;
+      const fields = text(change.label).match(/: (.+)$/)?.[1];
+      return fields ? html`Update ${pill()}: ${fields}` : html`Update ${pill()}`;
+    }
+    case 'delete_collection': return html`Delete collection ${pill()}`;
+    case 'add_dashboard_widget': return html`Show ${pill()} on the dashboard`;
+    case 'rename_tag':
+      if (text(change.from) && text(change.to)) return html`Rename ${tagList([change.from])} to ${tagList([change.to])} on ${items}`;
+    // falls through: without both tag names the engine's label says it
+    default:
+      if (ITEM_CHANGES.has(change.op)) return recount(change.label, changeCount(change), included);
+      return text(change.label) || text(change.op).replace(/_/g, ' ') || 'Change';
   }
 }
 
 function renderProposal(ctx, proposal) {
   const status = proposalStatus(proposal);
   if (!['pending', 'applying'].includes(status)) return renderReceipt(ctx, proposal, status);
-  const ui = proposalUi.get(proposal.id) || { open: false, excluded: new Map() };
+  const ui = proposalUi.get(proposal.id) || newProposalUi();
   const changes = proposal.changes || [];
   const createdIds = new Set(changes.filter(change => change.op === 'create_collection').map(change => change.collectionId));
+  const created = new Map(changes.filter(change => change.op === 'create_collection').map(change => [change.collectionId, text(change.collectionName)]));
+  const byChange = excludedByChange(proposal, ui.excluded);
   const reviewable = changes.some(change => ITEM_CHANGES.has(change.op) && change.items?.length);
-  const left = changes.filter((change, index) => !ITEM_CHANGES.has(change.op) || changeCount(change) - (ui.excluded.get(index)?.size || 0) > 0).length;
-  const excludedTotal = [...ui.excluded.values()].reduce((sum, set) => sum + set.size, 0);
+  const left = changes.filter((change, index) => !isSkipped(change, byChange.get(index))).length;
   const titleId = `ai-pr-${proposal.id}`;
   return html`<section class="ai-proposal" data-key="pr:${proposal.id}" aria-labelledby="${titleId}">
     <header class="ai-proposal-head">${icon('list-checks', { size: 16 })}<h3 class="ai-proposal-title" id="${titleId}">Proposed changes</h3>
       ${badge({ label: 'Needs approval', tone: 'warning', className: 'ai-proposal-badge' })}</header>
     <ul class="ai-changes" role="list">${changes.map((change, index) => {
-      const out = ui.excluded.get(index) || new Set();
-      const included = changeCount(change) - out.size;
-      const sub = changeSub(ctx, change, out);
-      return html`<li class="${cx('ai-change', ITEM_CHANGES.has(change.op) && included <= 0 && 'is-skipped')}">
-        <span class="ai-change-icon">${icon(CHANGE_ICONS[change.op] || 'circle', { size: 16 })}</span>
-        <div class="ai-change-body"><p class="ai-change-label">${changeLabel(ctx, change, Math.max(0, included), createdIds)}</p>
+      const out = byChange.get(index) || new Set();
+      const sub = changeSub(ctx, change, out, { created });
+      return html`<li class="${cx('ai-change', isSkipped(change, out) && 'is-skipped', DESTRUCTIVE.has(change.op) && 'is-destructive')}">
+        <span class="ai-change-icon">${icon(changeIcon(change.op), { size: 16 })}</span>
+        <div class="ai-change-body"><p class="ai-change-label">${changeLabel(ctx, change, Math.max(0, changeCount(change) - out.size), createdIds, created)}</p>
           ${sub ? html`<p class="ai-change-sub">${sub}</p>` : ''}
           ${ui.open && ITEM_CHANGES.has(change.op) && change.items?.length ? renderReview(ctx, proposal, change, index, ui) : ''}</div>
       </li>`;
     })}</ul>
     <footer class="ai-proposal-foot">
-      ${button({ label: excludedTotal && left ? `Apply ${plural(left, 'change')}` : 'Apply', variant: 'primary', size: 'sm', action: 'ai.proposal-apply',
+      ${button({ label: byChange.size && left ? `Apply ${plural(left, 'change')}` : 'Apply', variant: 'primary', size: 'sm', action: 'ai.proposal-apply',
         data: { id: proposal.id }, loading: status === 'applying', disabled: !ui.resolve || !left })}
       ${reviewable ? button({ label: ui.open ? 'Hide review' : 'Review', variant: 'secondary', size: 'sm', action: 'ai.proposal-review', data: { id: proposal.id },
         attrs: { 'aria-expanded': ui.open ? 'true' : 'false' } }) : ''}
@@ -1362,36 +1546,42 @@ function renderProposal(ctx, proposal) {
   </section>`;
 }
 
+// Per-item checkboxes. Unchecking an item leaves it out of every change it is in (the engine's exclusion rule), so a
+// second list that shows it follows. Links still to be saved show their domain, with the full address on hover.
 function renderReview(ctx, proposal, change, index, ui) {
-  const out = ui.excluded.get(index) || new Set();
+  const out = ui.excluded;
   const listed = change.items || [];
+  const noun = change.op === 'save_links' ? 'link' : 'item';
   const included = listed.filter(item => !out.has(item.id)).length;
   const all = included === listed.length;
   return html`<div class="ai-review">
     <label class="checkbox ai-review-all"><input type="checkbox" ${all ? raw('checked') : ''} ${!all && included ? raw('data-indeterminate') : ''}
       data-change="ai.review-all" data-proposal="${proposal.id}" data-change-index="${index}"><span class="checkbox-box" aria-hidden="true">${icon('check', { size: 12, strokeWidth: 3 })}</span>
-      <span class="checkbox-label">${included} of ${plural(listed.length, 'item')} selected</span></label>
+      <span class="checkbox-label">${included} of ${plural(listed.length, noun)} selected</span></label>
     <ul class="ai-review-list" role="list">${listed.map(entry => {
       const item = liveItem(ctx, entry.id);
+      const url = text(entry.url) || text(item?.url);
+      const meta = domainOf(url) || (item ? collectionName(ctx, item.collectionId || '') : '');
       return html`<li><label class="checkbox ai-review-item"><input type="checkbox" ${out.has(entry.id) ? '' : raw('checked')} data-change="ai.review-item"
         data-proposal="${proposal.id}" data-change-index="${index}" data-item="${entry.id}"><span class="checkbox-box" aria-hidden="true">${icon('check', { size: 12, strokeWidth: 3 })}</span>
-        <span class="checkbox-label"><span class="ai-review-title">${entry.title || item?.title || 'Untitled'}</span>${item ? html`<span class="ai-review-meta">${domainOf(item.url) || collectionName(ctx, item.collectionId || '')}</span>` : ''}</span></label></li>`;
+        <span class="checkbox-label"><span class="ai-review-title">${entry.title || item?.title || domainOf(url) || 'Untitled'}</span>${meta ? html`<span class="ai-review-meta" ${url ? html`title="${url}"` : ''}>${meta}</span>` : ''}</span></label></li>`;
     })}</ul>
-    ${changeCount(change) > listed.length ? html`<p class="ai-review-more">${plural(changeCount(change) - listed.length, 'more item')} cannot be reviewed here and will be included.</p>` : ''}
+    ${changeCount(change) > listed.length ? html`<p class="ai-review-more">${plural(changeCount(change) - listed.length, `more ${noun}`)} cannot be reviewed here and will be included.</p>` : ''}
   </div>`;
 }
 
 function renderReceipt(ctx, proposal, status) {
   const ui = proposalUi.get(proposal.id);
-  const lines = ui?.lines || proposal.appliedLines || appliedLines(proposal);
+  const lines = ui?.lines || proposal.appliedLines || appliedLines(proposal, proposal.excluded || []);
   const undoing = !!ui?.undoing;
   if (status === 'applied') {
     const title = lines.length === 1 ? `Applied: ${lowerFirst(lines[0])}` : `Applied ${plural(lines.length, 'change')}`;
+    const undoable = typeof ui?.undo === 'function' || savedUndo(ctx, proposal);
     return html`<div class="ai-receipt" data-status="applied" data-key="pr:${proposal.id}">
       ${icon('circle-check', { size: 16, className: 'ai-receipt-icon' })}
       <div class="ai-receipt-text"><p class="ai-receipt-title">${title}</p>
         ${lines.length > 1 ? html`<ul class="ai-receipt-lines" role="list">${lines.map(line => html`<li>${line}</li>`)}</ul>` : ''}</div>
-      ${ui?.undo ? button({ label: 'Undo', icon: 'undo-2', variant: 'ghost', size: 'sm', action: 'ai.proposal-undo', data: { id: proposal.id }, loading: undoing }) : ''}
+      ${undoable ? button({ label: 'Undo', icon: 'undo-2', variant: 'ghost', size: 'sm', action: 'ai.proposal-undo', data: { id: proposal.id }, loading: undoing }) : ''}
     </div>`;
   }
   const copy = { discarded: ['circle-x', 'Discarded the proposed changes. Nothing was changed.'], undone: ['undo-2', 'Undone. Your library is back as it was.'],
@@ -1400,6 +1590,9 @@ function renderReceipt(ctx, proposal, status) {
   return html`<div class="ai-receipt" data-status="${status}" data-key="pr:${proposal.id}">${icon(copy[0], { size: 16, className: 'ai-receipt-icon' })}
     <div class="ai-receipt-text"><p class="ai-receipt-title">${copy[1]}</p></div></div>`;
 }
+
+/** A proposal as the transcript shows it: the card while it waits for a decision, the receipt after. */
+export const renderProposalCard = (ctx, proposal) => renderProposal(ctx, proposal);
 
 // ------------------------------------------------------------------------------------------------ popovers
 
@@ -1619,12 +1812,6 @@ function setOpen(ctx, key) {
 function moveCaretTo(input, index, length = 0) {
   input.focus({ preventScroll: true });
   input.setSelectionRange(index, index + length);
-}
-
-function excludedFor(ui, data) {
-  const index = Number(data.changeIndex);
-  if (!ui.excluded.has(index)) ui.excluded.set(index, new Set());
-  return { index, set: ui.excluded.get(index) };
 }
 
 registerActions({
@@ -1905,38 +2092,33 @@ registerActions({
   },
   'ai.review-item': ({ ctx, el, data }) => {
     const ui = proposalUi.get(data.proposal);
-    if (!ui?.resolve) return;
-    const { set } = excludedFor(ui, data);
-    if (el.checked) set.delete(data.item); else set.add(data.item);
+    if (!ui?.resolve || !data.item) return;
+    if (el.checked) ui.excluded.delete(data.item); else ui.excluded.add(data.item);
     bump(ctx);
   },
   'ai.review-all': ({ ctx, el, data }) => {
     const ui = proposalUi.get(data.proposal);
     const proposal = findProposal(ctx, data.proposal);
     if (!ui?.resolve || !proposal) return;
-    const { index, set } = excludedFor(ui, data);
-    set.clear();
-    if (!el.checked) for (const item of proposal.changes[index]?.items || []) set.add(item.id);
+    for (const item of proposal.changes?.[Number(data.changeIndex)]?.items || []) {
+      if (el.checked) ui.excluded.delete(item.id); else ui.excluded.add(item.id);
+    }
     bump(ctx);
   },
+  // The engine leaves the unchecked items out before it applies anything ({ decision: 'apply', exclude }), so its tool
+  // results, the saved proposal and this receipt all count the same items.
   'ai.proposal-apply': ({ ctx, data }) => {
     const ui = proposalUi.get(data.id);
     const proposal = findProposal(ctx, data.id);
     if (!ui?.resolve || !proposal) return;
     const resolve = ui.resolve;
     ui.resolve = null;
-    const excluded = new Map([...ui.excluded].filter(([, set]) => set.size));
-    const left = (proposal.changes || []).filter((change, index) => !ITEM_CHANGES.has(change.op) || changeCount(change) - (excluded.get(index)?.size || 0) > 0);
-    if (!left.length) { ui.status = 'discarded'; resolve('discard'); bump(ctx, { render: true }); return; }
-    if (excluded.size) {
-      const before = new Map();
-      for (const set of excluded.values()) for (const id of set) { const item = ctx.select.byId(id); if (item) before.set(id, structuredClone(item)); }
-      ui.restore = exclusionPatches(proposal, excluded, before);
-      ui.lines = appliedLines(proposal, excluded);
-    }
+    const decision = proposalDecision(proposal, ui.excluded);
+    if (decision === 'discard') { ui.status = 'discarded'; resolve('discard'); bump(ctx, { render: true }); return; }
+    ui.lines = decision.exclude ? appliedLines(proposal, decision.exclude) : null;
     ui.status = 'applying';
     ui.open = false;
-    resolve('apply');
+    resolve(decision);
     bump(ctx, { render: true });
   },
   'ai.proposal-discard': ({ ctx, data }) => {
@@ -1948,17 +2130,26 @@ registerActions({
     resolve('discard');
     bump(ctx, { render: true });
   },
+  // Undo with the live undo from this run, or after a reload (or in another window) with the undo record saved with the
+  // proposal (ai.undoProposal). Errors reach ctx.run, which says what went wrong; the receipt then still offers Undo.
   'ai.proposal-undo': async ({ ctx, data }) => {
-    const ui = proposalUi.get(data.id);
-    if (!ui?.undo || ui.undone || ui.undoing) return;
+    const proposal = findProposal(ctx, data.id);
+    let ui = proposalUi.get(data.id);
+    if (ui?.undone || ui?.undoing || proposal?.status === 'undone') return;
+    const undo = typeof ui?.undo === 'function' ? ui.undo : savedUndo(ctx, proposal) ? () => ctx.ai.undoProposal(proposal.undo) : null;
+    if (!undo) return;
+    if (!ui) { ui = { ...newProposalUi(), status: 'applied' }; proposalUi.set(data.id, ui); }
     ui.undoing = true;
     bump(ctx);
     try {
-      await ui.undo();
+      const result = await undo();
       ui.undone = true;
       ui.undo = null;
-      announce(ctx, 'Changes undone.');
-      ctx.toast('Changes undone');
+      // Undo leaves alone anything changed after the apply, so later edits are never wiped.
+      const kept = Number(result?.kept) || 0;
+      const message = kept ? `Changes undone. ${kept === 1 ? '1 thing you changed since was' : `${kept} things you changed since were`} left as is.` : 'Changes undone.';
+      announce(ctx, message);
+      ctx.toast(kept ? message : 'Changes undone');
       await persistProposal(ctx, data.id, { status: 'undone' });
     } finally {
       ui.undoing = false;

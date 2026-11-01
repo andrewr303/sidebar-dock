@@ -120,7 +120,8 @@ test('the empty page greets by name and offers suggestions and quick scopes', ()
   const ctx = fakeCtx();
   const out = flat(renderAssistantPage(ctx));
   assert.match(out, /<h2 class="asst-greeting">Good (morning|afternoon|evening|night), Maddy<\/h2>/);
-  assert.equal(count(out, /class="asst-suggestion"/g), 4);
+  assert.equal(count(out, /class="asst-suggestion"/g), 5);
+  assert.match(out, /Save these links into a collection/, 'the empty page shows that the assistant can save links');
   assert.match(out, /aria-pressed="true" data-scope="library"/);
   assert.match(out, /aria-pressed="false" data-scope="collection" data-collection=""/, 'Inbox is offered');
   assert.match(out, /<span class="asst-title-text" title="New chat">New chat<\/span>/);

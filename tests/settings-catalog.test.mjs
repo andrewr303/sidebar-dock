@@ -85,6 +85,8 @@ test('matchSections finds sections by name, summary and keywords', () => {
   assert.ok(matchSections('wallpaper').some(s => s.id === 'newtab'));
   assert.ok(matchSections('dark mode').some(s => s.id === 'appearance'));
   assert.ok(matchSections('backup').some(s => s.id === 'library'));
+  // Automatic snapshots and the chat/CSV exports live in Library & backup.
+  for (const query of ['snapshot', 'rollback', 'chats', 'spreadsheet']) assert.ok(matchSections(query).some(s => s.id === 'library'), query);
   assert.equal(matchSections('').length, SETTINGS_SECTIONS.length);
   assert.deepEqual(matchSections('qqqzzz'), []);
 });

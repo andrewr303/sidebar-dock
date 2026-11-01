@@ -117,3 +117,66 @@ test('start pages and engines cover the schema values', () => {
   assert.deepEqual(START_PAGES.map(page => page.value), ['dashboard', 'all', 'inbox', 'notes', 'assistant']);
   assert.deepEqual(SEARCH_ENGINES.map(engine => engine.value), ['default', 'google', 'duckduckgo', 'bing', 'kagi', 'perplexity', 'brave']);
 });
+
+/* ------------------------------------------------------------------ Library & backup */
+
+const { renderLibrarySection, loadSnapshots, importReport, snapshotDetails } = await import('../extension/ui/settings.js');
+const { createSnapshot } = await import('../extension/lib/storage/snapshots.js');
+const libraryCtx = (open = []) => ({ library: { items: [], collections: [], settings: {} }, select: { counts: () => ({ trash: 0 }) }, env: { isExtension: false },
+  state: { settings: { section: 'library', list: false, query: '', open: new Set(open) } }, render() {} });
+
+test('Library & backup offers every export and says what a full backup holds and where snapshots live', () => {
+  resetIds();
+  const out = flat(renderLibrarySection(libraryCtx()));
+  for (const action of ['settings.backup', 'settings.import-choose', 'settings.export-html', 'settings.export-notes', 'settings.export-csv', 'settings.export-chats', 'settings.snapshot-create']) {
+    assert.ok(out.includes(`data-action="${action}"`), action);
+  }
+  assert.match(out, /settings and wallpaper, dashboards and widgets, assistant chats and AI connections/);
+  assert.match(out, /API keys, account tokens and passwords are never included/);
+  assert.match(out, /Automatic snapshots/);
+  assert.match(out, /stay on this device only: removing Still or clearing its data deletes them, so keep a downloaded full backup somewhere else too/);
+  assert.match(out, /Loading snapshots/, 'before the list arrives');
+});
+
+test('the snapshot list shows date, kind, contents, Restore and Delete, newest five first', async () => {
+  await loadSnapshots();
+  assert.match(flat(renderLibrarySection(libraryCtx())), /No snapshots yet/);
+  for (let index = 0; index < 7; index++) await createSnapshot('manual');
+  await loadSnapshots();
+  resetIds();
+  const out = flat(renderLibrarySection(libraryCtx()));
+  assert.equal(out.match(/data-action="settings\.snapshot-restore"/g).length, 5);
+  assert.equal(out.match(/data-action="settings\.snapshot-delete"/g).length, 5);
+  assert.match(out, /data-tone="accent"[^>]*>Manual</);
+  assert.match(out, /Taken by you · 0 items, 0 collections, 0 dashboards, 0 chats/);
+  assert.match(out, /Show 2 older snapshots/);
+  assert.match(out, /data-id="snapshot_[\w-]+"/);
+  assert.ok(!out.includes('id="settings-more-snapshots"'), 'older snapshots stay folded');
+  assert.match(out, /aria-controls="settings-more-snapshots"/);
+  resetIds();
+  const open = flat(renderLibrarySection(libraryCtx(['snapshots'])));
+  assert.equal(open.match(/data-action="settings\.snapshot-restore"/g).length, 7);
+  assert.match(open, /id="settings-more-snapshots"/);
+  assert.match(open, /Show fewer snapshots/);
+});
+
+test('snapshot details name the reason and what the snapshot holds', () => {
+  const counts = { items: 12, collections: 1, notes: 3, boards: 2, conversations: 1 };
+  assert.equal(snapshotDetails({ reason: 'update', extensionVersion: '0.5.0', previousVersion: '0.4.0', counts, bytes: 2048 }),
+    'Still updated from 0.4.0 to 0.5.0 · 12 items, 1 collection, 2 dashboards, 1 chat · 2.0 KB');
+  assert.equal(snapshotDetails({ reason: 'before-import', extensionVersion: '0.5.0', counts }), 'Taken before an import · Still 0.5.0 · 12 items, 1 collection, 2 dashboards, 1 chat');
+  assert.match(snapshotDetails({ reason: 'daily', counts: {} }), /^Daily copy · 0 items/);
+});
+
+test('the import report says what came back, what was kept and how to go back', () => {
+  const report = importReport({ items: 4, files: 1, warnings: [], notes: ['1 AI connection came back without its API key. Add it again in AI models.'], settings: true, boards: 2,
+    conversations: { added: 3, updated: 1, skipped: 0 }, aiConnections: 1, snapshotId: 'snapshot_1',
+    library: { items: { added: 3, updated: 1, kept: 2, tombstoned: 1 } } }, 'still-backup.json');
+  assert.equal(report.title, 'Brought in still-backup.json');
+  assert.deepEqual(report.lines, ['3 items added.', '1 item updated to the file’s newer copy.', '2 items already here kept as they are: this device’s copy is the same or newer.',
+    '1 item you deleted forever stayed deleted.', '1 file restored.', 'Settings restored.', '2 dashboards restored.', '4 assistant chats restored.', '1 AI connection added.']);
+  assert.match(report.notes.join(' '), /API key.*Automatic snapshots/);
+  assert.equal(report.summary, 'Brought in 4 items, 1 file, 2 dashboards, 4 chats');
+  assert.deepEqual(importReport({ items: 2, warnings: [] }, 'links.csv').lines, ['2 items added.']);
+  assert.deepEqual(importReport({ items: 0, library: { items: { added: 0, updated: 0, kept: 0, tombstoned: 0 } } }).lines, ['Nothing new: everything in the file is already here.']);
+});

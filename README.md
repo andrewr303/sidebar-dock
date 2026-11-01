@@ -104,9 +104,11 @@ Raindrop import uses your personal token to bring in collections, links, notes a
 
 Library metadata stays in `chrome.storage.local`; original file bytes stay in IndexedDB. Uploads are bounded to **100 MB per file** and portable imports to **200 MB per backup**, subject to available device storage.
 
-**Settings & backup → Full backup** exports sources, personal notes, highlights, connections, nested collection metadata and original file bytes. Import validates before merging and rolls back newly written attachments if a later stage fails. Matching IDs restore those records; device credentials and preferences remain local. A legacy metadata-only backup cannot restore bytes it never contained.
+**Settings & backup → Full backup** exports sources, personal notes, highlights, connections, nested collection metadata, original file bytes, the wallpaper, dashboards, assistant chats and AI settings (never API keys, account tokens or other credentials). Import validates the whole file before writing, takes an automatic snapshot first, and rolls back newly written attachments if a later stage fails. Records merge by ID and the newer copy wins, so newer edits on this device are kept and items deleted forever are not brought back; non-secret preferences come back, device credentials stay local. A legacy metadata-only backup cannot restore bytes it never contained.
 
-HTML bookmark import/export preserves nested folders. CSV supports quoted multiline fields, notes, tags and descriptions. Markdown export retains personal notes, annotations and source connections. Existing Chrome bookmarks can be imported after granting optional access.
+Still also keeps **automatic snapshots** on this device (after an update, daily when something changed, and before every import or restore); Settings lists them and restores any of them, taking a safety snapshot first. Snapshots are deleted with the extension's data, so keep a downloaded full backup elsewhere. See [docs/data-model.md](docs/data-model.md).
+
+HTML bookmark import/export preserves nested folders. CSV import and export support quoted multiline fields, notes, tags, descriptions, type, collection and dates. Markdown export retains personal notes, annotations and source connections, and assistant chats export as Markdown too. Existing Chrome bookmarks can be imported after granting optional access.
 
 ## References and provenance
 

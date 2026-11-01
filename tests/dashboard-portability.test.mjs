@@ -9,7 +9,7 @@ function libraryAdapter(seed = { schemaVersion: 1, items: [], collections: [], s
   const core = createLibraryStore({ read: async () => library, write: async value => { library = value; } });
   return {
     store: {
-      exportLibrary: () => core.dispatch('exportLibrary'), importLibrary: value => core.dispatch('importLibrary', [value]),
+      exportLibrary: () => core.dispatch('exportLibrary'), importLibrary: (value, options) => core.dispatch('importLibrary', [value, options]),
       async getAttachment() { return null; }, async saveAttachment() { throw new Error('no files here'); }, async deleteAttachment() {},
     },
     get library() { return library; },
@@ -37,12 +37,14 @@ const dashboard = () => ({ activeBoardId: 'work', prefs: { stickiesHidden: false
   { id: 'main', name: 'Main', icon: 'house', widgets: [{ id: 'w_folder', type: 'links-folder', x: 0, y: 0, w: 4, h: 3, config: { collectionId: 'reading' } }] },
   { id: 'work', name: 'Work', icon: 'briefcase', widgets: [{ id: 'w_gh', type: 'github', x: 0, y: 0, w: 6, h: 4, title: 'PRs', config: { orgs: ['acme'], token: 'ghp_never_exported' } }] },
 ] });
+// Only the library and the dashboard: chats, AI settings, snapshots and the device id are covered in tests/backup-*.test.mjs.
+const only = dashboard => ({ dashboard, conversations: null, aiConfig: null, snapshot: null, deviceId: null });
 const jsonFile = value => new File([JSON.stringify(value)], 'still-backup.json', { type: 'application/json' });
 
 test('a full backup carries the dashboard without credentials and restores it into another device', async () => {
   const sourceLibrary = libraryAdapter(library());
   const sourceDashboard = dashboardSource(dashboard());
-  const backup = await createFullBackup(sourceLibrary.store, { dashboard: sourceDashboard });
+  const backup = await createFullBackup(sourceLibrary.store, only(sourceDashboard));
   assert.equal(backup.dashboard.boards.length, 2);
   assert.equal(backup.dashboard.boards[1].widgets[0].config.token, undefined);
   assert.deepEqual(backup.dashboard.boards[1].widgets[0].config.orgs, ['acme']);
@@ -50,7 +52,7 @@ test('a full backup carries the dashboard without credentials and restores it in
 
   const targetLibrary = libraryAdapter();
   const targetDashboard = dashboardSource({ activeBoardId: 'local', boards: [{ id: 'local', name: 'Home', widgets: [{ id: 'w_clock', type: 'clock', x: 0, y: 0, w: 3, h: 2 }] }] });
-  const result = await importPortableFile(jsonFile(backup), targetLibrary.store, { dashboard: targetDashboard });
+  const result = await importPortableFile(jsonFile(backup), targetLibrary.store, only(targetDashboard));
   assert.equal(result.items, 1);
   assert.equal(result.boards, 2);
   assert.deepEqual(result.warnings, []);
@@ -61,22 +63,23 @@ test('a full backup carries the dashboard without credentials and restores it in
 });
 
 test('restoring the same backup twice replaces boards by id instead of duplicating them', async () => {
-  const backup = await createFullBackup(libraryAdapter(library()).store, { dashboard: dashboardSource(dashboard()) });
-  const target = dashboardSource({ boards: [{ id: 'main', name: 'Old main', widgets: [] }] });
-  await importPortableFile(jsonFile(backup), libraryAdapter().store, { dashboard: target });
-  await importPortableFile(jsonFile(backup), libraryAdapter().store, { dashboard: target });
+  const backup = await createFullBackup(libraryAdapter(library()).store, only(dashboardSource(dashboard())));
+  // This device's dashboard was last saved before the backup, so the backup's board wins (a newer one would be kept).
+  const target = dashboardSource({ updatedAt: '2020-01-01T00:00:00.000Z', boards: [{ id: 'main', name: 'Old main', widgets: [] }] });
+  await importPortableFile(jsonFile(backup), libraryAdapter().store, only(target));
+  await importPortableFile(jsonFile(backup), libraryAdapter().store, only(target));
   assert.deepEqual(target.stored.boards.map(b => [b.id, b.name]), [['main', 'Main'], ['work', 'Work']]);
 });
 
 test('backups without a dashboard, or without a dashboard source, leave the dashboard alone', async () => {
-  const backup = await createFullBackup(libraryAdapter(library()).store, { dashboard: null });
+  const backup = await createFullBackup(libraryAdapter(library()).store, only(null));
   assert.equal(backup.dashboard, undefined);
   const target = dashboardSource({ boards: [{ id: 'keep', name: 'Keep', widgets: [] }] });
-  const result = await importPortableFile(jsonFile(backup), libraryAdapter().store, { dashboard: target });
+  const result = await importPortableFile(jsonFile(backup), libraryAdapter().store, only(target));
   assert.equal(result.boards, undefined);
   assert.deepEqual(target.stored.boards.map(b => b.id), ['keep']);
-  const withDashboard = await createFullBackup(libraryAdapter(library()).store, { dashboard: dashboardSource(dashboard()) });
-  const plain = await importPortableFile(jsonFile(withDashboard), libraryAdapter().store, { dashboard: null });
+  const withDashboard = await createFullBackup(libraryAdapter(library()).store, only(dashboardSource(dashboard())));
+  const plain = await importPortableFile(jsonFile(withDashboard), libraryAdapter().store, only(null));
   assert.equal(plain.boards, undefined);
 });
 
@@ -90,23 +93,23 @@ test('a malformed dashboard rejects the whole import before anything is written'
     value => { value.dashboard.boards = Array.from({ length: 101 }, (_, i) => ({ id: `b${i}`, widgets: [] })); },
   ];
   for (const mutate of bad) {
-    const backup = await createFullBackup(libraryAdapter(library()).store, { dashboard: dashboardSource(dashboard()) });
+    const backup = await createFullBackup(libraryAdapter(library()).store, only(dashboardSource(dashboard())));
     mutate(backup);
     const target = libraryAdapter();
     const before = JSON.stringify(target.library);
     const dash = dashboardSource({ boards: [{ id: 'keep', widgets: [] }] });
-    await assert.rejects(importPortableFile(jsonFile(backup), target.store, { dashboard: dash }));
+    await assert.rejects(importPortableFile(jsonFile(backup), target.store, only(dash)));
     assert.equal(JSON.stringify(target.library), before);
     assert.deepEqual(dash.stored.boards.map(b => b.id), ['keep']);
   }
 });
 
 test('a dashboard that fails to save after the library import becomes a warning', async () => {
-  const backup = await createFullBackup(libraryAdapter(library()).store, { dashboard: dashboardSource(dashboard()) });
+  const backup = await createFullBackup(libraryAdapter(library()).store, only(dashboardSource(dashboard())));
   const original = console.error;
   console.error = () => {};
   try {
-    const result = await importPortableFile(jsonFile(backup), libraryAdapter().store, { dashboard: { importDashboard: async () => { throw new Error('disk full'); } } });
+    const result = await importPortableFile(jsonFile(backup), libraryAdapter().store, only({ importDashboard: async () => { throw new Error('disk full'); } }));
     assert.equal(result.items, 1);
     assert.equal(result.warnings.length, 1);
     assert.match(result.warnings[0], /dashboard/);

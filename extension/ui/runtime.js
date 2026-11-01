@@ -53,6 +53,17 @@ function matches(event, keys) {
 }
 const typingIn = target => target?.closest?.('input, textarea, select, [contenteditable="true"], [contenteditable=""]');
 
+/**
+ * "/" is the shortcut that focuses a view's search field. Pressed while that field is already focused and still empty
+ * (a new tab can focus it on open), it must not become the query: otherwise the list offers to search the web for "/".
+ */
+export function isSearchSlash(event) {
+  const el = event?.target;
+  if (event?.key !== '/' || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return false;
+  if (el?.tagName !== 'INPUT' || el.value !== '') return false;
+  return el.hasAttribute?.('data-view-search') || el.id === 'search' || /(^|\s)\/(\s|$)/.test(el.getAttribute?.('aria-keyshortcuts') || '');
+}
+
 export function createRuntime({ root, ctx, view }) {
   let frame = 0;
   let rendering = false;
@@ -107,6 +118,7 @@ export function createRuntime({ root, ctx, view }) {
 
   root.ownerDocument.addEventListener('keydown', event => {
     if (event.defaultPrevented || event.isComposing) return;
+    if (isSearchSlash(event)) { event.preventDefault(); return; }
     for (const shortcut of shortcuts) {
       if (!matches(event, shortcut.keys)) continue;
       if (typingIn(event.target) && !shortcut.allowInInputs) continue;

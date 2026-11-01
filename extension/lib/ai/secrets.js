@@ -7,17 +7,23 @@ export const SECRETS_KEY = 'still.ai.secrets.v1';
 let queue = Promise.resolve();
 
 function area() { return globalThis.chrome?.storage?.local || null; }
+const isObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
 
-async function readAll() {
+// { map, foreign }: foreign is a stored value this build cannot read (another shape, or a newer build's format). Reads
+// then see no keys, and writes refuse, so the stored keys are never overwritten.
+async function readStored() {
   const local = area();
-  if (local) {
-    const value = (await local.get(SECRETS_KEY))?.[SECRETS_KEY];
-    return value && typeof value === 'object' ? value : {};
+  let value;
+  if (local) value = (await local.get(SECRETS_KEY))?.[SECRETS_KEY];
+  else {
+    const raw = globalThis.localStorage?.getItem(SECRETS_KEY);
+    if (raw) { try { value = JSON.parse(raw); } catch { return { map: {}, foreign: true }; } }
   }
-  const raw = globalThis.localStorage?.getItem(SECRETS_KEY);
-  if (!raw) return {};
-  try { const value = JSON.parse(raw); return value && typeof value === 'object' ? value : {}; } catch { return {}; }
+  if (value === undefined || value === null) return { map: {}, foreign: false };
+  return isObject(value) ? { map: value, foreign: false } : { map: {}, foreign: true };
 }
+
+async function readAll() { return (await readStored()).map; }
 
 async function writeAll(value) {
   const local = area();
@@ -26,8 +32,22 @@ async function writeAll(value) {
   else throw new Error('Secure local storage is unavailable, so the key was not saved.');
 }
 
+// Read-modify-write under this view's queue and a Web Lock shared by every view, so two views saving keys at the same
+// time never drop each other's key.
 function mutate(change) {
-  const run = queue.then(async () => { const all = await readAll(); const next = change({ ...all }); await writeAll(next); });
+  const task = async () => {
+    const { map, foreign } = await readStored();
+    if (foreign) {
+      const error = new Error('Your saved API keys were stored by a newer version of Still. Update Still to change them; nothing was changed.');
+      error.code = 'newer_version';
+      throw error;
+    }
+    await writeAll(change({ ...map }));
+  };
+  const run = queue.then(() => {
+    const locks = globalThis.navigator?.locks;
+    return typeof locks?.request === 'function' ? locks.request(SECRETS_KEY, task) : task();
+  });
   queue = run.catch(() => {});
   return run;
 }

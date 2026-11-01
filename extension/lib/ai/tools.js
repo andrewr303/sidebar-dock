@@ -1,22 +1,49 @@
-// Library tools for the assistant. Read tools run immediately. Write tools never run on their own: every write call in a
-// model step is validated, staged into ONE proposal per assistant turn, shown to the user through onProposal(), and
-// applied through the store only when the user answers 'apply'. Tool results tell the model exactly what happened.
+// Library tools for the assistant. Read tools run immediately. Write tools never run on their own: the write calls of one
+// model step are validated and staged into ONE proposal, shown to the user through onProposal(), and applied through the
+// store only when the user answers 'apply' (optionally leaving items out). A turn may hold up to MAX_PROPOSALS_PER_TURN
+// proposals so a later step can build on ids an applied one created; after a discard the turn proposes nothing more.
+// Tool results tell the model exactly what happened.
 import { getDescendantCollectionIds } from '../library-views.js';
+import { canonicalUrl, safeUrl, STICKY_COLORS } from '../store.js';
 import { plainText } from './search.js';
 
 export const ITEM_TYPES = ['bookmark', 'article', 'image', 'video', 'file', 'note'];
 export const MAX_ITEMS_PER_CHANGE = 500;
+export const MAX_PROPOSALS_PER_TURN = 4;
+export const MAX_LINKS_PER_CALL = 200;
 const MAX_TAGS = 20;
 const NEW_PREFIX = 'new:';
+const CONVERT_TYPES = ['bookmark', 'article', 'note'];
+const LINK_TYPES = ['bookmark', 'article'];
+// store.normalizeItem refuses these types without a url (or a file), so a url may not be removed from them.
+const NEEDS_URL = ['bookmark', 'image', 'video'];
+const ITEM_STATES = ['active', 'archived', 'trash', 'all'];
+const SORTS = ['newest', 'oldest', 'updated', 'title'];
+const DASHBOARD_TOOLS = new Set(['get_dashboard', 'show_collection_on_dashboard']);
+const LINKS_WIDGET = 'links-folder';
 
 const text = value => typeof value === 'string' ? value : '';
 const uidDefault = prefix => `${prefix}_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
 const plural = (count, word, many = `${word}s`) => `${count} ${count === 1 ? word : many}`;
 const quote = value => `“${text(value).replace(/\s+/g, ' ').trim().slice(0, 80)}”`;
 const clampInt = (value, min, max, fallback) => Number.isFinite(value) ? Math.max(min, Math.min(max, Math.floor(value))) : fallback;
+const unique = values => [...new Set(values)];
+const listJoin = words => words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words.at(-1)}` : words[0] || '';
 const schema = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const ids = description => ({ type: 'array', items: { type: 'string' }, description });
+const str = description => ({ type: 'string', description });
+const bool = description => ({ type: 'boolean', description });
 const PROPOSE = 'Changes are applied only after the user approves them.';
+const canonicalOf = value => { try { return canonicalUrl(value); } catch { return ''; } };
+// The link's identity for saving: the canonical address plus its #fragment. Hash-routed apps (Azure portal, Gmail, many
+// consoles) put the page in the fragment, so '…/#/billing' and '…/#/users' are different links, not duplicates.
+const linkKeyOf = value => {
+  const base = canonicalOf(value);
+  if (!base) return '';
+  try { const { hash } = new URL(value); return hash && hash !== '#' ? `${base}${hash}` : base; } catch { return base; }
+};
+const hostOf = url => { try { return new URL(url).hostname; } catch { return ''; } };
+const sameTag = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 
 export const LIBRARY_TOOLS = Object.freeze([
   { name: 'search_library', access: 'read', description: 'Search the user’s saved library (links, articles, notes, highlights and files) with combined keyword and semantic matching. The query understands tag:name, #name, type:note and "quoted phrases". Returns item ids, titles, collection paths, tags and a matching snippet. Read full text with get_items.',
@@ -27,49 +54,115 @@ export const LIBRARY_TOOLS = Object.freeze([
       tag: { type: 'string', description: 'Only items with this tag.' },
       limit: { type: 'integer', description: 'Maximum results, 1 to 50. Default 12.' },
     }, ['query']) },
-  { name: 'get_items', access: 'read', description: 'Read saved items in full by id: description, the user’s note, captured article text, highlights, tags, collection and linked item ids. Up to 20 ids per call.',
+  { name: 'get_items', access: 'read', description: 'Read saved items in full by id: description, the user’s note, captured article text, highlights, tags, collection, pinned, read and reminder state, and linked item ids. Up to 20 ids per call.',
     inputSchema: schema({ ids: ids('Item ids from search results or earlier tool results.') }, ['ids']) },
-  { name: 'list_collections', access: 'read', description: 'List the user’s collections with ids, nested paths (Parent › Child) and item counts.', inputSchema: schema({}) },
+  { name: 'list_items', access: 'read', description: 'Browse saved items without a search query. Filter by collection, type, tag, favorite, pinned and state: active (default), archived, trash or all. Returns total and nextOffset for the next page.',
+    inputSchema: schema({
+      collectionId: str('Only items in this collection and its sub-collections. Use "inbox" for unsorted items.'),
+      type: { type: 'string', enum: ITEM_TYPES, description: 'Only items of this type.' },
+      tag: str('Only items with this tag.'),
+      state: { type: 'string', enum: ITEM_STATES, description: 'active (default: not archived, not in Trash), archived, trash or all.' },
+      favorite: bool('true for favorites only, false to leave favorites out.'),
+      pinned: bool('true for pinned items only, false to leave pinned items out.'),
+      sort: { type: 'string', enum: SORTS, description: 'newest (default), oldest, updated or title.' },
+      limit: { type: 'integer', description: 'Items per page, 1 to 200. Default 50.' },
+      offset: { type: 'integer', description: 'Items to skip: nextOffset from the previous page.' },
+    }) },
+  { name: 'lookup_urls', access: 'read', description: 'Check whether web addresses are already saved. For each URL returns every item with the same address, of any type and including notes, archived and trashed items.',
+    inputSchema: schema({ urls: ids('Web addresses to check (up to 200).') }, ['urls']) },
+  { name: 'list_collections', access: 'read', description: 'List the user’s collections with ids, nested paths (Parent › Child), item counts, icon, color and pinned state.', inputSchema: schema({}) },
   { name: 'list_tags', access: 'read', description: 'List tags used in the library with item counts, most used first.', inputSchema: schema({}) },
   { name: 'get_page', access: 'read', description: 'Read the web page the user is viewing now: title, URL and readable text.', inputSchema: schema({}) },
+  { name: 'get_dashboard', access: 'read', description: 'Show the new-tab dashboard: its boards and their widgets (type, title, and the collection each links widget shows). Saved links appear on the dashboard only through a links widget for their collection.', inputSchema: schema({}) },
   { name: 'create_collection', access: 'write', description: `Propose a new collection. parentId nests it under an existing collection id, or under "new:<name>" for a collection proposed in the same step. Returns the id it will have. ${PROPOSE}`,
     inputSchema: schema({
       name: { type: 'string', description: 'Collection name.' },
       parentId: { type: 'string', description: 'Parent collection id, "new:<name>", or "" for top level.' },
       icon: { type: 'string', description: 'Optional icon name such as folder, book, sparkles, globe, star.' },
       color: { type: 'string', description: 'Optional #hex color.' },
+      description: str('Optional description.'),
     }, ['name']) },
+  { name: 'update_collection', access: 'write', description: `Propose changing a collection: name, description, icon, color, pinned, or parentId to move it. ${PROPOSE}`,
+    inputSchema: schema({
+      id: str('Collection id.'),
+      name: str('New name.'),
+      description: str('New description.'),
+      icon: str('Icon name such as folder, book, sparkles, globe, star.'),
+      color: str('#hex color.'),
+      parentId: str('New parent: a collection id, "new:<name>", or "" for top level.'),
+      pinned: bool('true to pin the collection, false to unpin it.'),
+    }, ['id']) },
+  { name: 'delete_collection', access: 'write', description: `Propose deleting a collection. Only when the user explicitly asks. Its items move to Inbox and its sub-collections move up one level; no item is deleted. ${PROPOSE}`,
+    inputSchema: schema({ id: str('Collection id.') }, ['id']) },
+  { name: 'save_links', access: 'write', description: `Propose saving web links as real links (bookmarks); they show in the collection's links widget on the dashboard. Use this, not create_note, whenever the user wants links saved. Copy each url and title exactly as the user gave them. Links already saved are not duplicated. ${PROPOSE}`,
+    inputSchema: schema({
+      links: { type: 'array', description: 'The links to save (up to 200).', items: schema({
+        url: str('The http or https address, exactly as the user gave it.'),
+        title: str('The title the user gave, or the page title. Optional.'),
+        description: str('Optional description.'),
+        tags: ids('Optional tags for this link, without #.'),
+      }, ['url']) },
+      collectionId: str('Collection id, "" for Inbox, or "new:<name>". A link already saved elsewhere is moved here.'),
+      tags: ids('Tags for every link, without #.'),
+    }, ['links']) },
   { name: 'move_items', access: 'write', description: `Propose moving items into a collection. collectionId is an existing collection id, "" for Inbox, or "new:<name>" for a collection proposed in the same step. ${PROPOSE}`,
     inputSchema: schema({ ids: ids('Item ids to move (up to 500).'), collectionId: { type: 'string', description: 'Target collection id, "" for Inbox, or "new:<name>".' } }, ['ids', 'collectionId']) },
   { name: 'add_tags', access: 'write', description: `Propose adding tags to items. Prefer tags that already exist (list_tags). ${PROPOSE}`,
     inputSchema: schema({ ids: ids('Item ids (up to 500).'), tags: { type: 'array', items: { type: 'string' }, description: 'Tags to add, without #.' } }, ['ids', 'tags']) },
   { name: 'remove_tags', access: 'write', description: `Propose removing tags from items. ${PROPOSE}`,
     inputSchema: schema({ ids: ids('Item ids (up to 500).'), tags: { type: 'array', items: { type: 'string' }, description: 'Tags to remove, without #.' } }, ['ids', 'tags']) },
+  { name: 'rename_tag', access: 'write', description: `Propose renaming a tag on every item that has it. Renaming to a tag that already exists merges the two. ${PROPOSE}`,
+    inputSchema: schema({ from: str('The tag to rename, without #.'), to: str('The new tag name, without #.') }, ['from', 'to']) },
+  { name: 'delete_tag', access: 'write', description: `Propose removing a tag from every item that has it. Only when the user asks. ${PROPOSE}`,
+    inputSchema: schema({ tag: str('The tag to remove, without #.') }, ['tag']) },
   { name: 'set_favorite', access: 'write', description: `Propose marking items as favorites, or removing them from favorites. ${PROPOSE}`,
     inputSchema: schema({ ids: ids('Item ids (up to 500).'), favorite: { type: 'boolean', description: 'true to add to favorites, false to remove.' } }, ['ids', 'favorite']) },
   { name: 'archive_items', access: 'write', description: `Propose archiving items. Only when the user asks to archive. ${PROPOSE}`,
     inputSchema: schema({ ids: ids('Item ids (up to 500).') }, ['ids']) },
-  { name: 'trash_items', access: 'write', description: `Propose moving items to Trash (recoverable). Only when the user explicitly asks to delete or trash them. ${PROPOSE}`,
+  { name: 'unarchive_items', access: 'write', description: `Propose taking archived items out of the archive. ${PROPOSE}`,
     inputSchema: schema({ ids: ids('Item ids (up to 500).') }, ['ids']) },
-  { name: 'create_note', access: 'write', description: `Propose a new Markdown note. collectionId is an existing id, "" for Inbox, or "new:<name>"; relatedIds links items; url attaches it to a web page. ${PROPOSE}`,
+  { name: 'trash_items', access: 'write', description: `Propose moving items to Trash (recoverable). Only when the user explicitly asks to delete or trash them, or to clean up items you created by mistake. ${PROPOSE}`,
+    inputSchema: schema({ ids: ids('Item ids (up to 500).') }, ['ids']) },
+  { name: 'restore_items', access: 'write', description: `Propose restoring items from Trash (find them with list_items state "trash"). ${PROPOSE}`,
+    inputSchema: schema({ ids: ids('Item ids (up to 500).') }, ['ids']) },
+  { name: 'convert_items', access: 'write', description: `Propose changing the type of items, for example turning notes that hold a web address into real links (bookmark) so they show in links widgets. Links and articles need an http or https url on the item. The item's text stays as its note. ${PROPOSE}`,
+    inputSchema: schema({ ids: ids('Item ids (up to 500).'), type: { type: 'string', enum: CONVERT_TYPES, description: 'bookmark (a link), article or note.' } }, ['ids', 'type']) },
+  { name: 'create_note', access: 'write', description: `Propose a new Markdown note. collectionId is an existing id, "" for Inbox, or "new:<name>"; relatedIds links items; url attaches it to a web page; sticky also pins it to the dashboard as a sticky note of that color. ${PROPOSE}`,
     inputSchema: schema({
       title: { type: 'string', description: 'Note title.' },
       markdown: { type: 'string', description: 'Note body in Markdown. Cite saved items as [[item_id]].' },
       collectionId: { type: 'string', description: 'Collection id, "" for Inbox, or "new:<name>".' },
       relatedIds: ids('Item ids to link from the note.'),
       url: { type: 'string', description: 'Web page the note is about (http or https).' },
+      tags: ids('Optional tags, without #.'),
+      sticky: { type: 'string', enum: [...STICKY_COLORS], description: 'Optional: show the note as a sticky note of this color on the dashboard.' },
     }, ['title', 'markdown']) },
   { name: 'append_to_note', access: 'write', description: `Propose appending Markdown to the end of an existing note. ${PROPOSE}`,
     inputSchema: schema({ id: { type: 'string', description: 'Note id.' }, markdown: { type: 'string', description: 'Markdown to append.' } }, ['id', 'markdown']) },
-  { name: 'update_item', access: 'write', description: `Propose a new title and/or description for an item. ${PROPOSE}`,
-    inputSchema: schema({ id: { type: 'string', description: 'Item id.' }, title: { type: 'string', description: 'New title.' }, excerpt: { type: 'string', description: 'New description.' } }, ['id']) },
+  { name: 'update_item', access: 'write', description: `Propose editing one item: title, description, url, note (replaces the whole Markdown body of a note, or the personal note of any other item), pinned, read, or reminderAt. ${PROPOSE}`,
+    inputSchema: schema({
+      id: { type: 'string', description: 'Item id.' },
+      title: { type: 'string', description: 'New title.' },
+      description: str('New description.'),
+      url: str('New http or https address.'),
+      note: str('New Markdown body; replaces the current one.'),
+      pinned: bool('true to pin, false to unpin.'),
+      read: bool('true to mark as read, false as unread.'),
+      reminderAt: str('Reminder date and time in ISO format such as 2026-11-02T09:00, or "" to clear it.'),
+    }, ['id']) },
+  { name: 'link_items', access: 'write', description: `Propose linking an item to related saved items (shown as linked items in its details). ${PROPOSE}`,
+    inputSchema: schema({ id: str('Item id.'), relatedIds: ids('Item ids to link to it.') }, ['id', 'relatedIds']) },
+  { name: 'unlink_items', access: 'write', description: `Propose removing links between an item and related items, in both directions. ${PROPOSE}`,
+    inputSchema: schema({ id: str('Item id.'), relatedIds: ids('Linked item ids to unlink.') }, ['id', 'relatedIds']) },
+  { name: 'show_collection_on_dashboard', access: 'write', description: `Propose adding a links widget that shows a collection's links on the new-tab dashboard. collectionId is an existing id or "new:<name>"; boardId defaults to the active board. ${PROPOSE}`,
+    inputSchema: schema({ collectionId: str('Collection id or "new:<name>".'), boardId: str('Optional dashboard board id from get_dashboard.') }, ['collectionId']) },
 ]);
 const TOOL_BY_NAME = new Map(LIBRARY_TOOLS.map(tool => [tool.name, tool]));
 export const isWriteTool = name => TOOL_BY_NAME.get(name)?.access === 'write';
 
-/** Normalized tool definitions for streamChat: [{ name, description, inputSchema }]. */
-export function toolDefinitions({ write = true, page = false } = {}) {
-  return LIBRARY_TOOLS.filter(tool => (write || tool.access === 'read') && (page || tool.name !== 'get_page'))
+/** Normalized tool definitions for streamChat: [{ name, description, inputSchema }]. Dashboard tools need a dashboard adapter. */
+export function toolDefinitions({ write = true, page = false, dashboard = false } = {}) {
+  return LIBRARY_TOOLS.filter(tool => (write || tool.access === 'read') && (page || tool.name !== 'get_page') && (dashboard || !DASHBOARD_TOOLS.has(tool.name)))
     .map(({ name, description, inputSchema }) => ({ name, description, inputSchema: structuredClone(inputSchema) }));
 }
 
@@ -96,43 +189,332 @@ export function normalizeTags(tags) {
   }
   return out.slice(0, MAX_TAGS);
 }
-const tagLabel = tags => {
-  const names = tags.map(tag => `#${tag}`);
-  return `${tags.length === 1 ? 'tag' : 'tags'} ${names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0]}`;
-};
-const safeWebUrl = value => { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : ''; } catch { return ''; } };
+const tagLabel = tags => `${tags.length === 1 ? 'tag' : 'tags'} ${listJoin(tags.map(tag => `#${tag}`))}`;
+const safeWebUrl = value => { try { return safeUrl(text(value).trim(), { optional: false }); } catch { return ''; } };
 export const noteExcerpt = markdown => { const plain = plainText(markdown); return plain.length > 180 ? `${plain.slice(0, 179).trimEnd()}…` : plain; };
+// Tags after renaming `from` to `to`, without case-insensitive duplicates (renaming onto an existing tag merges them).
+const renamedTags = (tags, from, to) => {
+  const out = [];
+  for (const tag of tags.flatMap(tag => sameTag(tag, from) ? [to] : [tag])) if (!out.some(kept => sameTag(kept, tag))) out.push(tag);
+  return out;
+};
+// The collection that follows `collection` among its siblings, so moveCollection can put it back in the same place.
+const nextSiblingId = (collections, collection) => {
+  const siblings = collections.filter(entry => text(entry.parentId) === text(collection.parentId));
+  return siblings[siblings.findIndex(entry => entry.id === collection.id) + 1]?.id || '';
+};
 
-/** Reverts an applied proposal: restores previous item fields, trashes created notes, removes created collections. */
-export async function undoChanges(store, undo) {
-  if (!undo) return;
-  if (undo.patches?.length) await store.bulkUpdateItems(undo.patches);
-  for (const id of undo.createdNotes || []) await store.deleteItem(id);
-  for (const id of [...(undo.createdCollections || [])].reverse()) await store.deleteCollection(id);
+function pathIn(library, draft, id) {
+  const staged = draft?.collections?.find(collection => collection.id === id);
+  if (!staged) return collectionPath(library, id);
+  const parent = staged.parentId ? pathIn(library, draft, staged.parentId) : '';
+  return parent ? `${parent} › ${staged.name}` : staged.name;
 }
+
+const TYPE_WORDS = { bookmark: ['a link', 'links'], article: ['an article', 'articles'], note: ['a note', 'notes'] };
+const ITEM_FIELDS = { title: 'title', excerpt: 'description', url: 'link', content: 'note', pinned: 'pin', read: 'read state', reminderAt: 'reminder' };
+const COLLECTION_FIELDS = { name: 'name', description: 'description', icon: 'icon', color: 'color', parentId: 'parent', pinned: 'pin' };
+
+function itemLabel(item, patch) {
+  const name = quote(item?.title);
+  const keys = Object.keys(patch);
+  if (keys.length === 2 && 'title' in patch && 'excerpt' in patch) return `Rename ${name} to ${quote(patch.title)} and update its description`;
+  if (keys.length === 1) {
+    switch (keys[0]) {
+      case 'title': return `Rename ${name} to ${quote(patch.title)}`;
+      case 'excerpt': return `Update the description of ${name}`;
+      case 'url': return patch.url ? `Change the link of ${name}` : `Remove the link from ${name}`;
+      case 'content': return item?.type === 'note' ? `Replace the text of ${name}` : `Replace the note on ${name}`;
+      case 'pinned': return `${patch.pinned ? 'Pin' : 'Unpin'} ${name}`;
+      case 'read': return `Mark ${name} as ${patch.read ? 'read' : 'unread'}`;
+      case 'reminderAt': return patch.reminderAt ? `Set a reminder on ${name}` : `Clear the reminder on ${name}`;
+    }
+  }
+  return `Update ${name}: ${listJoin(keys.map(key => key === 'content' && item?.type === 'note' ? 'text' : ITEM_FIELDS[key] || key))}`;
+}
+
+function collectionLabel(path, patch, library, draft) {
+  const keys = Object.keys(patch);
+  if (keys.length === 1 && 'name' in patch) return `Rename collection ${path} to ${patch.name}`;
+  if (keys.length === 1 && 'parentId' in patch) return patch.parentId ? `Move collection ${path} into ${pathIn(library, draft, patch.parentId)}` : `Move collection ${path} to the top level`;
+  if (keys.length === 1 && 'pinned' in patch) return `${patch.pinned ? 'Pin' : 'Unpin'} collection ${path}`;
+  return `Update collection ${path}: ${listJoin(keys.map(key => COLLECTION_FIELDS[key] || key))}`;
+}
+
+const groupKey = (op, callId) => {
+  switch (op.op) {
+    case 'move_items': return `move:${op.collectionId}`;
+    case 'save_links': return `save_links:${op.collectionId}`;
+    case 'add_tags': case 'remove_tags': return `${op.op}:${op.tags.map(tag => tag.toLowerCase()).sort().join('\u0000')}`;
+    case 'set_favorite': return `favorite:${op.favorite}`;
+    case 'convert_items': return `convert:${op.type}`;
+    case 'archive_items': case 'unarchive_items': case 'trash_items': case 'restore_items': return op.op;
+    default: return `${op.op}:${callId}`;
+  }
+};
+
+/**
+ * The rows of a proposal card for a draft: created collections first, then one row per group of like operations.
+ * Every operation gets a visible row, including ones this function has no wording for.
+ */
+export function buildChanges(draft, library) {
+  const index = new Map((library?.items || []).map(item => [item.id, item]));
+  const preview = list => list.slice(0, 50).map(id => { const item = index.get(id); return { id, title: item ? text(item.title) : id }; });
+  const groups = new Map();
+  for (const { op, callId } of draft.ops) {
+    const key = groupKey(op, callId);
+    const group = groups.get(key);
+    if (!group) { groups.set(key, { ...op, itemIds: [...(op.itemIds || [])], callIds: [callId] }); continue; }
+    for (const id of op.itemIds || []) if (!group.itemIds.includes(id)) group.itemIds.push(id);
+    if (group.links && op.links) group.links = [...group.links, ...op.links];
+    group.callIds.push(callId);
+  }
+  const changes = [];
+  for (const collection of draft.collections) {
+    const path = pathIn(library, draft, collection.id);
+    changes.push({ op: 'create_collection', label: `Create collection ${path}`, itemIds: [], count: 0, collectionId: collection.id, collectionName: path, parentId: collection.parentId });
+  }
+  for (const group of groups.values()) {
+    if (group.op === 'create_collection') continue;
+    const count = group.itemIds.length;
+    const items = plural(count, 'item');
+    const first = index.get(group.itemIds[0]);
+    const base = { op: group.op, itemIds: group.itemIds, count, items: preview(group.itemIds) };
+    const path = typeof group.collectionId === 'string' ? pathIn(library, draft, group.collectionId) : '';
+    const place = { collectionId: group.collectionId, collectionName: path };
+    switch (group.op) {
+      case 'move_items': changes.push({ ...base, label: `Move ${items} to ${path}`, ...place }); break;
+      case 'add_tags': changes.push({ ...base, label: `Add ${tagLabel(group.tags)} to ${items}`, tags: group.tags }); break;
+      case 'remove_tags': changes.push({ ...base, label: `Remove ${tagLabel(group.tags)} from ${items}`, tags: group.tags }); break;
+      case 'rename_tag': changes.push({ ...base, label: `Rename tag #${group.from} to #${group.to} on ${items}`, from: group.from, to: group.to, ...(group.merge ? { merge: true } : {}) }); break;
+      case 'set_favorite': changes.push({ ...base, label: group.favorite ? `Add ${items} to favorites` : `Remove ${items} from favorites`, favorite: group.favorite }); break;
+      case 'archive_items': changes.push({ ...base, label: `Archive ${items}` }); break;
+      case 'unarchive_items': changes.push({ ...base, label: `Unarchive ${items}` }); break;
+      case 'trash_items': changes.push({ ...base, label: `Move ${items} to Trash` }); break;
+      case 'restore_items': changes.push({ ...base, label: `Restore ${items} from Trash` }); break;
+      case 'convert_items': {
+        const [one, many] = TYPE_WORDS[group.type] || [group.type, group.type];
+        const fromNotes = group.type !== 'note' && group.itemIds.every(id => index.get(id)?.type === 'note');
+        changes.push({ ...base, label: fromNotes ? `Turn ${plural(count, 'note')} into ${count === 1 ? one : many}` : `Change ${items} to ${count === 1 ? one : many}`, type: group.type });
+        break;
+      }
+      case 'save_links': {
+        const links = group.links.map(link => structuredClone(link));
+        changes.push({ op: 'save_links', label: `Save ${plural(links.length, 'link')} to ${path}`, itemIds: links.map(link => link.id), count: links.length,
+          items: links.slice(0, 50).map(({ id, title, url }) => ({ id, title, url })), ...place, links });
+        break;
+      }
+      case 'create_note':
+        changes.push({ op: 'create_note', label: `Create note ${quote(group.title)}${group.collectionId ? ` in ${path}` : ''}`, itemIds: [], count: 1, ...place,
+          note: { id: group.noteId, title: group.title, markdown: group.markdown, relatedIds: group.relatedIds, url: group.url, ...(group.tags?.length ? { tags: group.tags } : {}), ...(group.sticky ? { sticky: group.sticky } : {}) } });
+        break;
+      case 'append_to_note': changes.push({ ...base, label: `Append to ${quote(first?.title)}`, note: { id: group.itemIds[0], markdown: group.markdown } }); break;
+      case 'update_item': {
+        const { title, excerpt } = group.patch;
+        changes.push({ ...base, label: itemLabel(first, group.patch), patch: { ...group.patch }, ...(title !== undefined ? { title } : {}), ...(excerpt !== undefined ? { excerpt } : {}) });
+        break;
+      }
+      case 'link_items': case 'unlink_items': {
+        const linking = group.op === 'link_items';
+        changes.push({ ...base, label: `${linking ? 'Link' : 'Unlink'} ${quote(first?.title)} ${linking ? 'to' : 'from'} ${plural(group.relatedIds.length, 'item')}`, relatedIds: group.relatedIds, related: preview(group.relatedIds) });
+        break;
+      }
+      case 'update_collection':
+        changes.push({ op: group.op, label: collectionLabel(path, group.patch, library, draft), itemIds: [], count: 0, ...place, patch: { ...group.patch } });
+        break;
+      case 'delete_collection': {
+        const moves = count => count === 1 ? 'moves' : 'move';
+        const notes = [group.itemCount ? `${plural(group.itemCount, 'item')} ${moves(group.itemCount)} to Inbox` : '',
+          group.childCount ? `${plural(group.childCount, 'sub-collection')} ${moves(group.childCount)} up a level` : ''].filter(Boolean);
+        changes.push({ op: group.op, label: `Delete collection ${path}${notes.length ? ` (${notes.join(', ')})` : ''}`, itemIds: [], count: 0, ...place, itemCount: group.itemCount || 0, childCount: group.childCount || 0 });
+        break;
+      }
+      case 'add_dashboard_widget':
+        changes.push({ op: group.op, label: `Show ${path} on the dashboard`, itemIds: [], count: 0, ...place, boardId: group.boardId, boardName: group.boardName });
+        break;
+      default: {
+        // An operation without wording still shows on the card: nothing may change that the user did not see.
+        const words = text(group.op).replace(/_/g, ' ').trim() || 'change';
+        changes.push({ ...base, label: `${words[0].toUpperCase()}${words.slice(1)}${count ? ` (${items})` : ''}`, ...(path ? place : {}) });
+      }
+    }
+  }
+  return changes;
+}
+
+const summarize = changes => {
+  const touched = new Set(changes.flatMap(change => change.itemIds));
+  const title = changes.length === 1 ? changes[0].label : touched.size ? `${plural(changes.length, 'change')} to ${plural(touched.size, 'item')}` : plural(changes.length, 'change');
+  return { title, summary: `${changes.map(change => change.label).join('. ')}.` };
+};
+
+// The draft without the items the user left out in Review; operations left with nothing to do are dropped.
+function excludeFromDraft(draft, exclude) {
+  if (!exclude.size) return draft;
+  const ops = [];
+  for (const entry of draft.ops) {
+    const { op } = entry;
+    if (op.noteId && exclude.has(op.noteId)) continue;
+    if (op.op === 'save_links') {
+      const links = op.links.filter(link => !exclude.has(link.id));
+      if (links.length) ops.push({ ...entry, op: { ...op, links, itemIds: links.map(link => link.id) } });
+    } else if (op.itemIds?.length) {
+      const itemIds = op.itemIds.filter(id => !exclude.has(id));
+      if (itemIds.length) ops.push({ ...entry, op: { ...op, itemIds } });
+    } else ops.push(entry);
+  }
+  return { ...draft, ops };
+}
+
+const PAST = [[/^Create /, 'Created '], [/^Move /, 'Moved '], [/^Add /, 'Added '], [/^Remove /, 'Removed '], [/^Archive /, 'Archived '], [/^Unarchive /, 'Unarchived '],
+  [/^Append /, 'Appended '], [/^Rename /, 'Renamed '], [/^Update /, 'Updated '], [/^Save /, 'Saved '], [/^Turn /, 'Turned '], [/^Change /, 'Changed '],
+  [/^Restore /, 'Restored '], [/^Delete /, 'Deleted '], [/^Link /, 'Linked '], [/^Unlink /, 'Unlinked '], [/^Pin /, 'Pinned '], [/^Unpin /, 'Unpinned '],
+  [/^Mark /, 'Marked '], [/^Clear /, 'Cleared '], [/^Replace /, 'Replaced '], [/^Show (.+) on the dashboard$/, 'Added $1 to the dashboard']];
+const pastTense = label => {
+  const rule = PAST.find(([pattern]) => pattern.test(label));
+  const past = rule ? label.replace(rule[0], rule[1]) : label;
+  // "Deleted collection P (3 items moved to Inbox)": the note in brackets follows the tense too.
+  return past.startsWith('Deleted collection ') ? past.replace(/ moves? (to Inbox|up a level)/g, ' moved $1') : past;
+};
+
+// The revision each changed item has after an apply: undo restores only items still at it.
+const revisionsOf = (items, ids) => {
+  const wanted = new Set(ids);
+  return Object.fromEntries((Array.isArray(items) ? items : []).filter(item => item?.id && wanted.has(item.id)).map(item => [item.id, text(item.updatedAt)]));
+};
+
+/**
+ * Reverts an applied proposal from its plain undo record (so it also works after a reload): removes the dashboard widgets it
+ * added, brings back deleted collections (same id, items and sub-collections), restores collection and item fields, deletes
+ * the items it created (for good when untouched since, otherwise to Trash) and removes the collections it created.
+ * Items changed after the apply, and created collections the user has put things in since, keep their current state, so
+ * an Undo clicked later (after a reload, or twice) never wipes newer work. Resolves to { kept } (how many were left as is).
+ * Best effort: every step runs, and the first failure is reported at the end.
+ */
+export async function undoChanges(store, undo, { dashboard = null } = {}) {
+  if (!undo || typeof undo !== 'object') return;
+  const failures = [];
+  const kept = [];
+  const attempt = async task => { try { await task(); } catch (error) { failures.push(error); } };
+  const gone = error => /no longer exists/i.test(text(error?.message));
+  const current = async () => {
+    try {
+      const library = typeof store?.loadLibrary === 'function' ? await store.loadLibrary() : null;
+      return library ? { items: new Map((library.items || []).map(item => [item.id, item])), collections: new Map((library.collections || []).map(c => [c.id, c])) } : null;
+    } catch { return null; }
+  };
+  for (const widgetId of undo.widgets || []) {
+    await attempt(async () => {
+      if (typeof dashboard?.removeWidget !== 'function') throw new Error('The dashboard widget could not be removed from here. Remove it on the dashboard.');
+      await dashboard.removeWidget(widgetId);
+    });
+  }
+  const deleted = (undo.deletedCollections || []).filter(entry => entry?.collection?.id).reverse();
+  if (deleted.length) {
+    let library = await current();
+    for (const { collection } of deleted) if (!library?.collections.has(collection.id)) await attempt(() => store.createCollection({ ...collection, parentId: '' }));
+    for (const { collection, childIds = [], itemIds = [], beforeId = '' } of deleted) {
+      // Read again each time: putting back one deleted collection moves its children, which the next one checks.
+      library = await current();
+      const parentId = text(collection.parentId);
+      if (parentId || beforeId) await attempt(() => store.moveCollection(collection.id, { parentId: !library || library.collections.has(parentId) ? parentId : '', beforeId }));
+      // deleteCollection lifted the children to its parent and sent its items to Inbox; put back those still there.
+      for (const childId of childIds) {
+        const child = library?.collections.get(childId);
+        if (!library || (child && text(child.parentId) === parentId)) await attempt(() => store.moveCollection(childId, { parentId: collection.id }));
+      }
+      const back = itemIds.filter(id => !library || (library.items.has(id) && !text(library.items.get(id).collectionId)));
+      if (back.length) await attempt(() => store.bulkUpdateItems(back.map(id => ({ id, patch: { collectionId: collection.id } }))));
+    }
+  }
+  for (const entry of [...(undo.collectionPatches || [])].reverse()) {
+    if (!entry?.id) continue;
+    if (typeof entry.parentId === 'string') await attempt(() => store.moveCollection(entry.id, { parentId: entry.parentId, beforeId: text(entry.beforeId) }));
+    if (entry.patch && Object.keys(entry.patch).length) await attempt(() => store.updateCollection(entry.id, entry.patch));
+  }
+  if (undo.patches?.length) {
+    const library = await current();
+    // An item changed after the proposal was applied (edited by the user, or already undone in another window) keeps
+    // its current state: restoring the old values would wipe that later work. Records without revisions predate this.
+    const revisions = undo.revisions && typeof undo.revisions === 'object' ? undo.revisions : null;
+    const changedSince = id => !!(revisions && library && Object.hasOwn(revisions, id) && text(library.items.get(id)?.updatedAt) !== text(revisions[id]));
+    // Items deleted for good since are skipped; a collection deleted since sends the item to Inbox instead.
+    const patches = undo.patches.filter(entry => entry?.id && (!library || library.items.has(entry.id)))
+      .filter(entry => { if (!changedSince(entry.id)) return true; kept.push(entry.id); return false; })
+      .map(entry => library && entry.patch?.collectionId && !library.collections.has(entry.patch.collectionId) ? { id: entry.id, patch: { ...entry.patch, collectionId: '' } } : entry);
+    if (patches.length) await attempt(() => store.bulkUpdateItems(patches));
+  }
+  for (const entry of [...(undo.createdItems || []), ...(undo.createdNotes || [])]) {
+    const id = typeof entry === 'string' ? entry : text(entry?.id);
+    const stamp = typeof entry === 'string' ? '' : text(entry?.updatedAt);
+    if (!id) continue;
+    await attempt(async () => {
+      if (stamp && typeof store.permanentlyDeleteItem === 'function') {
+        // Untouched since it was created: remove it for good. Edited since (a revision conflict): keep it, in Trash.
+        try { await store.permanentlyDeleteItem(id, { expectedUpdatedAt: stamp }); return; } catch (error) { if (gone(error)) return; }
+      }
+      try { await store.deleteItem(id); } catch (error) { if (!gone(error)) throw error; }
+    });
+  }
+  for (const id of [...(undo.createdCollections || [])].reverse()) {
+    // A collection the user has put something in since (an item, even in Trash, or a sub-collection) stays: deleting it
+    // would scatter their things into Inbox. Children created by this proposal were removed first (reverse order).
+    const library = await current();
+    if (library && ([...library.items.values()].some(item => text(item.collectionId) === id) || [...library.collections.values()].some(entry => text(entry.parentId) === id))) {
+      if (library.collections.has(id)) kept.push(id);
+      continue;
+    }
+    await attempt(async () => { try { await store.deleteCollection(id); } catch (error) { if (!gone(error)) throw error; } });
+  }
+  if (failures.length) throw new Error(`Some changes could not be undone: ${failures[0].message}${failures.length > 1 ? ` (and ${failures.length - 1} more)` : ''}`);
+  return { kept: kept.length };
+}
+
+const DECLINED = 'The user declined a proposal earlier in this request. Do not propose more changes now; answer in text and let the user ask again.';
+const LIMIT = `This request already had ${MAX_PROPOSALS_PER_TURN} proposals, the most allowed. Do not propose more; tell the user what is left so they can ask for it.`;
+const BLANK = { tags: [], relatedIds: [], deletedAt: null, reminderAt: null, sticky: null, favorite: false, archived: false, pinned: false, read: false };
 
 /**
  * One assistant turn's tool session.
- * createToolSession({ getLibrary, searchLibrary, store, page, onProposal, onEvent, signal }) -> { definitions, execute(calls), sources, proposals }
+ * createToolSession({ getLibrary, searchLibrary, store, page, dashboard, onProposal, onEvent, signal }) -> { definitions, execute(calls), sources, proposals }
+ * dashboard (optional; ui/dashboard/assistant-adapter.js builds it): { describe(), addCollectionWidget({ collectionId, boardId }), removeWidget(widgetId) }.
+ * onProposal(proposal) resolves to 'apply', 'discard' or { decision: 'apply', exclude: [itemIds] }; anything else discards.
  */
-export function createToolSession({ getLibrary, searchLibrary, store, page = null, onProposal, onEvent = () => {}, signal, uid = uidDefault, now = () => new Date().toISOString() } = {}) {
+export function createToolSession({ getLibrary, searchLibrary, store, page = null, dashboard = null, onProposal, onEvent = () => {}, signal, uid = uidDefault, now = () => new Date().toISOString() } = {}) {
+  const board = dashboard && typeof dashboard.describe === 'function' && typeof dashboard.addCollectionWidget === 'function' ? dashboard : null;
   const sources = new Map();
   const proposals = [];
-  let proposalUsed = false;
+  let declined = false;
+  // The library's updatedAt right after this session's last apply. Until the app's snapshot (getLibrary) reaches it, reads
+  // and staging use the store's own copy so a later step sees what an earlier proposal created.
+  let appliedAt = '';
   const remember = (item, library) => { if (item?.id) sources.set(item.id, { id: item.id, title: text(item.title), url: text(item.url), type: text(item.type), collection: collectionPath(library, text(item.collectionId)) }); };
-  const summaryOf = item => ({ id: item.id, title: text(item.title) });
+  const offered = name => (name !== 'get_page' || !!page) && (!DASHBOARD_TOOLS.has(name) || !!board);
+
+  async function readLibrary() {
+    const snapshot = await getLibrary();
+    if (!appliedAt || text(snapshot?.updatedAt) >= appliedAt) { appliedAt = ''; return snapshot; }
+    if (typeof store?.loadLibrary === 'function') { try { return (await store.loadLibrary()) || snapshot; } catch {} }
+    return snapshot;
+  }
+  async function settle() {
+    if (typeof store?.loadLibrary === 'function') {
+      try { const fresh = await store.loadLibrary(); if (fresh) { appliedAt = text(fresh.updatedAt); return fresh; } } catch {}
+    }
+    return getLibrary();
+  }
 
   // ---- read tools ----
   const readers = {
     async search_library(input) {
       const query = text(input.query).trim();
-      if (!query) throw new Error('Give search_library a query.');
+      if (!query) throw new Error('Give search_library a query, or use list_items to browse.');
       const filter = {};
       if (ITEM_TYPES.includes(input.type)) filter.type = input.type;
       if (typeof input.collectionId === 'string' && input.collectionId) filter.collectionId = input.collectionId === 'inbox' ? '' : input.collectionId;
       if (text(input.tag).trim()) filter.tag = text(input.tag).trim().replace(/^#/, '');
       const results = await searchLibrary(query, { limit: clampInt(input.limit, 1, 50, 12), mode: 'hybrid', filter, signal });
-      const library = await getLibrary();
+      const library = await readLibrary();
       const index = new Map((library?.items || []).map(item => [item.id, item]));
       // Pair each hit with its item before dropping ids that vanished, so snippets stay with the right item.
       const items = results.map(result => ({ result, item: index.get(result.id) })).filter(entry => entry.item).map(({ result, item }) => {
@@ -145,7 +527,7 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
     async get_items(input) {
       const wanted = [...new Set((Array.isArray(input.ids) ? input.ids : []).filter(id => typeof id === 'string'))];
       if (!wanted.length) throw new Error('Give get_items at least one item id.');
-      const library = await getLibrary();
+      const library = await readLibrary();
       const index = new Map((library?.items || []).map(item => [item.id, item]));
       const chosen = wanted.slice(0, 20);
       const budget = Math.max(4000, Math.floor(60000 / chosen.length));
@@ -160,7 +542,9 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
         const noteBudget = article ? Math.min(note.length, Math.floor(budget / 2)) : budget;
         const articleBudget = Math.max(0, budget - Math.min(note.length, noteBudget));
         items.push({ id: item.id, title: text(item.title), type: item.type, url: text(item.url), collection: collectionPath(library, text(item.collectionId)), collectionId: text(item.collectionId),
-          tags: item.tags || [], favorite: !!item.favorite, archived: !!item.archived, inTrash: !!item.deletedAt, createdAt: text(item.createdAt), updatedAt: text(item.updatedAt),
+          tags: item.tags || [], favorite: !!item.favorite, pinned: !!item.pinned, read: !!item.read, reminderAt: text(item.reminderAt) || null,
+          archived: !!item.archived, inTrash: !!item.deletedAt, createdAt: text(item.createdAt), updatedAt: text(item.updatedAt),
+          ...(item.sticky ? { sticky: text(item.sticky.color) || true } : {}),
           description: text(item.excerpt).slice(0, 2000), note: note.slice(0, noteBudget), article: article.slice(0, articleBudget),
           highlights: (item.highlights || []).slice(0, 40).map(h => ({ text: text(h.text).slice(0, 800), note: text(h.note).slice(0, 400) })),
           relatedIds: (item.relatedIds || []).slice(0, 50), fileName: text(item.fileName) || undefined,
@@ -168,18 +552,70 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       }
       return { summary: `Read ${plural(items.length, 'item')}`, data: { items, missing, ...(wanted.length > 20 ? { note: 'Only the first 20 ids were read.' } : {}) }, result: { count: items.length } };
     },
+    async list_items(input) {
+      const library = await readLibrary();
+      const state = ITEM_STATES.includes(input.state) ? input.state : 'active';
+      const raw = text(input.collectionId).trim();
+      const collectionIds = raw ? new Set(getDescendantCollectionIds(library, resolveCollection(raw, { collections: [] }, library))) : null;
+      const tag = text(input.tag).trim().replace(/^#+/, '');
+      const matches = (library?.items || []).filter(item => {
+        if (!item?.id) return false;
+        if (state === 'active' ? item.deletedAt || item.archived : state === 'archived' ? item.deletedAt || !item.archived : state === 'trash' ? !item.deletedAt : false) return false;
+        if (ITEM_TYPES.includes(input.type) && item.type !== input.type) return false;
+        if (typeof input.favorite === 'boolean' && !!item.favorite !== input.favorite) return false;
+        if (typeof input.pinned === 'boolean' && !!item.pinned !== input.pinned) return false;
+        if (collectionIds && !collectionIds.has(text(item.collectionId))) return false;
+        return !tag || (item.tags || []).some(t => sameTag(t, tag));
+      });
+      const sort = SORTS.includes(input.sort) ? input.sort : 'newest';
+      const order = { newest: (a, b) => text(b.createdAt).localeCompare(text(a.createdAt)), oldest: (a, b) => text(a.createdAt).localeCompare(text(b.createdAt)),
+        updated: (a, b) => text(b.updatedAt).localeCompare(text(a.updatedAt)), title: (a, b) => text(a.title).localeCompare(text(b.title)) }[sort];
+      matches.sort(order);
+      const offset = clampInt(input.offset, 0, Number.MAX_SAFE_INTEGER, 0);
+      const pageItems = matches.slice(offset, offset + clampInt(input.limit, 1, 200, 50));
+      const items = pageItems.map(item => {
+        remember(item, library);
+        return { id: item.id, title: text(item.title), type: item.type, url: text(item.url), collection: collectionPath(library, text(item.collectionId)), tags: item.tags || [],
+          favorite: !!item.favorite, pinned: !!item.pinned, archived: !!item.archived, inTrash: !!item.deletedAt, updatedAt: text(item.updatedAt) };
+      });
+      const nextOffset = offset + items.length < matches.length ? offset + items.length : null;
+      return { summary: `Listed ${plural(items.length, 'item')}${matches.length > items.length ? ` of ${matches.length}` : ''}`,
+        data: { state, total: matches.length, offset, count: items.length, nextOffset, items }, result: { count: items.length, ids: items.map(item => item.id) } };
+    },
+    async lookup_urls(input) {
+      const urls = (Array.isArray(input.urls) ? input.urls : []).filter(url => typeof url === 'string' && url.trim()).map(url => url.trim());
+      if (!urls.length) throw new Error('Give lookup_urls at least one url.');
+      if (urls.length > MAX_LINKS_PER_CALL) throw new Error(`Check up to ${MAX_LINKS_PER_CALL} urls at a time.`);
+      const library = await readLibrary();
+      const byUrl = new Map();
+      for (const item of library?.items || []) { const key = canonicalOf(item?.url); if (key) byUrl.set(key, [...(byUrl.get(key) || []), item]); }
+      const results = urls.map(url => {
+        const key = canonicalOf(url);
+        if (!key) return { url, valid: false, matches: [] };
+        // exact: false means the same page with another #fragment, which can be a different page in a hash-routed app.
+        const matches = (byUrl.get(key) || []).map(item => {
+          remember(item, library);
+          return { id: item.id, title: text(item.title), type: item.type, collection: collectionPath(library, text(item.collectionId)), inTrash: !!item.deletedAt, archived: !!item.archived,
+            exact: linkKeyOf(item.url) === linkKeyOf(url) };
+        });
+        return { url, saved: matches.length > 0, matches };
+      });
+      const saved = results.filter(entry => entry.matches.length).length;
+      return { summary: `Checked ${plural(urls.length, 'link')} · ${saved} already saved`, data: { results }, result: { count: urls.length, saved } };
+    },
     async list_collections() {
-      const library = await getLibrary();
+      const library = await readLibrary();
       const live = (library?.items || []).filter(item => item && !item.deletedAt && !item.archived);
       const direct = new Map();
       for (const item of live) direct.set(text(item.collectionId), (direct.get(text(item.collectionId)) || 0) + 1);
       const collections = (library?.collections || []).slice(0, 1000).map(collection => ({ id: collection.id, name: text(collection.name), path: collectionPath(library, collection.id), parentId: text(collection.parentId),
         items: getDescendantCollectionIds(library, collection.id).reduce((sum, id) => sum + (direct.get(id) || 0), 0),
+        icon: text(collection.icon) || 'folder', color: text(collection.color), pinned: !!collection.pinned,
         ...(text(collection.description) ? { description: text(collection.description).slice(0, 200) } : {}) }));
       return { summary: `Listed ${plural(collections.length, 'collection')}`, data: { inbox: { id: '', items: direct.get('') || 0 }, collections }, result: { count: collections.length } };
     },
     async list_tags() {
-      const library = await getLibrary();
+      const library = await readLibrary();
       const counts = new Map();
       for (const item of library?.items || []) {
         if (!item || item.deletedAt) continue;
@@ -199,6 +635,15 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       sources.set('page:current', { id: 'page:current', title: text(page.title) || text(page.url), url: text(page.url), type: 'page' });
       return { summary: 'Read this page', data: { id: 'page:current', url: text(page.url), title: text(page.title), text: body.slice(0, 60000), truncated: body.length > 60000 }, result: { chars: Math.min(body.length, 60000) } };
     },
+    async get_dashboard() {
+      const state = await board.describe();
+      const library = await readLibrary();
+      const boards = (Array.isArray(state?.boards) ? state.boards : []).map(entry => ({ id: text(entry.id), name: text(entry.name), active: entry.id === state.activeBoardId,
+        widgets: (Array.isArray(entry.widgets) ? entry.widgets : []).map(widget => ({ id: text(widget.id), type: text(widget.type), title: text(widget.title),
+          ...(widget.collectionId ? { collectionId: widget.collectionId, collection: collectionPath(library, widget.collectionId) } : {}),
+          ...(widget.includeSubcollections ? { includeSubcollections: true } : {}) })) }));
+      return { summary: `Checked the dashboard · ${plural(boards.length, 'board')}`, data: { activeBoardId: text(state?.activeBoardId), boards }, result: { count: boards.length } };
+    },
   };
 
   // ---- write staging ----
@@ -216,7 +661,7 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       else if (item.deletedAt && !allowTrashed) trashed.push(id);
       else found.push(item);
     }
-    if (!found.length) throw new Error(missing.length ? `No such items: ${missing.slice(0, 10).join(', ')}. Use ids from search results.` : 'Those items are in Trash and were left alone.');
+    if (!found.length) throw new Error(missing.length ? `No such items: ${missing.slice(0, 10).join(', ')}. Use ids from search results.` : 'Those items are in Trash and were left alone. Use restore_items to bring them back.');
     return { found, missing, trashed };
   }
   function resolveCollection(value, draft, library, { allowInbox = true } = {}) {
@@ -238,13 +683,22 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
     if (byName.length === 1) return byName[0].id;
     throw new Error(`Unknown collection id "${raw}". Use list_collections, or create_collection first.`);
   }
-  const pathIn = (library, draft, id) => {
-    const staged = draft.collections.find(collection => collection.id === id);
-    if (!staged) return collectionPath(library, id);
-    const parent = staged.parentId ? pathIn(library, draft, staged.parentId) : '';
-    return parent ? `${parent} › ${staged.name}` : staged.name;
+  function existingCollection(value, draft, library) {
+    const id = resolveCollection(value, draft, library, { allowInbox: false });
+    const collection = (library?.collections || []).find(entry => entry.id === id);
+    if (!collection) throw new Error('That collection is only proposed in this step; set its fields in create_collection instead.');
+    return collection;
+  }
+  const liveItem = (library, id, what = 'item') => {
+    const item = (library?.items || []).find(entry => entry.id === id);
+    if (!item || item.deletedAt) throw new Error(`That ${what} does not exist or is in Trash.`);
+    return item;
   };
   const skippedNote = ({ missing = [], trashed = [] }) => [missing.length ? `${plural(missing.length, 'unknown id')} skipped` : '', trashed.length ? `${plural(trashed.length, 'item')} in Trash left alone` : ''].filter(Boolean).join('; ');
+  const unchanged = message => ({ skip: true, data: { status: 'unchanged', message } });
+  const liveWithTag = (library, tag) => (library?.items || []).filter(item => item && !item.deletedAt && (item.tags || []).some(t => sameTag(t, tag)));
+  let described = null;
+  const describeDashboard = async () => described ||= await board.describe();
 
   const stagers = {
     create_collection(input, draft, library) {
@@ -256,49 +710,198 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       if (draft.collections.some(collection => collection.name.toLowerCase() === name.toLowerCase() && collection.parentId === parentId)) throw new Error('This collection is already part of the proposal.');
       const id = uid('collection');
       const color = /^#[\da-f]{3,8}$/i.test(text(input.color)) ? input.color : '';
-      draft.collections.push({ id, name, parentId, icon: text(input.icon).trim().slice(0, 40), color });
+      draft.collections.push({ id, name, parentId, icon: text(input.icon).trim().slice(0, 40), color, description: text(input.description).slice(0, 12000) });
       return { op: { op: 'create_collection', collectionId: id }, data: { status: 'proposed', collectionId: id, path: pathIn(library, draft, id) } };
+    },
+    update_collection(input, draft, library) {
+      const collection = existingCollection(input.id, draft, library);
+      const patch = {};
+      if (typeof input.name === 'string') {
+        const name = input.name.trim().replace(/\s+/g, ' ').slice(0, 200);
+        if (!name) throw new Error('A collection needs a name.');
+        if (name !== collection.name) patch.name = name;
+      }
+      if (typeof input.description === 'string' && input.description !== text(collection.description)) patch.description = input.description.slice(0, 12000);
+      if (typeof input.icon === 'string' && input.icon.trim() && input.icon.trim() !== collection.icon) patch.icon = input.icon.trim().slice(0, 40);
+      if (typeof input.color === 'string' && input.color.trim()) {
+        if (!/^#[\da-f]{3,8}$/i.test(input.color.trim())) throw new Error('Use a #hex color such as #4a90d9.');
+        if (input.color.trim().toLowerCase() !== text(collection.color).toLowerCase()) patch.color = input.color.trim();
+      }
+      if (typeof input.pinned === 'boolean' && input.pinned !== !!collection.pinned) patch.pinned = input.pinned;
+      if (typeof input.parentId === 'string') {
+        const parentId = resolveCollection(input.parentId, draft, library);
+        if (parentId !== text(collection.parentId)) {
+          // Walk up from the new parent (through proposed and saved collections): reaching this one would make a cycle.
+          const parentOf = id => draft.collections.find(entry => entry.id === id)?.parentId ?? (library?.collections || []).find(entry => entry.id === id)?.parentId ?? '';
+          for (let id = parentId, seen = new Set(); id && !seen.has(id); id = text(parentOf(id))) {
+            if (id === collection.id) throw new Error('A collection cannot be moved inside itself or one of its sub-collections.');
+            seen.add(id);
+          }
+          patch.parentId = parentId;
+        }
+      }
+      if (!Object.keys(patch).length) return unchanged('The collection already looks like that.');
+      return { op: { op: 'update_collection', collectionId: collection.id, patch }, data: { status: 'proposed', collectionId: collection.id, path: collectionPath(library, collection.id) } };
+    },
+    delete_collection(input, draft, library) {
+      const collection = existingCollection(input.id, draft, library);
+      if (draft.ops.some(({ op }) => op.op === 'delete_collection' && op.collectionId === collection.id)) return unchanged('This collection is already part of the proposal.');
+      const itemCount = (library?.items || []).filter(item => !item.deletedAt && item.collectionId === collection.id).length;
+      const childCount = (library?.collections || []).filter(entry => entry.parentId === collection.id).length;
+      return { op: { op: 'delete_collection', collectionId: collection.id, itemCount, childCount },
+        data: { status: 'proposed', collectionId: collection.id, path: collectionPath(library, collection.id), itemsToInbox: itemCount, subcollectionsMovingUp: childCount } };
+    },
+    save_links(input, draft, library) {
+      const links = (Array.isArray(input.links) ? input.links : []).map(link => typeof link === 'string' ? { url: link } : link).filter(link => link && typeof link === 'object');
+      if (!links.length) throw new Error('Give at least one link with a url.');
+      if (links.length > MAX_LINKS_PER_CALL) throw new Error(`Too many links in one call (${links.length}). Save up to ${MAX_LINKS_PER_CALL} at a time.`);
+      const collectionId = resolveCollection(input.collectionId, draft, library);
+      const shared = normalizeTags(input.tags);
+      const byUrl = new Map();
+      const byPage = new Map();
+      for (const item of library?.items || []) {
+        if (!item || item.deletedAt) continue;
+        const key = linkKeyOf(item.url), page = canonicalOf(item.url);
+        if (key) byUrl.set(key, [...(byUrl.get(key) || []), item]);
+        if (page) byPage.set(page, [...(byPage.get(page) || []), item]);
+      }
+      // saveItem with a pre-allocated id skips the store's own duplicate check, so it happens here: against saved items,
+      // within this request, and against links other save_links calls in the same step already staged.
+      draft.urls ||= new Set();
+      const similar = [];
+      const staged = [];
+      const invalid = [];
+      const duplicates = [];
+      const alreadySaved = [];
+      const notesWithSameUrl = [];
+      const moves = [];
+      for (const link of links) {
+        const given = text(link.url).trim();
+        const url = safeWebUrl(given);
+        if (!url) { invalid.push({ url: given.slice(0, 2000), reason: 'Not an http or https address (or it contains a user name or password).' }); continue; }
+        const key = linkKeyOf(url);
+        if (draft.urls.has(key)) { duplicates.push(given); continue; }
+        draft.urls.add(key);
+        const matches = byUrl.get(key) || [];
+        for (const note of (byPage.get(canonicalOf(url)) || []).filter(item => item.type === 'note')) if (!notesWithSameUrl.includes(note.id)) notesWithSameUrl.push(note.id);
+        const saved = matches.find(item => item.type !== 'note');
+        // Same page but another #fragment: saved as its own link; the near match is only reported, never moved.
+        const near = !saved && (byPage.get(canonicalOf(url)) || []).find(item => item.type !== 'note');
+        if (near) similar.push({ url: given, id: near.id, title: text(near.title), savedUrl: text(near.url) });
+        if (saved) {
+          // Already a real link: never a second copy. A collection the user named still applies, as a move.
+          const move = !!collectionId && text(saved.collectionId) !== collectionId;
+          if (move) moves.push(saved.id);
+          alreadySaved.push({ url: given, id: saved.id, title: text(saved.title), collection: collectionPath(library, text(saved.collectionId)), ...(move ? { moved: true } : {}), ...(saved.archived ? { archived: true } : {}) });
+          continue;
+        }
+        staged.push({ id: uid('item'), url, title: text(link.title).trim().slice(0, 500) || hostOf(url), description: text(link.description).trim().slice(0, 2000),
+          tags: normalizeTags([...shared, ...(Array.isArray(link.tags) ? link.tags : [])]) });
+      }
+      const report = { ...(alreadySaved.length ? { alreadySaved } : {}), ...(duplicates.length ? { duplicates } : {}), ...(invalid.length ? { invalid } : {}),
+        ...(similar.length ? { similar, similarHint: 'Saved as new links: an item with the same page but a different #part already exists. Mention it only if it matters.' } : {}),
+        ...(notesWithSameUrl.length ? { notesWithSameUrl, notesHint: 'These notes hold the same addresses. If they were meant as links, propose trash_items for them (or convert_items instead of saving).' } : {}) };
+      const ops = [];
+      if (staged.length) ops.push({ op: 'save_links', itemIds: staged.map(link => link.id), collectionId, links: staged });
+      if (moves.length) ops.push({ op: 'move_items', itemIds: moves, collectionId });
+      if (!ops.length) {
+        if (!alreadySaved.length && !duplicates.length) throw new Error(`None of these links can be saved: ${invalid.slice(0, 5).map(entry => entry.url || '(empty)').join(', ')}. Links need an http or https address.`);
+        return { skip: true, data: { status: 'unchanged', message: 'These links are already saved.', ...report } };
+      }
+      return { ops, data: { status: 'proposed', count: staged.length, itemIds: staged.map(link => link.id), collectionId, collection: pathIn(library, draft, collectionId), ...report } };
     },
     move_items(input, draft, library) {
       const targets = itemTargets(input, library);
       const collectionId = resolveCollection(input.collectionId, draft, library);
       const moving = targets.found.filter(item => text(item.collectionId) !== collectionId);
-      if (!moving.length) return { skip: true, data: { status: 'unchanged', message: `Those items are already in ${pathIn(library, draft, collectionId)}.` } };
+      if (!moving.length) return unchanged(`Those items are already in ${pathIn(library, draft, collectionId)}.`);
       return { op: { op: 'move_items', itemIds: moving.map(item => item.id), collectionId }, data: { status: 'proposed', count: moving.length, collection: pathIn(library, draft, collectionId), skipped: skippedNote(targets) || undefined } };
     },
     add_tags(input, draft, library) {
       const tags = normalizeTags(input.tags);
       if (!tags.length) throw new Error('Give at least one tag.');
       const targets = itemTargets(input, library);
-      const changing = targets.found.filter(item => tags.some(tag => !(item.tags || []).some(t => String(t).toLowerCase() === tag.toLowerCase())));
-      if (!changing.length) return { skip: true, data: { status: 'unchanged', message: 'Those items already have these tags.' } };
+      const changing = targets.found.filter(item => tags.some(tag => !(item.tags || []).some(t => sameTag(t, tag))));
+      if (!changing.length) return unchanged('Those items already have these tags.');
       return { op: { op: 'add_tags', itemIds: changing.map(item => item.id), tags }, data: { status: 'proposed', count: changing.length, tags, skipped: skippedNote(targets) || undefined } };
     },
     remove_tags(input, draft, library) {
       const tags = normalizeTags(input.tags);
       if (!tags.length) throw new Error('Give at least one tag.');
       const targets = itemTargets(input, library);
-      const lower = tags.map(tag => tag.toLowerCase());
-      const changing = targets.found.filter(item => (item.tags || []).some(t => lower.includes(String(t).toLowerCase())));
-      if (!changing.length) return { skip: true, data: { status: 'unchanged', message: 'None of those items have these tags.' } };
+      const changing = targets.found.filter(item => (item.tags || []).some(t => tags.some(tag => sameTag(t, tag))));
+      if (!changing.length) return unchanged('None of those items have these tags.');
       return { op: { op: 'remove_tags', itemIds: changing.map(item => item.id), tags }, data: { status: 'proposed', count: changing.length, tags } };
+    },
+    rename_tag(input, draft, library) {
+      const [from] = normalizeTags([input.from]);
+      const [to] = normalizeTags([input.to]);
+      if (!from || !to) throw new Error('Give the tag to rename (from) and its new name (to).');
+      const tagged = liveWithTag(library, from);
+      if (!tagged.length) throw new Error(`No items have the tag #${from}. Use list_tags.`);
+      // Items can spell the same tag differently ('JS', 'js'): only the ones not already spelled `to` change.
+      const changing = tagged.filter(item => (item.tags || []).some(tag => sameTag(tag, from) && tag !== to));
+      if (!changing.length) return unchanged('The tag already has that name.');
+      const stored = (changing[0].tags || []).find(tag => sameTag(tag, from) && tag !== to) || from;
+      const merge = !sameTag(from, to) && liveWithTag(library, to).length > 0;
+      return { op: { op: 'rename_tag', itemIds: changing.map(item => item.id), from: stored, to, ...(merge ? { merge: true } : {}) },
+        data: { status: 'proposed', count: changing.length, from: stored, to, ...(merge ? { merged: true } : {}) } };
+    },
+    delete_tag(input, draft, library) {
+      const [tag] = normalizeTags([input.tag]);
+      if (!tag) throw new Error('Give the tag to remove.');
+      const tagged = liveWithTag(library, tag);
+      if (!tagged.length) return unchanged(`No items have the tag #${tag}.`);
+      const stored = (tagged[0].tags || []).find(entry => sameTag(entry, tag)) || tag;
+      return { op: { op: 'remove_tags', itemIds: tagged.map(item => item.id), tags: [stored] }, data: { status: 'proposed', count: tagged.length, tag: stored } };
     },
     set_favorite(input, draft, library) {
       if (typeof input.favorite !== 'boolean') throw new Error('Set favorite to true or false.');
       const targets = itemTargets(input, library);
       const changing = targets.found.filter(item => !!item.favorite !== input.favorite);
-      if (!changing.length) return { skip: true, data: { status: 'unchanged', message: input.favorite ? 'Those items are already favorites.' : 'Those items are not favorites.' } };
+      if (!changing.length) return unchanged(input.favorite ? 'Those items are already favorites.' : 'Those items are not favorites.');
       return { op: { op: 'set_favorite', itemIds: changing.map(item => item.id), favorite: input.favorite }, data: { status: 'proposed', count: changing.length } };
     },
     archive_items(input, draft, library) {
       const targets = itemTargets(input, library);
       const changing = targets.found.filter(item => !item.archived);
-      if (!changing.length) return { skip: true, data: { status: 'unchanged', message: 'Those items are already archived.' } };
+      if (!changing.length) return unchanged('Those items are already archived.');
       return { op: { op: 'archive_items', itemIds: changing.map(item => item.id) }, data: { status: 'proposed', count: changing.length } };
+    },
+    unarchive_items(input, draft, library) {
+      const targets = itemTargets(input, library);
+      const changing = targets.found.filter(item => item.archived);
+      if (!changing.length) return unchanged('Those items are not archived.');
+      return { op: { op: 'unarchive_items', itemIds: changing.map(item => item.id) }, data: { status: 'proposed', count: changing.length, skipped: skippedNote(targets) || undefined } };
     },
     trash_items(input, draft, library) {
       const targets = itemTargets(input, library);
       return { op: { op: 'trash_items', itemIds: targets.found.map(item => item.id) }, data: { status: 'proposed', count: targets.found.length, skipped: skippedNote(targets) || undefined } };
+    },
+    restore_items(input, draft, library) {
+      const targets = itemTargets(input, library, { allowTrashed: true });
+      const changing = targets.found.filter(item => item.deletedAt);
+      if (!changing.length) return unchanged('Those items are not in Trash.');
+      return { op: { op: 'restore_items', itemIds: changing.map(item => item.id) }, data: { status: 'proposed', count: changing.length, skipped: skippedNote(targets) || undefined } };
+    },
+    convert_items(input, draft, library) {
+      if (!CONVERT_TYPES.includes(input.type)) throw new Error('Choose type bookmark, article or note.');
+      const targets = itemTargets(input, library);
+      // A url proposed for the item earlier in this step counts (update_item, then convert_items).
+      const urlFor = item => draft.ops.find(({ op }) => op.op === 'update_item' && op.itemIds[0] === item.id && op.patch.url)?.op.patch.url || item.url;
+      const invalid = [];
+      const changing = [];
+      for (const item of targets.found) {
+        if (item.type === input.type) continue;
+        if (LINK_TYPES.includes(input.type) && !safeWebUrl(urlFor(item))) invalid.push(item.id);
+        else changing.push(item);
+      }
+      if (!changing.length) {
+        if (invalid.length) throw new Error(`These items have no http or https url, so they cannot become links: ${invalid.slice(0, 10).join(', ')}. Give them a url with update_item, or use save_links.`);
+        return unchanged(`Those items are already ${TYPE_WORDS[input.type][1]}.`);
+      }
+      return { op: { op: 'convert_items', itemIds: changing.map(item => item.id), type: input.type },
+        data: { status: 'proposed', count: changing.length, type: input.type, ...(invalid.length ? { invalid, invalidReason: 'No http or https url on the item.' } : {}), skipped: skippedNote(targets) || undefined } };
     },
     create_note(input, draft, library) {
       const markdown = text(input.markdown).slice(0, 200000);
@@ -307,10 +910,13 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       const collectionId = resolveCollection(input.collectionId, draft, library);
       const live = new Set((library?.items || []).filter(item => !item.deletedAt).map(item => item.id));
       const relatedIds = [...new Set((Array.isArray(input.relatedIds) ? input.relatedIds : []).filter(id => typeof id === 'string' && live.has(id)))].slice(0, 100);
-      const url = text(input.url) ? safeWebUrl(input.url) : '';
-      if (text(input.url) && !url) throw new Error('The note url must be an http or https address.');
+      const url = text(input.url).trim() ? safeWebUrl(input.url) : '';
+      if (text(input.url).trim() && !url) throw new Error('The note url must be an http or https address.');
+      const sticky = text(input.sticky).trim().toLowerCase();
+      if (sticky && !STICKY_COLORS.includes(sticky)) throw new Error(`sticky must be one of ${STICKY_COLORS.join(', ')}.`);
       const id = uid('item');
-      return { op: { op: 'create_note', noteId: id, title, markdown, collectionId, relatedIds, url }, data: { status: 'proposed', noteId: id, collection: pathIn(library, draft, collectionId) } };
+      return { op: { op: 'create_note', noteId: id, title, markdown, collectionId, relatedIds, url, tags: normalizeTags(input.tags), ...(sticky ? { sticky } : {}) },
+        data: { status: 'proposed', noteId: id, collection: pathIn(library, draft, collectionId) } };
     },
     append_to_note(input, draft, library) {
       const markdown = text(input.markdown).slice(0, 200000);
@@ -321,68 +927,76 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       return { op: { op: 'append_to_note', itemIds: [note.id], markdown }, data: { status: 'proposed', noteId: note.id } };
     },
     update_item(input, draft, library) {
-      const item = (library?.items || []).find(entry => entry.id === input.id);
-      if (!item || item.deletedAt) throw new Error('That item does not exist or is in Trash.');
+      const item = liveItem(library, input.id);
       const patch = {};
       if (typeof input.title === 'string' && input.title.trim() && input.title.trim() !== item.title) patch.title = input.title.trim().slice(0, 500);
-      if (typeof input.excerpt === 'string' && input.excerpt !== item.excerpt) patch.excerpt = input.excerpt.slice(0, 2000);
-      if (!Object.keys(patch).length) return { skip: true, data: { status: 'unchanged', message: 'Nothing to change.' } };
-      return { op: { op: 'update_item', itemIds: [item.id], patch }, data: { status: 'proposed' } };
+      // `excerpt` is the older name of `description`.
+      const description = typeof input.description === 'string' ? input.description : input.excerpt;
+      if (typeof description === 'string' && description !== text(item.excerpt)) patch.excerpt = description.slice(0, 2000);
+      if (typeof input.url === 'string' && input.url.trim() !== text(item.url)) {
+        if (!input.url.trim()) {
+          if (NEEDS_URL.includes(item.type) && !item.attachmentId && !item.cover) throw new Error('A link needs a url: give the new http or https address instead of removing it.');
+          patch.url = '';
+        } else {
+          const url = safeWebUrl(input.url);
+          if (!url) throw new Error('The url must be an http or https address without a user name or password.');
+          if (url !== item.url) patch.url = url;
+        }
+      }
+      if (typeof input.note === 'string' && input.note.slice(0, 200000) !== text(item.content)) patch.content = input.note.slice(0, 200000);
+      for (const key of ['pinned', 'read']) if (typeof input[key] === 'boolean' && input[key] !== !!item[key]) patch[key] = input[key];
+      if (typeof input.reminderAt === 'string') {
+        const raw = input.reminderAt.trim();
+        // A bare date means 9:00 local time that day rather than midnight UTC.
+        const when = raw ? new Date(/^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T09:00:00` : raw) : null;
+        if (when && !Number.isFinite(when.getTime())) throw new Error('reminderAt must be an ISO date and time such as 2026-11-02T09:00, or "" to clear the reminder.');
+        const iso = when ? when.toISOString() : null;
+        if (iso !== (text(item.reminderAt) || null)) patch.reminderAt = iso;
+      }
+      if (!Object.keys(patch).length) return unchanged('Nothing to change.');
+      return { op: { op: 'update_item', itemIds: [item.id], patch }, data: { status: 'proposed', fields: Object.keys(patch) } };
+    },
+    link_items(input, draft, library) {
+      const item = liveItem(library, input.id);
+      const live = new Set((library?.items || []).filter(entry => !entry.deletedAt).map(entry => entry.id));
+      const wanted = unique((Array.isArray(input.relatedIds) ? input.relatedIds : []).filter(id => typeof id === 'string' && id !== item.id));
+      const valid = wanted.filter(id => live.has(id));
+      if (!valid.length) throw new Error('Give relatedIds of saved items that are not in Trash.');
+      const adding = valid.filter(id => !(item.relatedIds || []).includes(id)).slice(0, 100);
+      if (!adding.length) return unchanged('Those items are already linked.');
+      const missing = wanted.filter(id => !live.has(id));
+      return { op: { op: 'link_items', itemIds: [item.id], relatedIds: adding }, data: { status: 'proposed', count: adding.length, ...(missing.length ? { skipped: `${plural(missing.length, 'unknown id')} skipped` } : {}) } };
+    },
+    unlink_items(input, draft, library) {
+      const item = liveItem(library, input.id);
+      const index = new Map((library?.items || []).map(entry => [entry.id, entry]));
+      const wanted = unique((Array.isArray(input.relatedIds) ? input.relatedIds : []).filter(id => typeof id === 'string' && id !== item.id));
+      const removing = wanted.filter(id => (item.relatedIds || []).includes(id) || (index.get(id)?.relatedIds || []).includes(item.id));
+      if (!removing.length) return unchanged('Those items are not linked to it.');
+      return { op: { op: 'unlink_items', itemIds: [item.id], relatedIds: removing }, data: { status: 'proposed', count: removing.length } };
+    },
+    async show_collection_on_dashboard(input, draft, library) {
+      const collectionId = resolveCollection(input.collectionId, draft, library, { allowInbox: false });
+      const path = pathIn(library, draft, collectionId);
+      const state = await describeDashboard();
+      const boards = Array.isArray(state?.boards) ? state.boards : [];
+      const wanted = text(input.boardId).trim();
+      const target = wanted ? boards.find(entry => entry.id === wanted) || boards.filter(entry => text(entry.name).toLowerCase() === wanted.toLowerCase()).at(0) : boards.find(entry => entry.id === state?.activeBoardId) || boards[0];
+      if (wanted && !target) throw new Error(`Unknown dashboard board "${wanted}". Use get_dashboard.`);
+      // A links widget for this collection, or for a parent that includes sub-collections, already shows its links.
+      const shows = widget => widget?.type === LINKS_WIDGET && (widget.collectionId === collectionId || (widget.includeSubcollections && getDescendantCollectionIds(library, widget.collectionId).includes(collectionId)));
+      const showing = boards.filter(entry => (!wanted || entry === target) && (entry.widgets || []).some(shows));
+      if (showing.length) return unchanged(`${path} already shows on the dashboard (board ${text(showing[0].name) || 'Main'}).`);
+      if (draft.ops.some(({ op }) => op.op === 'add_dashboard_widget' && op.collectionId === collectionId && op.boardId === text(target?.id))) return unchanged('This widget is already part of the proposal.');
+      return { op: { op: 'add_dashboard_widget', collectionId, boardId: text(target?.id), boardName: text(target?.name) },
+        data: { status: 'proposed', collectionId, collection: path, board: text(target?.name) } };
     },
   };
 
-  function buildProposal(draft, library) {
-    const index = new Map((library?.items || []).map(item => [item.id, item]));
-    const preview = itemIds => itemIds.slice(0, 50).map(id => summaryOf(index.get(id) || { id, title: id }));
-    const groups = new Map();
-    for (const entry of draft.ops) {
-      const op = entry.op;
-      const key = op.op === 'move_items' ? `move:${op.collectionId}`
-        : op.op === 'add_tags' || op.op === 'remove_tags' ? `${op.op}:${op.tags.map(tag => tag.toLowerCase()).sort().join('\u0000')}`
-          : op.op === 'set_favorite' ? `favorite:${op.favorite}`
-            : op.op === 'archive_items' || op.op === 'trash_items' ? op.op : `${op.op}:${entry.callId}`;
-      const group = groups.get(key);
-      if (group) { for (const id of op.itemIds || []) if (!group.itemIds.includes(id)) group.itemIds.push(id); group.callIds.push(entry.callId); }
-      else groups.set(key, { ...op, itemIds: [...(op.itemIds || [])], callIds: [entry.callId] });
-    }
-    const changes = [];
-    for (const collection of draft.collections) {
-      const path = pathIn(library, draft, collection.id);
-      changes.push({ op: 'create_collection', label: `Create collection ${path}`, itemIds: [], count: 0, collectionId: collection.id, collectionName: path, parentId: collection.parentId });
-    }
-    for (const group of groups.values()) {
-      if (group.op === 'create_collection') continue;
-      const count = group.itemIds.length;
-      const items = plural(count, 'item');
-      const first = index.get(group.itemIds[0]);
-      const base = { op: group.op, itemIds: group.itemIds, count, items: preview(group.itemIds) };
-      if (group.op === 'move_items') { const path = pathIn(library, draft, group.collectionId); changes.push({ ...base, label: `Move ${items} to ${path}`, collectionId: group.collectionId, collectionName: path }); }
-      else if (group.op === 'add_tags') changes.push({ ...base, label: `Add ${tagLabel(group.tags)} to ${items}`, tags: group.tags });
-      else if (group.op === 'remove_tags') changes.push({ ...base, label: `Remove ${tagLabel(group.tags)} from ${items}`, tags: group.tags });
-      else if (group.op === 'set_favorite') changes.push({ ...base, label: group.favorite ? `Add ${items} to favorites` : `Remove ${items} from favorites`, favorite: group.favorite });
-      else if (group.op === 'archive_items') changes.push({ ...base, label: `Archive ${items}` });
-      else if (group.op === 'trash_items') changes.push({ ...base, label: `Move ${items} to Trash` });
-      else if (group.op === 'create_note') {
-        const path = pathIn(library, draft, group.collectionId);
-        changes.push({ op: 'create_note', label: `Create note ${quote(group.title)}${group.collectionId ? ` in ${path}` : ''}`, itemIds: [], count: 1, collectionId: group.collectionId, collectionName: path,
-          note: { id: group.noteId, title: group.title, markdown: group.markdown, relatedIds: group.relatedIds, url: group.url } });
-      } else if (group.op === 'append_to_note') changes.push({ ...base, label: `Append to ${quote(first?.title)}`, note: { id: group.itemIds[0], markdown: group.markdown } });
-      else if (group.op === 'update_item') {
-        const { title, excerpt } = group.patch;
-        const label = title && excerpt !== undefined ? `Rename ${quote(first?.title)} to ${quote(title)} and update its description`
-          : title ? `Rename ${quote(first?.title)} to ${quote(title)}` : `Update the description of ${quote(first?.title)}`;
-        changes.push({ ...base, label, ...(title ? { title } : {}), ...(excerpt !== undefined ? { excerpt } : {}) });
-      }
-    }
-    const touched = new Set(changes.flatMap(change => change.itemIds));
-    const title = changes.length === 1 ? changes[0].label : touched.size ? `${plural(changes.length, 'change')} to ${plural(touched.size, 'item')}` : plural(changes.length, 'change');
-    return { id: uid('proposal'), title, summary: `${changes.map(change => change.label).join('. ')}.`, changes };
-  }
-
   async function applyDraft(draft) {
-    const library = await getLibrary();
+    const library = await readLibrary();
     const index = new Map((library?.items || []).map(item => [item.id, item]));
-    const undo = { patches: [], createdCollections: [], createdNotes: [] };
+    const undo = { patches: [], createdCollections: [], createdNotes: [], createdItems: [], collectionPatches: [], deletedCollections: [], widgets: [] };
     const patches = new Map();
     const previous = new Map();
     const touch = (id, keys) => {
@@ -390,82 +1004,277 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       if (!item) return null;
       const patch = patches.get(id) || {};
       const before = previous.get(id) || {};
-      for (const key of keys) if (!(key in before)) before[key] = structuredClone(item[key] ?? (key === 'tags' ? [] : key === 'deletedAt' ? null : key === 'favorite' || key === 'archived' ? false : ''));
+      for (const key of keys) if (!(key in before)) before[key] = structuredClone(item[key] ?? (key in BLANK ? BLANK[key] : ''));
       patches.set(id, patch);
       previous.set(id, before);
       return { item, patch };
     };
     const live = id => { const item = index.get(id); return item && !item.deletedAt; };
+    const trashed = id => !!index.get(id)?.deletedAt;
     try {
+      // 1. New collections, so everything below can use them.
       for (const collection of draft.collections) {
-        await store.createCollection({ id: collection.id, name: collection.name, parentId: collection.parentId, ...(collection.icon ? { icon: collection.icon } : {}), ...(collection.color ? { color: collection.color } : {}) });
+        await store.createCollection({ id: collection.id, name: collection.name, parentId: collection.parentId, ...(collection.icon ? { icon: collection.icon } : {}),
+          ...(collection.color ? { color: collection.color } : {}), ...(collection.description ? { description: collection.description } : {}) });
         undo.createdCollections.push(collection.id);
       }
+      // 2. Collection edits. The undo entry is recorded first: restoring unchanged fields is harmless.
+      const saved = new Map((library?.collections || []).map(collection => [collection.id, collection]));
       for (const { op } of draft.ops) {
-        const itemIds = (op.itemIds || []).filter(live);
-        if (op.op === 'move_items') for (const id of itemIds) touch(id, ['collectionId']).patch.collectionId = op.collectionId;
-        else if (op.op === 'add_tags' || op.op === 'remove_tags') {
-          for (const id of itemIds) {
-            const { item, patch } = touch(id, ['tags']);
-            const tags = patch.tags || [...(item.tags || [])];
-            const lower = op.tags.map(tag => tag.toLowerCase());
-            patch.tags = op.op === 'add_tags' ? [...tags, ...op.tags.filter(tag => !tags.some(t => String(t).toLowerCase() === tag.toLowerCase()))]
-              : tags.filter(tag => !lower.includes(String(tag).toLowerCase()));
-          }
-        } else if (op.op === 'set_favorite') for (const id of itemIds) touch(id, ['favorite']).patch.favorite = op.favorite;
-        else if (op.op === 'archive_items') for (const id of itemIds) touch(id, ['archived']).patch.archived = true;
-        else if (op.op === 'trash_items') for (const id of itemIds) touch(id, ['deletedAt']).patch.deletedAt = now();
-        else if (op.op === 'update_item') for (const id of itemIds) Object.assign(touch(id, Object.keys(op.patch)).patch, op.patch);
-        else if (op.op === 'append_to_note') {
-          for (const id of itemIds) {
-            const { item, patch } = touch(id, ['content', 'excerpt']);
-            const current = text(patch.content ?? item.content).trimEnd();
-            patch.content = current ? `${current}\n\n${op.markdown.trim()}\n` : `${op.markdown.trim()}\n`;
-            patch.excerpt = noteExcerpt(patch.content);
-          }
+        if (op.op !== 'update_collection') continue;
+        const before = saved.get(op.collectionId);
+        if (!before) throw new Error('A collection in this proposal no longer exists.');
+        const { parentId, ...fields } = op.patch;
+        const old = { name: before.name, description: text(before.description), icon: text(before.icon) || 'folder', color: before.color, pinned: !!before.pinned };
+        undo.collectionPatches.push({ id: op.collectionId, patch: Object.fromEntries(Object.keys(fields).map(key => [key, old[key]])),
+          ...(parentId !== undefined ? { parentId: text(before.parentId), beforeId: nextSiblingId(library.collections, before) } : {}) });
+        if (Object.keys(fields).length) await store.updateCollection(op.collectionId, fields);
+        if (parentId !== undefined) await store.moveCollection(op.collectionId, { parentId });
+      }
+      // 3. Item edits, folded into one patch per item and written in one atomic call.
+      for (const { op } of draft.ops) {
+        const itemIds = (op.itemIds || []).filter(op.op === 'restore_items' ? trashed : live);
+        switch (op.op) {
+          case 'move_items': for (const id of itemIds) touch(id, ['collectionId']).patch.collectionId = op.collectionId; break;
+          case 'add_tags': case 'remove_tags':
+            for (const id of itemIds) {
+              const { item, patch } = touch(id, ['tags']);
+              const tags = patch.tags || [...(item.tags || [])];
+              patch.tags = op.op === 'add_tags' ? [...tags, ...op.tags.filter(tag => !tags.some(t => sameTag(t, tag)))] : tags.filter(tag => !op.tags.some(t => sameTag(t, tag)));
+            }
+            break;
+          case 'rename_tag': for (const id of itemIds) { const { item, patch } = touch(id, ['tags']); patch.tags = renamedTags(patch.tags || item.tags || [], op.from, op.to); } break;
+          case 'set_favorite': for (const id of itemIds) touch(id, ['favorite']).patch.favorite = op.favorite; break;
+          case 'archive_items': case 'unarchive_items': for (const id of itemIds) touch(id, ['archived']).patch.archived = op.op === 'archive_items'; break;
+          case 'trash_items': for (const id of itemIds) touch(id, ['deletedAt']).patch.deletedAt = now(); break;
+          case 'restore_items': for (const id of itemIds) touch(id, ['deletedAt']).patch.deletedAt = null; break;
+          // The sticky placement is recorded too: a note that becomes a link loses it, and undo puts it back.
+          case 'convert_items': for (const id of itemIds) touch(id, ['type', 'sticky']).patch.type = op.type; break;
+          case 'update_item':
+            for (const id of itemIds) {
+              const { item, patch } = touch(id, Object.keys(op.patch));
+              Object.assign(patch, op.patch);
+              if ('content' in op.patch && !('excerpt' in op.patch) && (patch.type ?? item.type) === 'note') { touch(id, ['excerpt']); patch.excerpt = noteExcerpt(op.patch.content); }
+            }
+            break;
+          case 'append_to_note':
+            for (const id of itemIds) {
+              const { item, patch } = touch(id, ['content', 'excerpt']);
+              const current = text(patch.content ?? item.content).trimEnd();
+              patch.content = current ? `${current}\n\n${op.markdown.trim()}\n` : `${op.markdown.trim()}\n`;
+              patch.excerpt = noteExcerpt(patch.content);
+            }
+            break;
+          case 'link_items':
+            for (const id of itemIds) { const { item, patch } = touch(id, ['relatedIds']); patch.relatedIds = unique([...(patch.relatedIds || item.relatedIds || []), ...op.relatedIds.filter(other => other !== id)]); }
+            break;
+          case 'unlink_items':
+            // Links show from both sides, so both directions go.
+            for (const id of itemIds) {
+              const { item, patch } = touch(id, ['relatedIds']);
+              patch.relatedIds = (patch.relatedIds || item.relatedIds || []).filter(other => !op.relatedIds.includes(other));
+              for (const otherId of op.relatedIds) {
+                const theirs = patches.get(otherId)?.relatedIds || index.get(otherId)?.relatedIds || [];
+                if (index.has(otherId) && theirs.includes(id)) touch(otherId, ['relatedIds']).patch.relatedIds = theirs.filter(other => other !== id);
+              }
+            }
+            break;
         }
       }
       if (patches.size) {
-        await store.bulkUpdateItems([...patches].map(([id, patch]) => ({ id, patch })));
+        const updated = await store.bulkUpdateItems([...patches].map(([id, patch]) => ({ id, patch })));
         undo.patches = [...previous].map(([id, patch]) => ({ id, patch }));
+        undo.revisions = revisionsOf(updated, patches.keys());
       }
+      // 4. New items. Each is recorded with the revision it was created at: undo deletes it for good only if untouched since.
+      let stickies = 0;
+      const topZ = (library?.items || []).reduce((max, item) => Math.max(max, Number(item?.sticky?.z) || 0), 0);
       for (const { op } of draft.ops) {
-        if (op.op !== 'create_note') continue;
-        await store.saveItem({ id: op.noteId, type: 'note', title: op.title, content: op.markdown, excerpt: noteExcerpt(op.markdown), collectionId: op.collectionId,
-          relatedIds: op.relatedIds.filter(live), url: op.url || '' });
-        undo.createdNotes.push(op.noteId);
+        if (op.op === 'create_note') {
+          // Several new stickies cascade instead of covering each other, above the stickies already there.
+          const sticky = op.sticky ? { color: op.sticky, board: '', y: 24 + 32 * stickies, z: topZ + 1 + stickies++ } : null;
+          const note = await store.saveItem({ id: op.noteId, type: 'note', title: op.title, content: op.markdown, excerpt: noteExcerpt(op.markdown), collectionId: op.collectionId,
+            relatedIds: op.relatedIds.filter(live), url: op.url || '', tags: op.tags || [], ...(sticky ? { sticky } : {}) });
+          undo.createdNotes.push({ id: op.noteId, updatedAt: text(note?.updatedAt) });
+        } else if (op.op === 'save_links') {
+          for (const link of op.links) {
+            const item = await store.saveItem({ id: link.id, type: 'bookmark', url: link.url, title: link.title, excerpt: link.description, tags: link.tags, collectionId: op.collectionId });
+            undo.createdItems.push({ id: link.id, updatedAt: text(item?.updatedAt) });
+          }
+        }
+      }
+      // 5. Collection deletions, after items were moved out of them. The record is taken from the store's current state
+      // so undo can bring back exactly the items and sub-collections that deleteCollection moved.
+      for (const { op } of draft.ops) {
+        if (op.op !== 'delete_collection') continue;
+        const latest = (typeof store.loadLibrary === 'function' ? await store.loadLibrary() : null) || await getLibrary();
+        const collection = (latest?.collections || []).find(entry => entry.id === op.collectionId);
+        if (!collection) continue;
+        const record = { collection: structuredClone(collection), itemIds: (latest.items || []).filter(item => item.collectionId === collection.id).map(item => item.id),
+          childIds: latest.collections.filter(entry => entry.parentId === collection.id).map(entry => entry.id), beforeId: nextSiblingId(latest.collections, collection) };
+        await store.deleteCollection(op.collectionId);
+        undo.deletedCollections.push(record);
+      }
+      // 6. Dashboard widgets last: they show collections that now exist.
+      for (const { op } of draft.ops) {
+        if (op.op !== 'add_dashboard_widget') continue;
+        if (!board) throw new Error('The dashboard is not available here.');
+        const added = await board.addCollectionWidget({ collectionId: op.collectionId, ...(op.boardId ? { boardId: op.boardId } : {}) });
+        if (added?.widgetId) undo.widgets.push(added.widgetId);
+        op.placed = { widgetId: text(added?.widgetId), boardId: text(added?.boardId) || op.boardId };
+      }
+      // Later steps (a collection deletion) can stamp a patched item again: record where each one finally ended up.
+      if (undo.patches.length && typeof store.loadLibrary === 'function') {
+        const latest = await store.loadLibrary().catch(() => null);
+        if (latest) undo.revisions = revisionsOf(latest.items, patches.keys());
       }
     } catch (error) {
       // Leave the library as it was: revert whatever part of the proposal was already written.
-      try { await undoChanges(store, undo); } catch {}
+      try { await undoChanges(store, undo, { dashboard: board }); } catch {}
       throw error;
     }
     return undo;
   }
 
-  const resultFor = (op, data, library) => {
-    if (!op) return data;
-    switch (op.op) {
+  const resultFor = (name, ops, data) => {
+    const op = ops[0];
+    const count = op.itemIds?.length || 0;
+    switch (name) {
       case 'create_collection': return { status: 'applied', collectionId: op.collectionId, ...(data?.path ? { path: data.path } : {}) };
-      case 'create_note': return { status: 'applied', noteId: op.noteId, title: op.title, cite: `[[${op.noteId}]]` };
-      case 'move_items': return { status: 'applied', moved: op.itemIds.length, collectionId: op.collectionId, collection: data?.collection };
-      case 'add_tags': return { status: 'applied', tagged: op.itemIds.length, tags: op.tags };
-      case 'remove_tags': return { status: 'applied', untagged: op.itemIds.length, tags: op.tags };
-      case 'set_favorite': return { status: 'applied', updated: op.itemIds.length, favorite: op.favorite };
-      case 'archive_items': return { status: 'applied', archived: op.itemIds.length };
-      case 'trash_items': return { status: 'applied', trashed: op.itemIds.length };
+      case 'create_note': return { status: 'applied', noteId: op.noteId, title: op.title, cite: `[[${op.noteId}]]`, ...(op.sticky ? { sticky: op.sticky } : {}) };
+      case 'save_links': {
+        const links = ops.find(entry => entry.op === 'save_links')?.links || [];
+        const moved = new Set(ops.find(entry => entry.op === 'move_items')?.itemIds || []);
+        const leftOut = (data?.count || 0) - links.length;
+        return { status: 'applied', saved: links.length, collectionId: data?.collectionId, collection: data?.collection, items: links.map(({ id, title, url }) => ({ id, title, url })),
+          ...(data?.alreadySaved ? { alreadySaved: data.alreadySaved.map(entry => entry.moved ? { ...entry, moved: moved.has(entry.id) } : entry) } : {}),
+          ...(leftOut > 0 ? { leftOutByUser: leftOut } : {}),
+          ...Object.fromEntries(['duplicates', 'invalid', 'notesWithSameUrl', 'notesHint', 'similar', 'similarHint'].filter(key => data?.[key]).map(key => [key, data[key]])) };
+      }
+      case 'move_items': return { status: 'applied', moved: count, collectionId: op.collectionId, collection: data?.collection };
+      case 'add_tags': return { status: 'applied', tagged: count, tags: op.tags };
+      case 'remove_tags': return { status: 'applied', untagged: count, tags: op.tags };
+      case 'delete_tag': return { status: 'applied', untagged: count, tag: op.tags[0] };
+      case 'rename_tag': return { status: 'applied', renamed: count, from: op.from, to: op.to };
+      case 'set_favorite': return { status: 'applied', updated: count, favorite: op.favorite };
+      case 'archive_items': return { status: 'applied', archived: count };
+      case 'unarchive_items': return { status: 'applied', unarchived: count };
+      case 'trash_items': return { status: 'applied', trashed: count };
+      case 'restore_items': return { status: 'applied', restored: count };
+      case 'convert_items': return { status: 'applied', converted: count, type: op.type, ...(data?.invalid ? { invalid: data.invalid } : {}) };
+      case 'update_item': return { status: 'applied', itemId: op.itemIds[0], updated: Object.keys(op.patch) };
+      case 'link_items': return { status: 'applied', itemId: op.itemIds[0], linked: op.relatedIds.length };
+      case 'unlink_items': return { status: 'applied', itemId: op.itemIds[0], unlinked: op.relatedIds.length };
+      case 'update_collection': return { status: 'applied', collectionId: op.collectionId, updated: Object.keys(op.patch) };
+      case 'delete_collection': return { status: 'applied', deleted: op.collectionId, movedToInbox: op.itemCount || 0 };
+      case 'show_collection_on_dashboard': return { status: 'applied', collectionId: op.collectionId, widgetId: op.placed?.widgetId || '', boardId: op.placed?.boardId || op.boardId };
       default: return { status: 'applied', itemId: op.itemIds?.[0] };
     }
   };
 
+  // -> { apply: true, exclude: Set } | { apply: false }
   const waitForDecision = proposal => new Promise((resolve, reject) => {
-    if (typeof onProposal !== 'function') { resolve('discard'); return; }
+    if (typeof onProposal !== 'function') { resolve({ apply: false }); return; }
     if (signal?.aborted) { reject(signal.reason || new DOMException('Stopped', 'AbortError')); return; }
     const onAbort = () => reject(signal.reason || new DOMException('Stopped', 'AbortError'));
     signal?.addEventListener?.('abort', onAbort, { once: true });
-    Promise.resolve().then(() => onProposal(proposal)).then(decision => resolve(decision === 'apply' ? 'apply' : 'discard'), () => resolve('discard'))
+    const decide = value => value === 'apply' ? { apply: true, exclude: new Set() }
+      : value && typeof value === 'object' && value.decision === 'apply' ? { apply: true, exclude: new Set((Array.isArray(value.exclude) ? value.exclude : []).filter(id => typeof id === 'string')) }
+        : { apply: false };
+    Promise.resolve().then(() => onProposal(proposal)).then(value => resolve(decide(value)), () => resolve({ apply: false }))
       .finally(() => signal?.removeEventListener?.('abort', onAbort));
   });
+
+  // Matches an applied operation to its row on the card by its own ids, so each call gets its own label.
+  const SAME = ['type', 'favorite', 'from', 'to', 'boardId'];
+  const matches = (entry, op) => {
+    if (entry.op !== op.op) return false;
+    if (op.op === 'create_note') return entry.note?.id === op.noteId;
+    if (op.collectionId !== undefined && entry.collectionId !== op.collectionId) return false;
+    if (SAME.some(key => op[key] !== undefined && entry[key] !== op[key])) return false;
+    if (op.tags && entry.tags && op.tags.map(tag => tag.toLowerCase()).sort().join('\u0000') !== entry.tags.map(tag => tag.toLowerCase()).sort().join('\u0000')) return false;
+    return !op.itemIds?.length || op.itemIds.every(id => entry.itemIds.includes(id));
+  };
+  const labelFor = (ops, changes) => {
+    const labels = unique(ops.map(op => changes.find(entry => matches(entry, op))?.label).filter(Boolean));
+    return labels.length ? labels.map(pastTense).join('; ') : 'Applied';
+  };
+
+  async function propose(writes, done) {
+    const refusal = declined ? DECLINED : proposals.length >= MAX_PROPOSALS_PER_TURN ? LIMIT : '';
+    if (refusal) {
+      for (const { call } of writes) done(call, { status: 'rejected', message: refusal }, { isError: true, summary: 'Extra changes not proposed' });
+      return;
+    }
+    const library = await readLibrary();
+    const draft = { collections: [], ops: [] };
+    const staged = [];
+    described = null;
+    // Collections first so moves, links and notes in the same step can reference "new:<name>".
+    const ordered = [...writes].sort((a, b) => (a.call.name === 'create_collection' ? 0 : 1) - (b.call.name === 'create_collection' ? 0 : 1));
+    for (const { call, input } of ordered) {
+      try {
+        const outcome = await stagers[call.name](input, draft, library);
+        if (outcome.skip) { done(call, outcome.data, { summary: outcome.data.message || 'No change needed' }); continue; }
+        const ops = outcome.ops || [outcome.op];
+        for (const op of ops) if (op.op !== 'create_collection') draft.ops.push({ callId: call.id, op });
+        staged.push({ call, ops, data: outcome.data });
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        done(call, { status: 'invalid', error: error.message }, { isError: true, summary: `${call.name.replace(/_/g, ' ')} not proposed` });
+      }
+    }
+    if (!staged.length) return;
+    const changes = buildChanges(draft, library);
+    const proposal = { id: uid('proposal'), ...summarize(changes), changes };
+    const record = { ...proposal, status: 'pending' };
+    proposals.push(record);
+    onEvent({ type: 'proposal', proposal });
+    onEvent({ type: 'status', label: 'Waiting for your review' });
+    let decision;
+    try { decision = await waitForDecision(proposal); }
+    catch (error) {
+      // Stopped while the card was open: close it as discarded so the UI does not leave an Apply button behind.
+      record.status = 'discarded';
+      onEvent({ type: 'proposal_result', proposalId: proposal.id, status: 'discarded' });
+      throw error;
+    }
+    // Items left out in Review never reach the store, so results and counts describe exactly what changed.
+    const proposed = new Set([...changes.flatMap(change => change.itemIds), ...draft.ops.map(({ op }) => op.noteId).filter(Boolean)]);
+    const excluded = decision.apply ? [...decision.exclude].filter(id => proposed.has(id)) : [];
+    const final = decision.apply ? excludeFromDraft(draft, new Set(excluded)) : null;
+    if (!final || (!final.collections.length && !final.ops.length)) {
+      declined = true;
+      record.status = 'discarded';
+      onEvent({ type: 'proposal_result', proposalId: proposal.id, status: 'discarded' });
+      for (const { call } of staged) done(call, { status: 'declined', message: 'The user declined the proposed changes. Nothing was changed. Do not propose them again unless asked.' }, { summary: 'Changes discarded' });
+      return;
+    }
+    try {
+      const undo = await applyDraft(final);
+      const applied = excluded.length ? buildChanges(final, library) : changes;
+      const { summary } = summarize(applied);
+      const after = await settle().catch(() => null);
+      Object.assign(record, { status: 'applied', result: { summary }, undo, excluded });
+      onEvent({ type: 'proposal_result', proposalId: proposal.id, status: 'applied', summary, excluded, undo: () => undoChanges(store, undo, { dashboard: board }) });
+      const index = new Map((after?.items || []).map(item => [item.id, item]));
+      for (const { call, ops, data } of staged) {
+        const kept = ops.some(op => op.op === 'create_collection') ? ops : final.ops.filter(entry => entry.callId === call.id).map(entry => entry.op);
+        if (!kept.length) { done(call, { status: 'excluded', message: 'The user left this change out. Nothing was changed for it.' }, { summary: 'Left out' }); continue; }
+        // New items become citable at once, even before the app's copy of the library catches up.
+        for (const op of kept) {
+          const created = op.op === 'create_note' ? [{ id: op.noteId, title: op.title, url: op.url, type: 'note' }] : op.op === 'save_links' ? op.links.map(link => ({ ...link, type: 'bookmark' })) : [];
+          for (const entry of created) remember(index.get(entry.id) || { ...entry, collectionId: op.collectionId }, after?.items ? after : library);
+        }
+        done(call, resultFor(call.name, kept, data), { summary: labelFor(kept, applied) });
+      }
+    } catch (error) {
+      record.status = 'failed';
+      record.error = error.message;
+      onEvent({ type: 'proposal_result', proposalId: proposal.id, status: 'failed', error: error.message });
+      for (const { call } of staged) done(call, { status: 'failed', message: `Nothing was changed: ${error.message}` }, { isError: true, summary: 'Changes failed' });
+    }
+  }
 
   /** Runs one model step's tool calls; returns [{ toolUseId, content, isError }] in call order. */
   async function execute(calls) {
@@ -478,7 +1287,7 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
     for (const call of calls) {
       const tool = TOOL_BY_NAME.get(call.name);
       const input = call.input && typeof call.input === 'object' && !Array.isArray(call.input) ? call.input : {};
-      if (!tool || (call.name === 'get_page' && !page)) { done(call, { error: `Unknown tool ${call.name}.` }, { isError: true }); continue; }
+      if (!tool || !offered(call.name)) { done(call, { error: `Unknown tool ${call.name}.` }, { isError: true }); continue; }
       if (tool.access === 'write') { writes.push({ call, input }); continue; }
       if (signal?.aborted) throw signal.reason || new DOMException('Stopped', 'AbortError');
       try {
@@ -489,76 +1298,9 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
         done(call, { error: error.message }, { isError: true, summary: `${tool.name.replace(/_/g, ' ')} failed` });
       }
     }
-    if (writes.length) {
-      if (proposalUsed) {
-        for (const { call } of writes) done(call, { status: 'rejected', message: 'Changes were already reviewed in this turn. Do not propose more; tell the user what else you would change so they can ask for it.' }, { isError: true, summary: 'Extra changes not proposed' });
-      } else {
-        const library = await getLibrary();
-        const draft = { collections: [], ops: [] };
-        const staged = [];
-        // Collections first so moves and notes in the same step can reference "new:<name>".
-        const ordered = [...writes].sort((a, b) => (a.call.name === 'create_collection' ? 0 : 1) - (b.call.name === 'create_collection' ? 0 : 1));
-        for (const { call, input } of ordered) {
-          try {
-            const outcome = stagers[call.name](input, draft, library);
-            if (outcome.skip) done(call, outcome.data, { summary: outcome.data.message || 'No change needed' });
-            else {
-              if (outcome.op.op !== 'create_collection') draft.ops.push({ callId: call.id, op: outcome.op });
-              staged.push({ call, op: outcome.op, data: outcome.data });
-            }
-          } catch (error) {
-            done(call, { status: 'invalid', error: error.message }, { isError: true, summary: `${call.name.replace(/_/g, ' ')} not proposed` });
-          }
-        }
-        if (staged.length) {
-          proposalUsed = true;
-          const proposal = buildProposal(draft, library);
-          const record = { ...proposal, status: 'pending' };
-          proposals.push(record);
-          onEvent({ type: 'proposal', proposal });
-          onEvent({ type: 'status', label: 'Waiting for your review' });
-          let decision;
-          try { decision = await waitForDecision(proposal); }
-          catch (error) {
-            // Stopped while the card was open: close it as discarded so the UI does not leave an Apply button behind.
-            record.status = 'discarded';
-            onEvent({ type: 'proposal_result', proposalId: proposal.id, status: 'discarded' });
-            throw error;
-          }
-          if (decision === 'apply') {
-            try {
-              const undo = await applyDraft(draft);
-              const after = await getLibrary();
-              record.status = 'applied';
-              record.result = { summary: proposal.summary };
-              record.undo = undo;
-              onEvent({ type: 'proposal_result', proposalId: proposal.id, status: 'applied', summary: proposal.summary, undo: () => undoChanges(store, undo) });
-              for (const { call, op, data } of staged) {
-                if (op.op === 'create_note') { const note = (after?.items || []).find(item => item.id === op.noteId); if (note) remember(note, after); }
-                done(call, resultFor(op, data, after), { summary: labelFor(op, proposal) });
-              }
-            } catch (error) {
-              record.status = 'failed';
-              record.error = error.message;
-              onEvent({ type: 'proposal_result', proposalId: proposal.id, status: 'failed', error: error.message });
-              for (const { call } of staged) done(call, { status: 'failed', message: `Nothing was changed: ${error.message}` }, { isError: true, summary: 'Changes failed' });
-            }
-          } else {
-            record.status = 'discarded';
-            onEvent({ type: 'proposal_result', proposalId: proposal.id, status: 'discarded' });
-            for (const { call } of staged) done(call, { status: 'declined', message: 'The user declined the proposed changes. Nothing was changed. Do not propose them again unless asked.' }, { summary: 'Changes discarded' });
-          }
-        }
-      }
-    }
+    if (writes.length) await propose(writes, done);
     return calls.map(call => results.get(call.id) || { toolUseId: call.id, content: JSON.stringify({ error: 'Tool did not run.' }), isError: true });
   }
 
-  const labelFor = (op, proposal) => {
-    const change = proposal.changes.find(entry => entry.op === op.op && (op.collectionId === undefined || entry.collectionId === op.collectionId) && (!op.itemIds?.length || op.itemIds.every(id => entry.itemIds.includes(id))));
-    return change ? change.label.replace(/^Create /, 'Created ').replace(/^Move /, 'Moved ').replace(/^Add /, 'Added ').replace(/^Remove /, 'Removed ')
-      .replace(/^Archive /, 'Archived ').replace(/^Append /, 'Appended ').replace(/^Rename /, 'Renamed ').replace(/^Update /, 'Updated ') : 'Applied';
-  };
-
-  return { definitions: options => toolDefinitions({ page: !!page, ...options }), execute, sources, proposals };
+  return { definitions: options => toolDefinitions({ page: !!page, dashboard: !!board, ...options }), execute, sources, proposals };
 }
