@@ -10,10 +10,15 @@ const SPEC_EXPORTS = ['CATALOG', 'listConnections', 'saveConnection', 'deleteCon
 test('the facade exposes the SPEC 7.2 API (plus pauseIndexing and the semanticSearch adapters) with explicit re-exports', async () => {
   for (const name of SPEC_EXPORTS) assert.ok(name in ai, name);
   // Beyond SPEC 7.2: indexing control, the bridge search adapter, file imports, and helpers the settings and assistant UIs need.
+  // The research agent's run API (build contracts §6) is part of the facade too.
   assert.deepEqual(Object.keys(ai).filter(name => !SPEC_EXPORTS.includes(name)).sort(), ['ANTHROPIC_EFFORTS', 'DEFAULT_AI_SETTINGS', 'EFFORT_LABELS', 'EFFORT_LEVELS',
-    'HANDOFF_TARGETS', 'cancelChatGptSignIn', 'chatGptSignInStatus', 'chatProviders', 'cliSignInStatus', 'embeddingProviders', 'ensureHostPermission', 'getBridgeStatus',
-    'getProvider', 'handoffPlan', 'hostPermissionOrigins', 'importDocument', 'importTarget', 'onConnectionsChanged', 'pairBridge', 'pauseIndexing', 'resolveChatTarget', 'semanticSearch',
-    'semanticSearchAvailable', 'startChatGptSignIn', 'undoProposal']);
+    'HANDOFF_TARGETS', 'cancelChatGptSignIn', 'chatGptSignInStatus', 'chatProviders', 'cliSignInStatus', 'continueResearch', 'embeddingProviders', 'ensureHostPermission', 'getBridgeStatus',
+    'getProvider', 'handoffPlan', 'hostPermissionOrigins', 'importDocument', 'importTarget', 'onConnectionsChanged', 'pairBridge', 'pauseIndexing', 'raiseResearchBudget',
+    'researchAvailability', 'resetResearchProvisioning', 'resolveChatTarget', 'resumeResearch', 'semanticSearch', 'semanticSearchAvailable', 'startChatGptSignIn', 'startResearch',
+    'stopResearch', 'subscribeResearch', 'undoProposal', 'undoResearch']);
+  for (const name of ['researchAvailability', 'startResearch', 'continueResearch', 'resumeResearch', 'stopResearch', 'raiseResearchBudget', 'undoResearch', 'subscribeResearch', 'resetResearchProvisioning']) {
+    assert.equal(typeof ai[name], 'function', name);
+  }
   assert.ok(Array.isArray(ai.CATALOG) && ai.CATALOG.length > 5);
   for (const name of SPEC_EXPORTS.filter(name => name !== 'CATALOG')) assert.equal(typeof ai[name], 'function', name);
   const source = await readFile(new URL('../extension/lib/ai/index.js', import.meta.url), 'utf8');

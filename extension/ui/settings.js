@@ -2,8 +2,8 @@
 // panel in the side panel (ctx.state.panel = { kind: 'settings' }); both use one layout that switches to a section list with
 // drill-in below 760px (styles/settings.css container queries). A search field filters every section down to matching rows.
 // Library settings go through ctx.store.updateSettings (app.js applies them to <html>); AI configuration through the ctx.ai
-// facade; bridge, MCP and Raindrop through lib/integrations.js. Appearance, New tab & dashboard and Connected accounts live in
-// ui/settings/*.js; the building blocks and the search renderer in ui/settings/parts.js.
+// facade; bridge, MCP and Raindrop through lib/integrations.js. Appearance, New tab & dashboard, Connected accounts, Assistant
+// permissions and Research agent live in ui/settings/*.js; the building blocks and the search renderer in ui/settings/parts.js.
 import { html, cx, plural, safeHref, safeSrc } from './html.js';
 import { icon } from './icons.js';
 import { button, iconButton, segmented, select, field, input, badge, spinner, emptyState, kbd, fileSize, relativeDate, shortDate } from './components.js';
@@ -22,6 +22,8 @@ import { uiState, isBusy, withBusy, renderFiltered, isSearching, matches, search
 import { renderAppearance, ACCENTS } from './settings/appearance.js';
 import { renderNewTab, attachNewTab, detachNewTab } from './settings/newtab.js';
 import { renderAccounts, attachAccounts, detachAccounts } from './settings/accounts.js';
+import { renderAssistantPermissions, renderResearch, researchPatch } from './settings/assistant.js';
+import { PERMISSION_CATEGORIES, PERMISSION_LEVELS, PERMISSION_PRESETS } from '../lib/ai/permissions.js';
 
 export { SETTINGS_SECTIONS, normalizeSection, ACCENTS };
 
@@ -427,8 +429,9 @@ registerMount('settings-live', (el, ctx) => {
 /* ------------------------------------------------------------------ public entry */
 
 /**
- * Opens Settings at a section: appearance, newtab, general, library, ai, search, agents, accounts, integrations, shortcuts,
- * about, help. options: { anchor } scrolls to a row id; { providerId } opens that AI provider's connect dialog (section 'ai').
+ * Opens Settings at a section: appearance, newtab, general, library, ai, assistant, research, search, agents, accounts,
+ * integrations, shortcuts, about, help. options: { anchor } scrolls to a row id; { providerId } opens that AI provider's
+ * connect dialog (section 'ai').
  */
 export function openSettings(ctx, section = 'general', options = {}) {
   const ui = uiState(ctx);
@@ -629,6 +632,8 @@ function renderSection(ctx, id) {
     case 'newtab': return renderNewTab(ctx);
     case 'library': return renderLibrary(ctx);
     case 'ai': return renderAi(ctx);
+    case 'assistant': return renderAssistantSection(ctx);
+    case 'research': return renderResearchSection(ctx);
     case 'search': return renderSearch(ctx);
     case 'agents': return renderAgents(ctx);
     case 'accounts': return renderAccounts(ctx);
@@ -931,6 +936,31 @@ function renderAiDefaults(ctx) {
       control: segmented({ name: 'handoff', value: handoff, action: 'settings.ai-handoff', ariaLabel: 'Continue in',
         options: targets.map(target => ({ value: target.id, label: target.name })) }) }),
   ]) });
+}
+
+/* ------------------------------------------------------------------ Assistant permissions and Research agent */
+
+// Both wait for the stored AI settings: showing the defaults first would offer "Always ask" for a moment on a device that
+// allows more, and a click in that moment would act on the wrong starting point. Null once the section can render, else
+// what to show meanwhile (nothing while searching).
+function aiSettingsPending(ctx, label) {
+  if (!ctx.ai) return live.engineSettled ? aiUnavailable() : loadingBlock('Loading AI settings');
+  if (!data.aiSettings) return data.aiError && data.aiError !== 'unavailable' ? aiUnavailable() : loadingBlock(label);
+  return null;
+}
+
+function renderAssistantSection(ctx) {
+  return aiSettingsPending(ctx, 'Loading assistant permissions') ?? renderAssistantPermissions(ctx, { permissions: aiSettings(ctx).assistantPermissions });
+}
+
+// Exported for tests (tests/settings-assistant.test.mjs renders both sections with a stub ctx).
+export function renderAssistantSettingsSection(ctx, id = 'assistant') { return id === 'research' ? renderResearchSection(ctx) : renderAssistantSection(ctx); }
+
+function renderResearchSection(ctx) {
+  const pending = aiSettingsPending(ctx, 'Loading research settings') ?? (data.connections ? null : loadingBlock('Loading AI connections'));
+  if (pending !== null) return pending;
+  const research = { ...(ctx.ai.DEFAULT_AI_SETTINGS?.research || {}), ...(aiSettings(ctx).research || {}) };
+  return renderResearch(ctx, { research, connections: data.connections, canReset: typeof ctx.ai.resetResearchProvisioning === 'function' });
 }
 
 /* ------------------------------------------------------------------ Local bridge (AI models and Agents & MCP) */
@@ -1743,6 +1773,34 @@ registerActions({
   'settings.ai-quick': ({ ctx, el }) => setAi(ctx, { quick: parseChoice(el.value) }),
   'settings.ai-flag': ({ ctx, el, data: payload }) => setAi(ctx, { [payload.key]: !!el.checked }),
   'settings.ai-handoff': ({ ctx, data: payload }) => setAi(ctx, { handoffTarget: payload.value }),
+
+  // Assistant permissions
+  'settings.ai-permission': ({ ctx, data: payload }) => {
+    if (!PERMISSION_CATEGORIES.some(category => category.id === payload.name) || !PERMISSION_LEVELS.includes(payload.value)) return undefined;
+    return setAi(ctx, { assistantPermissions: { [payload.name]: payload.value } });
+  },
+  'settings.ai-permission-preset': ({ ctx, data: payload }) => {
+    // Custom is whatever the rows below say: choosing it moves focus there instead of changing anything.
+    if (payload.value === 'custom') { focusSoon(ctx, '#settings-permission-create [role="radio"][aria-checked="true"]'); return undefined; }
+    if (!Object.hasOwn(PERMISSION_PRESETS, payload.value)) return undefined;
+    return setAi(ctx, { assistantPermissions: { ...PERMISSION_PRESETS[payload.value] } });
+  },
+
+  // Research agent
+  'settings.research': ({ ctx, el, data: payload }) => {
+    // Segmented controls carry data-name and data-value; selects their own name and value.
+    const patch = researchPatch(payload.name || el?.name, payload.value ?? el?.value);
+    return patch ? setAi(ctx, { research: patch }) : undefined;
+  },
+  'settings.research-flag': ({ ctx, el, data: payload }) => (['enabled', 'allowOriginalEdits'].includes(payload.key) ? setAi(ctx, { research: { [payload.key]: !!el.checked } }) : undefined),
+  'settings.research-reset': async ({ ctx }) => {
+    if (typeof ctx.ai?.resetResearchProvisioning !== 'function') { ctx.toast('Research is not available in this version of Still.', { tone: 'warning' }); return; }
+    const ok = await ctx.confirm({ title: 'Reset the research agent?', confirmLabel: 'Reset research agent',
+      body: 'Still forgets the research agent and environment it set up in your Anthropic account and sets up new ones on the next run. Nothing is deleted from your account, and research already in your notes stays.' });
+    if (!ok) return;
+    await withBusy(ctx, 'research-reset', () => ctx.ai.resetResearchProvisioning());
+    ctx.toast('Research agent reset', { tone: 'success' });
+  },
 
   // Local bridge
   'settings.bridge-field': ({ el }) => { drafts[el.dataset.field] = el.value; },

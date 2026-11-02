@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import {
   AI_STORE_KEY, LEGACY_PREFS_KEY, DEFAULT_AI_SETTINGS, configureConnections, deleteConnection, ensureHostPermission, getAiSettings, hostPermissionOrigins,
   listConnections, listModels, migrateLegacyPreferences, onConnectionsChanged, resolveChatTarget, resolveConnection, saveConnection, setAiSettings, testConnection,
+  exportAiConfig, importAiConfig,
 } from '../extension/lib/ai/connections.js';
+import { PERMISSION_PRESETS } from '../extension/lib/ai/permissions.js';
+import { RESEARCH_DEFAULTS } from '../extension/lib/ai/research/settings.js';
 import { SECRETS_KEY } from '../extension/lib/ai/secrets.js';
 import { CATALOG, clampEffort, getProvider, normalizeBaseUrl } from '../extension/lib/ai/catalog.js';
 import { streamChat } from '../extension/lib/ai/chat.js';
@@ -97,6 +100,92 @@ test('AI settings have spec defaults, merge per section and refuse secrets or in
   await assert.rejects(setAiSettings({ chat: { apiKey: 'sk-nope' } }), /belong in a connection/);
   await assert.rejects(setAiSettings({ embeddings: { dims: 1.5 } }), /whole number/);
   assert.equal((await getAiSettings()).chat.effort, 'high');
+});
+
+const ASK_ALL = { create: 'ask', organize: 'ask', edit: 'ask', dashboard: 'ask', delete: 'ask' };
+
+test('assistant permissions default to asking for everything, merge per kind and refuse anything but ask or allow', async t => {
+  reset(t);
+  assert.deepEqual({ ...DEFAULT_AI_SETTINGS.assistantPermissions }, ASK_ALL);
+  assert.deepEqual((await getAiSettings()).assistantPermissions, ASK_ALL);
+  let next = await setAiSettings({ assistantPermissions: { create: 'allow', organize: 'allow' } });
+  assert.deepEqual(next.assistantPermissions, { ...ASK_ALL, create: 'allow', organize: 'allow' });
+  next = await setAiSettings({ assistantPermissions: { ...PERMISSION_PRESETS.trusted } });
+  assert.deepEqual(next.assistantPermissions, { ...PERMISSION_PRESETS.trusted });
+  for (const [patch, message] of [
+    [{ assistantPermissions: { delete: 'yes' } }, /either Ask or Allow/],
+    [{ assistantPermissions: { delete: 'auto' } }, /either Ask or Allow/],
+    [{ assistantPermissions: { delete: true } }, /either Ask or Allow/],
+    [{ assistantPermissions: { everything: 'allow' } }, /only cover create, organize, edit, dashboard and delete/],
+    [{ assistantPermissions: 'allow' }, /must list each kind of change/],
+    [{ assistantPermissions: true }, /must list each kind of change/],
+    [{ assistantPermissions: null }, /must list each kind of change/],
+  ]) await assert.rejects(setAiSettings(patch), error => error.code === 'bad_request' && message.test(error.message), JSON.stringify(patch));
+  // A refused write changes nothing.
+  assert.deepEqual((await getAiSettings()).assistantPermissions, { ...PERMISSION_PRESETS.trusted });
+});
+
+test('research settings default from lib/ai/research/settings.js and accept only values already in range', async t => {
+  reset(t);
+  assert.deepEqual({ ...DEFAULT_AI_SETTINGS.research }, { ...RESEARCH_DEFAULTS });
+  assert.deepEqual((await getAiSettings()).research, { ...RESEARCH_DEFAULTS });
+  const next = await setAiSettings({ research: { depth: 'deep', github: 'off', maxSubpages: 0, budgetUsd: 12.5, allowOriginalEdits: true, enabled: false, connectionId: 'conn_1' } });
+  assert.deepEqual(next.research, { ...RESEARCH_DEFAULTS, depth: 'deep', github: 'off', maxSubpages: 0, budgetUsd: 12.5, allowOriginalEdits: true, enabled: false, connectionId: 'conn_1' });
+  assert.equal((await setAiSettings({ research: { maxSubpages: 12, budgetUsd: 50 } })).research.depth, 'deep', 'one level deep merge keeps the other fields');
+  for (const [patch, message] of [
+    [{ depth: 'extreme' }, /research depth/], [{ github: 'sometimes' }, /uses GitHub/], [{ maxSubpages: 13 }, /0 to 12 subpages/], [{ maxSubpages: 2.5 }, /0 to 12 subpages/],
+    [{ maxSubpages: '3' }, /0 to 12 subpages/], [{ budgetUsd: 0 }, /between \$1 and \$50/], [{ budgetUsd: 51 }, /between \$1 and \$50/], [{ budgetUsd: '5' }, /between \$1 and \$50/],
+    [{ budgetUsd: Number.NaN }, /between \$1 and \$50/], [{ enabled: 'yes' }, /on or off/], [{ allowOriginalEdits: 1 }, /Editing the original/], [{ connectionId: ' padded ' }, /connection for research/],
+    [{ connectionId: 'x'.repeat(201) }, /connection for research/], [{ model: 'claude-opus-5-5' }, /not a research agent setting/],
+  ]) await assert.rejects(setAiSettings({ research: patch }), error => error.code === 'bad_request' && message.test(error.message), JSON.stringify(patch));
+  await assert.rejects(setAiSettings({ research: true }), /Research agent settings must be an object/);
+  await assert.rejects(setAiSettings({ research: { token: 'ghp_nope' } }), /belong in a connection/);
+  assert.deepEqual((await getAiSettings()).research, { ...RESEARCH_DEFAULTS, depth: 'deep', github: 'off', maxSubpages: 12, budgetUsd: 50, allowOriginalEdits: true, enabled: false, connectionId: 'conn_1' });
+});
+
+test('stored permission and research values a build cannot use are read as safe values and never block other writes', async t => {
+  reset(t);
+  localStorage.setItem(AI_STORE_KEY, JSON.stringify({ version: 2, connections: [], overlays: {}, modelCache: {},
+    settings: { handoffTarget: 'claude', assistantPermissions: { create: 'allow', delete: 'always', wipe: 'allow' }, research: { depth: 'galaxy', budgetUsd: 999, extra: 1 } } }));
+  const settings = await getAiSettings();
+  assert.deepEqual(settings.assistantPermissions, { ...ASK_ALL, create: 'allow' }, 'only an exact allow allows');
+  assert.equal(settings.research.depth, RESEARCH_DEFAULTS.depth);
+  assert.equal(settings.research.budgetUsd, 50, 'clamped by normalizeResearchSettings');
+  assert.ok(!('extra' in settings.research));
+  assert.equal((await setAiSettings({ handoffTarget: 'grok' })).handoffTarget, 'grok');
+  const saved = stored(AI_STORE_KEY).settings;
+  assert.deepEqual(saved.assistantPermissions, { ...ASK_ALL, create: 'allow' });
+  assert.ok(!('extra' in saved.research));
+});
+
+test('assistant permissions and research settings stay on the device: never exported, never imported from a file', async t => {
+  reset(t, { chrome: { permissions: { request: async () => true, contains: async () => true } } });
+  const connection = await saveConnection({ providerId: 'anthropic', apiKey: KEY });
+  await setAiSettings({ assistantPermissions: { ...PERMISSION_PRESETS.full }, research: { connectionId: connection.id, budgetUsd: 20, allowOriginalEdits: true }, handoffTarget: 'grok' });
+  const exported = await exportAiConfig();
+  assert.equal(exported.settings.handoffTarget, 'grok');
+  assert.ok(!('assistantPermissions' in exported.settings), 'permissions are not in the backup');
+  assert.ok(!('research' in exported.settings), 'research settings are not in the backup');
+  // A crafted backup on a fresh device cannot turn on auto-apply or loosen the research agent.
+  localStorage.clear();
+  const crafted = { ...exported, settings: { ...exported.settings, assistantPermissions: { ...PERMISSION_PRESETS.full }, research: { ...RESEARCH_DEFAULTS, allowOriginalEdits: true, budgetUsd: 50 } } };
+  const result = await importAiConfig(crafted);
+  assert.ok(result.settingsAdded.includes('handoffTarget'));
+  assert.ok(!result.settingsAdded.includes('assistantPermissions') && !result.settingsAdded.includes('research'));
+  const settings = await getAiSettings();
+  assert.deepEqual(settings.assistantPermissions, ASK_ALL);
+  assert.deepEqual(settings.research, { ...RESEARCH_DEFAULTS });
+  assert.ok(!('assistantPermissions' in stored(AI_STORE_KEY).settings), 'nothing from the file was stored');
+});
+
+test('removing a connection sends research back to automatic', async t => {
+  reset(t, { chrome: { permissions: { request: async () => true, contains: async () => true } } });
+  const connection = await saveConnection({ providerId: 'anthropic', apiKey: KEY });
+  await setAiSettings({ research: { connectionId: connection.id, depth: 'quick' } });
+  await deleteConnection(connection.id);
+  const { research } = await getAiSettings();
+  assert.equal(research.connectionId, '');
+  assert.equal(research.depth, 'quick', 'the rest of the research settings stay');
 });
 
 test('saveConnection asks for host access inside the gesture, stores the key apart and makes it the default', async t => {

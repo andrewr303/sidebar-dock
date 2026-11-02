@@ -1,6 +1,7 @@
 import {
   LIBRARY_SCHEMA_VERSION, LIBRARY_MIGRATIONS, assertLibraryVersion, migrateLibrary,
 } from './storage/migrations.js';
+import { MAX_PAGE_DEPTH, pageIndex, childrenOf, wouldCycle, pageDepth, pageHeight } from './pages.js';
 
 export const STORAGE_KEY = 'still.library.v1';
 export const ITEM_TYPES = ['bookmark', 'article', 'image', 'video', 'file', 'note'];
@@ -20,7 +21,8 @@ const isObject = value => !!value && typeof value === 'object' && !Array.isArray
 // are dropped. Prototype keys are never copied.
 const ITEM_FIELDS = new Set(['id', 'type', 'title', 'url', 'excerpt', 'content', 'articleContent', 'tags', 'collectionId', 'favorite',
   'archived', 'deletedAt', 'createdAt', 'updatedAt', 'cover', 'art', 'sourceUrl', 'highlights', 'relatedIds', 'reminderAt',
-  'reminderNotifiedAt', 'attachmentId', 'fileName', 'mime', 'size', 'pinned', 'read', 'sticky']);
+  'reminderNotifiedAt', 'attachmentId', 'fileName', 'mime', 'size', 'pinned', 'read', 'sticky',
+  'parentId', 'siteName', 'author', 'publishedAt', 'icon', 'lang']);
 const COLLECTION_FIELDS = new Set(['id', 'name', 'color', 'icon', 'parentId', 'description', 'cover', 'pinned', 'layout', 'sidebarLayout',
   'createdAt', 'updatedAt', 'deletedAt']);
 const HIGHLIGHT_FIELDS = new Set(['id', 'text', 'note', 'color', 'createdAt', 'url']);
@@ -73,6 +75,29 @@ function coverUrl(value) {
   if (/^(assets|images)\/[a-z0-9_./ -]+$/i.test(str) && !str.includes('..')) return str;
   try { return safeUrl(str); } catch { return ''; }
 }
+
+// Page metadata captured with an article (publisher, byline, date, icon, language). Each is optional: '' when unknown.
+const oneLine = (value, max) => text(value).replace(/\s+/g, ' ').trim().slice(0, max).trim();
+function isoDate(value) {
+  const time = Date.parse(text(value).trim());
+  return Number.isFinite(time) ? new Date(time).toISOString() : '';
+}
+// A page icon is a web address or a small inline image: base64 raster, SVG or ICO data, or percent-encoded SVG (raw
+// double quotes, angle brackets, backslashes and spaces are refused). Anything else is dropped.
+export const MAX_ICON_DATA = 16 * 1024;
+const ICON_BASE64 = /^data:image\/(?:png|jpeg|gif|webp|avif|svg\+xml|x-icon|vnd\.microsoft\.icon);base64,[A-Za-z0-9+/]+={0,2}$/i;
+const ICON_SVG = /^data:image\/svg\+xml(?:;charset=utf-8|;utf8)?,[\w%!$&'()*+,;=:@/?#.~[\]-]+$/i;
+function iconUrl(value) {
+  const str = text(value).trim();
+  if (!str) return '';
+  if (/^data:/i.test(str)) return str.length <= MAX_ICON_DATA && (ICON_BASE64.test(str) || ICON_SVG.test(str)) ? str : '';
+  if (str.length > 8192) return '';
+  try { return safeUrl(str); } catch { return ''; }
+}
+const langTag = value => { const tag = text(value).trim().replace(/_/g, '-'); return tag.length <= 35 && /^[a-z]{1,8}(?:-[a-z0-9]{1,8})*$/i.test(tag) ? tag : ''; };
+// Only notes sit inside a page, and never inside themselves. Whether the parent exists is checked by the store ops.
+const MAX_PARENT_ID = 200;
+const pageParent = (value, type, id) => { const parentId = type === 'note' ? text(value).trim() : ''; return parentId && parentId !== id && parentId.length <= MAX_PARENT_ID ? parentId : ''; };
 
 // `stored` is the saved highlight with the same id (its unknown keys survive the edit).
 function normalizeHighlight(value, stored) {
@@ -127,8 +152,9 @@ export function normalizeItem(input, existing = {}, { stored = false } = {}) {
   const savedHighlights = new Map([...(Array.isArray(existing.highlights) ? existing.highlights : []),
     ...(stored && Array.isArray(input.highlights) ? input.highlights : [])].filter(h => isObject(h) && text(h.id)).map(h => [h.id, h]));
   const createdAt = text(existing.createdAt) || text(input.createdAt) || now();
+  const id = text(existing.id) || text(input.id) || uid('item');
   const item = {
-    id: text(existing.id) || text(input.id) || uid('item'), type,
+    id, type,
     title: text(merged.title).trim() || (url ? new URL(url).hostname : type === 'note' ? 'Untitled note' : 'Untitled item'),
     url, excerpt: text(merged.excerpt), content: text(merged.content), articleContent: text(merged.articleContent).slice(0, 250000), tags: list(merged.tags),
     collectionId: text(merged.collectionId), favorite: merged.favorite === true,
@@ -145,6 +171,9 @@ export function normalizeItem(input, existing = {}, { stored = false } = {}) {
     size: Number.isFinite(merged.size) && merged.size >= 0 ? merged.size : 0,
     pinned: merged.pinned === true, read: merged.read === true,
     sticky: normalizeSticky(merged.sticky, type, stored ? merged.sticky : existing.sticky),
+    parentId: pageParent(merged.parentId, type, id),
+    siteName: oneLine(merged.siteName, 200), author: oneLine(merged.author, 300), publishedAt: isoDate(merged.publishedAt),
+    icon: iconUrl(merged.icon), lang: langTag(merged.lang),
   };
   return keepUnknown(item, stored ? merged : existing, ITEM_FIELDS);
 }
@@ -234,6 +263,41 @@ function unbury(state, kind, ids) {
   state.tombstones = tombstonesOf(state).filter(t => !(t.kind === kind && back.has(t.id)));
 }
 
+// Ids below rootId in a page index, following only children whose current record matches `follow` (the walk stops at the
+// first child that does not). `current` reads the latest copy of a record while a change is being built.
+function subtreeIds(index, rootId, follow, current = id => index.byId.get(id)) {
+  const out = [], seen = new Set([rootId]), stack = [rootId];
+  while (stack.length) {
+    const id = stack.pop();
+    for (const child of childrenOf(index, id, { includeDeleted: true })) {
+      const record = current(child.id);
+      if (seen.has(child.id) || !record || record.parentId !== id || !follow(record)) continue;
+      seen.add(child.id); out.push(child.id); stack.push(child.id);
+    }
+  }
+  return out;
+}
+
+// Seed and import repair for subpages: a parent that is missing, a non-note child, a page that sits inside itself
+// through a loop, or one nested deeper than MAX_PAGE_DEPTH moves to the top level. `order` decides which page of a loop
+// is lifted (the first one met). With `bump` each repaired record gets a new updatedAt.
+function repairPages(items, { bump = true, order = items } = {}) {
+  const byId = new Map(items.map(item => [item.id, item]));
+  const lift = item => { item.parentId = ''; if (bump) item.updatedAt = nextStamp(item.updatedAt); };
+  for (const item of items) {
+    if (item.parentId && (item.type !== 'note' || item.parentId === item.id || !byId.has(item.parentId))) lift(item);
+  }
+  for (const item of order) {
+    const seen = new Set([item.id]);
+    let depth = 0;
+    for (let parentId = item.parentId; parentId; parentId = byId.get(parentId)?.parentId || '') {
+      if (parentId === item.id || ++depth > MAX_PAGE_DEPTH) { lift(item); break; }
+      if (seen.has(parentId)) break;
+      seen.add(parentId);
+    }
+  }
+}
+
 // What a commit changed, for onCommit: records whose updatedAt moved (or that appeared), records that disappeared,
 // plus records touched by derived clean-ups (backlink removal) that deliberately keep their updatedAt.
 const indexRecords = records => new Map((records || []).filter(isObject).map(record => [record.id, record.updatedAt]));
@@ -299,7 +363,10 @@ export function createLibraryStore({ read, write, withLock = task => task(), rea
       }
     }
     const fresh = !state;
-    if (!state) state = args[0] && operation === 'loadLibrary' ? validateLibrary(args[0], libraryOptions) : emptyLibrary(target);
+    if (!state) {
+      state = args[0] && operation === 'loadLibrary' ? validateLibrary(args[0], libraryOptions) : emptyLibrary(target);
+      repairPages(state.items, { bump: false });
+    }
     const before = onCommit ? commitIndex(migrated ? null : fresh ? emptyLibrary(target) : state) : null;
     const touched = new Set();
     let result, extra;
@@ -316,43 +383,208 @@ export function createLibraryStore({ read, write, withLock = task => task(), rea
         item.relatedIds = item.relatedIds.filter(id => !removed.has(id)); touched.add(item.id);
       }
     };
+    // An explicit request to put a page inside itself is refused (normalizeItem would quietly drop it).
+    const refuseSelfParent = (id, value) => {
+      if (isObject(value) && typeof value.parentId === 'string' && value.parentId.trim() && value.parentId.trim() === id) throw new Error('A page cannot be placed inside itself.');
+    };
+    // normalizeItem also quietly drops a parent id no item could have (not a string, or longer than an id). For a note an
+    // explicit request like that is refused, instead of moving the page to the top level. null and '' mean the top level.
+    const refuseBadParent = (value, type) => {
+      if (!isObject(value) || type !== 'note' || value.parentId === undefined || value.parentId === null) return;
+      if (typeof value.parentId !== 'string' || value.parentId.trim().length > MAX_PARENT_ID) throw new Error('That page no longer exists.');
+    };
+    /*
+     * Every item edit goes through here so subpages stay consistent. changes: [[existing | null, next]] (normalized).
+     * 1. A note given a new parent needs a live parent, no loop and room under MAX_PAGE_DEPTH, all judged on the state
+     *    after the whole change, so one batch cannot build a loop (A inside B and B inside A).
+     * 2. Restoring a page restores the subpages trashed together with it (the identical deletedAt stamp); a restored
+     *    page whose parent is still in Trash (or sent there by the same batch) or gone moves to the top level.
+     * 3. Trashing a page gives its live subpages its exact deletedAt stamp (a page already in Trash that gets a new stamp
+     *    takes the subpages trashed with it along). Pages are stamped from the top of each tree down, and a subpage the
+     *    same batch also trashes (with any stamp) or only edits takes its ancestor's, so the two stay "trashed together".
+     * 4. A page moved into another takes that page's collection, and so does its whole live subtree (even when the moved
+     *    page already had it); a page's collection change carries down to its live subpages, counting those the same
+     *    batch trashes with it (subpages given their own collection in the same batch keep it).
+     * Records changed only by a cascade get a new updatedAt (onCommit reports them). Returns the final `next` records.
+     */
+    const commitItems = changes => {
+      const post = new Map(state.items.map(item => [item.id, item]));
+      const previous = new Map();
+      for (const [existing, next] of changes) { post.set(next.id, next); previous.set(next.id, existing || null); }
+      const pageWork = changes.some(([existing, next]) => (existing ? next.parentId !== (existing.parentId || '') || (next.deletedAt || null) !== (existing.deletedAt || null)
+        || next.collectionId !== text(existing.collectionId) : !!next.parentId));
+      const bumped = new Set();
+      const touch = (id, patch) => {
+        const record = { ...post.get(id), ...patch };
+        if (!previous.has(id) && !bumped.has(id)) { record.updatedAt = nextStamp(record.updatedAt); bumped.add(id); }
+        post.set(id, record);
+      };
+      if (pageWork) {
+        let index = pageIndex(post);
+        const below = (id, follow) => subtreeIds(index, id, follow, key => post.get(key));
+        const moved = new Set();
+        for (const [existing, next] of changes) {
+          if (!next.parentId || next.parentId === (existing?.parentId || '')) continue;
+          const parent = post.get(next.parentId);
+          if (!parent || parent.deletedAt) throw new Error('That page no longer exists.');
+          if (wouldCycle(index, next.id, next.parentId)) throw new Error('A page cannot be placed inside itself.');
+          moved.add(next.id);
+        }
+        for (const id of moved) {
+          if (pageDepth(index, id) + pageHeight(index, id) > MAX_PAGE_DEPTH) throw new Error(`Pages can be nested ${MAX_PAGE_DEPTH} levels deep.`);
+        }
+        const restored = changes.filter(([existing, next]) => existing?.deletedAt && !next.deletedAt);
+        for (const [existing, next] of restored) for (const id of below(next.id, item => item.deletedAt === existing.deletedAt)) touch(id, { deletedAt: null });
+        // Top of each tree first, so an ancestor's stamp reaches a subpage the batch trashes with a stamp of its own.
+        const trashing = changes.filter(([existing, next]) => existing && next.deletedAt && next.deletedAt !== existing.deletedAt)
+          .sort(([, a], [, b]) => pageDepth(index, a.id) - pageDepth(index, b.id));
+        const stamped = new Set();
+        for (const [existing, next] of trashing) {
+          if (stamped.has(next.id)) continue;
+          // Never treat two missing stamps as "trashed together": a live page takes only live subpages, a trashed one
+          // only those with its old stamp. A subpage in this batch counts by its state before the batch, so one the batch
+          // only edits (tags, title, collection) or trashes too is followed, and one it restores stays out.
+          const from = existing.deletedAt || null;
+          const together = item => (previous.has(item.id) ? (previous.get(item.id)?.deletedAt || null) === from && (!from || !!item.deletedAt)
+            : from ? item.deletedAt === from : !item.deletedAt);
+          for (const id of below(next.id, together)) { touch(id, { deletedAt: next.deletedAt }); stamped.add(id); }
+        }
+        // After the trash cascade, so a parent this same batch sends to Trash (directly or through its own parent) counts.
+        let lifted = false;
+        for (const [, next] of restored) {
+          const parentId = post.get(next.id).parentId;
+          if (parentId && (!post.get(parentId) || post.get(parentId).deletedAt)) { touch(next.id, { parentId: '' }); lifted = true; }
+        }
+        if (lifted) index = pageIndex(post);
+        const anchors = changes.filter(([existing, next]) => existing && (moved.has(next.id) || next.collectionId !== text(existing.collectionId))).map(([, next]) => next.id);
+        const anchored = new Set(anchors);
+        anchors.sort((a, b) => pageDepth(index, a) - pageDepth(index, b));
+        for (const id of anchors) {
+          const parent = moved.has(id) ? post.get(post.get(id).parentId) : null;
+          if (parent && post.get(id).collectionId !== text(parent.collectionId)) touch(id, { collectionId: text(parent.collectionId) });
+          const collectionId = post.get(id).collectionId;
+          // A moved page always carries its parent's collection down: it may already have had it while its subpages did not.
+          if (!moved.has(id) && collectionId === text(previous.get(id).collectionId)) continue;
+          // A subpage this batch sent to Trash along with a page counts as live here, so the tree comes back in one collection.
+          for (const child of below(id, item => (!item.deletedAt || stamped.has(item.id)) && !anchored.has(item.id))) {
+            if (post.get(child).collectionId !== collectionId) touch(child, { collectionId });
+          }
+        }
+      }
+      const positions = new Map(state.items.map((item, position) => [item.id, position]));
+      for (const id of new Set([...previous.keys(), ...bumped])) {
+        if (positions.has(id)) state.items[positions.get(id)] = post.get(id);
+        else { positions.set(id, state.items.length); state.items.push(post.get(id)); }
+      }
+      return changes.map(([, next]) => post.get(next.id));
+    };
+    /*
+     * Deletes items for good. Their surviving subpages move up to the nearest page that stays (or the top level), with a
+     * new updatedAt. Backlinks are cleared and each id leaves a tombstone. Returns { ids, attachmentIds }: the file blobs
+     * that no remaining item uses, for the caller to delete.
+     */
+    const removeItems = removed => {
+      const byId = new Map(state.items.map(item => [item.id, item]));
+      const survivor = (parentId, childId) => {
+        const seen = new Set();
+        while (parentId && removed.has(parentId) && !seen.has(parentId)) { seen.add(parentId); parentId = byId.get(parentId)?.parentId || ''; }
+        return parentId && parentId !== childId && byId.has(parentId) && !removed.has(parentId) ? parentId : '';
+      };
+      for (const item of state.items) {
+        if (removed.has(item.id) || !item.parentId || !removed.has(item.parentId)) continue;
+        item.parentId = survivor(item.parentId, item.id); item.updatedAt = nextStamp(item.updatedAt);
+      }
+      const gone = state.items.filter(item => removed.has(item.id));
+      state.items = state.items.filter(item => !removed.has(item.id));
+      unlink(removed);
+      bury(state, 'item', gone.map(item => item.id));
+      const stillUsed = new Set(state.items.map(item => item.attachmentId).filter(Boolean));
+      return { ids: gone.map(item => item.id), attachmentIds: [...new Set(gone.map(item => item.attachmentId).filter(id => id && !stillUsed.has(id)))] };
+    };
     switch (operation) {
       case 'loadLibrary': case 'exportLibrary': result = state; break;
       case 'saveItem': {
         const valid = normalizeItem(input);
         const existing = input.id ? state.items.find(i => i.id === input.id) : valid.url && valid.type !== 'note'
           ? state.items.find(i => !i.deletedAt && i.type !== 'note' && canonicalUrl(i.url) === canonicalUrl(valid.url)) : null;
+        // Saving a page again never blanks what was captured before (metadata a new capture could not read stays). The
+        // page details compare the NORMALIZED incoming value (`valid`), so a non-empty but invalid one (an unparsable date,
+        // a javascript: icon) cannot win the merge and then normalize to '' over the stored value.
         const nextInput = existing && !input.id ? { ...input,
           content: input.content || existing.content, articleContent: input.articleContent || existing.articleContent, excerpt: input.excerpt || existing.excerpt,
-          cover: input.cover || existing.cover, collectionId: input.collectionId || existing.collectionId,
+          cover: valid.cover || existing.cover, collectionId: input.collectionId || existing.collectionId,
+          siteName: valid.siteName || existing.siteName, author: valid.author || existing.author, publishedAt: valid.publishedAt || existing.publishedAt,
+          icon: valid.icon || existing.icon, lang: valid.lang || existing.lang,
           tags: list([...existing.tags, ...valid.tags]),
           highlights: [...existing.highlights, ...valid.highlights], relatedIds: list([...existing.relatedIds, ...valid.relatedIds]) } : input;
+        refuseSelfParent(text(input.id), input);
         result = normalizeItem(nextInput, existing || {});
+        refuseBadParent(input, result.type);
+        // A new subpage lands in its parent's collection unless the caller chose one.
+        const parent = !existing && result.parentId ? state.items.find(i => i.id === result.parentId) : null;
+        if (parent && !text(input.collectionId) && parent.collectionId && state.collections.some(c => c.id === parent.collectionId)) result.collectionId = parent.collectionId;
         if (result.collectionId) findCollection(result.collectionId);
-        if (existing) state.items[state.items.indexOf(existing)] = result; else state.items.push(result);
+        [result] = commitItems([[existing || null, result]]);
         unbury(state, 'item', [result.id]);
         changed = true; break;
       }
       case 'updateItem': {
         const existing = findItem(input);
         assertRevision(existing, options);
-        result = normalizeItem({ ...patch, id: input }, existing);
-        if (result.collectionId) findCollection(result.collectionId);
-        state.items[state.items.indexOf(existing)] = result;
+        refuseSelfParent(input, patch);
+        const next = normalizeItem({ ...patch, id: input }, existing);
+        refuseBadParent(patch, next.type);
+        if (next.collectionId) findCollection(next.collectionId);
+        [result] = commitItems([[existing, next]]);
         changed = true; break;
       }
       case 'deleteItem': case 'restoreItem': {
+        // Trash and restore carry the page's subpages along (see commitItems).
         const existing = findItem(input);
         assertRevision(existing, patch);
-        result = normalizeItem({ deletedAt: operation === 'deleteItem' ? now() : null }, existing);
-        state.items[state.items.indexOf(existing)] = result; changed = true; break;
+        [result] = commitItems([[existing, normalizeItem({ deletedAt: operation === 'deleteItem' ? now() : null }, existing)]]);
+        changed = true; break;
       }
       case 'permanentlyDeleteItem': {
-        assertRevision(findItem(input), patch);
-        state.items = state.items.filter(i => i.id !== input);
-        unlink(new Set([input]));
-        bury(state, 'item', [input]);
-        result = { id: input }; changed = true; break;
+        // From Trash, the subpages trashed together with the item (same deletedAt) are deleted too. A live item (the
+        // assistant's undo deletes notes it created) never takes subpages with it. Other subpages move up a level.
+        // Returns { id, ids, attachmentIds } (every deleted id, and the file blobs nothing uses any more).
+        const target = findItem(input);
+        assertRevision(target, patch);
+        const together = target.deletedAt ? subtreeIds(pageIndex(state.items), input, item => item.deletedAt === target.deletedAt) : [];
+        result = { id: input, ...removeItems(new Set([input, ...together])) }; changed = true; break;
+      }
+      case 'movePage': {
+        // Moves a note into another item ({ parentId }) or to the top level (parentId: ''). Inside a page it takes that
+        // page's collection, and so do its subpages. Optional expectedUpdatedAt.
+        const existing = findItem(input);
+        assertRevision(existing, patch);
+        if (existing.type !== 'note') throw new Error('Only notes can be moved inside a page.');
+        if (existing.deletedAt) throw new Error('Restore this page from Trash before moving it.');
+        refuseBadParent(patch, existing.type);
+        const parentId = typeof patch?.parentId === 'string' ? patch.parentId.trim() : existing.parentId;
+        refuseSelfParent(input, { parentId });
+        if (parentId === (existing.parentId || '')) { result = existing; break; }
+        [result] = commitItems([[existing, normalizeItem({ parentId }, existing)]]);
+        changed = true; break;
+      }
+      case 'upsertContentSection': {
+        // The research agent's write, read and applied inside the queue so a concurrent edit is never lost:
+        // { previous, next, field }. When `previous` is non-empty and found, its LAST occurrence becomes `next`;
+        // otherwise `next` is appended after a blank line. Only content (and articleContent, for the original-edit path).
+        // Returns { item, replaced }.
+        const existing = findItem(input);
+        const { previous = '', next, field = 'content' } = isObject(patch) ? patch : {};
+        if (!['content', 'articleContent'].includes(field)) throw new Error('Only the note or the saved page text can be written here.');
+        if (typeof next !== 'string' || typeof previous !== 'string') throw new Error('Write the section as Markdown text.');
+        const current = text(existing[field]);
+        const at = previous ? current.lastIndexOf(previous) : -1;
+        const gap = !current || current.endsWith('\n\n') ? '' : current.endsWith('\n') ? '\n' : '\n\n';
+        const value = at >= 0 ? current.slice(0, at) + next + current.slice(at + previous.length) : next ? current + gap + next : current;
+        if (field === 'articleContent' && value.length > 250000) throw new Error('The saved page text is limited to 250,000 characters.');
+        if (value === current) { result = { item: existing, replaced: at >= 0 }; break; }
+        const [item] = commitItems([[existing, normalizeItem({ [field]: value }, existing)]]);
+        result = { item, replaced: at >= 0 }; changed = true; break;
       }
       case 'bulkUpdateItems': {
         // One write for many item patches: [{ id, patch }]. Trash via patch.deletedAt, restore via deletedAt: null.
@@ -361,22 +593,20 @@ export function createLibraryStore({ read, write, withLock = task => task(), rea
         const updates = input.map(entry => {
           if (!entry || typeof entry.id !== 'string' || !entry.patch || typeof entry.patch !== 'object') throw new Error('Each change needs an item id and a patch.');
           const existing = findItem(entry.id);
+          refuseSelfParent(entry.id, entry.patch);
           const next = normalizeItem({ ...entry.patch, id: entry.id }, existing);
+          refuseBadParent(entry.patch, next.type);
           if (next.collectionId) findCollection(next.collectionId);
           return [existing, next];
         });
-        for (const [existing, next] of updates) state.items[state.items.indexOf(existing)] = next;
-        result = updates.map(([, next]) => next); changed = true; break;
+        // Trash and restore patches cascade to subpages exactly like deleteItem and restoreItem (see commitItems).
+        result = commitItems(updates); changed = true; break;
       }
       case 'emptyTrash': {
-        const removed = state.items.filter(i => i.deletedAt);
-        const ids = new Set(removed.map(i => i.id));
-        state.items = state.items.filter(i => !i.deletedAt);
-        unlink(ids);
-        bury(state, 'item', [...ids]);
-        const stillUsed = new Set(state.items.map(i => i.attachmentId).filter(Boolean));
-        result = { ids: [...ids], attachmentIds: [...new Set(removed.map(i => i.attachmentId).filter(id => id && !stillUsed.has(id)))] };
-        changed = ids.size > 0; break;
+        // Live subpages of trashed pages (left by an older build) move up to a page that stays.
+        const removed = new Set(state.items.filter(i => i.deletedAt).map(i => i.id));
+        result = removeItems(removed);
+        changed = removed.size > 0; break;
       }
       case 'moveCollection': {
         // Reparent and/or reorder: { parentId, beforeId } places the collection before a sibling (or last when beforeId is empty).
@@ -458,6 +688,7 @@ export function createLibraryStore({ read, write, withLock = task => task(), rea
         // a stampless record from an old file overwrite a newer local edit. Missing or invalid counts as oldest.
         const fileStamps = kind => new Map((Array.isArray(input?.[kind]) ? input[kind] : []).filter(isObject)
           .map(record => [record.id, Date.parse(typeof record.updatedAt === 'string' ? record.updatedAt : '') || 0]));
+        const revivedItems = new Set();
         const merge = (kind, local, incoming, counts) => {
           const byId = new Map(local.map(record => [record.id, record]));
           const given = fileStamps(kind === 'item' ? 'items' : 'collections');
@@ -471,6 +702,7 @@ export function createLibraryStore({ read, write, withLock = task => task(), rea
             byId.set(record.id, record); counts[existing ? 'updated' : 'added']++; revived.push(record.id);
           }
           unbury(state, kind, revived);
+          if (kind === 'item') for (const id of revived) revivedItems.add(id);
           return [...byId.values()];
         };
         state.collections = merge('collection', state.collections, imported.collections, summary.collections);
@@ -491,6 +723,10 @@ export function createLibraryStore({ read, write, withLock = task => task(), rea
         for (const item of state.items) {
           if (item.collectionId && !collectionsById.has(item.collectionId)) { item.collectionId = ''; item.updatedAt = nextStamp(item.updatedAt); }
         }
+        // Subpages whose parent did not come in (missing from the file and this library, skipped or deleted here), or that
+        // would sit inside themselves across the file and this library, move to the top level. In a loop, an incoming
+        // page is lifted before a local one.
+        repairPages(state.items, { order: [...state.items.filter(item => revivedItems.has(item.id)), ...state.items.filter(item => !revivedItems.has(item.id))] });
         if (importOptions.settings === true && Object.keys(publicSettings(imported.settings)).length) {
           state.settings = mergeImportedSettings(state.settings, imported.settings);
           summary.settings = true;
@@ -572,6 +808,10 @@ export const mutateTags = input => operation('mutateTags', [input]);
 export const bulkUpdateItems = (changes, options = {}) => operation('bulkUpdateItems', [changes, options]);
 export const emptyTrash = () => operation('emptyTrash', []);
 export const moveCollection = (id, placement = {}) => operation('moveCollection', [id, placement]);
+/** Moves a note into another item ({ parentId, expectedUpdatedAt }) or to the top level (parentId: ''). */
+export const movePage = (id, placement = {}) => operation('movePage', [id, placement]);
+/** In-queue section write for the research agent: { previous = '', next, field = 'content' } -> { item, replaced }. */
+export const upsertContentSection = (id, section = {}) => operation('upsertContentSection', [id, section]);
 export const updateSettings = patch => operation('updateSettings', [patch]);
 export const importLibrary = (data, options = {}) => operation('importLibrary', [data, options]);
 export const exportLibrary = async () => {

@@ -3,6 +3,8 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import vm from 'node:vm';
+import { VENDORED_FILES, CLASSIC_SCRIPT_DIRS } from './vendored.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const extensionRoot = resolve(root, 'extension');
@@ -75,6 +77,10 @@ const allowedOptionalPermissions = new Set(['bookmarks', 'tabs', 'topSites']);
 if ((manifest.optional_permissions || []).some(permission => !allowedOptionalPermissions.has(permission))) fail('Unexpected optional permission.');
 const allowedHosts = new Set(['http://127.0.0.1/*', 'http://localhost/*', 'https://api.raindrop.io/*', 'https://*/*', 'http://*/*']);
 for (const host of manifest.optional_host_permissions || []) if (!allowedHosts.has(host)) fail(`Review unexpected optional host: ${host}`);
+// Page access stays on demand: the worker injects its classic scripts with executeScript({ files }) after a user action,
+// which needs neither declared content scripts nor page-visible extension files.
+if (manifest.content_scripts?.length) fail('Review declared content_scripts: Still injects page scripts on demand only.');
+if (manifest.web_accessible_resources?.length) fail('Review web_accessible_resources: no extension file should be exposed to web pages.');
 const csp = manifest.content_security_policy?.extension_pages || '';
 if (!/script-src\s+'self'\s*;/.test(csp) || /unsafe-eval|unsafe-inline|https?:|\*/.test(csp)) fail('Extension CSP must restrict scripts to self with no unsafe/remote execution.');
 
@@ -119,6 +125,36 @@ for (const directory of ['extension', 'bridge', 'scripts', 'tests']) {
 // Keep process count bounded while checking every first-party JavaScript entry.
 for (let index = 0; index < jsFiles.length; index += 4) await Promise.all(jsFiles.slice(index, index + 4).map(syntaxCheck));
 
+const isClassicScript = file => CLASSIC_SCRIPT_DIRS.some(prefix => within(extensionRoot, file) && relative(extensionRoot, file).split(sep).join('/').startsWith(prefix));
+// Injected page scripts must parse as classic scripts too (node --check above reads them as ES modules because of
+// package.json "type": "module"): no import/export, no top-level return or await.
+for (const file of jsFiles.filter(isClassicScript)) {
+  const source = await readFile(file, 'utf8');
+  try { new vm.Script(source, { filename: label(file) }); } catch (error) { fail(`${label(file)}: not a valid classic script: ${error.message}`); }
+  if (/^\s*(?:import\s*[\w*{'"]|export\s)/m.test(source) || /\bimport\s*\(/.test(source)) fail(`${label(file)}: page scripts cannot use import or export.`);
+}
+for (const file of extensionFiles.filter(path => relative(extensionRoot, path).split(sep).join('/').startsWith('lib/vendor/'))) {
+  if (!VENDORED_FILES.some(entry => resolve(extensionRoot, entry.path) === file)) fail(`${label(file)}: unreviewed vendored file (add its pin to scripts/vendored.mjs).`);
+}
+for (const entry of VENDORED_FILES) {
+  const file = resolve(extensionRoot, entry.path);
+  if (!(await requireFile(file, 'Vendored file'))) continue;
+  const bytes = await readFile(file);
+  if (bytes.length !== entry.bytes || createHash('sha256').update(bytes).digest('hex') !== entry.sha256) {
+    fail(`${label(file)}: vendored bytes changed; it must stay identical to ${entry.source}.`);
+  }
+  await requireFile(resolve(extensionRoot, entry.license), `${entry.path} license`);
+}
+// Every script the worker injects with executeScript({ files }) must exist and be one of the classic page scripts.
+try {
+  const { ARTICLE_SCRIPT_FILES, PICKER_SCRIPT_FILES } = await import(pathToFileURL(resolve(extensionRoot, 'lib/capture.js')).href);
+  for (const path of new Set([...ARTICLE_SCRIPT_FILES, ...PICKER_SCRIPT_FILES])) {
+    const file = resolve(extensionRoot, path);
+    if (!within(extensionRoot, file) || !isClassicScript(file)) fail(`Injected page script ${path} must live in ${CLASSIC_SCRIPT_DIRS.join(' or ')}.`);
+    else await requireFile(file, 'Injected page script');
+  }
+} catch (error) { fail(`Injected page scripts: ${error.message}`); }
+
 const sourceCache = new Map();
 const sourceOf = async file => { if (!sourceCache.has(file)) sourceCache.set(file, await readFile(file, 'utf8')); return sourceCache.get(file); };
 function exportNames(source) {
@@ -138,6 +174,7 @@ for (const file of jsFiles) {
     const target = resolve(dirname(file), specifier);
     const boundary = extensionSource ? extensionRoot : root;
     if (!within(boundary, target)) { fail(`${label(file)}: module path escapes its package: ${specifier}`); continue; }
+    if (extensionSource && isClassicScript(target)) { fail(`${label(file)}: ${specifier} is a page script injected by the worker, not a module.`); continue; }
     inspectedImports++;
     if (!(await requireFile(target, label(file)))) continue;
     if (bindings?.includes('{')) {

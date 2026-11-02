@@ -4,16 +4,18 @@
 import { html, cx, plural } from './html.js';
 import { icon } from './icons.js';
 import { button, iconButton, segmented, chip, emptyState, collectionIcon, searchField, favicon, domainOf } from './components.js';
-import { registerActions, registerMount, registerShortcuts } from './runtime.js';
-import { SORT_OPTIONS } from './selectors.js';
+import { registerActions, registerMount, registerShortcuts, hasAction } from './runtime.js';
+import { researchOffered } from './research-view.js';
+import { SORT_OPTIONS, trashedTogetherIds } from './selectors.js';
 import { renderItem, watchBrokenCovers } from './cards.js';
 import { renderMap, setMapScope } from './map.js';
 import { openAdd } from './quick-add.js';
 import { createNote } from './notes.js';
-import { confirmTrash } from './note-editor.js';
+import { confirmTrash, subpagesMoving } from './note-editor.js';
 import { askAi } from './ai-panel.js';
 import { openCollectionEditor } from './collections.js';
 import { exportBookmarkHtml, exportNotesMarkdown } from '../lib/portability.js';
+import { parentIdOf } from '../lib/pages.js';
 
 const PAGE = 150;
 export const LAYOUTS = ['list', 'cards', 'masonry', 'headlines'];
@@ -147,14 +149,60 @@ export function undoFor(changes, lookup) {
 }
 
 const uniq = list => [...new Set(list)];
+
+/**
+ * How removed duplicate copies leave without taking anything else to Trash. Every live subpage of a removed copy moves
+ * under the kept copy (the store's trash cascade would take it along otherwise). A kept copy that sits inside a removed
+ * copy (only notes have parents) first moves up to the nearest live page above every removed copy on its path, or to
+ * the top level, so those moves can never put a page inside itself: nothing on the kept copy's new path is a subpage of
+ * a removed copy. keepParentId: the kept copy's new parent ('' = top level), or null when it stays where it is.
+ */
+function loserSubpagePlan(keep, rest, allItems = []) {
+  const restIds = new Set(rest.map(item => item.id));
+  const byId = new Map();
+  for (const item of [...(allItems || []), keep, ...rest]) if (item?.id) byId.set(item.id, item);
+  // The kept copy's live ancestors, nearest first; a missing or trashed page, or a loop left by an older build, ends it.
+  const chain = [], seen = new Set([keep.id]);
+  for (let cur = byId.get(parentIdOf(keep)); cur && !cur.deletedAt && !seen.has(cur.id); cur = byId.get(parentIdOf(cur))) {
+    seen.add(cur.id);
+    chain.push(cur);
+  }
+  let highest = -1;
+  chain.forEach((entry, index) => { if (restIds.has(entry.id)) highest = index; });
+  const keepParentId = highest < 0 ? null : chain[highest + 1]?.id || '';
+  const reparentIds = new Set();
+  for (const item of allItems || []) {
+    if (!item || item.deletedAt || item.id === keep.id || restIds.has(item.id)) continue;
+    if (restIds.has(parentIdOf(item))) reparentIds.add(item.id);
+  }
+  return { restIds, keepParentId, reparentIds };
+}
+
+/**
+ * "Keep newest": the first item (the newest) stays, the other copies go to Trash. Their subpages move under the kept
+ * copy in the same write first (see loserSubpagePlan), so the trash cascade takes only the copies themselves.
+ */
+export function planKeepNewest(groupItems, allItems = [], { now = new Date().toISOString() } = {}) {
+  const [keep, ...rest] = groupItems || [];
+  if (!keep || !rest.length) return [];
+  const { keepParentId, reparentIds } = loserSubpagePlan(keep, rest, allItems);
+  return [
+    ...(keepParentId === null ? [] : [{ id: keep.id, patch: { parentId: keepParentId } }]),
+    ...[...reparentIds].map(id => ({ id, patch: { parentId: keep.id } })),
+    ...rest.map(item => ({ id: item.id, patch: { deletedAt: now } })),
+  ];
+}
+
 /**
  * Merges duplicate copies into the first item (the newest): tags, highlights, links, notes, missing metadata and an
  * attached file are combined, the other copies go to Trash, and links that pointed at a removed copy now point at the kept one.
+ * Subpages of a removed copy (research notes under a saved article, say) move under the kept copy in the same write,
+ * so the trash cascade does not take them along.
  */
 export function planMerge(groupItems, allItems = [], { now = new Date().toISOString() } = {}) {
   const [keep, ...rest] = groupItems;
   if (!keep || !rest.length) return [];
-  const restIds = new Set(rest.map(item => item.id));
+  const { restIds, keepParentId, reparentIds } = loserSubpagePlan(keep, rest, allItems);
   const all = [keep, ...rest];
   const tags = all.reduce((list, item) => unionTags(list, item.tags || []), []);
   const seenHighlights = new Set();
@@ -166,6 +214,7 @@ export function planMerge(groupItems, allItems = [], { now = new Date().toISOStr
   });
   const relatedIds = uniq(all.flatMap(item => item.relatedIds || []).map(id => restIds.has(id) ? keep.id : id)).filter(id => id !== keep.id);
   const patch = { tags, highlights, relatedIds };
+  if (keepParentId !== null) patch.parentId = keepParentId;
   const contents = uniq(all.map(item => (item.content || '').trim()).filter(Boolean));
   if (contents.length > 1 || (contents.length === 1 && !keep.content)) patch.content = contents.join('\n\n---\n\n');
   for (const field of ['excerpt', 'cover', 'articleContent', 'collectionId', 'reminderAt']) {
@@ -178,11 +227,52 @@ export function planMerge(groupItems, allItems = [], { now = new Date().toISOStr
   }
   if (!keep.favorite && rest.some(item => item.favorite)) patch.favorite = true;
   const changes = [{ id: keep.id, patch }, ...rest.map(item => ({ id: item.id, patch: { deletedAt: now } }))];
+  // One entry per item: the store applies a batch as a whole, so a subpage that also linked to a copy gets one patch.
   for (const item of allItems) {
-    if (item.deletedAt || item.id === keep.id || restIds.has(item.id) || !(item.relatedIds || []).some(id => restIds.has(id))) continue;
-    changes.push({ id: item.id, patch: { relatedIds: uniq(item.relatedIds.map(id => restIds.has(id) ? keep.id : id)).filter(id => id !== item.id) } });
+    if (item.deletedAt || item.id === keep.id || restIds.has(item.id)) continue;
+    const other = {};
+    if (reparentIds.has(item.id)) other.parentId = keep.id;
+    if ((item.relatedIds || []).some(id => restIds.has(id))) other.relatedIds = uniq(item.relatedIds.map(id => restIds.has(id) ? keep.id : id)).filter(id => id !== item.id);
+    if (Object.keys(other).length) changes.push({ id: item.id, patch: other });
   }
   return changes;
+}
+
+/**
+ * Deletes items forever, one store call each. Deleting a page from Trash also deletes the subpages trashed with it, so
+ * an id further down the list may already be gone: it is skipped, never an error. `outcome` fills as the loop runs
+ * (every deleted id and the file blobs the store reports as unused), so a failure halfway still leaves the caller the
+ * files it must clean up.
+ */
+export async function deleteItemsForever(store, ids, outcome = { ids: [], attachmentIds: [] }) {
+  const removed = new Set(outcome.ids), files = new Set(outcome.attachmentIds);
+  const sync = () => { outcome.ids = [...removed]; outcome.attachmentIds = [...files]; };
+  for (const id of ids) {
+    if (removed.has(id)) continue;
+    let result;
+    try { result = await store.permanentlyDeleteItem(id); } catch (error) {
+      if (!/no longer exists/i.test(String(error?.message || ''))) throw error;
+      removed.add(id); sync(); continue;
+    }
+    for (const gone of Array.isArray(result?.ids) && result.ids.length ? result.ids : [id]) removed.add(gone);
+    for (const file of Array.isArray(result?.attachmentIds) ? result.attachmentIds : []) if (file) files.add(file);
+    sync();
+  }
+  sync();
+  return outcome;
+}
+
+/** "Restored 2 items", "Restored 1 item and 3 subpages", plus a note when pages came back at the top level. */
+export function restoreMessage(count, { subpages = 0, lifted = 0 } = {}) {
+  const base = `Restored ${plural(count, 'item')}${subpages ? ` and ${plural(subpages, 'subpage')}` : ''}`;
+  if (!lifted) return base;
+  const who = lifted === count ? (count === 1 ? 'It' : 'They') : plural(lifted, 'page');
+  return `${base}. ${who} moved to the top level because the parent page is still in Trash or was deleted.`;
+}
+
+/** "Moved 2 items to Trash", "Moved 1 item and 3 subpages to Trash". */
+export function trashMessage(count, subpages = 0) {
+  return `Moved ${plural(count, 'item')}${subpages ? ` and ${plural(subpages, 'subpage')}` : ''} to Trash`;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -556,30 +646,47 @@ export async function trashItems(ctx, ids) {
   if (!(await confirmTrash(ctx, items))) return;
   const at = nowIso();
   const changes = items.map(item => ({ id: item.id, patch: { deletedAt: at } }));
-  await applyChanges(ctx, changes, `Moved ${label(changes.length)} to Trash`);
+  // The store trashes subpages with their page (same stamp), and Undo restores them with it.
+  const subpages = changes.length ? subpagesMoving(ctx.library, changes.map(change => change.id)) : 0;
+  await applyChanges(ctx, changes, trashMessage(changes.length, subpages));
   clearSelectionOf(ctx, ids);
   if (ctx.state.panel?.kind === 'item' && ids.includes(ctx.state.panel.id)) ctx.closePanel();
 }
 
 export async function restoreItems(ctx, ids) {
-  const changes = ids.map(byId(ctx)).filter(item => item?.deletedAt).map(item => ({ id: item.id, patch: { deletedAt: null } }));
-  await applyChanges(ctx, changes, `Restored ${label(changes.length)}`, { undo: false });
+  const items = ids.map(byId(ctx)).filter(item => item?.deletedAt);
+  const changes = items.map(item => ({ id: item.id, patch: { deletedAt: null } }));
+  // A page whose parent stays in Trash (or is gone) comes back at the top level; say so instead of leaving it to be found.
+  const restoring = new Set(changes.map(change => change.id));
+  const lifted = items.filter(item => {
+    const parentId = parentIdOf(item);
+    const parent = parentId ? ctx.select.byId(parentId) : null;
+    return parentId && (!parent || (parent.deletedAt && !restoring.has(parent.id)));
+  }).length;
+  const subpages = new Set(items.flatMap(item => trashedTogetherIds(ctx.library, item.id)).filter(id => !restoring.has(id))).size;
+  await applyChanges(ctx, changes, restoreMessage(changes.length, { subpages, lifted }), { undo: false });
   clearSelectionOf(ctx, ids);
 }
 
 export async function deleteForever(ctx, ids) {
   const items = ids.map(byId(ctx)).filter(Boolean);
   if (!items.length) return;
+  const chosen = new Set(items.map(item => item.id));
+  const together = new Set(items.flatMap(item => trashedTogetherIds(ctx.library, item.id)).filter(id => !chosen.has(id))).size;
   const ok = await ctx.confirm({ title: items.length > 1 ? `Delete ${label(items.length)} forever?` : `Delete “${items[0].title}” forever?`,
-    body: 'This cannot be undone. Attached files are removed from this device too.', confirmLabel: 'Delete forever', tone: 'danger' });
+    body: `This cannot be undone.${together ? ` ${plural(together, 'subpage')} trashed with ${items.length > 1 ? 'them' : 'it'} ${together === 1 ? 'is' : 'are'} deleted too.` : ''} Attached files are removed from this device too.`,
+    confirmLabel: 'Delete forever', tone: 'danger' });
   if (!ok) return;
-  const gone = new Set(items.map(item => item.id));
-  for (const item of items) await ctx.store.permanentlyDeleteItem(item.id);
-  const kept = (ctx.library?.items || []).filter(item => !gone.has(item.id));
-  const orphans = [...new Set(items.map(item => item.attachmentId).filter(Boolean))].filter(id => !kept.some(item => item.attachmentId === id));
-  await Promise.allSettled(orphans.map(id => ctx.store.deleteAttachment(id)));
-  clearSelectionOf(ctx, ids);
-  ctx.toast(`Deleted ${label(items.length)}`);
+  const outcome = { ids: [], attachmentIds: [] };
+  try {
+    await deleteItemsForever(ctx.store, items.map(item => item.id), outcome);
+  } finally {
+    // The store names exactly the files nothing uses any more, including those of subpages deleted with their page.
+    await Promise.allSettled(outcome.attachmentIds.map(id => ctx.store.deleteAttachment(id)));
+    clearSelectionOf(ctx, ids);
+  }
+  const extra = outcome.ids.filter(id => !chosen.has(id)).length;
+  ctx.toast(`Deleted ${label(items.length)}${extra ? ` and ${plural(extra, 'subpage')}` : ''}`);
 }
 
 async function emptyTrash(ctx) {
@@ -681,12 +788,23 @@ export function openItemMenu(ctx, id, anchor) {
       { label: item.favorite ? 'Remove from favorites' : 'Add to favorites', icon: 'star', run: () => ctx.run(() => setFavorite(ctx, ids, !item.favorite, { quiet: true })) },
       item.type !== 'note' && { label: 'Add note', icon: 'notebook-pen', run: () => ctx.run(() => addNoteFor(ctx, item)) },
       { label: 'Ask AI about this', icon: 'sparkles', run: () => askAi(ctx, { scope: 'item', ids }) },
+      researchMenuItem(item, ctx),
       { separator: true },
       { label: item.archived ? 'Unarchive' : 'Archive', icon: item.archived ? 'archive-restore' : 'archive', run: () => ctx.run(() => setArchived(ctx, ids, !item.archived)) },
       { label: 'Delete', icon: 'trash-2', danger: true, hint: 'Moves to Trash', run: () => ctx.run(() => trashItems(ctx, ids)) },
     ].filter(Boolean);
   }
   ctx.openMenu(anchor, items, { label: `Actions for ${item.title}` });
+}
+
+/**
+ * "Research more with AI" for a live item. The research view (ui/research.js) owns the research.start action; the
+ * entry only shows once that action is registered, so a build without it never offers a dead command, and (given ctx)
+ * only while research is offered in AI settings (researchOffered).
+ */
+export function researchMenuItem(item, ctx = null) {
+  if (!item || item.deletedAt || !hasAction('research.start') || (ctx && !researchOffered(ctx))) return null;
+  return { label: 'Research more with AI', icon: 'telescope', action: 'research.start', data: { id: item.id } };
 }
 
 function openSelectionMenu(ctx, ids, anchor) {
@@ -897,9 +1015,9 @@ registerActions({
   },
   'library.dupe-keep': async ({ ctx, data }) => {
     const group = ctx.select.duplicates().find(g => g.url === data.url);
-    if (!group) return;
-    const at = nowIso();
-    await applyChanges(ctx, group.items.slice(1).map(item => ({ id: item.id, patch: { deletedAt: at } })), `Kept the newest copy and moved ${label(group.items.length - 1, 'copy', 'copies')} to Trash`);
+    if (!group || group.items.length < 2) return;
+    await applyChanges(ctx, planKeepNewest(group.items, ctx.library?.items || [], { now: nowIso() }),
+      `Kept the newest copy and moved ${label(group.items.length - 1, 'copy', 'copies')} to Trash`);
   },
   'library.dupe-merge': async ({ ctx, data }) => {
     const group = ctx.select.duplicates().find(g => g.url === data.url);

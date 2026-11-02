@@ -1,8 +1,10 @@
 // Safe, dependency-free Markdown used by the reader, note cards and the block editor.
 // Tables store Markdown cell strings. Untouched imported blocks retain their raw source (_raw), so a note
-// re-serializes byte for byte until one of its blocks is edited. No raw HTML is ever rendered and images
-// are never fetched: ![label](url) renders as a link.
+// re-serializes byte for byte until one of its blocks is edited. No raw HTML is ever rendered. A line that is only
+// ![alt](https://…) renders as an image (lazy, no referrer: captured articles rely on it); an image anywhere else in a
+// line, or one that is not http(s), stays a link.
 import {describeEmbed,embedUrl,embedKindLabel} from './embeds.js';
+import {parsePageBlockLine,pageText} from './pages.js';
 const uid=()=>globalThis.crypto?.randomUUID?.()||Math.random().toString(36).slice(2);
 export const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const punctuation=/[!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~]/;
@@ -133,7 +135,7 @@ export function splitTableRow(line){
  }
  cells.push(cell.trim());if(value.startsWith('|'))cells.shift();if(value.endsWith('|')&&!escapedAt(value,value.length-1))cells.pop();return cells;
 }
-export function isTableDivider(line){const cells=splitTableRow(line);return cells.length>0&&cells.every(c=>/^:?-+:?$/.test(c));}
+export function isTableDivider(line){if(!String(line??'').includes('|'))return false;const cells=splitTableRow(line);return cells.length>0&&cells.every(c=>/^:?-+:?$/.test(c));}
 const alignment=value=>value.startsWith(':')&&value.endsWith(':')?'center':value.endsWith(':')?'right':value.startsWith(':')?'left':'';
 export function tableWidth(table){return Math.max(1,table.headers?.length||0,...(table.rows||[]).map(r=>r.length));}
 export function createTableBlock({headers=['Column 1','Column 2'],rows=[['',''],['','']],alignments=[]}={}){return {id:uid(),type:'table',text:'',headers:headers.map(String),rows:rows.map(r=>r.map(String)),alignments:[...alignments]};}
@@ -171,9 +173,9 @@ const LIST_ITEM=/^([ \t]*)(?:([-*]) \[([ xX])\](?: ([\s\S]*)|\r?$)|([-*]) ([\s\S
 const ALERT=/^> \[!(note|tip|important|warning|caution)\](?:[ \t]*\r?$| ([\s\S]*)$)/i,QUOTE_CONT=/^>(?: |\r?$)/;
 const columns=lead=>{let w=0;for(const ch of lead)w=ch==='\t'?w+4-(w%4):w+1;return w;};
 const hardBreak=line=>{const value=line.replace(/\r$/,'');return value.endsWith('\\')&&!escapedAt(value,value.length-1);};
-const startsBlock=line=>/^\s*$/.test(line)||LIST_ITEM.test(line)||/^(?:#{1,3} |>|`{3,}|~{3,}|:{3,}toggle|---\s*$)/.test(line)||!!parseEmbed(line);
+const startsBlock=line=>/^\s*$/.test(line)||LIST_ITEM.test(line)||/^(?:#{1,3} |>|`{3,}|~{3,}|:{3,}toggle|---\s*$)/.test(line)||!!parseEmbed(line)||!!parsePage(line);
 // A line that ends a table (anything else right after a table is read as one more row).
-const endsTable=line=>!String(line).trim()||/^\s*(?:>|#{1,6}\s|`{3,}|~{3,}|:{3,}|[-*+]\s|\d+\.\s)/.test(line)||/^\s*([-*_])\1\1+\s*$/.test(line);
+const endsTable=line=>!String(line).trim()||/^\s*(?:>|#{1,6}\s|`{3,}|~{3,}|:{3,}|[-*+]\s|\d+\.\s)/.test(line)||/^\s*([-*_])\1\1+\s*$/.test(line)||!!parsePage(line);
 // Embeds take a whole line: ::embed[Label](https://…) frames a web page or PDF and ![[id|Label]] shows a library item
 // (an uploaded PDF, image or video) in place; either may end in {height=480}. Other Markdown tools read them as a link.
 const EMBED_WEB=/^::embed\[((?:\\[\s\S]|[^\]\\\n])*)\]\((?:<([^<>\n]+)>|([^()<>\s]+))\)(?:\{height=(\d{2,4})\})?[ \t]*\r?$/;
@@ -189,6 +191,13 @@ export function serializeEmbed(b){
  const url=String(b.url||''),label=String(b.label||'').replace(/\r?\n/g,' ').replace(/[\\\]]/g,'\\$&');
  return `::embed[${label}](${/[()<>\s]/.test(url)?`<${url}>`:url})${height}`;
 }
+// A page block takes a whole line: [[id|Title]]{page} shows a subpage (lib/pages.js owns the grammar). The label is only
+// a fallback for older builds and other tools, which read the line as a wiki link: Still shows the page's current title.
+/** { target, label } for a page-block line, else null. */
+export function parsePage(line){const page=parsePageBlockLine(line);return page?{target:page.id,label:page.label}:null;}
+// pageText (lib/pages.js) cleans a page id or label for [[…]]; re-exported for the block editor.
+export { pageText };
+export function serializePage(b){const target=pageText(b.target),label=pageText(b.label);return `[[${target}${label&&label!==target?'|'+label:''}]]{page}`;}
 function signature(block){const value={};for(const [key,entry] of Object.entries(block))if(key!=='id'&&!key.startsWith('_'))value[key]=entry;return JSON.stringify(value);}
 function remember(block,raw,start,end){block._raw=raw;block._lineStart=start;block._lineEnd=end;block._signature=signature(block);return block;}
 export function parseNoteBlocks(markdown=''){
@@ -215,6 +224,7 @@ export function parseNoteBlocks(markdown=''){
   stack=[];
   if(/^---\s*$/.test(line)){add({...base,type:'divider',text:''},start,i);continue;}
   const embed=parseEmbed(line);if(embed){add({...base,type:'embed',text:'',...embed},start,i);continue;}
+  const page=parsePage(line);if(page){add({...base,type:'page',text:'',...page},start,i);continue;}
   const heading=/^(#{1,3}) /.exec(line);if(heading){add({...base,type:'h'+heading[1].length,text:line.slice(heading[0].length)},start,i);continue;}
   const alert=ALERT.exec(line);
   if(alert||/^> /.test(line)){const body=alert?alert[2]!==undefined?[alert[2]]:[]:[line.slice(2)];while(i+1<lines.length&&QUOTE_CONT.test(lines[i+1])&&!ALERT.test(lines[i+1]))body.push(lines[++i].replace(/^> ?/,''));add(alert?{...base,type:'callout',text:body.join('\n'),kind:alert[1].toLowerCase()}:{...base,type:'quote',text:body.join('\n')},start,i);continue;}
@@ -250,6 +260,8 @@ function escapeLineStart(line){
  if(/^[-*] /.test(rest))return ws+'\\'+rest;
  const number=/^(\d+)\. /.exec(rest);if(number)return ws+number[1]+'\\'+rest.slice(number[1].length);
  if(!ws&&(/^(?:#{1,6} |>|`{3,}|~{3,}|:{3,}|---\s*$)/.test(rest)||parseEmbed(rest)))return '\\'+rest;
+ // Typed text that looks like a page block (even indented) stays text when the note is reopened.
+ if(parsePage(line))return ws+'\\'+rest;
  return line;
 }
 // Newlines inside a text block become CommonMark hard breaks (a trailing backslash); continuation lines that
@@ -264,7 +276,7 @@ export function serializeBlockParts(blocks){
  const layout=listLayout(blocks);
  const body=(b,index)=>{
   if(typeof b._raw==='string'&&b._signature===signature(b))return b._raw;
-  if(b.type==='table')return serializeTable(b);if(b.type==='toggle')return serializeToggle(b);if(b.type==='divider')return '---';if(b.type==='embed')return serializeEmbed(b);
+  if(b.type==='table')return serializeTable(b);if(b.type==='toggle')return serializeToggle(b);if(b.type==='divider')return '---';if(b.type==='embed')return serializeEmbed(b);if(b.type==='page')return serializePage(b);
   if(b.type==='code'){let count=3;for(const line of String(b.text||'').split('\n')){const m=/^(`+)/.exec(line);if(m)count=Math.max(count,m[1].length+1);}const fence='`'.repeat(count);return fence+(b.language||'')+'\n'+(b.text||'')+'\n'+fence;}
   if(['h1','h2','h3'].includes(b.type))return '#'.repeat(Number(b.type[1]))+' '+String(b.text||'').replace(/\n+$/,'').replace(/\n/g,' ');
   if(b.type==='quote')return quoteLines(b.text).join('\n');
@@ -302,9 +314,38 @@ function renderEmbed(b,o){
  const info=describeEmbed(b.url);if(!info)return `<p>${escapeHtml(b.label||b.url)}</p>`;
  return `<div class="markdown-embed" data-kind="${escapeHtml(info.kind)}">${icon(info.kind==='video'?'video':info.kind==='pdf'?'file':'site')}<a class="markdown-link markdown-embed-title" href="${escapeHtml(info.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(b.label||info.label)}</a><span class="markdown-embed-meta">${escapeHtml(info.kind==='site'?info.host:`${embedKindLabel(info.kind)} · ${info.provider}`)}</span></div>`;
 }
+const PAGE_ICON='<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>';
+// A subpage row: the page's current title (a renamed page never shows a stale label) as an internal link, so every
+// surface that opens [[links]] (a.note-link[data-id]) opens it too. Only an exact id match counts: a page block never
+// falls back to a title lookup. With a resolver, a page that is gone or in Trash reads "Deleted page"; without one
+// (exports, previews that cannot look items up) the stored label is shown as plain text.
+function renderPage(b,o){
+ const icon=svg(PAGE_ICON,'markdown-page-icon'),data=label=>` data-target="${escapeHtml(b.target)}" data-label="${escapeHtml(label)}"`;
+ let hit=null;try{hit=o.resolveLink?.(b.target)||null;}catch{hit=null;}
+ const id=hit&&hit.id!=null?String(hit.id):'';
+ if(id&&id===b.target){
+  const title=String(hit.title??'').trim()||b.label||'Untitled page';
+  return `<div class="markdown-page"${data(title)}><a class="note-link markdown-page-link" href="#" data-id="${escapeHtml(id)}"${hit.type?` data-type="${escapeHtml(hit.type)}"`:''} data-target="${escapeHtml(b.target)}" data-label="${escapeHtml(title)}" data-page="">${icon}<span class="markdown-page-title">${escapeHtml(title)}</span></a></div>`;
+ }
+ if(o.resolveLink)return `<div class="markdown-page is-missing"${data(b.label)}><span class="markdown-page-link">${icon}<span class="markdown-page-title">Deleted page</span></span></div>`;
+ return `<div class="markdown-page"${data(b.label)}><span class="markdown-page-link">${icon}<span class="markdown-page-title">${escapeHtml(b.label||'Untitled page')}</span></span></div>`;
+}
+/** { src, alt, title } when a paragraph is exactly one http(s) image, ![alt](https://…), else null. */
+export function standaloneImage(text){
+ const value=String(text??'').trim();if(!value.startsWith('![')||value.includes('\n'))return null;
+ const end=bracketEnd(value,1);if(end<0||value[end+1]!=='(')return null;
+ const dest=destination(value,end+1);if(!dest||dest.end!==value.length-1)return null;
+ let raw=dest.value.trim();if(raw.startsWith('<')&&raw.endsWith('>'))raw=raw.slice(1,-1);
+ const title=/^(\S+?)(?:\s+["']([^"']*)["'])?$/.exec(raw);
+ const src=safeMarkdownUrl((title?.[1]||raw).replace(/\\([()\\])/g,'$1'));
+ return src&&/^https?:/i.test(src)?{src,alt:inlineText(value.slice(2,end)),title:title?.[2]||''}:null;
+}
+// The image loads from its site without sending which page asked for it; sizing lives in the stylesheet (max 100%).
+const renderImage=image=>`<p class="markdown-image"><img src="${escapeHtml(image.src)}" alt="${escapeHtml(image.alt)}"${image.title?` title="${escapeHtml(image.title)}"`:''} loading="lazy" decoding="async" referrerpolicy="no-referrer"></p>`;
 export function renderCallout(kind,body){const entry=CALLOUT_KINDS[kind]||CALLOUT_KINDS.note;return `<div class="markdown-callout" data-kind="${CALLOUT_KINDS[kind]?kind:'note'}" role="note"><p class="markdown-callout-title">${svg(entry.icon,'markdown-callout-icon')}<span>${entry.label}</span></p><div class="markdown-callout-body">${body}</div></div>`;}
 // options: interactiveTasks, compact (cards: first 12 blocks, closed toggles, 3 table rows), citations (AI answers),
-// resolveLink(title) -> { id, title, type } | null and linkClass (string or (link) => string) for [[wiki links]].
+// resolveLink(title) -> { id, title, type } | null and linkClass (string or (link) => string) for [[wiki links]] and
+// page blocks (pass resolveLink wherever a note can hold subpages, or page rows cannot show live titles).
 // Wrap the output in an element with class "markdown-body" to get the shared reading styles.
 export function renderMarkdown(markdown,{interactiveTasks=false,compact=false,citations,resolveLink,linkClass}={}){
  const options={citations,resolveLink,linkClass},o=inlineOptions(options),render=value=>inline(String(value??''),0,o);
@@ -331,8 +372,10 @@ export function renderMarkdown(markdown,{interactiveTasks=false,compact=false,ci
    if(['h1','h2','h3'].includes(b.type)){const tag=compact?'h3':b.type;out+=`<${tag}>${render(b.text)}</${tag}>`;continue;}
    if(b.type==='divider'){out+='<hr class="markdown-divider">';continue;}
    if(b.type==='embed'){out+=renderEmbed(b,o);continue;}
+   if(b.type==='page'){out+=renderPage(b,o);continue;}
    if(b.type==='quote'){out+='<blockquote>'+render(b.text)+'</blockquote>';continue;}
    if(b.type==='callout'){out+=renderCallout(b.kind,render(b.text));continue;}
+   const image=b.type==='paragraph'&&standaloneImage(b.text);if(image){out+=renderImage(image);continue;}
    out+=b.text.trim()?'<p>'+render(b.text)+'</p>':'<div class="paragraph-space"></div>';
   }return out;
  };
@@ -340,6 +383,6 @@ export function renderMarkdown(markdown,{interactiveTasks=false,compact=false,ci
 }
 // Plain text of a whole note (excerpts, word counts, search snippets).
 export function plainText(markdown){
- const walk=(text,depth)=>depth>16?'':parseNoteBlocks(text).map(b=>b.type==='code'?b.text:b.type==='table'?[b.headers,...b.rows].map(row=>row.map(cell=>inlineText(decodeCellPipes(String(cell)).replace(/<br\s*\/?>/gi,' '))).join(' ')).join('\n'):b.type==='toggle'?[inlineText(b.title),walk(b.text,depth+1)].filter(Boolean).join('\n'):b.type==='divider'?'':b.type==='embed'?b.label||b.target||b.url:inlineText(b.text)).join('\n');
+ const walk=(text,depth)=>depth>16?'':parseNoteBlocks(text).map(b=>b.type==='code'?b.text:b.type==='table'?[b.headers,...b.rows].map(row=>row.map(cell=>inlineText(decodeCellPipes(String(cell)).replace(/<br\s*\/?>/gi,' '))).join(' ')).join('\n'):b.type==='toggle'?[inlineText(b.title),walk(b.text,depth+1)].filter(Boolean).join('\n'):b.type==='divider'?'':b.type==='embed'?b.label||b.target||b.url:b.type==='page'?b.label:inlineText(b.text)).join('\n');
  return walk(String(markdown??''),0);
 }

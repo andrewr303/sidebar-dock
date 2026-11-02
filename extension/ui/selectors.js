@@ -1,5 +1,14 @@
 // Derived library data, memoized on library.updatedAt so renders never re-sort or re-count the whole library.
+//
+// Subpages (lib/pages.js): a note inside another live item is not listed on its own in browse lists (All items, Inbox,
+// collections, Notes): it shows under its parent. A parent in Trash or the archive does not count, and the Notes views
+// hide only subpages of a note, so a note inside a saved article (research findings) is still listed among the notes.
+// Search results, Favorites, Highlights, Reminders, tags, Untagged, Duplicates and Archive stay flat (cards show the
+// parent path). Trash lists the pages that were trashed on their own; the subpages trashed together with them are
+// counted on that row. Counts (counts()) are item counts: every live item, subpages included, so the sidebar can read
+// higher than the number of rows a browse list shows.
 import { canonicalUrl } from '../lib/store.js';
+import { pageIndex, parentIdOf, childrenOf, ancestorsOf, descendantIds } from '../lib/pages.js';
 
 const ITEM_VIEW_TYPES = ['bookmark', 'article', 'image', 'video', 'file', 'note'];
 const alive = item => !item.deletedAt && !item.archived;
@@ -7,6 +16,36 @@ const safeCanonical = url => { try { return url ? canonicalUrl(url) : ''; } catc
 const lower = value => String(value ?? '').toLowerCase();
 export const domainOf = url => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; } };
 const TASK_LINE = /^\s*(?:[-*+]|\d+[.)])\s+\[( |x|X)\]\s+/;
+/** Views that list items by place (where they live): they hide subpages, which show under their parent instead. */
+export const isBrowseView = view => view === 'all' || view === 'inbox' || view === 'notes' || /^(?:type|collection):/.test(String(view || ''));
+
+/** The live item an item sits inside (a note's page parent), or null. byId: Map of every item. */
+export function liveParentOf(byId, item) {
+  const parent = byId.get(parentIdOf(item));
+  return parent && !parent.deletedAt && !parent.archived ? parent : null;
+}
+
+/** Trashed together with its parent: the parent is in Trash with the identical stamp (one trash action took both). */
+export function trashedWithParent(byId, item) {
+  if (!item?.deletedAt) return false;
+  const parent = byId.get(parentIdOf(item));
+  return !!parent && parent.deletedAt === item.deletedAt;
+}
+
+/** Ids of the subpages that went to Trash together with `id` (same deletedAt), walking only through those pages. */
+export function trashedTogetherIds(library, id) {
+  const index = pageIndex(library || []);
+  const root = index.byId.get(id);
+  if (!root?.deletedAt) return [];
+  const out = [], seen = new Set([id]), stack = [id];
+  while (stack.length) {
+    for (const child of childrenOf(index, stack.pop(), { includeDeleted: true })) {
+      if (seen.has(child.id) || child.deletedAt !== root.deletedAt) continue;
+      seen.add(child.id); out.push(child.id); stack.push(child.id);
+    }
+  }
+  return out;
+}
 
 export function createSelectors(getLibrary, getPrefs = () => ({})) {
   let stamp = null;
@@ -20,6 +59,17 @@ export function createSelectors(getLibrary, getPrefs = () => ({})) {
   };
 
   const index = () => cached('index', lib => new Map(lib.items.map(item => [item.id, item])));
+  const pages = () => cached('pages', lib => pageIndex(lib.items));
+  /** The live item `id` sits inside, or null at the top level. */
+  const parentOf = id => liveParentOf(index(), index().get(id));
+  /** Live subpages of an item, oldest first. */
+  const children = id => cached(`children:${id}`, () => childrenOf(pages(), id));
+  /** Live ancestors of an item for breadcrumbs: [root, ..., parent]. */
+  const pagePath = id => cached(`pagePath:${id}`, () => ancestorsOf(pages(), id));
+  /** Ids of every live subpage below an item (all levels). */
+  const pageDescendants = id => cached(`pageDesc:${id}`, () => descendantIds(pages(), id));
+  /** How many subpages went to Trash together with this trashed item. */
+  const trashedWith = id => cached(`trashedWith:${id}`, () => trashedTogetherIds(pages(), id).length);
   const collectionIndex = () => cached('collectionIndex', lib => new Map(lib.collections.filter(c => !c.deletedAt).map(c => [c.id, c])));
   const live = () => cached('live', lib => lib.items.filter(alive));
 
@@ -132,9 +182,21 @@ export function createSelectors(getLibrary, getPrefs = () => ({})) {
     for (const back of backlinks(id)) out.set(back.id, back);
     return [...out.values()];
   };
+  // Items saved at an address, plus (after them) an article saved under its canonical address from that tab: it keeps
+  // the tab's address in sourceUrl (the same rule as lib/capture.js findSavedItem). Links, images and videos keep the
+  // page they were found on in sourceUrl, and that page is not them, so only articles match that way.
   const findByUrl = url => {
     const key = safeCanonical(url);
-    return key ? cached(`url:${key}`, lib => lib.items.filter(item => !item.deletedAt && item.url && safeCanonical(item.url) === key)) : [];
+    if (!key) return [];
+    return cached(`url:${key}`, lib => {
+      const direct = [], bySource = [];
+      for (const item of lib.items) {
+        if (item.deletedAt) continue;
+        if (item.url && safeCanonical(item.url) === key) direct.push(item);
+        else if (item.type === 'article' && item.url && item.sourceUrl && safeCanonical(item.sourceUrl) === key) bySource.push(item);
+      }
+      return [...direct, ...bySource];
+    });
   };
   const savedForUrl = url => findByUrl(url).find(item => item.type !== 'note') || null;
   const notesForUrl = url => findByUrl(url).filter(item => item.type === 'note' && !item.archived)
@@ -167,6 +229,17 @@ export function createSelectors(getLibrary, getPrefs = () => ({})) {
         else if (view.startsWith('collection:')) { const ids = new Set(descendants(view.slice(11))); rows = rows.filter(i => ids.has(i.collectionId)); }
         else if (view.startsWith('tag:')) { const tag = lower(view.slice(4)); rows = rows.filter(i => i.tags?.some(t => lower(t) === tag)); }
       }
+      // Without a search, browse views list top-level items only, and Trash lists what was trashed on its own.
+      if (!query.trim()) {
+        if (view === 'trash') rows = rows.filter(i => !trashedWithParent(index(), i));
+        else if (isBrowseView(view)) {
+          const byId = index(), noteView = view === 'notes' || view === 'type:note';
+          rows = rows.filter(i => {
+            const parent = liveParentOf(byId, i);
+            return !parent || (noteView && parent.type !== 'note');
+          });
+        }
+      }
       if (typeFilter && typeFilter !== 'all') rows = rows.filter(i => typeFilter === 'link' ? ['bookmark', 'article'].includes(i.type) : typeFilter === 'media' ? ['image', 'video', 'file'].includes(i.type) : i.type === typeFilter);
       if (tagFilter) rows = rows.filter(i => i.tags?.some(t => lower(t) === lower(tagFilter)));
       if (query.trim()) rows = searchRows(rows, query, collectionIndex());
@@ -177,6 +250,7 @@ export function createSelectors(getLibrary, getPrefs = () => ({})) {
   return {
     live, byId: id => index().get(id) || null, collection: id => collectionIndex().get(id) || null, tree, path, descendants, counts, tags,
     duplicates: duplicateGroups, backlinks, related, findByUrl, savedForUrl, notesForUrl, recentCollections, pinnedCollections, itemsForView,
+    pages, parentOf, children, pagePath, pageDescendants, subpageCount: id => children(id).length, trashedWith,
   };
 }
 

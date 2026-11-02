@@ -1,6 +1,6 @@
 # AI providers in Still
 
-Still's AI editor sends only the request, conversation history and context selected for that turn. The local bridge owns the application instruction and streaming transport. Sources are quoted as untrusted reference data, and the assistant drafts text for the user to accept; provider responses do not automatically change library items, run commands or open files.
+Still's AI editor sends only the request, conversation history and context selected for that turn. The local bridge owns the application instruction and streaming transport. Sources are quoted as untrusted reference data, and the assistant drafts text for the user to accept. Provider responses never run commands or open files. Library changes the assistant proposes wait for review, except the kinds the user allows in **Settings → Assistant permissions** (none by default; see [prompt contracts](ai-prompts.md#assistant-permission-levels)). [Research with AI](research-agent.md) writes its own section and subpages into the item being researched.
 
 ## Provider configuration
 
@@ -46,6 +46,10 @@ The `anthropic` type sends `anthropic-version: 2026-10-21`. That version rejects
 
 `stop_reason: "refusal"` ends the request as an error that quotes `stop_details.category` and `explanation` when present, keeps the partial text and reports `stopReason: "refusal"`. `stop_reason: "max_tokens"` completes normally with that stop reason when there is text, and fails with a clear message when the whole budget went to thinking.
 
+#### Research agent (Claude Managed Agents)
+
+[Research with AI](research-agent.md) does not use the Messages transport above. It calls the Claude Managed Agents API (`/v1/agents`, `/v1/environments`, `/v1/sessions` and their event stream) from the extension page with plain `fetch`, using a **direct** Anthropic connection: an API key added in Still, for `https://api.anthropic.com/v1`, with Chrome access to `https://api.anthropic.com/*`. Connections through the local bridge, Codex or Claude Code, and `anthropic-compatible` endpoints, cannot run it. The client sends the same key, version, browser-access and workspace headers as chat, without the fallback beta, plus `anthropic-beta: managed-agents-2026-04-01`. Errors reuse the extension's redacted provider error codes from `lib/ai/http.js` (`auth`, `rate_limit`, `provider_down`, `workspace_required`, `permission`, `not_found`, `bad_request`, `network`, `timeout`), with `budget` for spending-cap errors. The model is fixed to `claude-sonnet-5-5`; effort follows the research depth. The code is in [`extension/lib/ai/research/api.js`](../extension/lib/ai/research/api.js).
+
 `anthropic-compatible` endpoints (proxies, gateways and other servers that speak the Messages API) keep `anthropic-version: 2023-06-01` unless `config.anthropicVersion` sets another date, default to 4,096 output tokens, and receive `thinking`/`output_config` only when an effort is chosen. They never receive caching or fallback fields.
 
 ### Other providers
@@ -62,7 +66,7 @@ Provider metadata and credentials are encrypted together in `bridge/.local/ai-pr
 
 This is local encryption, not a hardware-backed vault. Someone who can read both local files can decrypt the provider settings. Keep both private and back them up together if you need recovery. A missing key or tampered ciphertext fails closed and is not silently overwritten. Keys are never returned by provider list/save endpoints, placed in extension storage, included in library backups or logged by the service. Blank credential fields preserve an existing key; an explicit `null` removes that credential field.
 
-API usage starts only when you explicitly test/discover models or send a chat request. Inference may incur the chosen provider's charges. This implementation does not create provider accounts, purchase credits, grant cloud permissions or change account budgets.
+API usage starts only when you explicitly test/discover models, send a chat request or start research. Inference may incur the chosen provider's charges. A research run creates a Managed Agents session (and, on first use, an agent and environment) in the key's Anthropic workspace, billed there and capped by its per-run spending cap. This implementation does not create provider accounts, purchase credits, grant cloud permissions or change account budgets.
 
 For Bedrock's default credential option, Still runs only:
 

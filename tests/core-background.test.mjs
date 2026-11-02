@@ -30,10 +30,11 @@ const { buildCapture } = await import('../extension/lib/capture.js');
 
 test('registers capture menus and captures selected text into source-linked highlights', async () => {
   await installMenus();
-  // The 8 original ids keep their order; the "Save … to" parents follow (their children are built per collection).
+  // The 8 original ids keep their order, then the article, picker and research items (build contracts §5); the "Save … to"
+  // parents follow (their children are built per collection).
   assert.deepEqual(menus.map(menu => menu.id), ['still-save-page', 'still-save-link', 'still-save-selection', 'still-note-selection', 'still-save-image', 'still-screenshot', 'still-screenshot-full', 'still-open-library',
-    'still-save-page-to', 'still-save-link-to', 'still-save-image-to']);
-  assert.deepEqual(menus.slice(8).map(menu => [menu.title, menu.contexts.join()]), [['Save page to', 'page'], ['Save link to', 'link'], ['Save image to', 'image']]);
+    'still-save-article', 'still-select-parts', 'still-save-research', 'still-save-page-to', 'still-save-link-to', 'still-save-image-to']);
+  assert.deepEqual(menus.slice(11).map(menu => [menu.title, menu.contexts.join()]), [['Save page to', 'page'], ['Save link to', 'link'], ['Save image to', 'image']]);
   const item = await captureTab({ id: 7, title: 'Page', url: 'https://example.com/post' }, { menuItemId: 'still-save-selection', selectionText: 'A source passage', pageUrl: 'https://example.com/post' });
   assert.equal(item.type, 'article');
   assert.equal(item.content, '');

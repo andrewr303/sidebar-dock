@@ -10,6 +10,9 @@ const popovers = new Map();
 let ctx = null;
 let runtime = null;
 const restoreFocus = new WeakMap();
+// Every opened dialog gets its own id (also its element id), kept by updateDialog: code that waits on something can
+// tell the dialog it started from apart from a newer dialog of the same name opened meanwhile (ui/research.js).
+let dialogSeq = 0;
 // The menu's anchor while one of its items runs: the item goes away with the menu, so what it opens returns focus here.
 let menuOrigin = null;
 
@@ -58,7 +61,7 @@ export function openDialog(name, props = {}) {
   if (!dialogs.has(name)) throw new Error(`Unknown dialog: ${name}`);
   const opener = focusOrigin();
   closePopover();
-  const entry = { name, props, id: `dialog-${name}-${ctx.state.dialogs.length}` };
+  const entry = { name, props, id: `dialog-${name}-${++dialogSeq}` };
   restoreFocus.set(entry, opener);
   ctx.state.dialogs = [...ctx.state.dialogs, entry];
   runtime.nextFrame(() => {

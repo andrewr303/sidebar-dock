@@ -73,7 +73,8 @@ await store('createCollection', { id: 'inspiration', name: 'Inspiration', parent
 await store('createCollection', { id: 'reading', name: 'Reading' });
 
 test('the message allowlist covers every new request type', () => {
-  for (const type of ['saveTabs', 'getActiveTab', 'getPageContext', 'listTabs', 'captureCurrent', 'saveCurrentTab', 'still:capture-current', 'openSidePanel']) {
+  for (const type of ['saveTabs', 'getActiveTab', 'getPageContext', 'listTabs', 'captureCurrent', 'saveCurrentTab', 'still:capture-current', 'openSidePanel',
+    'still:capture-article', 'still:start-picker', 'still:picker-result']) {
     assert.ok(MESSAGE_TYPES.includes(type), type);
   }
   const [onMessage] = listener('runtime.onMessage#onMessage'.replace('.onMessage#', '#'));
@@ -101,7 +102,7 @@ test('collection menus list Inbox, ranked collections with paths, a separator an
   assert.equal(await installCollectionMenus(snapshot), true);
   const topLevel = menus.filter(menu => !menu.parentId).map(menu => menu.id);
   assert.deepEqual(topLevel.slice(-3), ['still-save-page-to', 'still-save-link-to', 'still-save-image-to']);
-  assert.equal(topLevel.length, 11);
+  assert.equal(topLevel.length, 14, 'eight original items, three capture items (contract §5) and the three parents');
   const children = parentId => menus.filter(menu => menu.parentId === parentId);
   const page = children('still-save-page-to');
   assert.deepEqual(page.map(menu => menu.id), ['__inbox', 'reading', 'long', 'design', 'inspiration', 'p7', 'p3', 'p10', 'p9', 'p8', 'p6', '__separator', '__choose']
@@ -117,7 +118,7 @@ test('collection menus list Inbox, ranked collections with paths, a separator an
   snapshot.collections[2].name = 'Reading list';
   assert.equal(await installCollectionMenus(snapshot), true);
   assert.equal(children('still-save-page-to')[1].title, 'Reading list');
-  assert.equal(menus.length, 11 + 3 * 13);
+  assert.equal(menus.length, 14 + 3 * 13);
 });
 
 test('a Save page to child saves into that collection, shows the check badge and records the collection as recent', async () => {

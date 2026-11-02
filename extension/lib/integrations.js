@@ -40,8 +40,10 @@ function bridgeUrl(value = DEFAULT_BRIDGE_URL) {
 }
 
 function publicSnapshot(state) {
-  // Only the library is shared. Device credentials, preferences and file bytes stay local.
-  return { schemaVersion: 1, items: state.items.map(({ attachmentId, ...item }) => ({ ...item, cover: /^data:/i.test(item.cover || '') ? '' : item.cover })), collections: state.collections, updatedAt: state.updatedAt };
+  // Only the library is shared. Device credentials, preferences and file bytes stay local; inline images (data: covers
+  // and page icons) stay out of the snapshot too.
+  return { schemaVersion: 1, items: state.items.map(({ attachmentId, ...item }) => ({ ...item, cover: /^data:/i.test(item.cover || '') ? '' : item.cover,
+    ...(/^data:/i.test(item.icon || '') ? { icon: '' } : {}) })), collections: state.collections, updatedAt: state.updatedAt };
 }
 
 export function mapRaindropLibrary(collections, items) {
@@ -143,13 +145,21 @@ export function createIntegrationClient({ storage = defaultStorage, fetch: fetch
     if (command.operation === 'restoreItem') return store.restoreItem(args.id, revision);
     if (command.operation === 'permanentlyDeleteItem') {
       const before = await store.loadLibrary(), previous = before.items.find(i => i.id === args.id);
-      const result = await store.permanentlyDeleteItem(args.id, revision);
-      if (previous?.attachmentId && !(await store.loadLibrary()).items.some(i => i.attachmentId === previous.attachmentId)) {
-        try { await store.deleteAttachment(previous.attachmentId); return { ...result, fileCleanup: 'complete' }; }
-        catch { return { ...result, fileCleanup: 'failed', warning: 'The item was permanently deleted, but its local file bytes could not be removed. Review device storage before claiming full file erasure.' }; }
-      }
-      return result;
+      // Deleting a page from Trash also deletes the subpages trashed with it, so a later command for one of them finds
+      // it gone already: the outcome the agent asked for.
+      if (!previous) return { id: args.id, ids: [], attachmentIds: [], alreadyDeleted: true };
+      let result;
+      try { result = await store.permanentlyDeleteItem(args.id, revision); }
+      catch (error) { if (/no longer exists/i.test(error?.message || '')) return { id: args.id, ids: [], attachmentIds: [], alreadyDeleted: true }; throw error; }
+      // The store names the file blobs nothing uses any more (this item's and those of subpages deleted with it).
+      const files = Array.isArray(result?.attachmentIds) ? result.attachmentIds
+        : previous.attachmentId && !(await store.loadLibrary()).items.some(i => i.attachmentId === previous.attachmentId) ? [previous.attachmentId] : [];
+      if (!files.length) return result;
+      const cleanup = await Promise.allSettled(files.map(id => store.deleteAttachment(id)));
+      if (cleanup.every(outcome => outcome.status === 'fulfilled')) return { ...result, fileCleanup: 'complete' };
+      return { ...result, fileCleanup: 'failed', warning: 'The item was permanently deleted, but its local file bytes could not be removed. Review device storage before claiming full file erasure.' };
     }
+    if (command.operation === 'movePage') return store.movePage(args.id, { parentId: args.parentId, ...revision });
     if (command.operation === 'updateCollection') return store.updateCollection(args.id, args.patch, revision);
     if (command.operation === 'deleteCollection') return store.deleteCollection(args.id, revision);
     if (command.operation === 'mutateTags') return store.mutateTags(args);

@@ -182,3 +182,59 @@ test('Markdown export includes standalone and source notes, annotations and conn
   assert.match(markdown, /Useful & lovely: <https:\/\/example.com/);
   assert.match(markdown, /Source file \(document\)/);
 });
+
+test('importing a backup sanitizes conversation.research so imported conversations cannot hijack local items on undo or subpage edits', async () => {
+  const source = fixture();
+  source.conversations = {
+    schemaVersion: 1,
+    conversations: [{
+      id: 'conv_research',
+      title: 'Imported research',
+      mode: 'research',
+      targetId: 'article',
+      createdAt: '2026-04-08T10:00:00.000Z',
+      updatedAt: '2026-04-08T10:05:00.000Z',
+      research: {
+        status: 'running',
+        itemId: 'article',
+        sessionId: 'sesn_remote',
+        connectionId: 'anthropic:remote',
+        ownerId: 'owner_remote',
+        allowOriginalEdits: true,
+        budgetCents: 100,
+        spentCents: 25,
+        pages: [{ id: 'note', title: 'Target local note' }],
+        undo: {
+          originalField: 'content',
+          originalText: 'INJECTED CONTENT',
+          originalWritten: 'A note\nwith two lines',
+          subpageIds: ['note'],
+        },
+      },
+      messages: [{
+        id: 'msg_1',
+        role: 'assistant',
+        text: 'Summary',
+        createdAt: '2026-04-08T10:05:00.000Z',
+        research: { status: 'running', sessionId: 'sesn_remote', live: true, steps: [{ id: 's1', kind: 'search', label: 'Searched', status: 'done' }] },
+      }],
+    }],
+  };
+  let importedPayload = null;
+  const target = adapter();
+  await importPortableFile(jsonFile(source), target.store, {
+    ...isolated,
+    conversations: { importAll: async value => { importedPayload = value; } },
+  });
+  const imported = importedPayload.conversations.find(entry => entry.id === 'conv_research');
+  assert.ok(imported);
+  assert.equal(imported.research.status, 'stopped', 'running research is clamped to stopped on import');
+  assert.equal(imported.research.undo, undefined, 'undo state is stripped on import');
+  assert.equal(imported.research.allowOriginalEdits, undefined, 'allowOriginalEdits is stripped on import');
+  assert.equal(imported.research.sessionId, undefined, 'remote sessionId is stripped on import');
+  assert.equal(imported.research.connectionId, undefined, 'remote connectionId is stripped on import');
+  assert.equal(imported.research.pages[0].imported, true, 'imported pages are marked imported');
+  assert.equal(imported.messages[0].research.live, false);
+  assert.equal(imported.messages[0].research.sessionId, undefined);
+});
+

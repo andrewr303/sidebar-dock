@@ -58,9 +58,12 @@ test('toggle Markdown round trips nested containers, literal fences, empty lines
 test('unclosed toggle source stays ordinary text without losing body content',()=>{
  const source=':::toggle [open] Incomplete\nkeep\n\n# Heading';const blocks=parseMarkdown(source);assert.equal(blocks[0].type,'paragraph');assert.equal(serializeBlocks(blocks),source);assert.doesNotMatch(renderMarkdown(source),/<details/);
 });
-test('safe renderer supports notes and never executes raw HTML or image references',()=>{
+// Contract §2.2 (capture + research): a line that is only an http(s) image now renders as an image. Everything else
+// in this test is unchanged: raw HTML stays text and no other element or handler is ever produced.
+test('safe renderer supports notes and never executes raw HTML; only a whole-line http(s) image loads',()=>{
  const source='# Title\n- First\n- Second\n1. Ordered\n> Source\n> [!NOTE] Careful\n---\n![picture](https://example.com/pic.png)\n<img src=x onerror=alert(1)>\n<script>alert(1)</script>\n[bad](javascript:alert(1))\n[encoded](jav&#x61;script:alert(1))\n[safe](https://example.com/a?q=%22%3E)';
- const html=renderMarkdown(source);assert.match(html,/<h1>Title<\/h1>/);assert.match(html,/<ul><li>First<\/li><li>Second<\/li><\/ul>/);assert.match(html,/<ol><li>Ordered<\/li><\/ol>/);assert.match(html,/<blockquote>Source<\/blockquote>/);assert.match(html,/class="markdown-callout"/);assert.match(html,/class="markdown-media-link" href="https:\/\/example.com\/pic.png"/);assert.match(html,/href="https:\/\/example.com\/a\?q=%22%3E"/);assert.doesNotMatch(html,/<img|<iframe|<script|href="javascript:|onerror="/i);
+ const html=renderMarkdown(source);assert.match(html,/<h1>Title<\/h1>/);assert.match(html,/<ul><li>First<\/li><li>Second<\/li><\/ul>/);assert.match(html,/<ol><li>Ordered<\/li><\/ol>/);assert.match(html,/<blockquote>Source<\/blockquote>/);assert.match(html,/class="markdown-callout"/);assert.match(html,/<p class="markdown-image"><img src="https:\/\/example.com\/pic.png" alt="picture" loading="lazy" decoding="async" referrerpolicy="no-referrer"><\/p>/);assert.match(html,/href="https:\/\/example.com\/a\?q=%22%3E"/);
+ assert.equal((html.match(/<img/gi)||[]).length,1,'the image line is the only image; the raw <img> stays text');assert.doesNotMatch(html,/<iframe|<script|href="javascript:|onerror="/i);
 });
 test('links reject unsafe protocols, controls and embedded credentials',()=>{
  for(const value of ['javascript:alert(1)','data:text/html,hi','file:///C:/private.txt','vbscript:bad','https://user:pass@example.com/','https://example.com/\nnext','//example.com'])assert.equal(safeMarkdownUrl(value),'');

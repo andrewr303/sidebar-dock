@@ -459,7 +459,8 @@ test('dashboard tools: get_dashboard lists boards, show_collection_on_dashboard 
     call('show_collection_on_dashboard', { collectionId: '' }, 's6'),
   ]);
   assert.deepEqual(proposals[0].changes.map(change => change.label), ['Create collection Reading', 'Show Reading on the dashboard', 'Save 1 link to Reading', 'Show Misc on the dashboard']);
-  assert.deepEqual(proposals[0].changes.at(-1), { op: 'add_dashboard_widget', label: 'Show Misc on the dashboard', itemIds: [], count: 0, collectionId: 'misc', collectionName: 'Misc', boardId: 'work', boardName: 'Work' });
+  assert.deepEqual(proposals[0].changes.at(-1), { op: 'add_dashboard_widget', label: 'Show Misc on the dashboard', itemIds: [], count: 0, collectionId: 'misc', collectionName: 'Misc', boardId: 'work', boardName: 'Work',
+    tools: ['show_collection_on_dashboard'] });
   assert.equal(parse(results[3]).status, 'unchanged');
   assert.match(parse(results[3]).message, /already shows on the dashboard/);
   assert.match(parse(results[5]).error, /Unknown dashboard board/);

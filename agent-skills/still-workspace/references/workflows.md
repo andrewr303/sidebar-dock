@@ -22,6 +22,13 @@ These examples describe tool argument objects, not shell commands. Use the names
 
 `search_library({"query":"<url>"})` first. If the page already exists, move it with `update_item({"id":"<id>","patch":{"collectionId":"<collection>"}})`. Otherwise `create_item({"type":"bookmark","title":"<page title>","url":"<url>","collectionId":"<collection>"})`, or omit `collectionId` to save to Inbox. Check the operation until `saved`.
 
+## Create and move subpages
+
+1. Any live item (article, bookmark, note, etc.) can have note subpages up to 32 levels deep. List an item's subpages with `list_items({"parentId":"<parent-id>"})` or top-level items with `list_items({"parentId":""})`. `get_item` also returns `parentId` and `subpageIds`.
+2. Create a subpage with `create_item({"type":"note","title":"<subpage title>","parentId":"<parent-id>","content":"<markdown>"})`. It inherits the parent's `collectionId` unless you supply one.
+3. Move an existing note under another live item (or to the top level with `parentId: ""`) using `move_page({"id":"<note-id>","parentId":"<new-parent-id>","expectedUpdatedAt":"<current updatedAt>"})`. `update_item` cannot change `parentId`.
+4. When a note's `content` links a subpage inline as a block, use a standalone line `[[<subpage-id>|<Title>]]{page}`. Removing that line from `content` does not trash or move the subpage itself.
+
 ## Edit without losing newer work
 
 Read the complete current record, then `update_item({"id":"<id>","patch":{"content":"<intended personal note>"},"expectedUpdatedAt":"<current updatedAt>"})`. Patches preserve omitted fields. The source, attachment metadata and highlight identities cannot be altered through this patch.

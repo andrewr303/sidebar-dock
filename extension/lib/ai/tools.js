@@ -1,15 +1,24 @@
 // Library tools for the assistant. Read tools run immediately. Write tools never run on their own: the write calls of one
 // model step are validated and staged into ONE proposal, shown to the user through onProposal(), and applied through the
-// store only when the user answers 'apply' (optionally leaving items out). A turn may hold up to MAX_PROPOSALS_PER_TURN
-// proposals so a later step can build on ids an applied one created; after a discard the turn proposes nothing more.
-// Tool results tell the model exactly what happened.
+// store only when the user answers 'apply' (optionally leaving items out). The one exception is a proposal whose every
+// change is of a kind the user allows in Settings > Assistant permissions (lib/ai/permissions.js) and that changes at most
+// MAX_AUTO_ITEMS items: it applies at once through the same path, with the same undo record, and is marked autoApproved.
+// A turn may hold up to
+// MAX_PROPOSALS_PER_TURN proposals for review (plus MAX_AUTO_PROPOSALS_PER_TURN applied automatically) so a later step can
+// build on ids an applied one created; after a discard the turn proposes nothing more. Tool results tell the model exactly
+// what happened.
 import { getDescendantCollectionIds } from '../library-views.js';
 import { canonicalUrl, safeUrl, STICKY_COLORS } from '../store.js';
 import { plainText } from './search.js';
+import { allowedCategories, autoApproves, normalizePermissions, toolAutoApplies, MAX_AUTO_ITEMS } from './permissions.js';
+import { pageIndex, descendantIds } from '../pages.js';
 
 export const ITEM_TYPES = ['bookmark', 'article', 'image', 'video', 'file', 'note'];
 export const MAX_ITEMS_PER_CHANGE = 500;
 export const MAX_PROPOSALS_PER_TURN = 4;
+// Proposals applied without review (they never wait on the user) have their own, larger cap: it still ends a runaway
+// loop, for example one steered by instructions hidden in page text.
+export const MAX_AUTO_PROPOSALS_PER_TURN = 12;
 export const MAX_LINKS_PER_CALL = 200;
 const MAX_TAGS = 20;
 const NEW_PREFIX = 'new:';
@@ -34,6 +43,8 @@ const ids = description => ({ type: 'array', items: { type: 'string' }, descript
 const str = description => ({ type: 'string', description });
 const bool = description => ({ type: 'boolean', description });
 const PROPOSE = 'Changes are applied only after the user approves them.';
+// The wording for a tool whose every change the user allows without review (Settings > Assistant permissions).
+const AUTO_APPLY = `The user lets this kind of change apply without review: when every change in the step is of a kind they allow and the step changes at most ${MAX_AUTO_ITEMS} items, it is applied at once and they can undo it; otherwise the step waits for their approval.`;
 const canonicalOf = value => { try { return canonicalUrl(value); } catch { return ''; } };
 // The link's identity for saving: the canonical address plus its #fragment. Hash-routed apps (Azure portal, Gmail, many
 // consoles) put the page in the fragment, so '…/#/billing' and '…/#/users' are different links, not duplicates.
@@ -127,7 +138,7 @@ export const LIBRARY_TOOLS = Object.freeze([
     inputSchema: schema({ ids: ids('Item ids (up to 500).') }, ['ids']) },
   { name: 'convert_items', access: 'write', description: `Propose changing the type of items, for example turning notes that hold a web address into real links (bookmark) so they show in links widgets. Links and articles need an http or https url on the item. The item's text stays as its note. ${PROPOSE}`,
     inputSchema: schema({ ids: ids('Item ids (up to 500).'), type: { type: 'string', enum: CONVERT_TYPES, description: 'bookmark (a link), article or note.' } }, ['ids', 'type']) },
-  { name: 'create_note', access: 'write', description: `Propose a new Markdown note. collectionId is an existing id, "" for Inbox, or "new:<name>"; relatedIds links items; url attaches it to a web page; sticky also pins it to the dashboard as a sticky note of that color. ${PROPOSE}`,
+  { name: 'create_note', access: 'write', description: `Propose a new Markdown note. collectionId is an existing id, "" for Inbox, or "new:<name>"; relatedIds links items; url attaches it to a web page; sticky also pins it to the dashboard as a sticky note of that color; parent_id makes it a subpage of a saved item. ${PROPOSE}`,
     inputSchema: schema({
       title: { type: 'string', description: 'Note title.' },
       markdown: { type: 'string', description: 'Note body in Markdown. Cite saved items as [[item_id]].' },
@@ -136,6 +147,7 @@ export const LIBRARY_TOOLS = Object.freeze([
       url: { type: 'string', description: 'Web page the note is about (http or https).' },
       tags: ids('Optional tags, without #.'),
       sticky: { type: 'string', enum: [...STICKY_COLORS], description: 'Optional: show the note as a sticky note of this color on the dashboard.' },
+      parent_id: str('Optional: the id of a saved item (a note, article, link or any other item, not in Trash) to nest this note under as a subpage. Without collectionId the note joins that item’s collection.'),
     }, ['title', 'markdown']) },
   { name: 'append_to_note', access: 'write', description: `Propose appending Markdown to the end of an existing note. ${PROPOSE}`,
     inputSchema: schema({ id: { type: 'string', description: 'Note id.' }, markdown: { type: 'string', description: 'Markdown to append.' } }, ['id', 'markdown']) },
@@ -160,10 +172,15 @@ export const LIBRARY_TOOLS = Object.freeze([
 const TOOL_BY_NAME = new Map(LIBRARY_TOOLS.map(tool => [tool.name, tool]));
 export const isWriteTool = name => TOOL_BY_NAME.get(name)?.access === 'write';
 
-/** Normalized tool definitions for streamChat: [{ name, description, inputSchema }]. Dashboard tools need a dashboard adapter. */
-export function toolDefinitions({ write = true, page = false, dashboard = false } = {}) {
+/**
+ * Normalized tool definitions for streamChat: [{ name, description, inputSchema }]. Dashboard tools need a dashboard adapter.
+ * permissions (the assistantPermissions setting) keeps each write tool's description truthful: a tool whose every change
+ * the user allows says it applies without review.
+ */
+export function toolDefinitions({ write = true, page = false, dashboard = false, permissions = null } = {}) {
+  const describe = ({ name, access, description }) => access === 'write' && permissions && toolAutoApplies(name, permissions) ? description.replace(PROPOSE, AUTO_APPLY) : description;
   return LIBRARY_TOOLS.filter(tool => (write || tool.access === 'read') && (page || tool.name !== 'get_page') && (dashboard || !DASHBOARD_TOOLS.has(tool.name)))
-    .map(({ name, description, inputSchema }) => ({ name, description, inputSchema: structuredClone(inputSchema) }));
+    .map(tool => ({ name: tool.name, description: describe(tool), inputSchema: structuredClone(tool.inputSchema) }));
 }
 
 export function collectionPath(library, id) {
@@ -253,26 +270,35 @@ const groupKey = (op, callId) => {
   }
 };
 
+// The tools behind a row, when every staged entry in it names one. A row can merge calls of different tools
+// (remove_tags and delete_tag on the same tag), so it lists them all; a row with an unnamed entry gets none and always asks.
+const toolsOf = entries => (entries.length && entries.every(tool => typeof tool === 'string' && tool) ? unique(entries) : null);
+
 /**
  * The rows of a proposal card for a draft: created collections first, then one row per group of like operations.
- * Every operation gets a visible row, including ones this function has no wording for.
+ * Every operation gets a visible row, including ones this function has no wording for. Each row carries tools: the write
+ * tools that staged it, so the row alone can be classified (lib/ai/permissions.js autoApproves): delete_tag stages
+ * remove_tags but is a deletion.
  */
 export function buildChanges(draft, library) {
   const index = new Map((library?.items || []).map(item => [item.id, item]));
   const preview = list => list.slice(0, 50).map(id => { const item = index.get(id); return { id, title: item ? text(item.title) : id }; });
   const groups = new Map();
-  for (const { op, callId } of draft.ops) {
+  for (const { op, callId, tool } of draft.ops) {
     const key = groupKey(op, callId);
     const group = groups.get(key);
-    if (!group) { groups.set(key, { ...op, itemIds: [...(op.itemIds || [])], callIds: [callId] }); continue; }
+    if (!group) { groups.set(key, { ...op, itemIds: [...(op.itemIds || [])], callIds: [callId], tools: [tool] }); continue; }
     for (const id of op.itemIds || []) if (!group.itemIds.includes(id)) group.itemIds.push(id);
     if (group.links && op.links) group.links = [...group.links, ...op.links];
     group.callIds.push(callId);
+    group.tools.push(tool);
   }
   const changes = [];
   for (const collection of draft.collections) {
     const path = pathIn(library, draft, collection.id);
-    changes.push({ op: 'create_collection', label: `Create collection ${path}`, itemIds: [], count: 0, collectionId: collection.id, collectionName: path, parentId: collection.parentId });
+    const tools = toolsOf([collection.tool]);
+    changes.push({ op: 'create_collection', label: `Create collection ${path}`, itemIds: [], count: 0, collectionId: collection.id, collectionName: path, parentId: collection.parentId,
+      ...(tools ? { tools } : {}) });
   }
   for (const group of groups.values()) {
     if (group.op === 'create_collection') continue;
@@ -304,10 +330,14 @@ export function buildChanges(draft, library) {
           items: links.slice(0, 50).map(({ id, title, url }) => ({ id, title, url })), ...place, links });
         break;
       }
-      case 'create_note':
-        changes.push({ op: 'create_note', label: `Create note ${quote(group.title)}${group.collectionId ? ` in ${path}` : ''}`, itemIds: [], count: 1, ...place,
-          note: { id: group.noteId, title: group.title, markdown: group.markdown, relatedIds: group.relatedIds, url: group.url, ...(group.tags?.length ? { tags: group.tags } : {}), ...(group.sticky ? { sticky: group.sticky } : {}) } });
+      case 'create_note': {
+        const parent = group.parentId ? index.get(group.parentId) : null;
+        const label = group.parentId ? `Create subpage ${quote(group.title)} in ${quote(parent?.title || group.parentId)}` : `Create note ${quote(group.title)}${group.collectionId ? ` in ${path}` : ''}`;
+        changes.push({ op: 'create_note', label, itemIds: [], count: 1, ...place,
+          note: { id: group.noteId, title: group.title, markdown: group.markdown, relatedIds: group.relatedIds, url: group.url, ...(group.tags?.length ? { tags: group.tags } : {}),
+            ...(group.sticky ? { sticky: group.sticky } : {}), ...(group.parentId ? { parentId: group.parentId } : {}) } });
         break;
+      }
       case 'append_to_note': changes.push({ ...base, label: `Append to ${quote(first?.title)}`, note: { id: group.itemIds[0], markdown: group.markdown } }); break;
       case 'update_item': {
         const { title, excerpt } = group.patch;
@@ -338,6 +368,9 @@ export function buildChanges(draft, library) {
         changes.push({ ...base, label: `${words[0].toUpperCase()}${words.slice(1)}${count ? ` (${items})` : ''}`, ...(path ? place : {}) });
       }
     }
+    // Every case above pushes exactly one row for its group.
+    const tools = toolsOf(group.tools);
+    if (tools) changes.at(-1).tools = tools;
   }
   return changes;
 }
@@ -444,10 +477,16 @@ export async function undoChanges(store, undo, { dashboard = null } = {}) {
       .map(entry => library && entry.patch?.collectionId && !library.collections.has(entry.patch.collectionId) ? { id: entry.id, patch: { ...entry.patch, collectionId: '' } } : entry);
     if (patches.length) await attempt(() => store.bulkUpdateItems(patches));
   }
-  for (const entry of [...(undo.createdItems || []), ...(undo.createdNotes || [])]) {
+  // Created items go newest first (notes in reverse creation order, then links): a subpage is removed before the page it
+  // sits under, so the store never has to lift (and so change) a child this undo is about to remove anyway.
+  const created = [...(undo.createdItems || []), ...(undo.createdNotes || [])].reverse();
+  const present = created.length ? await current() : null;
+  for (const entry of created) {
     const id = typeof entry === 'string' ? entry : text(entry?.id);
     const stamp = typeof entry === 'string' ? '' : text(entry?.updatedAt);
     if (!id) continue;
+    // Already gone (deleted for good since, or with a page removed earlier in this loop): nothing left to undo.
+    if (present && !present.items.has(id)) continue;
     await attempt(async () => {
       if (stamp && typeof store.permanentlyDeleteItem === 'function') {
         // Untouched since it was created: remove it for good. Edited since (a revision conflict): keep it, in Trash.
@@ -470,18 +509,48 @@ export async function undoChanges(store, undo, { dashboard = null } = {}) {
   return { kept: kept.length };
 }
 
+// Ops whose store write also changes a page's subpages: a move carries the collection down, trash and restore carry
+// the Trash state (lib/store.js commitItems).
+const CASCADING_OPS = new Set(['move_items', 'trash_items', 'restore_items']);
+/**
+ * The staged calls of one step as autoApproves reads them: { tool, op, fields?, itemIds, noteId?, itemCount?,
+ * subpageIds?, relatedIds? }. subpageIds lists the subpages a cascading op changes too (live ones; for a restore, trashed
+ * ones), so a step that moves one page with many subpages counts every one of them toward MAX_AUTO_ITEMS; relatedIds
+ * lists the items an unlink_items changes besides its own (links go from both sides), which count the same way.
+ */
+function stagedChanges(staged, library) {
+  let index = null;
+  return staged.flatMap(({ call, ops }) => ops.map(op => {
+    const itemIds = Array.isArray(op.itemIds) ? op.itemIds : [];
+    let subpageIds;
+    if (CASCADING_OPS.has(op.op) && itemIds.length) {
+      index ||= pageIndex(library);
+      subpageIds = itemIds.flatMap(id => descendantIds(index, id, { includeDeleted: op.op === 'restore_items' }));
+    }
+    return { tool: call.name, op: op.op, itemIds, ...(op.patch ? { fields: Object.keys(op.patch) } : {}), ...(op.noteId ? { noteId: op.noteId } : {}),
+      ...(Number.isFinite(op.itemCount) ? { itemCount: op.itemCount } : {}), ...(subpageIds?.length ? { subpageIds } : {}),
+      ...(op.op === 'unlink_items' && Array.isArray(op.relatedIds) ? { relatedIds: op.relatedIds } : {}) };
+  }));
+}
+
 const DECLINED = 'The user declined a proposal earlier in this request. Do not propose more changes now; answer in text and let the user ask again.';
 const LIMIT = `This request already had ${MAX_PROPOSALS_PER_TURN} proposals, the most allowed. Do not propose more; tell the user what is left so they can ask for it.`;
+// Review slots are used up but changes the user allows without review can still apply.
+const REVIEW_LIMIT = `This request already had ${MAX_PROPOSALS_PER_TURN} proposals for review, the most allowed. Only changes the user allows without review can still apply; tell the user what else is left so they can ask for it. A step that changes more than ${MAX_AUTO_ITEMS} items always needs review.`;
 const BLANK = { tags: [], relatedIds: [], deletedAt: null, reminderAt: null, sticky: null, favorite: false, archived: false, pinned: false, read: false };
 
 /**
  * One assistant turn's tool session.
- * createToolSession({ getLibrary, searchLibrary, store, page, dashboard, onProposal, onEvent, signal }) -> { definitions, execute(calls), sources, proposals }
+ * createToolSession({ getLibrary, searchLibrary, store, page, dashboard, permissions, onProposal, onEvent, signal }) -> { definitions, execute(calls), sources, proposals }
  * dashboard (optional; ui/dashboard/assistant-adapter.js builds it): { describe(), addCollectionWidget({ collectionId, boardId }), removeWidget(widgetId) }.
+ * permissions (optional): the assistantPermissions setting, read once per turn by the caller. A proposal whose every change
+ * is allowed applies without calling onProposal; its 'proposal' event and record carry autoApproved: true.
  * onProposal(proposal) resolves to 'apply', 'discard' or { decision: 'apply', exclude: [itemIds] }; anything else discards.
  */
-export function createToolSession({ getLibrary, searchLibrary, store, page = null, dashboard = null, onProposal, onEvent = () => {}, signal, uid = uidDefault, now = () => new Date().toISOString() } = {}) {
+export function createToolSession({ getLibrary, searchLibrary, store, page = null, dashboard = null, permissions = null, onProposal, onEvent = () => {}, signal, uid = uidDefault, now = () => new Date().toISOString() } = {}) {
   const board = dashboard && typeof dashboard.describe === 'function' && typeof dashboard.addCollectionWidget === 'function' ? dashboard : null;
+  const policy = normalizePermissions(permissions);
+  const allowsAny = allowedCategories(policy).length > 0;
   const sources = new Map();
   const proposals = [];
   let declined = false;
@@ -547,7 +616,7 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
           ...(item.sticky ? { sticky: text(item.sticky.color) || true } : {}),
           description: text(item.excerpt).slice(0, 2000), note: note.slice(0, noteBudget), article: article.slice(0, articleBudget),
           highlights: (item.highlights || []).slice(0, 40).map(h => ({ text: text(h.text).slice(0, 800), note: text(h.note).slice(0, 400) })),
-          relatedIds: (item.relatedIds || []).slice(0, 50), fileName: text(item.fileName) || undefined,
+          relatedIds: (item.relatedIds || []).slice(0, 50), fileName: text(item.fileName) || undefined, parentId: text(item.parentId) || undefined,
           truncated: note.length > noteBudget || article.length > articleBudget });
       }
       return { summary: `Read ${plural(items.length, 'item')}`, data: { items, missing, ...(wanted.length > 20 ? { note: 'Only the first 20 ids were read.' } : {}) }, result: { count: items.length } };
@@ -907,7 +976,11 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       const markdown = text(input.markdown).slice(0, 200000);
       if (!markdown.trim()) throw new Error('Give the note some Markdown content.');
       const title = text(input.title).trim().slice(0, 300) || plainText(markdown).slice(0, 80) || 'Untitled note';
-      const collectionId = resolveCollection(input.collectionId, draft, library);
+      // A subpage: any live saved item can be the parent. The store checks the nesting depth when the note is saved.
+      const parentId = text(input.parent_id ?? input.parentId).trim();
+      const parent = parentId ? liveItem(library, parentId, 'parent item') : null;
+      // A subpage lives with its parent unless the model names another collection.
+      const collectionId = parent && !text(input.collectionId).trim() ? text(parent.collectionId) : resolveCollection(input.collectionId, draft, library);
       const live = new Set((library?.items || []).filter(item => !item.deletedAt).map(item => item.id));
       const relatedIds = [...new Set((Array.isArray(input.relatedIds) ? input.relatedIds : []).filter(id => typeof id === 'string' && live.has(id)))].slice(0, 100);
       const url = text(input.url).trim() ? safeWebUrl(input.url) : '';
@@ -915,8 +988,8 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       const sticky = text(input.sticky).trim().toLowerCase();
       if (sticky && !STICKY_COLORS.includes(sticky)) throw new Error(`sticky must be one of ${STICKY_COLORS.join(', ')}.`);
       const id = uid('item');
-      return { op: { op: 'create_note', noteId: id, title, markdown, collectionId, relatedIds, url, tags: normalizeTags(input.tags), ...(sticky ? { sticky } : {}) },
-        data: { status: 'proposed', noteId: id, collection: pathIn(library, draft, collectionId) } };
+      return { op: { op: 'create_note', noteId: id, title, markdown, collectionId, relatedIds, url, tags: normalizeTags(input.tags), ...(sticky ? { sticky } : {}), ...(parent ? { parentId: parent.id } : {}) },
+        data: { status: 'proposed', noteId: id, collection: pathIn(library, draft, collectionId), ...(parent ? { parentId: parent.id } : {}) } };
     },
     append_to_note(input, draft, library) {
       const markdown = text(input.markdown).slice(0, 200000);
@@ -1094,7 +1167,7 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
           // Several new stickies cascade instead of covering each other, above the stickies already there.
           const sticky = op.sticky ? { color: op.sticky, board: '', y: 24 + 32 * stickies, z: topZ + 1 + stickies++ } : null;
           const note = await store.saveItem({ id: op.noteId, type: 'note', title: op.title, content: op.markdown, excerpt: noteExcerpt(op.markdown), collectionId: op.collectionId,
-            relatedIds: op.relatedIds.filter(live), url: op.url || '', tags: op.tags || [], ...(sticky ? { sticky } : {}) });
+            relatedIds: op.relatedIds.filter(live), url: op.url || '', tags: op.tags || [], ...(sticky ? { sticky } : {}), ...(op.parentId ? { parentId: op.parentId } : {}) });
           undo.createdNotes.push({ id: op.noteId, updatedAt: text(note?.updatedAt) });
         } else if (op.op === 'save_links') {
           for (const link of op.links) {
@@ -1141,7 +1214,7 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
     const count = op.itemIds?.length || 0;
     switch (name) {
       case 'create_collection': return { status: 'applied', collectionId: op.collectionId, ...(data?.path ? { path: data.path } : {}) };
-      case 'create_note': return { status: 'applied', noteId: op.noteId, title: op.title, cite: `[[${op.noteId}]]`, ...(op.sticky ? { sticky: op.sticky } : {}) };
+      case 'create_note': return { status: 'applied', noteId: op.noteId, title: op.title, cite: `[[${op.noteId}]]`, ...(op.sticky ? { sticky: op.sticky } : {}), ...(op.parentId ? { parentId: op.parentId } : {}) };
       case 'save_links': {
         const links = ops.find(entry => entry.op === 'save_links')?.links || [];
         const moved = new Set(ops.find(entry => entry.op === 'move_items')?.itemIds || []);
@@ -1201,11 +1274,13 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
   };
 
   async function propose(writes, done) {
-    const refusal = declined ? DECLINED : proposals.length >= MAX_PROPOSALS_PER_TURN ? LIMIT : '';
-    if (refusal) {
-      for (const { call } of writes) done(call, { status: 'rejected', message: refusal }, { isError: true, summary: 'Extra changes not proposed' });
-      return;
-    }
+    const reject = (calls, message) => { for (const { call } of calls) done(call, { status: 'rejected', message }, { isError: true, summary: 'Extra changes not proposed' }); };
+    // Review slots and automatic slots are counted apart: a turn of allowed changes is not cut short by the review cap.
+    const automatic = proposals.filter(record => record.autoApproved).length;
+    const canAsk = proposals.length - automatic < MAX_PROPOSALS_PER_TURN;
+    const canAuto = allowsAny && automatic < MAX_AUTO_PROPOSALS_PER_TURN;
+    const refusal = declined ? DECLINED : !canAsk && !canAuto ? LIMIT : '';
+    if (refusal) { reject(writes, refusal); return; }
     const library = await readLibrary();
     const draft = { collections: [], ops: [] };
     const staged = [];
@@ -1214,10 +1289,13 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
     const ordered = [...writes].sort((a, b) => (a.call.name === 'create_collection' ? 0 : 1) - (b.call.name === 'create_collection' ? 0 : 1));
     for (const { call, input } of ordered) {
       try {
+        const known = draft.collections.length;
         const outcome = await stagers[call.name](input, draft, library);
+        // Staged ops and new collections remember the tool that staged them, so every card row names its tools.
+        for (const collection of draft.collections.slice(known)) collection.tool = call.name;
         if (outcome.skip) { done(call, outcome.data, { summary: outcome.data.message || 'No change needed' }); continue; }
         const ops = outcome.ops || [outcome.op];
-        for (const op of ops) if (op.op !== 'create_collection') draft.ops.push({ callId: call.id, op });
+        for (const op of ops) if (op.op !== 'create_collection') draft.ops.push({ callId: call.id, tool: call.name, op });
         staged.push({ call, ops, data: outcome.data });
       } catch (error) {
         if (signal?.aborted) throw error;
@@ -1225,16 +1303,26 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       }
     }
     if (!staged.length) return;
+    // Classified by tool and op together (delete_tag stages remove_tags but is a deletion), and sized by the items they
+    // change (subpages the store carries along included). Past the automatic cap, or over MAX_AUTO_ITEMS items, an
+    // allowed proposal goes to review like any other.
+    const auto = canAuto && autoApproves(stagedChanges(staged, library), policy);
+    if (!auto && !canAsk) { reject(staged, REVIEW_LIMIT); return; }
     const changes = buildChanges(draft, library);
-    const proposal = { id: uid('proposal'), ...summarize(changes), changes };
+    const proposal = { id: uid('proposal'), ...summarize(changes), changes, ...(auto ? { autoApproved: true } : {}) };
     const record = { ...proposal, status: 'pending' };
     proposals.push(record);
     onEvent({ type: 'proposal', proposal });
-    onEvent({ type: 'status', label: 'Waiting for your review' });
     let decision;
-    try { decision = await waitForDecision(proposal); }
-    catch (error) {
-      // Stopped while the card was open: close it as discarded so the UI does not leave an Apply button behind.
+    try {
+      if (!auto) {
+        onEvent({ type: 'status', label: 'Waiting for your review' });
+        decision = await waitForDecision(proposal);
+      } else if (signal?.aborted) throw signal.reason || new DOMException('Stopped', 'AbortError');
+      else decision = { apply: true, exclude: new Set() };
+    } catch (error) {
+      // Stopped while the card was open (or just before an automatic apply): close it as discarded so the UI does not leave
+      // an Apply button behind.
       record.status = 'discarded';
       onEvent({ type: 'proposal_result', proposalId: proposal.id, status: 'discarded' });
       throw error;
@@ -1256,7 +1344,7 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       const { summary } = summarize(applied);
       const after = await settle().catch(() => null);
       Object.assign(record, { status: 'applied', result: { summary }, undo, excluded });
-      onEvent({ type: 'proposal_result', proposalId: proposal.id, status: 'applied', summary, excluded, undo: () => undoChanges(store, undo, { dashboard: board }) });
+      onEvent({ type: 'proposal_result', proposalId: proposal.id, status: 'applied', summary, excluded, ...(auto ? { autoApproved: true } : {}), undo: () => undoChanges(store, undo, { dashboard: board }) });
       const index = new Map((after?.items || []).map(item => [item.id, item]));
       for (const { call, ops, data } of staged) {
         const kept = ops.some(op => op.op === 'create_collection') ? ops : final.ops.filter(entry => entry.callId === call.id).map(entry => entry.op);
@@ -1266,7 +1354,8 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
           const created = op.op === 'create_note' ? [{ id: op.noteId, title: op.title, url: op.url, type: 'note' }] : op.op === 'save_links' ? op.links.map(link => ({ ...link, type: 'bookmark' })) : [];
           for (const entry of created) remember(index.get(entry.id) || { ...entry, collectionId: op.collectionId }, after?.items ? after : library);
         }
-        done(call, resultFor(call.name, kept, data), { summary: labelFor(kept, applied) });
+        // The model hears that nobody reviewed the change, so its confirmation can point at Undo.
+        done(call, { ...resultFor(call.name, kept, data), ...(auto ? { appliedWithoutReview: true } : {}) }, { summary: labelFor(kept, applied) });
       }
     } catch (error) {
       record.status = 'failed';
@@ -1302,5 +1391,5 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
     return calls.map(call => results.get(call.id) || { toolUseId: call.id, content: JSON.stringify({ error: 'Tool did not run.' }), isError: true });
   }
 
-  return { definitions: options => toolDefinitions({ page: !!page, dashboard: !!board, ...options }), execute, sources, proposals };
+  return { definitions: options => toolDefinitions({ page: !!page, dashboard: !!board, permissions: policy, ...options }), execute, sources, proposals };
 }

@@ -17,7 +17,7 @@ test('every section has a known group, an icon and copy, and ids are unique', ()
   assert.deepEqual(groupSections().map(group => [group.label, group.sections.map(s => s.id)]), [
     ['Personalize', ['appearance', 'newtab']],
     ['Library', ['general', 'library']],
-    ['AI', ['ai', 'search', 'agents']],
+    ['AI', ['ai', 'assistant', 'research', 'search', 'agents']],
     ['Connections', ['accounts', 'integrations']],
     ['Help', ['shortcuts', 'about', 'help']],
   ]);
@@ -34,6 +34,10 @@ test('sections normalize from ids, aliases and views', () => {
   assert.ok(isSection('accounts'));
   assert.ok(!isSection('theme'));
   assert.equal(sectionById('ai').label, 'AI models');
+  assert.equal(normalizeSection('permissions'), 'assistant');
+  assert.equal(sectionById('assistant').label, 'Assistant permissions');
+  assert.equal(sectionById('research').label, 'Research agent');
+  assert.equal(sectionFromView('settings:research'), 'research');
   assert.equal(sectionById('missing'), null);
 
   assert.equal(sectionFromView('settings:newtab'), 'newtab');
@@ -81,12 +85,16 @@ test('search terms are lower-case words without duplicates; every term must matc
 });
 
 test('matchSections finds sections by name, summary and keywords', () => {
-  assert.deepEqual(matchSections('github').map(s => s.id), ['accounts']);
+  // GitHub is a connected account, and the research agent can search it.
+  assert.deepEqual(matchSections('github').map(s => s.id), ['research', 'accounts']);
   assert.ok(matchSections('wallpaper').some(s => s.id === 'newtab'));
   assert.ok(matchSections('dark mode').some(s => s.id === 'appearance'));
   assert.ok(matchSections('backup').some(s => s.id === 'library'));
   // Automatic snapshots and the chat/CSV exports live in Library & backup.
   for (const query of ['snapshot', 'rollback', 'chats', 'spreadsheet']) assert.ok(matchSections(query).some(s => s.id === 'library'), query);
+  // Assistant permissions and the research agent (contracts §8).
+  for (const query of ['permissions', 'approval', 'auto apply', 'trusted', 'full access', 'links folders']) assert.ok(matchSections(query).some(s => s.id === 'assistant'), query);
+  for (const query of ['research', 'managed agents', 'spending cap', 'subpages', 'sonnet']) assert.ok(matchSections(query).some(s => s.id === 'research'), query);
   assert.equal(matchSections('').length, SETTINGS_SECTIONS.length);
   assert.deepEqual(matchSections('qqqzzz'), []);
 });

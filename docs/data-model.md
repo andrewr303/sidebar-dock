@@ -12,10 +12,11 @@ local-first: nothing leaves the device unless the user exports a file or connect
 | --- | --- | --- | --- | --- | --- |
 | `still.library.v1` | `lib/store.js` | Library: items, collections, settings, tombstones | yes | yes (settings without secrets) | secret-like settings keys |
 | `still.dashboard.v1` | `lib/dashboard-store.js` | New-tab boards, widgets, widget config (kanban, quick links, notes draft) | yes | yes (secret-like config keys stripped) | no |
-| `still.ai.v2` | `lib/ai/connections.js` | AI connections (non-secret fields), AI settings, overlays, model cache | yes | non-secret part | bridge auth |
+| `still.ai.v2` | `lib/ai/connections.js` | AI connections (non-secret fields), AI settings, overlays, model cache | yes | non-secret part, without the device-only settings | bridge auth; the `assistantPermissions` and `research` settings |
 | `still.ai.secrets.v1` | `lib/ai/secrets.js` | `{ <connectionId>: { apiKey, updatedAt } }` | yes | **never** | **yes** |
 | `still.ai.conversations.v2` | `lib/ai/conversations.js` | Conversation index `{ version: 2, migratedLegacy, items: [summary] }` | yes | yes | no |
-| `still.ai.conversation.v2:<id>` | `lib/ai/conversations.js` | One conversation body (messages) | yes | yes | no |
+| `still.ai.conversation.v2:<id>` | `lib/ai/conversations.js` | One conversation body (messages; research runs also keep their run record) | yes | yes | no |
+| `still.ai.research.v1` | `lib/ai/research/provision.js` | Research agent and environment ids per Anthropic connection and workspace (below) | yes | **never** | **yes** |
 | `still.accounts.v1` | `lib/accounts.js` | Connected accounts (GitHub, Linear, Product Hunt tokens; calendar feed URLs) | yes | **never** | **yes** |
 | `still.integrations.v1` | `lib/integrations.js` | Raindrop and local-bridge tokens, bridge URL and switches | yes | **never** | **yes** |
 | `still.ai.preferences.v1`, `still.ai.chats.v1` | legacy | Read-only migration sources from older builds; never deleted | yes | no | no |
@@ -25,6 +26,22 @@ local-first: nothing leaves the device unless the user exports a file or connect
 
 "Secret-like" means a key that matches `token|secret|password|passphrase|credential|bridge|integration|api[-_]?key|authorization|cookie`
 (case-insensitive). Those keys never go into an export file. Imports never apply them, and the device keeps its own.
+
+`still.ai.research.v1` is `{ version: 1, byConnection: { '<connectionId>|<workspaceId>': { agentId, agentVersion, specHash,
+environmentId, createdAt, updatedAt } } }`. It names resources in one person's Anthropic account, so no export carries
+it. Writes use the Web Lock `still.ai.research.v1`. A stored `version` above 1 is never written over: research then
+refuses to run (`newer_version`) rather than create agents the newer record cannot see. **Reset research agent** writes
+an empty record; nothing is deleted from the Anthropic account. Restoring a snapshot that lacks the key removes it, and the
+next run creates a new agent and environment.
+
+### chrome.storage.session (extension only, cleared when the browser closes)
+
+| Key | Owner | Contents |
+| --- | --- | --- |
+| `still.capture.pickers.v1` | `background.js` | Page picker requests the worker started `{ <requestId>: { tabId, windowId, from, documentId, startedAt } }`, at most 20, each valid for 30 minutes. A picker result is accepted only for a known request id, from that tab's top frame. |
+| `still.capture.drafts.v1` | `lib/capture.js`, `ui/quick-add.js` | Picker results finished while that window's side panel was closed `{ <draftId>: { draftId, windowId, tabId, createdAt, article } }`, at most 3. The side panel takes its window's newest one when it opens. |
+
+Neither key is in snapshots or backups. Web pages cannot read `storage.session`.
 
 ### localStorage (per extension origin, every build)
 
@@ -66,7 +83,13 @@ connection on `versionchange`, reopens on the next call, and reports `blocked` a
 title, url, excerpt, content (Markdown note), articleContent (<= 250k chars), tags[], collectionId ('' = Inbox), favorite,
 archived, deletedAt (Trash), createdAt, updatedAt, cover, art, sourceUrl, highlights[{ id, text, note, color, createdAt, url }],
 relatedIds[], reminderAt, reminderNotifiedAt, attachmentId, fileName, mime, size, pinned, read,
-sticky ({ color, board, x, y, w, h, z, hidden } | null, notes only)`.
+sticky ({ color, board, x, y, w, h, z, hidden } | null, notes only), parentId ('' = top level, notes only),
+siteName (<= 200), author (<= 300), publishedAt (ISO or ''), icon (http(s) URL or data:image <= 16 KB, else ''),
+lang (language tag <= 35)`.
+
+`siteName`, `author`, `publishedAt`, `icon` and `lang` are details captured with a page. Saving the same URL again
+fills them only when the new value is not empty, so a later capture never blanks one. None of these fields needed a
+migration: older records read as `''`, and older builds keep the fields through edits (`keepUnknown`).
 
 **Collection:** `id, name, color, icon, parentId ('' = top level), description, cover, pinned, layout, sidebarLayout,
 createdAt, updatedAt, deletedAt? (only when set)`. Order is the array order.
@@ -77,9 +100,9 @@ createdAt, updatedAt, deletedAt? (only when set)`. Order is the array order.
   `design`, ...) and from imports (`raindrop-<id>`).
 - `updatedAt` is an ISO string that only moves forward per record: it is `max(now, previous + 1 ms)`.
 - An edit bumps it, and so does an edit as a side effect (tag rename, collection deletion moving items to the Inbox,
-  re-parenting children). The exception is derived backlink clean-up: when an item is deleted forever, other items lose
-  it from `relatedIds` without a new stamp, so an editor open on them keeps a valid revision. `onCommit` still reports
-  those items as changed.
+  re-parenting children, every subpage cascade and lift below). The exception is derived backlink clean-up: when an item
+  is deleted forever, other items lose it from `relatedIds` without a new stamp, so an editor open on them keeps a valid
+  revision. `onCommit` still reports those items as changed.
 - Seed, import and backup data keep their own `createdAt` and `updatedAt` when they parse. A future stamp, for example
   from another device's clock, is clamped to now.
 
@@ -89,8 +112,46 @@ createdAt, updatedAt, deletedAt? (only when set)`. Order is the array order.
   (`keepUnknown` in `store.js`). A field written by a newer build, or by an older one, therefore survives. Keys that
   arrive only with a patch, such as UI transient props, are dropped. Prototype keys are never copied.
 - Seeding and importing keep unknown keys from the file.
-- Trash is a soft delete (`deletedAt`). Hard deletes (delete forever, empty Trash, delete collection) record a tombstone.
-  Tombstones are capped at the newest 10,000, and one is removed when its id is created again.
+- Trash is a soft delete (`deletedAt`). Hard deletes (delete forever, empty Trash, delete collection) record a tombstone,
+  one per id, including subpages deleted with their page. Tombstones are capped at the newest 10,000, and one is
+  removed when its id is created again.
+
+### Subpages (the page tree)
+
+A note can sit inside another item through `parentId`, like a page inside a page. The rules live in `lib/store.js`; the
+read helpers (`parentIdOf`, `pageIndex`, `parentOf`, `childrenOf`, `descendantIds`, `ancestorsOf`, `isSubpage`,
+`wouldCycle`, `pageTree`, `pageDepth`, `pageHeight`, `pageText`, `pageBlockLine`, `parsePageBlockLine`) are pure
+functions in `lib/pages.js`. The bridge (`bridge/protocol.mjs`) imports the same module for its MCP checks.
+
+- **Shape.** Only notes have a parent; the parent may be any item type (a note, a saved article, a bookmark, a file).
+  There is no children array: `parentId` on the child is the only source of truth. Siblings are ordered by `createdAt`,
+  then `id`. Pages nest at most 32 levels (`MAX_PAGE_DEPTH`). Every walk over stored data is guarded against loops.
+- **Placing a page** (`saveItem` with `parentId`, `updateItem`, `bulkUpdateItems`, `movePage(id, { parentId,
+  expectedUpdatedAt })`): the parent must exist and not be in Trash ("That page no longer exists."), the page cannot end
+  up inside itself or one of its subpages ("A page cannot be placed inside itself."), and the whole subtree must fit
+  under the cap ("Pages can be nested 32 levels deep."). A batch is checked on the state after the whole batch, so it
+  cannot build a loop between its own entries; a failed check writes nothing.
+- **Collections.** A new subpage takes its parent's collection unless the caller chose one. A page moved inside another
+  takes that page's collection, and a page's collection change carries down to its live subpages in the same write
+  (subpages patched in the same batch keep their own). A page moved to the top level keeps its collection.
+- **Trash.** Trashing a page (`deleteItem`, or a `bulkUpdateItems` patch that sets `deletedAt`: Library trash and undo,
+  the assistant's `trash_items`) gives its live subpages the identical `deletedAt` stamp. A subpage already in Trash
+  keeps its own stamp. A page already in Trash that gets a new stamp takes the subpages trashed with it along.
+- **Restore** (`restoreItem`, or a patch that clears `deletedAt`) brings back the subpages whose `deletedAt` equals the
+  page's former stamp: those trashed together, never ones trashed separately. A restored page whose parent is still in
+  Trash, or gone, moves to the top level (`parentId: ''`); restoring the old parent later does not re-nest it.
+- **Delete forever.** `permanentlyDeleteItem` on a page in Trash also deletes the subpages that share its stamp. Its
+  other subpages move up to the nearest page that stays (or the top level). On a live page (the assistant's undo of a
+  note it created) no subpage is ever deleted: its children move up. It returns `{ id, ids, attachmentIds }`: every
+  deleted id and the file blobs no remaining item uses. `emptyTrash` moves live subpages of trashed pages (left by an
+  older build) up the same way. Callers that loop over delete forever skip ids a cascade already removed.
+- **Research writes.** `upsertContentSection(id, { previous = '', next, field = 'content' })` reads the latest record
+  inside the write queue: when `previous` is non-empty and found, its last occurrence becomes `next`; otherwise `next` is
+  appended after a blank line, keeping the existing text byte for byte. Only `content` and `articleContent` can be
+  written. It returns `{ item, replaced }`.
+- **Page block.** A note links a subpage with one whole line, `[[item_id|Title]]{page}` (`pageBlockLine`). Older builds
+  and wiki-aware tools read it as a wiki link. Deleting the line never deletes or moves the page.
+- `onCommit` reports every record a cascade or lift changed, and every id deleted with a page.
 
 ### Schema versions and migrations
 
@@ -115,6 +176,10 @@ createdAt, updatedAt, deletedAt? (only when set)`. Order is the array order.
   the deletion comes back and clears the tombstone.
 - Imported items may point at collections already in the library. Dangling references and cross-file parent cycles are
   repaired: the item moves to the Inbox, or the collection moves to the top level.
+- Imported subpages may sit inside items already in the library. A subpage whose parent is missing (not in the file or
+  the library, skipped, or deleted here), a non-note with a parent, a page inside a loop (within the file or across
+  the file and the library; an incoming page is lifted before a local one) or one nested over 32 levels moves to the
+  top level with a new `updatedAt`. Seed data gets the same repair, keeping its stamps.
 - `{ settings: true }` merges the file's settings key by key, with groups replaced whole. Secret-like keys are stripped
   from the file, and the device's own secret-like keys survive at every level. Without it, settings are untouched.
 - The result is the library plus `importSummary: { items: { added, updated, kept, tombstoned }, collections: { ... },
@@ -185,8 +250,29 @@ Writes use the Web Lock `still.meta.v1`, and unknown keys are kept.
   type, x, y, w, h, title, style, config }] }], prefs, updatedAt }`. Widget data such as kanban boards and quick links
   lives in `widget.config`.
 - **AI (`still.ai.v2`, version 2):** connections, settings, overlays and model cache. API keys are in `still.ai.secrets.v1`.
+  Two settings are device-only: `assistantPermissions` (`{ create, organize, edit, dashboard, delete }`, each `'ask'` or
+  `'allow'`, all `'ask'` by default; `lib/ai/permissions.js`) and `research` (`{ enabled, connectionId, github, depth,
+  maxSubpages, budgetUsd, allowOriginalEdits }`; `lib/ai/research/settings.js`). Reads normalize both whatever was stored,
+  and writes refuse values outside their ranges. `exportAiConfig` leaves them out and `importAiConfig` never applies
+  them, so a crafted backup cannot turn on automatic assistant changes, let research edit originals or raise its cap.
+  Deleting a connection that research was set to use resets `research.connectionId` to automatic.
 - **Conversations:** an index (version 2) plus one body key per conversation. Caps: 300 conversations, 400 messages,
   200k characters per message, 4 MB per conversation.
+  - A research conversation has `kind: 'research'` and a run record `research: { itemId, sessionId, agentId,
+    agentVersion, connectionId, status ('starting' | 'running' | 'waiting' | 'done' | 'stopped' | 'failed'), reason?,
+    error, errorCode?, startedAt, finishedAt, ownerId, heartbeatAt, allowOriginalEdits, settings: { depth, maxSubpages,
+    github, budgetUsd }, handled: { <eventId>: resultText }, undo: { itemId, sectionText, sectionHeader?,
+    originalField?, originalText?, originalWritten?, subpageIds }, pages: [{ id, title, parent }], writes, usage?,
+    stopRequestedAt?, budgetStopped?, undoneAt?, undoResult? }`. `handled` keeps the newest 300 tool results (about 1M characters), so a
+    replayed tool call is answered without writing twice. `usage` is `{ costUsd, currency, inputTokens, outputTokens,
+    cacheReadTokens, webSearches, activeSeconds }`.
+  - Its assistant messages carry `research: { live, steps: [{ id, kind, label, detail?, url?, state, at }], subpages,
+    writes, sessionId, baseline, sent, messageIds, request: { kind, text }, preview? }`. A repeated search or page read
+    shares one step. Steps are capped at 200 per message: past that, the oldest finished steps (never writes or
+    subpages) fold into one `collapsed` row ("N earlier steps") with a `count`.
+  - The index summary of a research conversation keeps `kind` and `research: { status, itemId }`, so the history list
+    can mark it and a new run can find a run already researching the same item.
+  - These are plain data. Older builds keep them as unknown fields.
 - These stores follow the same rules as the library: keep unknown keys, never write over a newer version, and serialise
   writes across views with a Web Lock (`still.dashboard.v1`, `still.ai.v2`, `still.ai.secrets.v1`,
   `still.ai.conversations`). Version gates:
@@ -215,14 +301,20 @@ Writes use the Web Lock `still.meta.v1`, and unknown keys are kept.
   ```
 
   - The wallpaper image (`settings.wallpaper.attachmentId`) travels as an attachment marked `ref: 'wallpaper'`.
+  - Items keep `parentId` and the captured page details. A subpage whose parent page is not in the file moves to the
+    top level, with a warning. A malformed `parentId` makes an import fail before anything is written.
   - Tombstones are included in the file, but an import ignores them (a future sync engine will apply them).
   - Export never fails because of one bad record. Unrestorable fields are repaired, unrestorable records and missing
     attachment blobs are left out, and each of these adds a line to `manifest.warnings`. Files are added wallpaper
     first, then smallest first, while the file stays under the limit; the rest are left out with a warning.
   - It never contains API keys, account or integration tokens, snapshots or caches.
 - **Other formats:** bookmarks as Netscape HTML, notes as Markdown, items as CSV (`url, title, tags, note, excerpt, type,
-  collection, created, updated`; cells that start with `= + - @` get a leading apostrophe) and assistant chats as
-  Markdown.
+  collection, created, updated, site, author, published, language`; cells that start with `= + - @` get a leading
+  apostrophe) and assistant chats as Markdown.
+  - The CSV has no item ids, so subpages export and import as flat rows. Page icons are not a CSV column.
+  - The notes Markdown puts each subpage section right after its parent page (depth first) under a "Subpage of" line
+    linking to the parent's section, and turns page blocks into `- [Title](#section)` links (the page's title when it is
+    not in the file). Lines inside code fences are left as written.
 - **Restore** accepts `backupVersion` 1 or 2 with `schemaVersion <= current`, plus bookmark HTML and CSV:
   1. The whole file is checked before anything is written. A newer or invalid version is refused.
   2. A `before-import` snapshot is taken. If it fails, the import stops and nothing is written.
@@ -232,8 +324,9 @@ Writes use the Web Lock `still.meta.v1`, and unknown keys are kept.
      Settings are restored for any JSON backup (version 1 or 2), never for HTML or CSV.
   5. Files saved for records the merge did not take (`importSummary.skippedItemIds`) are deleted again.
   6. The dashboard, chats (`importAll`) and AI connections (`importAiConfig`) follow. A failure in one of them, such as
-     `newer_version`, becomes a warning. Undo data in imported chat proposals is dropped: undo records from a file are
-     never trusted.
+     `newer_version`, becomes a warning. Undo data in imported chat proposals is dropped: restored chats show their
+     proposals without Undo. A research conversation's run record (`conversation.research`, including its `undo`
+     record) is restored as it was saved. Device-only AI settings are never restored.
 
 ## Sync plan (not built yet)
 
@@ -254,5 +347,5 @@ The pieces are in place so that an online database can be added behind an adapte
    incoming records, `onCommit` for outgoing ones) and keeps its cursor in its own key, for example
    `still.sync.v1`. Secrets, device-only keys and snapshots never sync.
 6. **Not yet covered:** dashboard boards and widgets have only a document-level `updatedAt`. Collection order is the
-   array position. Library settings have no per-key stamps. Each needs per-record stamps or order keys before it can
-   sync record by record.
+   array position (subpages need no order key: siblings sort by `createdAt`, then `id`). Library settings have no
+   per-key stamps. Each needs per-record stamps or order keys before it can sync record by record.

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {renderMarkdown,renderInline,inlineText,plainText,trimAutolink,CALLOUT_KINDS} from '../extension/lib/markdown.js';
+import {renderMarkdown,renderInline,inlineText,plainText,trimAutolink,isTableDivider,parseNoteBlocks,serializeNoteBlocks,CALLOUT_KINDS} from '../extension/lib/markdown.js';
 
 const resolve=target=>({Alpha:{id:'n1',title:'Alpha',type:'note'},n2:{id:'n2',title:'Beta',type:'bookmark'}})[target]||null;
 
@@ -74,8 +74,11 @@ test('citations keep priority for listed ids; other targets fall through to reso
  assert.equal((renderInline('[[x]]',{citations:[{id:'x',title:'A very long source title that will be shortened for the chip'}]}).match(/>([^<]*)<\/button>/)||[])[1].length,36);
 });
 
-test('images never load: they render as media links; raw HTML stays text',()=>{
- assert.equal(renderMarkdown('![alt](https://x.com/a.png)'),'<p><a class="markdown-media-link" href="https://x.com/a.png" target="_blank" rel="noopener noreferrer"><span>Image · </span>alt</a></p>');
+// Contract §2.2 changed this: a line that is only an http(s) image renders as an image (captured articles rely on it).
+// An image inside a line still renders as a media link, and raw HTML still stays text.
+test('a whole-line http(s) image loads lazily without a referrer; inline images stay media links; raw HTML stays text',()=>{
+ assert.equal(renderMarkdown('![alt](https://x.com/a.png)'),'<p class="markdown-image"><img src="https://x.com/a.png" alt="alt" loading="lazy" decoding="async" referrerpolicy="no-referrer"></p>');
+ assert.equal(renderMarkdown('see ![alt](https://x.com/a.png)'),'<p>see <a class="markdown-media-link" href="https://x.com/a.png" target="_blank" rel="noopener noreferrer"><span>Image · </span>alt</a></p>');
  const html=renderMarkdown('<img src=x onerror=alert(1)> ![a](javascript:alert(1)) https://x.com/"onmouseover=alert(1)');
  assert.doesNotMatch(html,/<img|onerror="|href="javascript|onmouseover="/);
 });
@@ -89,4 +92,25 @@ test('inlineText and plainText give readable text for excerpts and labels',()=>{
  assert.equal(inlineText('**b** [l](https://a.com) [[T|Lbl]] [[U]] `c` a\\\nb'),'b l Lbl U c a\nb');
  assert.equal(inlineText('&lt; <b>'),'&lt; <b>','entities and tags are literal text');
  assert.equal(plainText('# T\n- [ ] x\n| a | b |\n| - | - |\n| 1 | 2 |\n:::toggle [open] Tt\nbody\n:::\n---\n```\ncode\n```'),'T\nx\na b\n1 2\nTt\nbody\n\ncode');
+});
+
+test('a bare --- divider after a line with pipes in inline code or escaped pipes is never treated as a 1-column table divider',()=>{
+ assert.equal(isTableDivider('---'),false);
+ assert.equal(isTableDivider('| --- |'),true);
+ assert.equal(isTableDivider('--- | ---'),true);
+ for(const line of ['Run `a | b`','Use a \\| b here']){
+  const md=`${line}\n---`;
+  const blocks=parseNoteBlocks(md);
+  assert.deepEqual(blocks.map(b=>b.type),['paragraph','divider'],line);
+  assert.doesNotMatch(renderMarkdown(md),/<table/,line);
+  assert.match(renderMarkdown(md),/<hr class="markdown-divider">$/,line);
+  const roundTrip=parseNoteBlocks(serializeNoteBlocks(blocks));
+  assert.deepEqual(roundTrip.map(b=>b.type),['paragraph','divider'],`round-trip: ${line}`);
+  // Blocks made in the editor (no stored source) serialize the divider as --- right after the line, and read back the same.
+  const fresh=[{id:'p',type:'paragraph',text:line,checked:false,language:''},{id:'d',type:'divider',text:'',checked:false,language:''}];
+  const saved=serializeNoteBlocks(fresh);
+  assert.equal(saved,md,`serialized: ${line}`);
+  assert.deepEqual(parseNoteBlocks(saved).map(b=>[b.type,b.text]),[['paragraph',line],['divider','']],`fresh round-trip: ${line}`);
+ }
+ assert.deepEqual(parseNoteBlocks('| A |\n| --- |\n| 1 |').map(b=>b.type),['table'],'a one-column table with pipes is still a table');
 });

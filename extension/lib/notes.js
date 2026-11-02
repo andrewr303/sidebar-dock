@@ -30,11 +30,11 @@ export function toggleTask(markdown,index,done){
 }
 export function taskProgress(markdown){const tasks=extractTasks(markdown);return {done:tasks.filter(t=>t.done).length,total:tasks.length};}
 
-/** Distinct [[wiki link]] and ![[embed]] targets (the part before "|"), outside code. */
+/** Distinct [[wiki link]], ![[embed]] and [[page]]{page} targets (the part before "|"), outside code. */
 export function extractWikiLinks(markdown){
  const seen=new Set();
  const scan=text=>{for(const m of String(text??'').replace(/(`+)[\s\S]*?\1/g,' ').replace(/\\\[/g,'  ').matchAll(WIKI)){const target=m[1].trim();if(target)seen.add(target);}};
- walkBlocks(markdown,b=>{if(b.type==='code'||b.type==='divider')return;if(b.type==='embed'){if(b.target)seen.add(b.target);return;}if(b.type==='table'){for(const row of [b.headers,...b.rows])row.forEach(scan);return;}scan(b.type==='toggle'?b.title:b.text);});
+ walkBlocks(markdown,b=>{if(b.type==='code'||b.type==='divider')return;if(b.type==='embed'||b.type==='page'){if(b.target)seen.add(b.target);return;}if(b.type==='table'){for(const row of [b.headers,...b.rows])row.forEach(scan);return;}scan(b.type==='toggle'?b.title:b.text);});
  return [...seen];
 }
 const usable=item=>item&&!item.deletedAt;
