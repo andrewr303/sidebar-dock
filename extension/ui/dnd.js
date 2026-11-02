@@ -1,6 +1,6 @@
 // Delegated drag and drop. Items ([data-drag-item]) drop onto collections ([data-drop-collection], '' = Inbox), tags
 // ([data-drop-tag]) and filters ([data-drop-filter] favorite|archive|trash). Collection rows ([data-drag-collection])
-// reorder or nest. Links and files dragged in from other pages or apps save to a collection row or open the Add dialog
+// reorder or nest, and pin when dropped on the sidebar's Pinned section ([data-drop-pin]). Links and files dragged in from other pages or apps save to a collection row or open the Add dialog
 // when dropped on a [data-drop-zone]. The pure helpers at the top are unit tested.
 
 const ITEMS_TYPE = 'application/x-still-items';
@@ -149,7 +149,7 @@ const hasExternal = types => types.includes('Files') || types.includes('text/uri
 function stopExpandTimer() { clearTimeout(expandTimer); expandTimer = 0; expandTarget = ''; }
 
 /** Wires the delegated listeners once. openAdd is quick-add's openAdd (injected so this module stays dependency free). */
-export function initDnd(ctx, { openAdd } = {}) {
+export function initDnd(ctx, { openAdd, setPinned } = {}) {
   if (initialized || typeof document === 'undefined') return;
   initialized = true;
   initClickSlop();
@@ -199,6 +199,16 @@ export function initDnd(ctx, { openAdd } = {}) {
     if (!target) return;
     const types = [...(event.dataTransfer?.types || [])];
     if (drag?.kind === 'collection') {
+      // The Pinned section pins whatever collection is dropped on it (rows or heading); an already pinned one just stays put.
+      const pinZone = setPinned && target.closest('[data-drop-pin]');
+      if (pinZone) {
+        stopExpandTimer();
+        if (ctx.select.collection(drag.id)?.pinned) { clearMarks(); return; }
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        mark(pinZone, 'is-drop-target');
+        return;
+      }
       const row = target.closest('[data-drop-collection]:not([data-drop-collection=""])');
       const root = !row && target.closest('[data-drop-root]');
       if (!row && !root) { clearMarks(); stopExpandTimer(); return; }
@@ -248,6 +258,12 @@ export function initDnd(ctx, { openAdd } = {}) {
     stopExpandTimer();
     if (!target) return;
     if (current?.kind === 'collection') {
+      if (setPinned && target.closest('[data-drop-pin]')) {
+        if (ctx.select.collection(current.id)?.pinned) return;
+        event.preventDefault();
+        ctx.run(() => setPinned(ctx, current.id, true));
+        return;
+      }
       const row = target.closest('[data-drop-collection]:not([data-drop-collection=""])');
       const root = !row && target.closest('[data-drop-root]');
       if (!row && !root) return;

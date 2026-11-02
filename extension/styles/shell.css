@@ -195,6 +195,10 @@
 .nav-icon { flex: none; color: var(--fg-muted); }
 .tag-hash { flex: none; width: 16px; color: var(--fg-subtle); font-weight: var(--weight-medium); text-align: center; }
 .tree-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A pinned collection says so in the tree, and a pinned row names its parent so nested ones are recognisable. */
+.tree-pin { flex: none; display: inline-flex; color: var(--accent-soft-fg); opacity: .8; }
+.tree-pin .icon { fill: currentColor; fill-opacity: .25; }
+.tree-parent { margin-inline-start: var(--space-2); color: var(--fg-subtle); font-size: var(--nav-meta, var(--text-xs)); }
 .tree-count { flex: none; color: var(--fg-subtle); font-size: var(--nav-meta, var(--text-xs)); font-variant-numeric: tabular-nums; }
 /* Row glyphs share the collection tiles' 22px column, so every name starts on the same line. */
 :is(.sidebar, .library-root) .tree-row > .nav-icon { margin-inline: 2px; }
@@ -250,6 +254,7 @@
 .tree-row.is-drop-target,
 .tree-row.is-drop-inside,
 .nav-heading.is-drop-target,
+.nav-pinned.is-drop-target,
 .sidebar-foot-link.is-drop-target {
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 2px var(--accent);
