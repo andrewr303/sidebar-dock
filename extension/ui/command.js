@@ -3,6 +3,7 @@
 import { html, cx } from './html.js';
 import { icon } from './icons.js';
 import { collectionIcon, favicon, kbd, domainOf, TYPE_ICONS, TYPE_LABELS } from './components.js';
+import { pathOfItem } from './cards.js';
 import { registerDialog } from './overlay.js';
 import { registerActions, hasAction } from './runtime.js';
 
@@ -25,6 +26,10 @@ export const COMMANDS = [
   { id: 'ask', label: 'Ask AI', icon: 'sparkles', keywords: 'assistant chat claude chatgpt grok question', shortcut: 'mod+shift+a', action: 'shell.ask', pinned: true },
   // In the full tab the active tab is Still itself, so saving "this page" only makes sense from the side panel.
   { id: 'save-page', label: 'Save this page', icon: 'bookmark-plus', keywords: 'current tab capture clip', action: 'shell.save-page', when: ctx => ext(ctx) && ctx.env.isSidepanel, pinned: true },
+  { id: 'save-article', label: 'Save article', icon: 'newspaper', keywords: 'reader readable full text markdown clip capture page content',
+    action: 'add.save-article', when: ctx => ext(ctx) && ctx.env.isSidepanel && hasAction('add.save-article') },
+  { id: 'select-parts', label: 'Select parts of this page', icon: 'square-dashed-mouse-pointer', keywords: 'picker pick elements region selection clip capture',
+    action: 'add.select-parts', when: ctx => ext(ctx) && ctx.env.isSidepanel && hasAction('add.select-parts') },
   { id: 'save-tabs', label: 'Save all tabs', icon: 'layers', keywords: 'window session collection', action: 'add.save-tabs', when: ctx => ext(ctx) && hasAction('add.save-tabs') },
   { id: 'upload', label: 'Upload files', icon: 'upload', keywords: 'pdf image attach', action: 'add.upload', when: () => hasAction('add.upload') },
   { id: 'new-collection', label: 'New collection', icon: 'folder-plus', keywords: 'folder create group', action: 'collections.new', pinned: true },
@@ -56,6 +61,8 @@ export const COMMANDS = [
   { id: 'accounts', label: 'Connected accounts', icon: 'key-round', keywords: 'github linear product hunt token sign in oauth',
     action: 'shell.settings', data: { section: 'accounts' } },
   { id: 'ai-models', label: 'AI models', icon: 'bot', keywords: 'settings provider api key anthropic claude openai ollama', action: 'shell.settings', data: { section: 'ai' } },
+  { id: 'assistant-permissions', label: 'Assistant permissions', icon: 'shield-check', keywords: 'settings ai trust level ask cautious standard trusted approval', action: 'shell.settings', data: { section: 'assistant' } },
+  { id: 'research-settings', label: 'Research agent settings', icon: 'telescope', keywords: 'settings ai claude managed agents depth subpages budget spending cap github', action: 'shell.settings', data: { section: 'research' } },
   { id: 'semantic', label: 'Semantic search settings', icon: 'brain', keywords: 'embeddings index voyage', action: 'shell.settings', data: { section: 'search' } },
   { id: 'agents', label: 'Connect Claude Code or Codex', icon: 'terminal', keywords: 'mcp agents bridge desktop', action: 'shell.settings', data: { section: 'agents' } },
   { id: 'backup', label: 'Back up or bring in bookmarks', icon: 'folder-input', keywords: 'import export backup raindrop chrome html csv', action: 'shell.settings', data: { section: 'library' } },
@@ -173,11 +180,12 @@ function recentItems(ctx) {
   return recent.list;
 }
 
-function itemOption(ctx, item, extra = {}) {
+export function itemOption(ctx, item, extra = {}) {
   const path = item.collectionId ? ctx.select.path(item.collectionId).map(c => c.name).join(' / ') : 'Inbox';
-  const where = item.type === 'note' ? `Note · ${path}` : [domainOf(item.url), path].filter(Boolean).join(' · ');
+  const pagePath = pathOfItem(ctx, item);
+  const where = item.type === 'note' ? ['Note', pagePath, path].filter(Boolean).join(' · ') : [domainOf(item.url), pagePath, path].filter(Boolean).join(' · ');
   return {
-    kind: 'item', key: `item:${item.id}`, label: item.title || domainOf(item.url) || 'Untitled', hint: extra.snippet || where,
+    kind: 'item', key: `item:${item.id}`, label: item.title || domainOf(item.url) || 'Untitled', hint: extra.snippet ? [pagePath, extra.snippet].filter(Boolean).join(' · ') : where,
     leading: item.type === 'note' || !item.url ? html`<span class="command-glyph">${icon(TYPE_ICONS[item.type] || 'file', { size: 16 })}</span>` : favicon(item.url, { size: 18 }),
     meta: extra.semantic ? html`<span class="command-meta-semantic" title="Related by meaning">${icon('sparkles', { size: 12 })}</span>${TYPE_LABELS[item.type] || ''}` : TYPE_LABELS[item.type] || '',
     altLabel: item.url ? 'Open link' : null,

@@ -236,15 +236,18 @@ export function favicon(url, { size = 16, className } = {}) {
 /**
  * Real site icon (Chrome's favicon cache through the "favicon" permission) on a letter-tile fallback. The letter tile
  * shows until the image loads and stays when Chrome has no icon, so a missing favicon never leaves an empty box.
- * Outside the extension it is the letter tile alone.
+ * Outside the extension it is the letter tile alone. src: the page's own icon (an article's saved `icon`), used instead
+ * of Chrome's favicon when it is a safe image address; it sits on the same letter tile.
  */
-export function siteIcon(url, { size = 16, className, rounded = true } = {}) {
+export function siteIcon(url, { size = 16, className, rounded = true, src = '' } = {}) {
   const tile = favicon(url, { size, className: cx('site-icon-fallback', rounded && 'is-rounded') });
+  const own = safeSrc(src);
+  const img = value => html`<img class="site-icon-img" src="${value}" alt="" width="${size}" height="${size}" loading="lazy" decoding="async" draggable="false"${own ? raw(' referrerpolicy="no-referrer"') : ''}>`;
+  if (own) return html`<span class="${cx('site-icon', className)}" style="--size:${size}px">${tile}${img(own)}</span>`;
   const domain = domainOf(url);
   const runtime = globalThis.chrome?.runtime;
   if (!domain || !runtime?.id || typeof runtime.getURL !== 'function') return html`<span class="${cx('site-icon', className)}" style="--size:${size}px">${tile}</span>`;
-  const src = `${runtime.getURL('/_favicon/')}?pageUrl=${encodeURIComponent(url)}&size=${size > 32 ? 64 : 32}`;
-  return html`<span class="${cx('site-icon', className)}" style="--size:${size}px">${tile}<img class="site-icon-img" src="${src}" alt="" width="${size}" height="${size}" loading="lazy" decoding="async" draggable="false"></span>`;
+  return html`<span class="${cx('site-icon', className)}" style="--size:${size}px">${tile}${img(`${runtime.getURL('/_favicon/')}?pageUrl=${encodeURIComponent(url)}&size=${size > 32 ? 64 : 32}`)}</span>`;
 }
 
 /**

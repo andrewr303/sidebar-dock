@@ -1,14 +1,18 @@
 // Quick add: the Add dialog (links, notes, files), paste-to-add, uploads, "Save all tabs", the capture menu and
 // screenshot progress. Saving a link into a collection should take one paste and one keystroke.
+// It is also the article preview: "Save article" and "Select parts" open it with the page's readable Markdown, an icon
+// and the usual collection, tags and note fields, and a saved article offers "Research with AI".
 import { html, cx, plural, safeSrc } from './html.js';
 import { icon } from './icons.js';
-import { button, iconButton, segmented, checkbox, collectionIcon, favicon, domainOf, fileSize, spinner, badge, emptyState, keyshortcuts, shortcutLabel } from './components.js';
-import { registerActions, registerShortcuts } from './runtime.js';
+import { button, iconButton, segmented, checkbox, collectionIcon, favicon, siteIcon, domainOf, fileSize, spinner, badge, emptyState, keyshortcuts, shortcutLabel } from './components.js';
+import { registerActions, registerShortcuts, registerMount } from './runtime.js';
+import { researchOffered } from './research-view.js';
 import { registerDialog, isDialogOpen } from './overlay.js';
 import { renderCollectionPickerTrigger, renderTagInput, splitTags, mergeTags, formatReminder } from './pickers.js';
 import { canonicalUrl, safeUrl } from '../lib/store.js';
 import { noteExcerpt } from '../lib/notes.js';
-import { isVideoUrl } from '../lib/capture.js';
+import { renderMarkdown } from '../lib/markdown.js';
+import { isVideoUrl, normalizeArticleResult, articleSaveUrl, PANEL_DRAFTS_KEY } from '../lib/capture.js';
 
 export const MAX_FILE_BYTES = 100 * 1024 * 1024;
 const PENDING_CAPTURE = new Set(['preparing', 'capturing', 'stitching', 'saving']);
@@ -110,6 +114,133 @@ const validUrl = value => {
 const sameUrl = (a, b) => { try { return !!a && !!b && canonicalUrl(a) === canonicalUrl(b); } catch { return false; } };
 const originPattern = url => { try { const { protocol, hostname } = new URL(url); return `${protocol}//${hostname}/*`; } catch { return ''; } };
 
+/* ------------------------------------------------------------------ captured articles (pure) */
+
+// The preview renders at most this much Markdown until the user asks for all of it (a page can be 250,000 characters).
+export const PREVIEW_CHARS = 30000;
+const PANEL_DRAFT_TTL = 30 * 60 * 1000;
+const CAPTURE_META = ['siteName', 'author', 'publishedAt', 'lang'];
+
+/**
+ * Puts a cleaned ArticleResult (lib/capture.js normalizeArticleResult) into an Add draft. The article's Markdown is the
+ * page content; its title, description, cover and icon fill only fields the user has not typed in. source 'article' is
+ * "Save article", 'parts' the picker's selection.
+ */
+export function applyCapture(d, article, { source = 'article', tabId = null } = {}) {
+  if (!d || !article?.ok) return d;
+  d.capture = {
+    source: source === 'parts' ? 'parts' : 'article', wordCount: Number(article.wordCount) || 0, truncated: article.truncated === true,
+    selectionCount: Number(article.selectionCount) || 0, siteName: article.siteName || '', author: article.author || '', publishedAt: article.publishedAt || '',
+    lang: article.lang || '', icon: article.icon || '', pageUrl: article.url || '', tabId: Number.isInteger(tabId) ? tabId : null,
+  };
+  d.articleContent = String(article.markdown || '');
+  d.captureRev = (d.captureRev || 0) + 1;
+  d.replaceArticle = true;
+  d.previewAll = false;
+  d.type = 'link';
+  d.urlFirst = false;
+  if (!['image', 'video'].includes(d.itemType)) d.itemType = 'article';
+  if (!d.touched.has('title') && article.title) d.title = article.title;
+  if (!d.touched.has('excerpt') && article.excerpt) d.excerpt = article.excerpt;
+  if (!d.touched.has('cover') && !d.cover && article.cover) d.cover = article.cover;
+  if (!d.touched.has('icon')) { d.icon = article.icon || ''; d.iconFailed = ''; }
+  return d;
+}
+
+/** Fills a link draft from fetched page details. A captured article already holds richer details and its Markdown. */
+export function applyMeta(d, meta) {
+  if (!meta || d.capture) return;
+  if (meta.title && !d.touched.has('title')) d.title = meta.title;
+  if (meta.excerpt && !d.touched.has('excerpt')) d.excerpt = meta.excerpt;
+  if (meta.cover && !d.touched.has('cover') && !d.cover) d.cover = meta.cover;
+  if (typeof meta.text === 'string' && meta.text.trim().length > 600 && !d.touched.has('articleContent')) d.articleContent = meta.text;
+}
+
+/** { words, minutes, truncated, parts } for the captured page content of a draft. */
+export function contentStats(d) {
+  const capture = d?.capture || {};
+  const words = capture.wordCount > 0 ? capture.wordCount : (String(d?.articleContent || '').match(/\S+/g) || []).length;
+  return { words, minutes: words ? Math.max(1, Math.round(words / 230)) : 0, truncated: capture.truncated === true,
+    parts: capture.source === 'parts' ? capture.selectionCount || 0 : 0 };
+}
+
+/** "1,240 words · 6 min read · 3 parts · Shortened to fit" */
+export function contentSummary({ words = 0, minutes = 0, parts = 0, truncated = false } = {}) {
+  return [words ? `${plural(words, 'word')} · ${minutes} min read` : 'No text', parts ? plural(parts, 'part') : '', truncated ? 'Shortened to fit' : '']
+    .filter(Boolean).join(' · ');
+}
+
+/** The start of long Markdown, cut at a line break, with an open code fence closed so it cannot swallow the rest. */
+export function previewSource(markdown, limit = PREVIEW_CHARS) {
+  const text = String(markdown ?? '');
+  if (text.length <= limit) return { text, clipped: false };
+  let cut = text.lastIndexOf('\n', limit);
+  if (cut < limit / 2) cut = limit;
+  let head = text.slice(0, cut);
+  let fence = '';
+  for (const line of head.split('\n')) {
+    if (!fence) {
+      const open = /^(`{3,}|~{3,})([^\n]*)$/.exec(line);
+      if (open) fence = open[1];
+    } else if (new RegExp('^' + fence[0] + '{' + fence.length + ',}\\s*$').test(line)) {
+      fence = '';
+    }
+  }
+  if (fence) head += `\n${fence}`;
+  return { text: head, clipped: true };
+}
+
+/**
+ * The store write for a link draft: { id, patch, expectedUpdatedAt } in update mode, else { input } for saveItem.
+ * An explicit article capture (replaceArticle) replaces the saved article text; the page metadata it brought only
+ * fills fields the saved item does not have yet.
+ */
+export function linkSave(d, url, existing = null) {
+  const type = d.itemType === 'image' ? 'image' : isVideoUrl(url) ? 'video' : d.articleContent ? 'article' : d.itemType || 'bookmark';
+  const captured = d.capture || {};
+  const pageIcon = d.icon && d.icon !== d.iconFailed ? d.icon : '';
+  const sourceUrl = d.sourceUrl || (captured.pageUrl && !sameUrl(captured.pageUrl, url) ? captured.pageUrl : '');
+  if (d.updateId && existing) {
+    const patch = { url, title: d.title.trim() || existing.title, excerpt: d.excerpt.trim(), cover: d.cover, content: d.note, collectionId: d.collectionId,
+      tags: d.tags, favorite: d.favorite, reminderAt: d.reminderAt || null };
+    if (d.articleContent && (d.replaceArticle || !existing.articleContent)) patch.articleContent = d.articleContent;
+    if (d.touched.has('icon') ? pageIcon !== (existing.icon || '') : pageIcon && !existing.icon) patch.icon = pageIcon;
+    if (sourceUrl && !existing.sourceUrl) patch.sourceUrl = sourceUrl;
+    for (const key of CAPTURE_META) if (captured[key] && !existing[key]) patch[key] = captured[key];
+    if (existing.type === 'bookmark' && type !== 'bookmark') patch.type = type;
+    return { id: existing.id, patch, expectedUpdatedAt: existing.updatedAt };
+  }
+  // The store merges a save into an existing item with the same address, so only send what the user set.
+  // A fetched cover that failed to load here is dropped rather than saved as a broken image.
+  const cover = d.cover && d.cover === d.coverFailed && !d.touched.has('cover') ? '' : d.cover;
+  const input = { url, excerpt: d.excerpt.trim(), cover, content: d.note, collectionId: d.collectionId, tags: d.tags, articleContent: d.articleContent, sourceUrl };
+  if (pageIcon) input.icon = pageIcon;
+  for (const key of CAPTURE_META) if (captured[key]) input[key] = captured[key];
+  if (d.title.trim()) input.title = d.title.trim();
+  if (!existing || (existing.type === 'bookmark' && type !== 'bookmark')) input.type = type;
+  if (d.favorite) input.favorite = true;
+  if (d.reminderAt) input.reminderAt = d.reminderAt;
+  return { input };
+}
+
+/**
+ * A picker result reaches every Still view straight from the page. The side panel takes only the one it asked for:
+ * same request id, from 'panel', this extension's content script in frame 0 of the tab the picker was started in.
+ */
+export function acceptPickerMessage(pending, message, sender, extensionId) {
+  return Boolean(pending?.requestId) && message?.type === 'still:picker-result' && message.requestId === pending.requestId && message.from === 'panel'
+    && !!sender && sender.id === extensionId && sender.tab?.id === pending.tabId && sender.frameId === 0 && /^https?:\/\//i.test(sender.url || '');
+}
+
+/** The newest fresh picker draft the worker kept for this window (PANEL_DRAFTS_KEY), and the drafts that stay. */
+export function pickPanelDraft(drafts, windowId, now = Date.now()) {
+  const fresh = Object.entries(drafts && typeof drafts === 'object' ? drafts : {})
+    .filter(([, entry]) => entry && typeof entry === 'object' && now - Number(entry.createdAt) <= PANEL_DRAFT_TTL);
+  const matchWindow = entry => windowId === null || windowId < 0 || entry.windowId === null || entry.windowId < 0 || entry.windowId === windowId;
+  const mine = fresh.filter(([, entry]) => matchWindow(entry) && entry.article?.ok).sort(([, a], [, b]) => Number(b.createdAt) - Number(a.createdAt));
+  return { draft: mine[0]?.[1] || null, rest: Object.fromEntries(fresh.filter(([, entry]) => !matchWindow(entry))) };
+}
+
 /* ------------------------------------------------------------------ shared helpers (page.js, sidebar) */
 
 let windowIdPromise = null;
@@ -160,7 +291,7 @@ export async function saveCurrentTab(ctx, { collectionId, note, tags, title } = 
   }
   const item = result;
   if (target && !item.collectionFallback) ctx.prefs.touchCollection(target);
-  if (ctx.state.page && (!page?.url || sameUrl(ctx.state.page.url, item.url))) Object.assign(ctx.state.page, { saved: true, itemId: item.id });
+  if (ctx.state.page && (!page?.url || sameUrl(ctx.state.page.url, item.url) || sameUrl(ctx.state.page.url, item.sourceUrl))) Object.assign(ctx.state.page, { saved: true, itemId: item.id });
   const where = collectionLabel(ctx, item.collectionId);
   const moved = !item.created && before && before.collectionId !== item.collectionId;
   const action = item.created
@@ -202,7 +333,7 @@ function createDraft(ctx, prefill = {}) {
   let collectionId = defaultCollectionId(ctx);
   if (typeof prefill.collectionId === 'string' && (prefill.collectionId === '' || ctx.select.collection(prefill.collectionId))) collectionId = prefill.collectionId;
   else if (viewCollection && ctx.select.collection(viewCollection)) collectionId = viewCollection;
-  const touched = new Set(['title', 'excerpt', 'cover', 'note', 'tags'].filter(key => prefill[key]?.length));
+  const touched = new Set(['title', 'excerpt', 'cover', 'note', 'tags', 'icon'].filter(key => prefill[key]?.length));
   if (typeof prefill.collectionId === 'string') touched.add('collection');
   return {
     id: ++draftSeq, type, itemType, url, title: String(prefill.title || ''), excerpt: String(prefill.excerpt || ''),
@@ -210,6 +341,7 @@ function createDraft(ctx, prefill = {}) {
     collectionId, tags: Array.isArray(prefill.tags) ? prefill.tags.map(String) : splitTags(prefill.tags),
     favorite: prefill.favorite === true, reminderAt: prefill.reminderAt || null,
     files: files.map(fileEntry), sourceUrl: String(prefill.sourceUrl || ''), articleContent: '',
+    icon: String(prefill.icon || ''), iconFailed: '', capture: null, captureRev: 0, replaceArticle: false, previewAll: false, saved: null,
     source: prefill.source || 'manual', urlFirst: type === 'link' && !url, touched,
     meta: { status: 'idle', forUrl: '' }, suggest: { status: 'idle', key: '', tags: [], collectionId: '', source: '' },
     updateId: '', saving: false, error: '', urlError: '', dragging: false,
@@ -222,21 +354,39 @@ function editExisting(d, item) {
     updateId: item.id, type: 'link', urlFirst: false, url: d.url || item.url,
     title: d.touched.has('title') && d.title ? d.title : item.title || d.title,
     excerpt: d.touched.has('excerpt') && d.excerpt ? d.excerpt : item.excerpt || d.excerpt,
-    cover: d.touched.has('cover') ? d.cover : item.cover || d.cover, note: d.note.trim() ? d.note : item.content || '',
+    cover: d.touched.has('cover') ? d.cover : item.cover || d.cover, icon: d.touched.has('icon') ? d.icon : item.icon || d.icon,
+    note: d.note.trim() ? d.note : item.content || '',
     collectionId: d.touched.has('collection') ? d.collectionId : item.collectionId || '', tags: mergeTags(item.tags || [], d.tags),
     favorite: d.favorite || item.favorite === true, reminderAt: d.reminderAt || item.reminderAt || null,
   });
   // Saved values are the user's: page details fetched later must not replace them.
-  for (const key of ['title', 'excerpt', 'cover']) if (item[key]) d.touched.add(key);
+  for (const key of ['title', 'excerpt', 'cover', 'icon']) if (item[key]) d.touched.add(key);
 }
 
 /**
- * Opens the Add dialog. prefill: { url, title, excerpt, cover, collectionId, tags, note, type: 'link'|'note'|'file'|item type,
- * kind: 'page'|'link'|'image', files, source: 'tab'|'paste'|'menu'|'upload'|'drop', sourceUrl, favorite, reminderAt,
- * updateId: edit that saved link instead of adding }. When the dialog is already open, the prefill is merged into it.
+ * Opens the Add dialog. prefill: { url, title, excerpt, cover, icon, collectionId, tags, note, type: 'link'|'note'|'file'|item type,
+ * kind: 'page'|'link'|'image', files, source: 'tab'|'paste'|'menu'|'upload'|'drop'|'article'|'parts', sourceUrl, favorite,
+ * reminderAt, updateId: edit that saved link instead of adding, capture: a cleaned ArticleResult (the article preview) with
+ * tabId and existingId (the saved item at that address) }. When the dialog is already open, the prefill is merged into it.
  */
 export function openAdd(ctx, prefill = {}) {
   prefill ||= {};
+  const capture = prefill.capture?.ok ? prefill.capture : null;
+  const captureOptions = { source: prefill.source, tabId: prefill.tabId };
+  if (draft && isDialogOpen('add.item') && capture && !draft.saved && draft.type === 'link'
+    && (!validUrl(draft.url) || sameUrl(draft.url, prefill.url) || sameUrl(draft.url, capture.url) || (draft.capture && sameUrl(draft.sourceUrl, capture.url)))) {
+    // "Capture article" or "Select parts" from inside the open dialog: the page content joins what is typed there.
+    if (!validUrl(draft.url)) draft.url = String(prefill.url || capture.url || '');
+    applyCapture(draft, capture, captureOptions);
+    const saved = draft.updateId ? null : (prefill.existingId && ctx.select.byId(prefill.existingId)) || ctx.select.savedForUrl(validUrl(draft.url));
+    if (saved?.url && saved.type !== 'note' && !saved.deletedAt) { draft.url = saved.url; editExisting(draft, saved); }
+    draft.meta = { status: 'done', forUrl: validUrl(draft.url) };
+    ctx.render();
+    loadSuggestions(ctx);
+    return;
+  }
+  // A finished dialog (the saved state) or one for another page makes way for the new one.
+  if (draft && isDialogOpen('add.item') && (draft.saved || capture)) ctx.closeDialog('add.item');
   if (draft && isDialogOpen('add.item')) {
     const next = createDraft(ctx, prefill);
     if (prefill.files?.length) { draft.type = 'file'; draft.files.push(...next.files); }
@@ -247,10 +397,18 @@ export function openAdd(ctx, prefill = {}) {
     return;
   }
   draft = createDraft(ctx, prefill);
-  const existing = prefill.updateId ? ctx.select.byId(prefill.updateId) : null;
-  if (existing?.url && existing.type !== 'note') editExisting(draft, existing);
+  if (capture) applyCapture(draft, capture, captureOptions);
+  const existing = prefill.updateId ? ctx.select.byId(prefill.updateId)
+    : capture ? (prefill.existingId && ctx.select.byId(prefill.existingId)) || ctx.select.savedForUrl(draft.url) : null;
+  // Capturing a page that is already saved edits that item: its own title, note, tags and collection stay unless changed here.
+  if (existing?.url && existing.type !== 'note' && !existing.deletedAt) {
+    if (capture) draft.url = existing.url;
+    editExisting(draft, existing);
+  }
   const id = draft.id;
-  ctx.openDialog('add.item', { onClose: () => { if (draft?.id === id) draft = null; clearTimeout(metaTimer); } });
+  // Closing this dialog (Close, Esc, Done, research.js once research opens) drops its draft. A late close of an older
+  // dialog never drops, or stops the page-details fetch of, a draft that a newer openAdd created.
+  ctx.openDialog('add.item', { onClose: () => { if (draft && draft.id !== id) return; draft = null; clearTimeout(metaTimer); } });
   if (draft.type === 'link' && validUrl(draft.url)) scheduleMeta(ctx, 0);
   else if (draft.type === 'link' && !draft.url) prefillFromClipboard(ctx, id);
 }
@@ -309,14 +467,6 @@ async function fetchMetadata(url) {
   return parseHtmlMetadata(await readLimited(response), response.url || url);
 }
 
-function applyMeta(d, meta) {
-  if (!meta) return;
-  if (meta.title && !d.touched.has('title')) d.title = meta.title;
-  if (meta.excerpt && !d.touched.has('excerpt')) d.excerpt = meta.excerpt;
-  if (meta.cover && !d.touched.has('cover') && !d.cover) d.cover = meta.cover;
-  if (typeof meta.text === 'string' && meta.text.trim().length > 600) d.articleContent = meta.text;
-}
-
 async function loadMeta(ctx, { force = false } = {}) {
   const d = draft;
   if (!d || d.type !== 'link') return;
@@ -325,6 +475,8 @@ async function loadMeta(ctx, { force = false } = {}) {
   const id = d.id;
   // An image link (context menu "Save image to") has no page details to read; asking for its CDN's access would mislead.
   if (d.itemType === 'image') { d.meta = { status: 'done', forUrl: url }; loadSuggestions(ctx); return; }
+  // A captured article already holds the page: reading it again as plain text would only replace the Markdown.
+  if (d.capture) { d.meta = { status: 'done', forUrl: url }; ctx.render(); loadSuggestions(ctx); return; }
   d.meta = { status: 'loading', forUrl: url };
   ctx.render();
   let meta = null, needs = '';
@@ -431,8 +583,8 @@ function renderPreview(ctx, d) {
   return html`<div class="add-preview">
     ${renderCover(d)}
     <div class="add-preview-text">
-      <input class="add-title" id="add-title" data-focus-key="add-title" name="title" value="${d.title}" placeholder="${loading ? 'Reading the page…' : saved?.title || domain || 'Title'}"
-        aria-label="Title" data-input="add.field" data-field="title" autocomplete="off">
+      <input class="add-title" id="add-title" data-focus-key="add-title" name="title" value="${d.title}" placeholder="${loading ? 'Reading the page…' : saved?.title || domain || (d.capture ? 'Name' : 'Title')}"
+        aria-label="${d.capture ? 'Name' : 'Title'}" data-input="add.field" data-field="title" autocomplete="off">
       <textarea class="add-desc" id="add-excerpt" data-focus-key="add-excerpt" name="excerpt" rows="2" placeholder="Add a description" aria-label="Description"
         data-input="add.field" data-field="excerpt">${d.excerpt}</textarea>
       ${renderPermissionNotice(d)}
@@ -446,7 +598,7 @@ function renderDuplicate(ctx, d) {
   if (d.updateId) {
     const item = ctx.select.byId(d.updateId);
     if (!item) return '';
-    return html`<div class="add-notice is-update" role="status">${icon('pencil', { size: 16 })}<span class="add-notice-text">Editing the saved link in
+    return html`<div class="add-notice is-update" role="status">${icon('pencil', { size: 16 })}<span class="add-notice-text">${d.capture ? 'Updating the saved page in' : 'Editing the saved link in'}
       ${collectionIcon(ctx.select.collection(item.collectionId), { size: 16 })}<strong>${collectionLabel(ctx, item.collectionId)}</strong></span></div>`;
   }
   const existing = ctx.select.savedForUrl(url);
@@ -460,6 +612,58 @@ function renderDuplicate(ctx, d) {
       ${button({ label: 'Update it', variant: 'secondary', size: 'sm', action: 'add.update-existing', data: { id: existing.id } })}
     </span></div>`;
 }
+
+// Page capture is offered for the tab the side panel is next to (the worker reads the active tab of this window).
+const canCapturePage = (ctx, d) => ctx.env.isExtension && ctx.env.isSidepanel && !ctx.state.page?.demo
+  && sameUrl(ctx.state.page?.url, d.capture?.pageUrl || d.url);
+
+function renderIconRow(d) {
+  const src = d.icon && d.icon !== d.iconFailed ? safeSrc(d.icon) : '';
+  const name = !src ? 'Site icon' : d.icon === d.capture?.icon ? 'Page icon' : 'Custom icon';
+  return row('Icon', html`<div class="add-icon-field">
+      <span class="add-icon-preview">${src ? html`<img src="${src}" alt="" width="20" height="20" decoding="async" referrerpolicy="no-referrer">` : siteIcon(d.url, { size: 20 })}</span>
+      <span class="add-icon-name">${name}</span>
+      ${button({ label: 'Change', variant: 'ghost', size: 'sm', action: 'add.icon-menu', id: 'add-icon', attrs: { 'aria-haspopup': 'menu', 'aria-label': `Change icon (${name})` } })}
+    </div>`);
+}
+
+function renderContentRow(ctx, d) {
+  const page = canCapturePage(ctx, d);
+  const reading = ctx.state.articleCapture === 'reading';
+  const actions = page ? html`<span class="add-content-actions">
+      ${button({ label: d.capture ? 'Capture again' : 'Capture article', icon: 'newspaper', variant: 'ghost', size: 'sm', action: 'add.save-article', loading: reading, disabled: reading })}
+      ${button({ label: 'Select parts…', icon: 'square-dashed-mouse-pointer', variant: 'ghost', size: 'sm', action: 'add.select-parts', disabled: ctx.state.picker?.status === 'selecting' })}
+    </span>` : '';
+  if (!d.capture) {
+    return page ? row('Page content', html`<div class="add-content is-empty"><p class="add-content-stats">Keep the readable text of this page with the link.</p>${actions}</div>`,
+      { className: 'add-row-content' }) : '';
+  }
+  const clipped = !d.previewAll && d.articleContent.length > PREVIEW_CHARS;
+  return row('Page content', html`<div class="add-content">
+      <div class="add-content-head"><p class="add-content-stats" id="add-content-stats">${contentSummary(contentStats(d))}</p>${actions}</div>
+      <div class="add-content-preview" data-mount="add.content-preview" data-morph="skip" data-key="add-content:${d.id}:${d.captureRev || 0}:${d.articleContent.length}:${d.previewAll ? 'all' : 'start'}"
+        role="region" tabindex="0" aria-label="Page content preview (read only)" aria-describedby="add-content-stats"></div>
+      ${clipped ? button({ label: 'Show the whole page', variant: 'link', size: 'sm', action: 'add.preview-all', className: 'add-content-more' }) : ''}
+    </div>`, { className: 'add-row-content' });
+}
+
+// Read-only preview of the captured Markdown, rendered once per capture (the dialog itself re-renders on every keystroke).
+// A new capture bumps draft.captureRev, which is part of the element's data-key (a re-capture of the same length still
+// repaints); update() repaints only when that revision or "Show the whole page" changed, never on a keystroke.
+registerMount('add.content-preview', el => {
+  let painted = null;
+  const paint = () => {
+    const d = draft;
+    const revision = d?.articleContent ? `${d.id}:${d.captureRev || 0}:${d.previewAll ? 'all' : 'start'}` : '';
+    if (revision === painted) return;
+    painted = revision;
+    if (!revision) { el.innerHTML = ''; return; }
+    const { text } = d.previewAll ? { text: d.articleContent } : previewSource(d.articleContent);
+    el.innerHTML = `<div class="markdown-body is-compact add-content-body">${renderMarkdown(text)}</div>`;
+  };
+  paint();
+  return { update: paint };
+});
 
 function renderNoteField(d, { rows = 3, autofocus = false } = {}) {
   return html`<div class="add-note">
@@ -531,6 +735,8 @@ function renderBody(ctx, d) {
   return html`${d.urlFirst ? renderUrlRow(ctx, d) : ''}
     ${renderDuplicate(ctx, d)}
     ${showPreview ? renderPreview(ctx, d) : ''}
+    ${d.capture ? renderIconRow(d) : ''}
+    ${renderContentRow(ctx, d)}
     ${row('Note', renderNoteField(d), { id: 'add-note', className: 'add-row-note' })}
     ${row('Collection', renderCollectionField(ctx, d), { id: 'add-collection' })}
     ${row('Tags', renderTagsField(ctx, d), { id: 'tag-input-add-tags' })}
@@ -538,10 +744,41 @@ function renderBody(ctx, d) {
     ${renderReminderRow(d)}`;
 }
 
+// After an article is saved the dialog stays open on this state: where it went, Open, and "Research with AI".
+function renderAddSaved(ctx, d) {
+  const saved = d.saved;
+  const item = ctx.select.byId(saved.id);
+  const research = researchOffered(ctx);
+  return html`<div class="dialog-form add-saved" data-key="add-saved">
+    <header class="dialog-header add-header">
+      <div class="dialog-heading"><h2 class="dialog-title" id="dialog-title-add.item">${saved.updated ? 'Article updated' : d.capture?.source === 'parts' ? 'Selection saved' : 'Article saved'}</h2></div>
+      ${iconButton({ icon: 'x', label: 'Close', action: 'overlay.dismiss', size: 'sm', className: 'dialog-close' })}
+    </header>
+    <div class="dialog-body add-body">
+      <div class="add-success" role="status">
+        <span class="add-success-icon" aria-hidden="true">${icon('circle-check', { size: 20 })}</span>
+        <div class="add-success-text">
+          <p class="add-success-title" id="add-success-title" tabindex="-1">${saved.updated ? 'Updated in' : 'Saved to'} ${collectionLabel(ctx, item ? item.collectionId : saved.collectionId)}</p>
+          <p class="add-success-item">${item?.title || saved.title}</p>
+          ${research ? html`<p class="add-success-hint">Research with AI reads this page, searches the web and adds cited findings to its note.</p>` : ''}
+        </div>
+      </div>
+    </div>
+    <footer class="dialog-footer add-footer"><div class="add-foot-start"></div>
+      ${button({ label: 'Done', variant: 'ghost', action: 'overlay.dismiss' })}
+      ${button({ label: 'Open', variant: research ? 'secondary' : 'primary', action: 'add.open-saved', data: { id: saved.id } })}
+      ${research ? button({ label: 'Research with AI', icon: 'telescope', variant: 'primary', action: 'research.start', data: { id: saved.id }, attrs: { 'data-add-research': true } }) : ''}
+    </footer>
+  </div>`;
+}
+
 function renderAddDialog(ctx) {
   const d = draft;
   if (!d) return '';
-  const title = d.type === 'note' ? 'New note' : d.type === 'file' ? 'Upload files' : d.updateId ? 'Update link' : 'Add link';
+  if (d.saved) return renderAddSaved(ctx, d);
+  const article = d.type === 'link' && d.capture;
+  const title = d.type === 'note' ? 'New note' : d.type === 'file' ? 'Upload files'
+    : article ? (d.updateId ? 'Update article' : d.capture.source === 'parts' ? 'Save selection' : 'Save article') : d.updateId ? 'Update link' : 'Add link';
   const validFiles = d.files.filter(f => !f.error).length;
   const saveLabel = d.type === 'file' ? (validFiles > 1 ? `Upload ${validFiles} files` : 'Upload') : d.updateId ? 'Update' : 'Save';
   const headerActions = html`<div class="add-head-actions">
@@ -550,7 +787,10 @@ function renderAddDialog(ctx) {
     ${iconButton({ icon: d.reminderAt ? 'bell-ring' : 'bell', label: d.reminderAt ? `Reminder: ${formatReminder(d.reminderAt)}` : 'Remind me', action: 'add.reminder', pressed: !!d.reminderAt, size: 'sm', className: 'add-remind' })}
     <span class="add-vr" aria-hidden="true"></span>
   </div>`;
-  const heading = html`<span>${title}</span>${d.source === 'tab' && d.type === 'link' ? html`<span class="add-source-chip">${icon('app-window', { size: 12 })}From current tab</span>` : ''}`;
+  const parts = article && d.capture.source === 'parts' ? d.capture.selectionCount : 0;
+  const chip = parts ? html`<span class="add-source-chip">${icon('square-dashed-mouse-pointer', { size: 12 })}${plural(parts, 'part')} selected</span>`
+    : (d.source === 'tab' || article) && d.type === 'link' ? html`<span class="add-source-chip">${icon('app-window', { size: 12 })}From current tab</span>` : '';
+  const heading = html`<span>${title}</span>${chip}`;
   const footer = html`<div class="add-foot-start">${d.error ? html`<p class="add-error" role="alert">${icon('circle-alert', { size: 14 })}<span>${d.error}</span></p>` : ''}</div>
     ${button({ label: 'Cancel', variant: 'ghost', action: 'overlay.dismiss' })}
     ${button({ label: saveLabel, variant: 'primary', type: 'submit', loading: d.saving, disabled: d.saving || (d.type === 'file' && !validFiles),
@@ -584,23 +824,8 @@ async function imageThumbnail(file) {
 
 async function saveLink(ctx, d, url) {
   const existing = d.updateId ? ctx.select.byId(d.updateId) : ctx.select.savedForUrl(url);
-  const type = d.itemType === 'image' ? 'image' : isVideoUrl(url) ? 'video' : d.articleContent ? 'article' : d.itemType || 'bookmark';
-  if (d.updateId && existing) {
-    const patch = { url, title: d.title.trim() || existing.title, excerpt: d.excerpt.trim(), cover: d.cover, content: d.note, collectionId: d.collectionId,
-      tags: d.tags, favorite: d.favorite, reminderAt: d.reminderAt || null };
-    if (d.articleContent && !existing.articleContent) patch.articleContent = d.articleContent;
-    if (existing.type === 'bookmark' && type !== 'bookmark') patch.type = type;
-    return ctx.store.updateItem(existing.id, patch, { expectedUpdatedAt: existing.updatedAt });
-  }
-  // The store merges a save into an existing item with the same address, so only send what the user set.
-  // A fetched cover that failed to load here is dropped rather than saved as a broken image.
-  const cover = d.cover && d.cover === d.coverFailed && !d.touched.has('cover') ? '' : d.cover;
-  const input = { url, excerpt: d.excerpt.trim(), cover, content: d.note, collectionId: d.collectionId, tags: d.tags, articleContent: d.articleContent, sourceUrl: d.sourceUrl };
-  if (d.title.trim()) input.title = d.title.trim();
-  if (!existing || (existing.type === 'bookmark' && type !== 'bookmark')) input.type = type;
-  if (d.favorite) input.favorite = true;
-  if (d.reminderAt) input.reminderAt = d.reminderAt;
-  return ctx.store.saveItem(input);
+  const write = linkSave(d, url, existing);
+  return write.patch ? ctx.store.updateItem(write.id, write.patch, { expectedUpdatedAt: write.expectedUpdatedAt }) : ctx.store.saveItem(write.input);
 }
 
 function noteInput(ctx, d) {
@@ -641,7 +866,7 @@ async function saveFiles(ctx, d) {
 
 async function saveDraft(ctx) {
   const d = draft;
-  if (!d || d.saving) return;
+  if (!d || d.saving || d.saved) return;
   d.error = '';
   d.urlError = '';
   let url = '';
@@ -679,12 +904,25 @@ async function saveDraft(ctx) {
     return;
   }
   ctx.prefs.touchCollection(d.collectionId);
-  if (draft === d) { draft = null; ctx.closeDialog('add.item'); }
   const first = saved[0];
+  // The tab counts as saved when this is its address, or when its article was captured here and saved under the page's
+  // canonical address. A link or image from the context menu keeps the page it was found on in sourceUrl: that page is
+  // not saved by it.
+  const tab = ctx.state.page?.url;
+  if (url && first && tab && (sameUrl(tab, url) || sameUrl(tab, first.url) || (d.capture && (sameUrl(tab, d.capture.pageUrl) || sameUrl(tab, d.sourceUrl))))) {
+    Object.assign(ctx.state.page, { saved: true, itemId: first.id });
+  }
+  // A saved article keeps the dialog open on its saved state, which offers research on it.
+  if (d.type === 'link' && d.capture && first && draft === d && isDialogOpen('add.item')) {
+    Object.assign(d, { saving: false, saved: { id: first.id, collectionId: first.collectionId || '', title: first.title || d.title, updated: Boolean(d.updateId || merged) } });
+    ctx.render();
+    ctx.nextFrame(() => document.getElementById('add-success-title')?.focus());
+    return;
+  }
+  if (draft === d) { draft = null; ctx.closeDialog('add.item'); }
   const where = collectionLabel(ctx, first ? first.collectionId : d.collectionId);
   const message = d.type === 'file' && saved.length > 1 ? `Saved ${saved.length} files to ${where}` : d.updateId || merged ? `Updated in ${where}` : `Saved to ${where}`;
   ctx.toast(message, { tone: 'success', action: first ? { label: 'Open', run: () => ctx.openItem(first.id) } : null });
-  if (url && first && ctx.state.page && sameUrl(ctx.state.page.url, url)) Object.assign(ctx.state.page, { saved: true, itemId: first.id });
   ctx.render();
 }
 
@@ -822,6 +1060,8 @@ export function openCaptureMenu(ctx, anchor, options = {}) {
     { label: 'Upload files…', icon: 'upload', action: 'add.upload' },
     { separator: true },
     { label: 'Save page', icon: 'bookmark-plus', action: 'add.save-page', disabled: !page, hint },
+    { label: 'Save article…', icon: 'newspaper', action: 'add.save-article', disabled: !page, hint },
+    { label: 'Select parts of page…', icon: 'square-dashed-mouse-pointer', action: 'add.select-parts', disabled: !page || ctx.state.picker?.status === 'selecting', hint },
     { label: 'Save with note…', icon: 'notebook-pen', action: 'add.save-with-note', disabled: !page, hint },
     { label: 'Screenshot visible area', icon: 'camera', action: 'add.screenshot', disabled: !page, hint },
     { label: 'Full-page screenshot', icon: 'scan', action: 'add.full-page', disabled: !page || capturePending(ctx), hint },
@@ -883,6 +1123,89 @@ async function captureFull(ctx) {
   ctx.render();
 }
 
+/* ------------------------------------------------------------------ article capture + the page picker */
+
+// The picker request this side panel started; its result arrives straight from the page (see init).
+let pickerRequest = null;
+
+const friendlyPageError = error => /cannot access|cannot be scripted|extensions gallery|chrome:\/\/|chrome-extension:/i.test(error?.message || '')
+  ? new Error('Chrome does not let extensions read this page. Save it as a link instead.') : friendlyCaptureError(error);
+
+// The worker answered { needsPermission }: Chrome only shows the prompt from a click, so the toast's Allow asks, then retries.
+function askPageAccess(ctx, need, retry) {
+  const request = need === 'tabs' ? { permissions: ['tabs'] } : { origins: [need] };
+  let host = '';
+  try { host = new URL(String(need).replace(/\*$/, '')).hostname.replace(/^www\./, ''); } catch { host = ''; }
+  ctx.toast(need === 'tabs' ? 'Allow Still to read this tab first.' : `Allow Still to read ${host || 'this site'} first.`, {
+    tone: 'warning', duration: 10000,
+    action: { label: 'Allow', run: () => requestPermission(request).then(granted => (granted ? retry() : ctx.toast('Still cannot read this site without access. You can still save the link.'))) },
+  });
+}
+
+/** Reads the active tab's article and opens it in the Add dialog's article preview. */
+export async function captureArticle(ctx) {
+  if (!ctx.env.isExtension) { ctx.toast('Saving articles needs Still installed as a Chrome extension.'); return null; }
+  if (ctx.state.articleCapture === 'reading') return null;
+  ctx.state.articleCapture = 'reading';
+  ctx.render();
+  let reply;
+  try {
+    const windowId = await ensureWindowId(ctx);
+    reply = await ctx.chrome('still:capture-article', { windowId, save: false });
+  } catch (error) { throw friendlyPageError(error); }
+  finally { ctx.state.articleCapture = ''; ctx.render(); }
+  if (reply?.needsPermission) { askPageAccess(ctx, reply.needsPermission, () => captureArticle(ctx)); return null; }
+  if (!reply?.article?.ok) {
+    ctx.toast(reply?.article?.error || 'Still could not read an article on this page.', { tone: 'warning', action: { label: 'Save as link', run: () => openAddForPage(ctx) } });
+    return null;
+  }
+  openAdd(ctx, { capture: reply.article, url: reply.url, source: 'article', tabId: reply.tabId, existingId: reply.existing?.id || '', type: 'article', sourceUrl: reply.article.url });
+  return reply;
+}
+
+/** Starts the multi-select picker on the active tab; its result opens the article preview (see init). */
+export async function selectParts(ctx) {
+  if (!ctx.env.isExtension) { ctx.toast('Selecting parts of a page needs Still installed as a Chrome extension.'); return null; }
+  let reply;
+  try {
+    const windowId = await ensureWindowId(ctx);
+    reply = await ctx.chrome('still:start-picker', { windowId, from: 'panel' });
+  } catch (error) { throw friendlyPageError(error); }
+  if (reply?.needsPermission) { askPageAccess(ctx, reply.needsPermission, () => selectParts(ctx)); return null; }
+  pickerRequest = { requestId: reply.requestId, tabId: reply.tabId };
+  ctx.state.picker = { status: 'selecting', requestId: reply.requestId };
+  ctx.render();
+  return reply;
+}
+
+/** Side panel status while the user selects parts on the page; '' otherwise. */
+export function renderPickerStatus(ctx) {
+  if (ctx.state.picker?.status !== 'selecting') return '';
+  return html`<div class="capture-progress" data-status="selecting" data-key="picker-status" role="status" aria-live="polite">
+    <span class="capture-progress-icon" aria-hidden="true">${icon('square-dashed-mouse-pointer', { size: 16 })}</span>
+    <span class="capture-progress-text"><span class="capture-progress-label">Selecting parts of the page</span>
+      <span class="capture-progress-detail">Click the parts you want on the page, then choose Done there. Esc on the page cancels.</span></span>
+    ${iconButton({ icon: 'x', label: 'Stop waiting for the selection', action: 'add.picker-dismiss', size: 'sm' })}
+  </div>`;
+}
+
+function setIcon(ctx, d, value) {
+  if (draft !== d) return;
+  d.icon = value;
+  d.iconFailed = '';
+  d.touched.add('icon');
+  ctx.render();
+  ctx.nextFrame(() => document.getElementById('add-icon')?.focus());
+}
+
+async function iconFromLink(ctx, d) {
+  const value = await ctx.prompt({ title: 'Page icon', label: 'Image link', value: /^https?:/i.test(d.icon) ? d.icon : '', placeholder: 'https://', confirmLabel: 'Use image' });
+  if (value == null || draft !== d) return;
+  const url = detectUrl(value);
+  if (value.trim() && !url) { ctx.toast('Enter an image link that starts with https://', { tone: 'danger' }); return; }
+  setIcon(ctx, d, url);
+}
+
 /* ------------------------------------------------------------------ actions */
 
 let uploadArmed = false;
@@ -917,6 +1240,34 @@ registerActions({
   'add.capture-view': ({ ctx }) => { const id = ctx.state.capture?.itemId; ctx.state.capture = null; if (id) ctx.openItem(id); else ctx.render(); },
   'add.capture-dismiss': ({ ctx }) => { ctx.state.capture = null; ctx.render(); },
   'add.highlight-tip': ({ ctx }) => ctx.toast('Select text on the page, then right-click and choose Highlight selection in Still.', { duration: 7000 }),
+  'add.save-article': ({ ctx }) => captureArticle(ctx),
+  'add.select-parts': ({ ctx }) => selectParts(ctx),
+  'add.picker-dismiss': ({ ctx }) => {
+    const tabId = pickerRequest?.tabId;
+    pickerRequest = null;
+    ctx.state.picker = null;
+    ctx.render();
+    if (Number.isInteger(tabId)) {
+      try { globalThis.chrome?.scripting?.executeScript?.({ target: { tabId, frameIds: [0] }, func: () => globalThis.__stillPicker?.stop?.() })?.catch?.(() => {}); } catch {}
+    }
+  },
+  'add.preview-all': ({ ctx }) => {
+    if (!draft) return;
+    draft.previewAll = true;
+    ctx.render();
+    ctx.nextFrame(() => document.querySelector('.add-content-preview')?.focus());
+  },
+  'add.open-saved': ({ ctx, data }) => { draft = null; ctx.closeDialog('add.item'); ctx.openItem(data.id); },
+  'add.icon-menu': ({ ctx, el }) => {
+    const d = draft;
+    if (!d) return;
+    const page = d.capture?.icon || '';
+    ctx.openMenu(el, [
+      ...(page && d.icon !== page ? [{ label: 'Use the page icon', icon: 'image', run: () => setIcon(ctx, d, page) }] : []),
+      ...(d.icon ? [{ label: 'Use the site icon', icon: 'globe', run: () => setIcon(ctx, d, '') }] : []),
+      { label: 'Use image link…', icon: 'link', run: () => iconFromLink(ctx, d) },
+    ], { label: 'Icon' });
+  },
 
   'add.type': ({ ctx, data, event }) => {
     const d = draft;
@@ -948,11 +1299,16 @@ registerActions({
     const d = draft;
     if (!d) return;
     const changed = validUrl(el.value) !== validUrl(d.url);
+    const previous = d.url;
     d.url = el.value;
     d.urlError = '';
-    if (changed) {
+    // A captured article stays with its page when only the spelling of the address changes (tracking parameters).
+    if (changed && !(d.capture && sameUrl(previous, d.url))) {
       d.updateId = '';
       d.articleContent = '';
+      d.capture = null;
+      d.replaceArticle = false;
+      if (!d.touched.has('icon')) d.icon = '';
       if (!d.touched.has('cover') && d.meta.status === 'done') d.cover = '';
       d.meta = { status: 'idle', forUrl: '' };
       if (validUrl(d.url)) scheduleMeta(ctx);
@@ -1119,8 +1475,10 @@ export async function init(ctx) {
   // Image errors do not bubble; catch a failed cover in the capture phase and show the fallback tile.
   document.addEventListener('error', event => {
     const img = event.target;
-    if (!draft || img?.tagName !== 'IMG' || !img.closest?.('.add-cover')) return;
-    draft.coverFailed = draft.cover;
+    if (!draft || img?.tagName !== 'IMG') return;
+    if (img.closest?.('.add-cover')) draft.coverFailed = draft.cover;
+    else if (img.closest?.('.add-icon-preview')) draft.iconFailed = draft.icon;
+    else return;
     ctx.render();
   }, true);
 
@@ -1169,4 +1527,49 @@ export async function init(ctx) {
     openAdd(ctx, { url: payload.url, title: payload.title, kind: payload.kind, sourceUrl: payload.sourceUrl,
       source: payload.kind === 'page' ? 'tab' : 'menu', ...(payload.kind === 'image' ? { type: 'image', cover: payload.url } : {}) });
   });
+
+  // "Select parts" from this panel: the picker's result comes straight from the page, not through the worker, and only
+  // the request this panel started counts (same id, tab and frame 0).
+  globalThis.chrome?.runtime?.onMessage?.addListener?.((message, sender) => {
+    if (message?.type !== 'still:picker-result' || !ctx.env.isSidepanel) return;
+    if (!acceptPickerMessage(pickerRequest, message, sender, globalThis.chrome.runtime.id)) return;
+    const { requestId, tabId } = pickerRequest;
+    pickerRequest = null;
+    ctx.state.picker = null;
+    const area = globalThis.chrome?.storage?.session;
+    if (requestId && area?.get) {
+      area.get(PANEL_DRAFTS_KEY).then(raw => {
+        const drafts = raw?.[PANEL_DRAFTS_KEY];
+        if (drafts && Object.hasOwn(drafts, requestId)) {
+          const next = { ...drafts };
+          delete next[requestId];
+          return area.set({ [PANEL_DRAFTS_KEY]: next });
+        }
+        return undefined;
+      }).catch(() => {});
+    }
+    if (message.cancelled === true) { ctx.render(); return; }
+    const article = normalizeArticleResult(message.result, { pageUrl: sender.url });
+    if (!article.ok) { ctx.toast(article.error, { tone: 'warning' }); ctx.render(); return; }
+    openAdd(ctx, { capture: article, url: articleSaveUrl(article, sender.url), source: 'parts', tabId, type: 'article', sourceUrl: article.url });
+  });
+  if (ctx.env.isSidepanel) recoverPanelDraft(ctx);
+}
+
+// A selection finished while this window's side panel was closed: the worker kept it in storage.session.
+async function recoverPanelDraft(ctx) {
+  const params = new URLSearchParams(globalThis.location?.search || '');
+  if (params.get('item') || params.get('tab')) return;
+  const area = globalThis.chrome?.storage?.session;
+  if (!area?.get) return;
+  try {
+    const windowId = await ensureWindowId(ctx);
+    const { draft: found, rest } = pickPanelDraft((await area.get(PANEL_DRAFTS_KEY))?.[PANEL_DRAFTS_KEY], windowId);
+    if (!found) return;
+    await area.set({ [PANEL_DRAFTS_KEY]: rest });
+    const article = normalizeArticleResult(found.article, { pageUrl: found.article?.url });
+    if (!article.ok) return;
+    openAdd(ctx, { capture: article, url: articleSaveUrl(article, article.url), source: 'parts', tabId: found.tabId, type: 'article', sourceUrl: article.url });
+    ctx.toast('These are the parts you selected while the side panel was closed.');
+  } catch (error) { console.warn('[still] selection draft', error); }
 }

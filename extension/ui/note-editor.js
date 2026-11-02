@@ -1,20 +1,24 @@
 // Note editor host (SPEC §6.1, §12.2). renderNoteEditor and renderInlineEditor return an empty mount point; the
-// 'note-editor' mount builds the editor once (toolbar, title, meta row, block editor, AI preview card, backlinks,
-// footer) and refreshes its declarative regions with morph() after every app render, so typing never re-renders the
-// app. Saves are debounced, serialized per editor and revision-checked: a change made elsewhere reloads an editor
-// without unsaved edits and raises a non-destructive conflict bar over unsaved ones. Unsaved text is mirrored to
-// localStorage so a closed side panel never loses it.
+// 'note-editor' mount builds the editor once (toolbar, page path, title, meta row, block editor, AI preview card,
+// subpages, backlinks, footer) and refreshes its declarative regions with morph() after every app render, so typing
+// never re-renders the app. Saves are debounced, serialized per editor and revision-checked: a change made elsewhere
+// reloads an editor without unsaved edits and raises a non-destructive conflict bar over unsaved ones. Unsaved text is
+// mirrored to localStorage so a closed side panel never loses it. Subpages (lib/pages.js): "/page" and "Add subpage"
+// create a note inside this one, the page path above the title leads back up, and "Move to page…" re-parents a note.
 import { html, raw, cx, plural } from './html.js';
 import { morph } from './morph.js';
 import { icon } from './icons.js';
 import { registerMount, registerActions, registerShortcuts, hasAction } from './runtime.js';
-import { button, iconButton, favicon, domainOf, relativeDate, colorVar, spinner, keyshortcuts, shortcutLabel, TYPE_ICONS } from './components.js';
+import { researchOffered } from './research-view.js';
+import { registerPopover } from './overlay.js';
+import { button, iconButton, favicon, domainOf, relativeDate, colorVar, spinner, keyshortcuts, shortcutLabel, kbd, TYPE_ICONS, TYPE_LABELS } from './components.js';
 import * as pickers from './pickers.js';
 import { mountBlockEditor } from '../lib/block-editor.js';
 import { renderMarkdown } from '../lib/markdown.js';
 import { noteExcerpt, wordCount, linkResolver, resolveWikiLinks, toggleTask } from '../lib/notes.js';
 import { leadingTitle } from '../lib/import/index.js';
 import { openImport, openEmbed, itemEmbedMount, saveFileItem } from './note-import.js';
+import { pageIndex, parentIdOf, descendantIds } from '../lib/pages.js';
 
 export const UNTITLED = 'Untitled note';
 const SAVE_DELAY = 600;
@@ -87,6 +91,47 @@ export function searchLinkCandidates(items, query, { exclude = '', limit = 8, co
   }));
 }
 
+/**
+ * The page path above a title: every ancestor while they fit, else the first one, an ellipsis standing for the
+ * middle and the last `max - 1` (with room for fewer than three, only the ellipsis and the last `max`).
+ * Returns [{ item } | { more: [items] }].
+ */
+export function crumbTrail(ancestors = [], max = 3) {
+  const list = (ancestors || []).filter(Boolean);
+  const limit = Math.max(1, Math.floor(max) || 1);
+  if (list.length <= limit) return list.map(item => ({ item }));
+  if (limit < 3) return [{ more: list.slice(0, list.length - limit) }, ...list.slice(-limit).map(item => ({ item }))];
+  const tail = list.slice(-(limit - 1));
+  return [{ item: list[0] }, { more: list.slice(1, list.length - tail.length) }, ...tail.map(item => ({ item }))];
+}
+
+/**
+ * Items a note can move into ("Move to page…"): live items other than the note and its subpages (trashed ones too:
+ * the store refuses loops through them), matched by title, prefix matches and notes first, then newest first.
+ */
+export function pageMoveCandidates(items, { id = '', query = '', limit = 30 } = {}) {
+  const index = pageIndex(items || []);
+  const blocked = new Set([id, ...descendantIds(index, id, { includeDeleted: true })]);
+  const q = String(query ?? '').trim().toLowerCase();
+  const rows = [];
+  for (const item of index.byId.values()) {
+    if (item.deletedAt || blocked.has(item.id) || !String(item.title || '').trim()) continue;
+    const at = q ? String(item.title).toLowerCase().indexOf(q) : 0;
+    if (at < 0) continue;
+    rows.push({ item, score: (at === 0 ? 0 : 1) + (item.type === 'note' ? 0 : 2) });
+  }
+  rows.sort((a, b) => a.score - b.score || String(b.item.updatedAt || '').localeCompare(String(a.item.updatedAt || '')));
+  return rows.slice(0, limit).map(row => row.item);
+}
+
+/** Live subpages (all levels) below these items, not counting the items themselves: Trash takes them along. */
+export function subpagesMoving(library, ids = []) {
+  const index = pageIndex(library || { items: [] });
+  const chosen = new Set(ids), out = new Set();
+  for (const id of ids) for (const sub of descendantIds(index, id)) if (!chosen.has(sub)) out.add(sub);
+  return out.size;
+}
+
 /** What to do with a stored draft when an editor opens: 'none' | 'discard' (already saved) | 'restore' | 'conflict'. */
 export function draftDecision(draft, item, { field = 'content', title = true } = {}) {
   if (!draft || !item) return 'none';
@@ -142,7 +187,10 @@ export function rememberItem(item) {
 export async function confirmTrash(ctx, items) {
   if (ctx.library?.settings?.confirmDelete !== true || !items.length) return true;
   const title = items.length > 1 ? `Move ${plural(items.length, 'item')} to Trash?` : items[0].title ? `Move “${items[0].title}” to Trash?` : 'Move this item to Trash?';
-  return ctx.confirm({ title, body: 'You can restore items from Trash until you empty it.', confirmLabel: 'Move to Trash' });
+  const subpages = subpagesMoving(ctx.library, items.map(item => item.id));
+  const along = !subpages ? '' : subpages === 1 ? `${items.length > 1 ? 'One subpage' : 'Its subpage'} moves to Trash too. `
+    : `${items.length > 1 ? 'Their' : 'Its'} ${plural(subpages, 'subpage')} move to Trash too. `;
+  return ctx.confirm({ title, body: `${along}You can restore items from Trash until you empty it.`, confirmLabel: 'Move to Trash' });
 }
 
 export function latestItem(ctx, id) {
@@ -196,12 +244,47 @@ export function closeNote(ctx, id) {
   ctx.render();
 }
 
-/** Saves a new note item and remembers it so an editor can open before the library update arrives. */
-export async function createNoteItem(ctx, { title = '', content = '', url = '', collectionId = '', relatedIds = [], tags = [] } = {}) {
+/**
+ * Saves a new note item and remembers it so an editor can open before the library update arrives. With parentId the
+ * note is a subpage of that item; without a collection of its own it joins the parent's (the store's rule).
+ */
+export async function createNoteItem(ctx, { title = '', content = '', url = '', collectionId = '', relatedIds = [], tags = [], parentId = '' } = {}) {
   const target = collectionId && ctx.select.collection(collectionId) ? collectionId : '';
   const item = await ctx.store.saveItem({ type: 'note', title: String(title || '').trim(), content, url, collectionId: target,
-    relatedIds: relatedIds.filter(Boolean), tags, excerpt: noteExcerpt(content) });
+    relatedIds: relatedIds.filter(Boolean), tags, excerpt: noteExcerpt(content), ...(parentId ? { parentId } : {}) });
   return rememberItem(item);
+}
+
+/** Creates an empty subpage inside `parent` (any live item). Returns the saved note. */
+export function createSubpage(ctx, parent) {
+  if (!parent?.id || parent.deletedAt) return Promise.reject(new Error('That page no longer exists.'));
+  return createNoteItem(ctx, { parentId: parent.id });
+}
+
+/** "New subpage" from any surface: creates it inside `parentId` and opens it with the title selected. */
+export async function addSubpage(ctx, parentId) {
+  const child = await createSubpage(ctx, latestItem(ctx, parentId));
+  openNote(ctx, child.id, { focus: 'title' });
+  return child;
+}
+
+/**
+ * Moves a note into another item (parentId) or to the top level (''), with an Undo that puts it back where it was
+ * when that place still exists. The store refuses loops, Trash and the depth cap with a clear message.
+ */
+export async function movePageTo(ctx, id, parentId) {
+  const note = latestItem(ctx, id);
+  if (!note) throw new Error('This note no longer exists.');
+  const from = parentIdOf(note);
+  if (from === (parentId || '')) return note;
+  const saved = rememberItem(await ctx.store.movePage(id, { parentId: parentId || '' }));
+  const parent = parentId ? latestItem(ctx, parentId) : null;
+  const undo = { label: 'Undo', run: async () => {
+    const back = from && latestItem(ctx, from);
+    rememberItem(await ctx.store.movePage(id, { parentId: back && !back.deletedAt ? from : '' }));
+  } };
+  ctx.toast(parent ? `Moved into “${displayTitle(parent)}”` : 'Moved to the top level', { tone: 'success', action: undo });
+  return saved;
 }
 
 /** The editor instance showing note `id` (full or side surface), if one is mounted. */
@@ -298,11 +381,13 @@ function shell(variant, surface) {
     <div class="ne-scroll">
       <div class="ne-doc">
         <div class="ne-head">
+          <nav class="ne-crumbs" data-region="crumbs" aria-label="Page path" hidden></nav>
           <textarea class="ne-title" rows="1" placeholder="Untitled" aria-label="Title" maxlength="300" spellcheck="true" enterkeyhint="next"></textarea>
           <div class="ne-meta" data-region="meta"></div>
         </div>
         <div class="ne-body"><textarea name="content" aria-label="Note"></textarea></div>
         <div class="ne-ai" data-region="ai" hidden></div>
+        <section class="ne-subpages" data-region="subpages" aria-label="Subpages" hidden></section>
         <section class="ne-links" data-region="links" aria-label="Linked from"></section>
       </div>
     </div>
@@ -362,6 +447,7 @@ function createEditor(host, ctx) {
       target.querySelector('[data-block-edit]')?.focus({ preventScroll: true });
     },
     metaWrite, openAiMenu, runAi, applyAi, closeAi, resolveBanner, setMode: mode => { editor?.setMode(mode); renderFoot(); },
+    newSubpage: () => newSubpage(),
     openImport: files => openImportDialog(files), openEmbed: () => openEmbedDialog(),
     retry: () => { st.retry = 0; save(); },
   };
@@ -409,10 +495,11 @@ function createEditor(host, ctx) {
       onChange: markdown => changed(markdown),
       onAskAi: () => openAiMenu(selectionPoint() || els.toolbar?.querySelector('[data-tool="ai"]') || host),
       searchLinks: async query => searchLinkCandidates(ctx.select.live(), query, { exclude: id, collectionName: cid => ctx.select.collection(cid)?.name || '' }),
-      resolveLink: target => noteResolver(ctx)(target) || justSaved(target),
+      resolveLink: target => withPageMeta(ctx, noteResolver(ctx)(target) || justSaved(target)),
       onOpenLink: linkId => openLinked(ctx, linkId),
       onImport: ({ files } = {}) => openImportDialog(files),
       onEmbed: () => openEmbedDialog(),
+      ...(field === 'content' ? { onCreatePage: () => createPageFromSlash() } : {}),
       mountEmbed: itemEmbedMount(ctx, { lookup: itemId => latestItem(ctx, itemId) }),
       onSelectionChange: info => { st.marks = info.marks || new Set(); st.block = info.block || 'paragraph'; active = instance; syncToolbar(); },
     });
@@ -461,6 +548,24 @@ function createEditor(host, ctx) {
     if (typeof ResizeObserver === 'function') {
       observer = new ResizeObserver(() => { autosizeTitle(); rovingStop(); });
       observer.observe(host);
+    }
+  }
+
+  /* ---------- subpages ---------- */
+
+  // "/page": the subpage is saved first, its block goes where "/page" was typed, and this note is saved before the new
+  // page opens, so the block is never lost when the editor closes for the navigation.
+  async function createPageFromSlash() {
+    const parent = item();
+    if (!parent || parent.deletedAt) { ctx.toast('Restore this note from Trash before adding pages to it.', { tone: 'warning' }); return; }
+    try {
+      const child = await createSubpage(ctx, parent);
+      if (st.destroyed || !editor) return;
+      editor.command('page', { target: child.id, label: titleValue(child.title) });
+      await save();
+      openNote(ctx, child.id, { focus: 'title' });
+    } catch (error) {
+      ctx.toast(error?.message || 'The page could not be created.', { tone: 'danger' });
     }
   }
 
@@ -618,7 +723,11 @@ function createEditor(host, ctx) {
       navigator.clipboard?.writeText(currentText()).then(() => ctx.toast('Copied your version'), () => ctx.toast('Could not copy. Select the text and copy it instead.', { tone: 'danger' }));
       return;
     } else if (op === 'restore') {
-      return ctx.run(async () => { rememberItem(await ctx.store.restoreItem(id)); ctx.toast('Restored from Trash'); });
+      return ctx.run(async () => {
+        const before = item();
+        const restored = rememberItem(await ctx.store.restoreItem(id));
+        ctx.toast(parentIdOf(before) && !parentIdOf(restored) ? 'Restored from Trash. Its parent page is still in Trash, so it is now at the top level.' : 'Restored from Trash');
+      });
     }
     renderBanner();
     renderFoot();
@@ -643,11 +752,22 @@ function createEditor(host, ctx) {
       else if (verdict === 'conflict' && st.conflict?.latest?.updatedAt !== record.updatedAt) { st.conflict = { latest: record }; clearTimeout(st.timer); setStatus('conflict'); }
     }
     renderRegions(record);
+    editor?.refresh?.();
   }
 
   function renderRegions(record = item()) {
     if (!st.built || !record) return;
+    if (els.crumbs) {
+      const markup = renderCrumbs(ctx, record, surface);
+      els.crumbs.hidden = !String(markup).trim();
+      morph(els.crumbs, markup);
+    }
     if (els.meta) morph(els.meta, renderMeta(ctx, instance, record, surface));
+    if (els.subpages) {
+      const markup = renderSubpages(ctx, record);
+      els.subpages.hidden = !String(markup).trim();
+      morph(els.subpages, markup);
+    }
     if (els.links) {
       const markup = renderLinks(ctx, record, surface);
       els.links.hidden = !String(markup).trim();
@@ -790,8 +910,13 @@ function createEditor(host, ctx) {
     const page = ctx.state.page;
     const pageLinkable = !record.url && /^https?:/i.test(page?.url || '');
     const mode = editor?.getMode?.() || 'blocks';
+    const nested = !!parentIdOf(record);
+    const research = !record.deletedAt && researchOffered(ctx);
     ctx.openMenu(anchor, [
       { label: record.pinned ? 'Unpin' : 'Pin to top', icon: record.pinned ? 'pin-off' : 'pin', run: () => metaWrite({ pinned: !record.pinned }) },
+      { label: 'Add subpage', icon: 'file-plus', run: () => newSubpage() },
+      { label: 'Move to page…', icon: 'folder-tree', run: () => openPagePicker(ctx, anchor, id) },
+      ...(nested ? [{ label: 'Move to top level', icon: 'arrow-up-from-line', run: () => ctx.run(async () => { await save(); await movePageTo(ctx, id, ''); }) }] : []),
       { label: 'Duplicate', icon: 'files', run: () => duplicate(record) },
       { label: 'Copy as Markdown', icon: 'copy', run: () => copyMarkdown(record) },
       { label: 'Download as Markdown', icon: 'download', run: () => downloadMarkdown(record) },
@@ -800,6 +925,7 @@ function createEditor(host, ctx) {
       { separator: true },
       { label: 'Import file…', icon: 'file-down', run: () => openImportDialog() },
       { label: 'Embed…', icon: 'app-window', run: () => openEmbedDialog() },
+      ...(research ? [{ label: 'Research more with AI', icon: 'telescope', action: 'research.start', data: { id } }] : []),
       ...(surface === 'side' ? [
         { separator: true }, { heading: 'View' },
         { label: 'Write', checked: mode === 'blocks', keepFocus: true, run: () => instance.setMode('blocks') },
@@ -812,10 +938,18 @@ function createEditor(host, ctx) {
     ], { label: 'Note actions', placement: 'bottom-end' });
   }
 
+  async function newSubpage() {
+    await save();
+    return ctx.run(() => addSubpage(ctx, id));
+  }
+
   async function duplicate(record) {
     await save();
+    // The copy is a sibling: it sits in the same page as the original (its subpages stay with the original).
+    const parentId = parentIdOf(record);
+    const parent = parentId ? latestItem(ctx, parentId) : null;
     const copy = await createNoteItem(ctx, { title: `${titleValue(record.title) || 'Untitled'} copy`, content: currentText(), url: record.url,
-      collectionId: record.collectionId, relatedIds: record.relatedIds, tags: record.tags });
+      collectionId: record.collectionId, relatedIds: record.relatedIds, tags: record.tags, parentId: parent && !parent.deletedAt ? parentId : '' });
     ctx.toast('Duplicated', { tone: 'success' });
     openNote(ctx, copy.id);
   }
@@ -854,9 +988,12 @@ function createEditor(host, ctx) {
   async function trash(record) {
     if (!(await confirmTrash(ctx, [latestItem(ctx, id) || record].filter(Boolean)))) return record;
     await save();
+    // The store trashes the subpages with the page (same stamp); Undo restores them together.
+    const subpages = subpagesMoving(ctx.library, [id]);
     await enqueue(async () => rememberItem(await ctx.store.deleteItem(id)));
     closeNote(ctx, id);
-    ctx.toast('Moved to Trash', { action: { label: 'Undo', run: async () => { rememberItem(await ctx.store.restoreItem(id)); openNote(ctx, id); } } });
+    ctx.toast(subpages ? `Moved to Trash with ${plural(subpages, 'subpage')}` : 'Moved to Trash',
+      { action: { label: 'Undo', run: async () => { rememberItem(await ctx.store.restoreItem(id)); openNote(ctx, id); } } });
     return record;
   }
 
@@ -1118,8 +1255,111 @@ function renderMeta(ctx, instance, record, surface) {
   return html`<div class="ne-props">${picker}${page}${reminder}${pin}</div>${tags}`;
 }
 
+/* ------------------------------------------------------------------ page path and subpages */
+
+const pageGlyph = (entry, size = 14, className = 'ne-link-icon') => entry.type === 'note' ? icon('file-text', { size, className })
+  : entry.url ? favicon(entry.url, { size }) : icon(TYPE_ICONS[entry.type] || 'file', { size, className });
+
+/** The page path above the title: the ancestors of a subpage, each one a button that opens it. */
+function renderCrumbs(ctx, record, surface) {
+  const parentId = parentIdOf(record);
+  const parent = parentId ? latestItem(ctx, parentId) : null;
+  if (!parent || parent.deletedAt) return '';
+  const ancestors = [...ctx.select.pagePath(parent.id), parent].filter(entry => entry.id !== record.id);
+  const trail = crumbTrail(ancestors, surface === 'side' ? 2 : 3);
+  return html`<ol class="ne-crumbs-list">${trail.map((entry, index) => html`<li class="ne-crumb-item" data-key="crumb:${entry.item?.id || 'more'}">
+    ${index ? icon('chevron-right', { size: 12, className: 'ne-crumb-sep' }) : ''}
+    ${entry.more
+      ? html`<button type="button" class="ne-crumb is-more" data-action="editor.crumbs-more" data-ids="${entry.more.map(item => item.id).join(',')}" aria-haspopup="menu"
+          aria-label="${plural(entry.more.length, 'more page')} in the path" data-tooltip="${entry.more.map(item => displayTitle(item)).join(' / ')}">…</button>`
+      : html`<button type="button" class="ne-crumb" data-action="editor.open-link" data-id="${entry.item.id}">${pageGlyph(entry.item, 14, 'ne-crumb-icon')}<span class="ne-crumb-title">${displayTitle(entry.item)}</span></button>`}
+  </li>`)}</ol>`;
+}
+
+/** Subpages of this note, oldest first, each opening in the editor; hidden while there are none. */
+function renderSubpages(ctx, record) {
+  const children = ctx.select.children(record.id);
+  if (!children.length) return '';
+  return html`<h2 class="ne-links-title">Subpages<span class="ne-count-pill">${children.length}</span></h2>
+    <ul class="ne-links-list">${children.map(child => {
+      const inner = ctx.select.subpageCount(child.id);
+      return html`<li data-key="sp:${child.id}"><button type="button" class="ne-link-row" data-action="editor.open-link" data-id="${child.id}">
+        ${icon('file-text', { size: 14, className: 'ne-link-icon' })}<span class="ne-link-title">${displayTitle(child)}</span>
+        <span class="ne-link-meta">${inner ? `${plural(inner, 'subpage')} · ` : ''}${relativeDate(child.updatedAt)}</span></button></li>`;
+    })}</ul>
+    <div class="ne-subpages-foot">${button({ label: 'New subpage', icon: 'plus', variant: 'ghost', size: 'sm', action: 'editor.new-subpage' })}</div>`;
+}
+
+/** A resolved link with the meta line page blocks show ("3 subpages"). */
+function withPageMeta(ctx, hit) {
+  if (!hit?.id) return hit;
+  const count = ctx.select.subpageCount?.(hit.id) || 0;
+  return count ? { ...hit, meta: plural(count, 'subpage') } : hit;
+}
+
+/* ------------------------------------------------------------------ "Move to page…" picker */
+
+function pagePickerOptions(ctx, props) {
+  const record = latestItem(ctx, props.id);
+  const query = String(props.query || '').trim().toLowerCase();
+  const options = [];
+  if (parentIdOf(record) && (!query || 'top level'.includes(query))) options.push({ kind: 'top', id: '' });
+  for (const item of pageMoveCandidates(ctx.library?.items || [], { id: props.id, query })) options.push({ kind: 'item', id: item.id, item });
+  return options;
+}
+const activeOption = (options, props) => (Number.isInteger(props.active) && props.active >= 0 && props.active < options.length ? props.active : 0);
+
+function renderPagePicker(ctx, props) {
+  const options = pagePickerOptions(ctx, props);
+  const active = activeOption(options, props);
+  const current = parentIdOf(latestItem(ctx, props.id));
+  const query = String(props.query || '');
+  const option = (o, index) => {
+    const selected = o.kind === 'item' && o.id === current;
+    return html`<div role="option" id="pick-page-${index}" class="${cx('pick-option', index === active && 'is-active')}" aria-selected="${selected ? 'true' : 'false'}"
+      data-action="pick.page-choose" data-index="${index}">
+      ${o.kind === 'top' ? icon('arrow-up-from-line', { size: 16 }) : pageGlyph(o.item, 16, '')}
+      <span class="pick-option-label">${o.kind === 'top' ? 'Top level' : displayTitle(o.item)}</span>
+      ${o.kind === 'item' ? html`<span class="pick-option-count">${TYPE_LABELS[o.item.type] || 'Item'}</span>` : ''}${selected ? icon('check', { size: 14, className: 'pick-option-check' }) : ''}</div>`;
+  };
+  return html`<div class="pick-collection pick-page" data-key="pick-page">
+    <div class="pick-title">Move to page</div>
+    <div class="pick-search">${icon('search', { size: 16 })}
+      <input class="pick-search-input" id="pick-page-search" data-focus-key="pick-page-search" type="text" role="combobox" aria-expanded="true"
+        aria-controls="pick-page-list" aria-autocomplete="list" aria-activedescendant="${options.length ? `pick-page-${active}` : ''}"
+        aria-label="Find a page to move this note into" placeholder="Find a page" value="${query}"
+        data-input="pick.page-query" data-keydown="pick.page-key" data-autofocus autocomplete="off" spellcheck="false">
+      ${kbd('Esc')}
+    </div>
+    <div class="pick-list" role="listbox" id="pick-page-list" aria-label="Pages">
+      ${options.map(option)}
+      ${options.length ? '' : html`<p class="pick-empty" role="presentation">${query.trim() ? `No pages match “${query.trim()}”` : 'No other pages yet'}</p>`}
+    </div>
+    <p class="sr-only" role="status" aria-live="polite">${query.trim() ? plural(options.length, 'match', 'matches') : ''}</p>
+  </div>`;
+}
+registerPopover('pick.page', renderPagePicker, { role: 'none', className: 'pick-popover pick-collection-popover' });
+
+/** "Move to page…": pick any item (not this note or one of its subpages), or the top level. */
+export function openPagePicker(ctx, anchor, id) {
+  ctx.openPopover('pick.page', anchor, { id, query: '', active: null, onPick: parentId => ctx.run(async () => {
+    await editorFor(id)?.save();
+    await movePageTo(ctx, id, parentId);
+  }) }, { placement: 'bottom-end' });
+}
+
+async function choosePage(ctx, index) {
+  const props = ctx.state.popover?.name === 'pick.page' ? ctx.state.popover.props : null;
+  const option = props && pagePickerOptions(ctx, props)[index];
+  if (!option) return;
+  ctx.closePopover();
+  await props.onPick?.(option.id);
+}
+
 function renderLinks(ctx, record, surface) {
-  const back = ctx.select.backlinks(record.id).filter(entry => !entry.deletedAt);
+  // The parent page links here through its page block; the page path above the title already shows it.
+  const parentId = parentIdOf(record);
+  const back = ctx.select.backlinks(record.id).filter(entry => !entry.deletedAt && entry.id !== parentId);
   if (!back.length) return '';
   return html`<h2 class="ne-links-title">Linked from<span class="ne-count-pill">${back.length}</span></h2>
     <ul class="ne-links-list">${back.slice(0, 20).map(entry => html`<li data-key="bl:${entry.id}"><button type="button" class="ne-link-row" data-action="editor.open-link" data-id="${entry.id}">
@@ -1183,6 +1423,35 @@ registerActions({
   }),
   'editor.unarchive': withInstance(instance => instance.metaWrite({ archived: false })),
   'editor.open-link': ({ ctx, data }) => openLinked(ctx, data.id),
+  'editor.new-subpage': withInstance(instance => instance.newSubpage()),
+  'editor.crumbs-more': ({ ctx, el, data }) => {
+    const entries = String(data.ids || '').split(',').map(id => ctx.select.byId(id)).filter(entry => entry && !entry.deletedAt);
+    if (entries.length) ctx.openMenu(el, entries.map(entry => ({ label: displayTitle(entry), icon: entry.type === 'note' ? 'file-text' : TYPE_ICONS[entry.type] || 'file', run: () => openLinked(ctx, entry.id) })), { label: 'Page path' });
+  },
+  'pick.page-query': ({ ctx, el }) => {
+    const props = ctx.state.popover?.name === 'pick.page' ? ctx.state.popover.props : null;
+    if (!props) return;
+    props.query = el.value;
+    props.active = null;
+    ctx.render();
+  },
+  'pick.page-key': async ({ ctx, event }) => {
+    const props = ctx.state.popover?.name === 'pick.page' ? ctx.state.popover.props : null;
+    if (!props || event.metaKey || event.ctrlKey || event.altKey) return;
+    const options = pagePickerOptions(ctx, props);
+    const active = activeOption(options, props);
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+      event.preventDefault();
+      if (!options.length) return;
+      props.active = event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1 : (active + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
+      ctx.render();
+      ctx.nextFrame(() => document.getElementById(`pick-page-${props.active}`)?.scrollIntoView({ block: 'nearest' }));
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      await choosePage(ctx, active);
+    }
+  },
+  'pick.page-choose': ({ ctx, data }) => choosePage(ctx, Number(data.index)),
   'editor.ai': withInstance((instance, { data }) => instance.applyAi(data.op)),
   'editor.banner': withInstance((instance, { data }) => instance.resolveBanner(data.op)),
   'editor.retry': withInstance(instance => instance.retry()),

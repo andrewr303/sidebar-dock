@@ -107,6 +107,13 @@
 }
 .asst-model:active { scale: var(--press-scale); }
 .asst-model[aria-expanded="true"] { background: var(--bg-active); color: var(--fg-default); }
+/* A research conversation names the research agent here; it is a label, not a model picker. */
+.asst-model.is-static { cursor: default; }
+.asst-model.is-static > .icon { color: var(--accent-soft-fg); }
+@media (hover: hover) {
+  .asst-model.is-static:hover { background: var(--bg-tag); color: var(--fg-muted); }
+}
+.asst-model.is-static:active { scale: none; }
 .asst-model.is-missing { background: var(--warning-soft); color: var(--warning); }
 .asst-model.is-missing > .icon { color: currentColor; }
 /* Its tooltip only repeats the label, so it shows once the label is gone (below). */
@@ -390,7 +397,7 @@
 .asst-field .select { display: block; width: 100%; }
 .asst-field select { width: 100%; }
 .asst-added { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.asst-add-items { align-self: flex-start; margin-inline-start: calc(var(--space-4) * -1); margin-block-start: calc(var(--space-2) * -1); }
+.asst-add-items, .asst-open-item { align-self: flex-start; margin-inline-start: calc(var(--space-4) * -1); margin-block-start: calc(var(--space-2) * -1); }
 .asst-context .asst-sources { margin: 0 calc(var(--space-3) * -1); padding: 0; list-style: none; }
 .asst-context .asst-sources .ai-source { font-size: var(--text-sm); }
 .asst-context .asst-sources .ai-source-meta { display: none; }

@@ -20,6 +20,7 @@ import { dashboardBackupSource } from './dashboard-store.js';
 import { LIBRARY_SCHEMA_VERSION, libraryVersion } from './storage/migrations.js';
 import { createSnapshot } from './storage/snapshots.js';
 import { getDeviceId } from './storage/meta.js';
+import { pageIndex, parentOf, childrenOf, parsePageBlockLine } from './pages.js';
 
 export const BACKUP_VERSION = 2;
 export const MAX_BACKUP_BYTES = 200 * 1024 * 1024;
@@ -124,7 +125,10 @@ function safeSettings(settings) { return stripSecrets(settings); }
 
 /* ------------------------------------------------------------------ record checks (shared by import and export) */
 
-const ITEM_STRINGS = ['title', 'url', 'excerpt', 'content', 'articleContent', 'fileName', 'mime', 'sourceUrl', 'art', 'collectionId', 'attachmentId'];
+// parentId (subpages) and the captured page details (siteName, author, publishedAt, icon, lang) are plain strings here; the
+// store's normalizeItem repairs any value it cannot use (an unreadable date or icon becomes '').
+const ITEM_STRINGS = ['title', 'url', 'excerpt', 'content', 'articleContent', 'fileName', 'mime', 'sourceUrl', 'art', 'collectionId', 'attachmentId',
+  'parentId', 'siteName', 'author', 'publishedAt', 'icon', 'lang'];
 const ITEM_FLAGS = ['favorite', 'archived', 'pinned', 'read'];
 const ITEM_DATES = ['createdAt', 'updatedAt', 'deletedAt', 'reminderAt', 'reminderNotifiedAt'];
 const validDate = value => value === undefined || value === null || value === '' || (typeof value === 'string' && Number.isFinite(Date.parse(value)));
@@ -159,6 +163,7 @@ function checkItem(item, fix = null) {
   attempt('cover', () => { item.cover = validCover(item.cover); }, '');
   attempt('attachmentId', () => { if (item.attachmentId) validId(item.attachmentId, 'Attachment'); });
   attempt('collectionId', () => { if (item.collectionId) validId(item.collectionId, 'Collection'); }, '');
+  attempt('parentId', () => { if (item.parentId) validId(item.parentId, 'Parent page'); }, '');
   if (['bookmark', 'image', 'video'].includes(item.type) && !item.url && !item.attachmentId && !item.cover) throw new Error('A bookmark or media item needs a URL, cover or attachment.');
   for (const field of ITEM_FLAGS) if (has(item, field) && typeof item[field] !== 'boolean') repair(field, `Item ${field} must be a boolean.`);
   if (has(item, 'size') && item.size !== null && !(Number.isFinite(item.size) && item.size >= 0 && item.size <= Number.MAX_SAFE_INTEGER)) repair('size', 'An item has an invalid file size.');
@@ -273,11 +278,15 @@ function exportableLibrary(raw, warnings = []) {
     if (fixed) repaired++;
     return true;
   });
+  // A subpage whose parent page is not in the file (left out above, or already missing) restores at the top level.
+  let lifted = 0;
+  for (const item of items) if (item.parentId && (item.parentId === item.id || !itemIds.has(item.parentId))) { item.parentId = ''; lifted++; }
   if (dropped.length) {
     const named = dropped.map(titleOf).filter(Boolean).slice(0, 3);
     warnings.push(`Left out ${plural(dropped.length, 'damaged item')} that could not be restored${named.length ? ` (${named.join(', ')}${dropped.length > named.length ? ', …' : ''})` : ''}.`);
   }
   if (repaired) warnings.push(`Repaired ${plural(repaired, 'item')} with an invalid detail (such as a broken cover image, link or date) so the backup restores cleanly.`);
+  if (lifted) warnings.push(`Moved ${plural(lifted, 'subpage')} to the top level because ${lifted === 1 ? 'its parent page is' : 'their parent pages are'} not in the backup.`);
   if (droppedCollections) warnings.push(`Left out ${plural(droppedCollections, 'damaged collection')}; ${droppedCollections === 1 ? 'its' : 'their'} items are in the backup without a collection.`);
   const output = { schemaVersion: libraryVersion(raw) === Infinity ? LIBRARY_SCHEMA_VERSION : libraryVersion(raw), items, collections, settings: safeSettings(library.settings) };
   if (Array.isArray(library.tombstones)) {
@@ -320,13 +329,37 @@ function validateAiConfig(value) {
   if (!isObject(value)) throw new Error('The AI settings in this backup are not in a form Still can read.');
   return value;
 }
-// A saved proposal's undo data is an instruction (delete these items, restore those fields). One from a file is never
-// trusted: restored chats show their proposals without an Undo button.
+// A saved proposal's or research run's undo data is an instruction (delete these items, restore those fields). One from
+// a file is never trusted: restored chats show their proposals and research history without live session state or undo.
+const IMPORT_STOPPED_STATUSES = new Set(['starting', 'running', 'waiting']);
+function importableResearch(research) {
+  if (!isObject(research)) return research;
+  const copy = Object.fromEntries(Object.entries(research).filter(([key]) =>
+    !['undo', 'allowOriginalEdits', 'settings', 'sessionId', 'connectionId', 'ownerId', 'heartbeatAt', 'stopRequestedAt', 'budgetStopped'].includes(key)));
+  if (IMPORT_STOPPED_STATUSES.has(copy.status)) { copy.status = 'stopped'; delete copy.reason; }
+  if (Array.isArray(copy.pages)) copy.pages = copy.pages.map(page => (isObject(page) ? { ...page, imported: true } : page));
+  return copy;
+}
 function importableConversations(value) {
-  const withoutUndo = message => (isObject(message) && Array.isArray(message.proposals)
-    ? { ...message, proposals: message.proposals.map(proposal => (isObject(proposal) ? Object.fromEntries(Object.entries(proposal).filter(([key]) => key !== 'undo')) : proposal)) } : message);
-  return { ...value, conversations: value.conversations.map(conversation => (isObject(conversation) && Array.isArray(conversation.messages)
-    ? { ...conversation, messages: conversation.messages.map(withoutUndo) } : conversation)) };
+  const withoutUndo = message => {
+    if (!isObject(message)) return message;
+    let next = message;
+    if (Array.isArray(message.proposals)) {
+      next = { ...next, proposals: message.proposals.map(proposal => (isObject(proposal) ? Object.fromEntries(Object.entries(proposal).filter(([key]) => key !== 'undo')) : proposal)) };
+    }
+    if (isObject(message.research)) {
+      const { sessionId: _s, live: _l, preview: _p, ...rest } = message.research;
+      next = { ...next, research: { ...rest, live: false } };
+    }
+    return next;
+  };
+  return { ...value, conversations: value.conversations.map(conversation => {
+    if (!isObject(conversation)) return conversation;
+    const next = { ...conversation };
+    if (Array.isArray(conversation.messages)) next.messages = conversation.messages.map(withoutUndo);
+    if ('research' in conversation) next.research = importableResearch(conversation.research);
+    return next;
+  }) };
 }
 
 // Where backups read and write the other stores. Each can be replaced (or turned off with null) through options; the AI
@@ -499,7 +532,9 @@ export function parseCsv(source) {
   return rows;
 }
 
-export const CSV_COLUMNS = Object.freeze(['url', 'title', 'tags', 'note', 'excerpt', 'type', 'collection', 'created', 'updated']);
+// site, author, published and language are the captured page details (siteName, author, publishedAt, lang). Subpages
+// export as flat rows: a CSV has no item ids, so their place in a page does not travel.
+export const CSV_COLUMNS = Object.freeze(['url', 'title', 'tags', 'note', 'excerpt', 'type', 'collection', 'created', 'updated', 'site', 'author', 'published', 'language']);
 const PATH_SEPARATOR = ' / ';
 // Spreadsheet apps run cells that start with = + - @ as formulas, so such cells get a leading apostrophe; import drops it.
 const FORMULA_START = /^[=+\-@\t\r]/;
@@ -556,7 +591,8 @@ function csvLibrary(source, localCollections = []) {
       tags: cell('tags').split(/[,;]/).map(tag => tag.trim()).filter(Boolean), content: cell('note'), excerpt: cell('excerpt') };
     const collectionId = resolve(cell('collection'));
     if (collectionId) item.collectionId = collectionId;
-    for (const [column, field] of [['created', 'createdAt'], ['updated', 'updatedAt']]) {
+    for (const [column, field] of [['site', 'siteName'], ['author', 'author'], ['language', 'lang']]) if (cell(column).trim()) item[field] = cell(column).trim();
+    for (const [column, field] of [['created', 'createdAt'], ['updated', 'updatedAt'], ['published', 'publishedAt']]) {
       const time = Date.parse(cell(column).trim());
       if (Number.isFinite(time)) item[field] = new Date(time).toISOString();
     }
@@ -579,7 +615,8 @@ export function exportItemsCsv(library) {
     return names.join(PATH_SEPARATOR);
   };
   const rows = snapshot.items.filter(item => !item.deletedAt).map(item => [item.url || '', item.title || '', (item.tags || []).join(', '), item.content || '',
-    item.excerpt || '', item.type, path(item.collectionId), item.createdAt || '', item.updatedAt || '']);
+    item.excerpt || '', item.type, path(item.collectionId), item.createdAt || '', item.updatedAt || '',
+    item.siteName || '', item.author || '', item.publishedAt || '', item.lang || '']);
   return `﻿${[CSV_COLUMNS, ...rows].map(row => row.map(csvCell).join(',')).join('\r\n')}\r\n`;
 }
 
@@ -835,18 +872,88 @@ export function exportBookmarkHtml(library) {
   const renderCollection = parentId => snapshot.collections.filter(collection => (collection.parentId || '') === parentId).map(collection => `    <DT><H3>${escapeHtml(collection.name)}</H3>\n    <DL><p>\n${renderItems(collection.id)}\n${renderCollection(collection.id)}\n    </DL><p>`).join('\n');
   return `<!DOCTYPE NETSCAPE-Bookmark-file-1>\n<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">\n<TITLE>Still bookmarks</TITLE>\n<H1>Still bookmarks</H1>\n<DL><p>\n${renderItems('')}\n${renderCollection('')}\n</DL><p>\n`;
 }
+// Heading anchors as GitHub, VS Code and most Markdown viewers make them: lower case, punctuation removed, spaces to
+// hyphens, and -1, -2... for repeats.
+function anchorSlugger() {
+  const used = new Map();
+  return text => {
+    const base = text.trim().toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, '').replace(/ /g, '-');
+    let slug = base;
+    while (used.has(slug)) { used.set(base, used.get(base) + 1); slug = `${base}-${used.get(base)}`; }
+    used.set(slug, 0);
+    return slug;
+  };
+}
+const linkText = value => String(value).replace(/[\r\n]+/g, ' ').replace(/[[\]\\]/g, '\\$&');
+// Feed lines in order: true while inside a fenced code block (the fence lines included), where nothing is rewritten.
+function fenceTracker() {
+  let fence = '';
+  return line => {
+    const marker = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (marker && (!fence || (marker[0] === fence[0] && marker.length >= fence.length))) { fence = fence ? '' : marker; return true; }
+    return !!fence;
+  };
+}
+
+/**
+ * Notes as one Markdown file: every live note, and every other item with a note or highlights, as a "## Title" section.
+ * Subpages follow their parent page (depth first, oldest first) under a "Subpage of" line, and page blocks
+ * ([[id|Title]]{page}) become links to the subpage's section (or its title when it is not in the file).
+ */
 export function exportNotesMarkdown(library) {
   const snapshot = exportableLibrary(library);
   const active = snapshot.items.filter(item => !item.deletedAt);
   const byId = new Map(active.map(item => [item.id, item]));
-  const sections = active.filter(item => item.type === 'note' || item.content || item.highlights?.length).map(item => {
-    const title = (item.title || 'Untitled note').replace(/[\r\n]/g, ' ');
-    const source = item.url ? `\nSource: <${item.url}>\n` : '';
+  const pages = pageIndex(active);
+  const ordered = [], seen = new Set();
+  const visit = root => {
+    const stack = [root];
+    while (stack.length) {
+      const item = stack.pop();
+      if (seen.has(item.id)) continue;
+      seen.add(item.id); ordered.push(item);
+      stack.push(...childrenOf(pages, item.id).reverse());
+    }
+  };
+  for (const item of active) if (!parentOf(pages, item)) visit(item);
+  for (const item of active) visit(item); // pages caught in a loop of parents
+  const titleOf = item => (item.title || 'Untitled note').replace(/[\r\n]/g, ' ');
+  // Lines are text, or markers resolved once every heading anchor is known: { heading }, { parent }, { page, label }.
+  const lines = ['# Still notes', ''];
+  const sections = ordered.filter(item => item.type === 'note' || item.content || item.highlights?.length);
+  sections.forEach((item, position) => {
+    if (position) lines.push('', '---', '');
+    lines.push({ heading: item.id, text: `## ${titleOf(item)}` });
+    const parent = parentOf(pages, item);
+    if (parent) lines.push('', { parent: parent.id });
+    if (item.url) lines.push('', `Source: <${item.url}>`);
+    const byline = [item.siteName, item.author && `by ${item.author}`, day(item.publishedAt) && `published ${day(item.publishedAt)}`].filter(Boolean).map(oneLine);
+    if (byline.length) lines.push('', `_${byline.join(' · ').replace(/[_*]/g, '\\$&')}_`);
+    const body = String(item.content || '').replace(/^(?:[ \t]*\r?\n)+/, '').trimEnd();
+    if (body) {
+      lines.push('');
+      const fenced = fenceTracker();
+      for (const line of body.split('\n')) { const page = !fenced(line) && parsePageBlockLine(line); lines.push(page ? { page: page.id, label: page.label } : line); }
+    }
     const highlights = (item.highlights || []).map(highlight => `> ${highlight.text.replace(/\n/g, '\n> ')}${highlight.note ? `\n\n${highlight.note}` : ''}`).join('\n\n');
+    if (highlights) lines.push('', '### Highlights', '', ...highlights.split('\n'));
     const related = (item.relatedIds || []).map(id => byId.get(id)).filter(Boolean).map(related => related.url ? `- ${related.title || related.url}: <${related.url}>` : `- ${related.title || related.id} (${related.id})`).join('\n');
-    return `## ${title}\n${source}\n${item.content || ''}${highlights ? `\n\n### Highlights\n\n${highlights}` : ''}${related ? `\n\n### Connected items\n\n${related}` : ''}`.trim();
+    if (related) lines.push('', '### Connected items', '', ...related.split('\n'));
   });
-  return `# Still notes\n\n${sections.join('\n\n---\n\n')}\n`;
+  // Anchors follow every heading in the file, in order, outside code fences (as viewers count them).
+  const slug = anchorSlugger(), anchors = new Map(), fenced = fenceTracker();
+  for (const line of lines) {
+    if (typeof line !== 'string') { if (line.heading) anchors.set(line.heading, slug(line.text.replace(/^#+\s*/, ''))); continue; }
+    const heading = !fenced(line) && /^\s{0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
+    if (heading) slug(heading[1]);
+  }
+  const link = (id, fallback) => {
+    const item = byId.get(id), label = linkText(item ? titleOf(item) : fallback || 'Untitled page');
+    if (anchors.has(id)) return `[${label}](#${anchors.get(id)})`;
+    return item?.url ? `[${label}](<${item.url}>)` : label;
+  };
+  const text = lines.map(line => (typeof line === 'string' ? line : line.heading ? line.text : line.parent ? `Subpage of ${link(line.parent)}` : `- ${link(line.page, line.label)}`));
+  return `${text.join('\n')}\n`;
 }
 
 // Assistant answers cite saved items as [[id]] markers; outside Still a marker becomes the source's title or link.

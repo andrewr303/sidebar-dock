@@ -16,6 +16,7 @@ import { createTransforms } from './transforms.js';
 import { createConversationStore } from './conversations.js';
 import { createImports } from './imports.js';
 import { getProvider as catalogProvider } from './catalog.js';
+import { createResearch } from './research/run.js';
 
 export { CATALOG, EFFORT_LEVELS, ANTHROPIC_EFFORTS, EFFORT_LABELS, getProvider, chatProviders, embeddingProviders } from './catalog.js';
 export { listConnections, saveConnection, deleteConnection, testConnection, listModels, getAiSettings, onConnectionsChanged, ensureHostPermission,
@@ -35,8 +36,17 @@ async function currentLibrary() {
 // lib/store.js operations the assistant's proposals apply and undo with; loadLibrary is the worker's authoritative copy,
 // read while the app's snapshot still lags behind a change the assistant just applied.
 const STORE_METHODS = ['bulkUpdateItems', 'createCollection', 'saveItem', 'deleteItem', 'deleteCollection', 'updateItem', 'restoreItem', 'permanentlyDeleteItem',
-  'updateCollection', 'moveCollection', 'mutateTags', 'loadLibrary'];
+  'updateCollection', 'moveCollection', 'movePage', 'upsertContentSection', 'mutateTags', 'loadLibrary'];
 const store = Object.fromEntries(STORE_METHODS.map(name => [name, (...args) => runtime.store[name](...args)]));
+// The research agent writes through these (lib/ai/research/custom-tools.js), resolved at call time like `store` above.
+// upsertContentSection is optional: without it the research tools fall back to a revision-checked updateItem.
+const researchStore = {
+  loadLibrary: (...args) => runtime.store.loadLibrary(...args),
+  saveItem: input => runtime.store.saveItem(input),
+  updateItem: (id, patch, options) => runtime.store.updateItem(id, patch, options),
+  deleteItem: (id, options) => runtime.store.deleteItem(id, options),
+  get upsertContentSection() { return typeof runtime.store?.upsertContentSection === 'function' ? (id, section) => runtime.store.upsertContentSection(id, section) : undefined; },
+};
 const dashboardAdapter = value => value && typeof value.describe === 'function' && typeof value.addCollectionWidget === 'function' ? value : null;
 const aiSettings = () => connections.getAiSettings();
 
@@ -55,6 +65,12 @@ function engine() {
   services = { conversations, indexer, search, assistant, transforms, imports };
   return services;
 }
+
+// Research runs outlive init()/dispose(): a run keeps going while its page is open, so its engine is not part of the
+// knowledge services that dispose() resets.
+let research = null;
+const researchEngine = () => research ||= createResearch({ conversations: createConversationStore(), store: researchStore, getAiSettings: aiSettings,
+  listConnections: (...args) => connections.listConnections(...args), resolveConnection: (...args) => connections.resolveConnection(...args) });
 
 /** Saves AI settings; a change to `embeddings` re-reads the index configuration (and starts indexing when enabled). */
 export async function setAiSettings(patch) {
@@ -80,6 +96,25 @@ export const startIndexing = () => engine().indexer.startIndexing();
 export const rebuildIndex = () => engine().indexer.rebuildIndex();
 export const clearIndex = () => engine().indexer.clearIndex();
 export const pauseIndexing = () => engine().indexer.pauseIndexing();
+
+/**
+ * The research agent (Claude Managed Agents), see lib/ai/research/run.js. Runs are driven by the page that starts or
+ * resumes them and mirrored into an assistant conversation (kind 'research') that every view renders from storage.
+ * researchAvailability() -> { available, code?, reason?, connectionId? }
+ * startResearch({ itemId, instructions, allowOriginalEdits }) -> { conversationId, done, existing? }
+ * continueResearch(conversationId, text) -> { conversationId, done }      resumeResearch(conversationId) -> { resumed, reason?, done? }
+ * stopResearch(conversationId)      raiseResearchBudget(conversationId, budgetUsd)      undoResearch(conversationId)
+ * subscribeResearch(listener) -> unsubscribe (live events for runs this page drives)      resetResearchProvisioning()
+ */
+export const researchAvailability = () => researchEngine().researchAvailability();
+export const startResearch = options => researchEngine().startResearch(options);
+export const continueResearch = (conversationId, text) => researchEngine().continueResearch(conversationId, text);
+export const resumeResearch = conversationId => researchEngine().resumeResearch(conversationId);
+export const stopResearch = conversationId => researchEngine().stopResearch(conversationId);
+export const raiseResearchBudget = (conversationId, budgetUsd) => researchEngine().raiseResearchBudget(conversationId, budgetUsd);
+export const undoResearch = conversationId => researchEngine().undoResearch(conversationId);
+export const subscribeResearch = listener => researchEngine().subscribeResearch(listener);
+export const resetResearchProvisioning = () => researchEngine().resetResearchProvisioning();
 
 export const listConversations = () => engine().conversations.listConversations();
 export const getConversation = id => engine().conversations.getConversation(id);

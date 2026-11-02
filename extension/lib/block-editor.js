@@ -13,11 +13,14 @@
 //                                          empty from the menu); the host converts them and calls insertMarkdown
 //  onEmbed()                               "Embed" in the slash menu; the host asks for an address or a file and calls
 //                                          command('embed', { url } | { target })
+//  onCreatePage()                          "Page" in the slash menu (omit to hide it); the host creates a subpage of this
+//                                          note and calls command('page', { target: id, label: title })
 //  mountEmbed(box, { target, label, item }) -> { destroy() } | null   shows a library item (![[id]]) inside an embed
 //                                          block; without it, item embeds show a short note
 //  placeholder                             shown while the note is empty ('Write, or press / for blocks')
 //  searchLinks(query) -> Promise<[{ id, title, type, subtitle }]>   enables the [[ link picker, which inserts [[Title]]
-//  resolveLink(title) -> { id, title, type } | null                  renders [[Title]] / [[id|Label]] as link chips
+//  resolveLink(title) -> { id, title, type, meta? } | null           renders [[Title]] / [[id|Label]] as link chips and page
+//                                          blocks ([[id|Title]]{page}) with the page's current title and an optional meta line
 //  onOpenLink(id)                          a resolved link chip was clicked (blocks and preview)
 //  onSelectionChange({ text, marks, block })  marks: Set of 'bold'|'italic'|'strike'|'code'|'link'; block: its type
 //  mode = 'blocks'|'markdown'|'preview', showModeSwitch = true, compact = false (side panel sizing)
@@ -27,14 +30,16 @@
 //  getMarkdown(), setMarkdown(md, { emit = false })    emit records an undo step and fires onChange
 //  getSelection() -> { text, start, end }  text is the selected text; start/end are offsets into getMarkdown()
 //  command(type, args)                     'paragraph'|'h1'|'h2'|'h3'|'bullet'|'number'|'todo'|'quote'|'code'|'divider'|
-//                                          'table'|'toggle'|'callout'|'link'|'image'|'file'|'embed'. Text types turn the current
+//                                          'table'|'toggle'|'callout'|'link'|'image'|'file'|'embed'|'page'. Text types turn the current
 //                                          (or selected) blocks into that type, or back into text when they already are;
 //                                          divider and table insert a block. args: { kind } callout, { language } code,
 //                                          { url, label } link/image/file (without url the link form opens),
-//                                          embed: { url, label, height } frames a page, { target, label } a library item
+//                                          embed: { url, label, height } frames a page, { target, label } a library item,
+//                                          page: { target, label } inserts a page block (removing one never deletes the page)
 //  format(mark)                            'bold'|'italic'|'strike'|'code'|'link' toggles on the text selection
 //  insertMarkdown(md, { at })              'cursor' (default) | 'end' | 'replace-selection'; Markdown becomes blocks
 //  undo(), redo(), focus({ at: 'start'|'end' }), setMode(mode), getMode(), destroy()
+//  refresh()                               redraws page blocks (and the preview) after the library changed, e.g. a rename
 //
 // Keyboard: Enter splits a block, Shift+Enter adds a line break, Backspace at the start turns a block into text and
 // then merges it upward, Delete at the end merges the next block, arrow keys cross block edges, Tab and Shift+Tab
@@ -42,15 +47,15 @@
 // edge select a range of blocks (Copy gives Markdown, Cut, Delete), Mod+/ (or the Menu key, Shift+F10) opens the block
 // menu (turn into, duplicate, move, delete), Mod+D duplicates, Mod+Z, Mod+Shift+Z and Mod+Y use the editor's own
 // history, Mod+B/I/E/K and Mod+Shift+X format. "# ", "## ", "### ", "- ", "* ", "1. ", "[] ", "[ ] ", "> ", ">! ", "```"
-// and "---" at the start of a block change its type; embeds and dividers are selected as whole blocks; **bold**, *italic*, `code`, ~~strike~~ and [label](url) convert
+// and "---" at the start of a block change its type; embeds, page blocks and dividers are selected as whole blocks; **bold**, *italic*, `code`, ~~strike~~ and [label](url) convert
 // when closed; "/" opens the insert menu and "[[" the link picker. Paste and drop accept plain text, Markdown and HTML.
 //
-// Also exported (pure, Node-importable): BLOCK_COMMANDS, findBlockCommands, parseMarkdown, serializeBlocks,
+// Also exported (pure, Node-importable): BLOCK_COMMANDS, slashCatalogue, findBlockCommands, parseMarkdown, serializeBlocks,
 // serializeInlineFragment, matchBlockShortcut, matchInlineShortcut, htmlToMarkdown.
 // Styles: styles/editor.css. Render Markdown elsewhere inside an element with class "markdown-body".
 import {
  escapeHtml as esc, safeMarkdownUrl, renderInline, renderTableCell, renderMarkdown, inlineText, trimAutolink, CALLOUT_KINDS,
- parseNoteBlocks, serializeNoteBlocks, serializeBlockParts, listNumbers, createTableBlock, createToggleBlock,
+ parseNoteBlocks, serializeNoteBlocks, serializeBlockParts, listNumbers, createTableBlock, createToggleBlock, pageText,
  tableWidth, insertTableRow, removeTableRow, insertTableColumn, removeTableColumn, tableCellPosition
 } from './markdown.js';
 import {toggleTask} from './notes.js';
@@ -75,6 +80,7 @@ const ICONS={
  code:'<path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/>',
  divider:'<path d="M5 12h14"/>',
  note:'<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+ page:'<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
  ai:'<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/>',
  grip:'<circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/>',
  plus:'<path d="M5 12h14"/><path d="M12 5v14"/>',
@@ -112,16 +118,21 @@ export const BLOCK_COMMANDS=[
  ['callout','Callout','Make a note stand out.','callout'],
  ['table','Table','Rows and columns.','table'],
  ['link','Link','Add a web link.','link'],
- ['image','Image link','Link to an image without loading it.','image'],
+ ['image','Image link','Add an image by its web address.','image'],
  ['file','File link','Link to a file by its web address.','file'],
  ['code','Code','A code block.','code'],
  ['divider','Divider','Separate sections.','divider']
 ];
-const SLASH_EXTRAS=[['note-link','Link to note','Link another note or saved item.','note'],['embed','Embed','A live website, video, design or PDF.','embed'],['import','Import file','PDF, Word, Markdown and more, as blocks.','import'],['ai','Ask AI','Write or edit with AI.','ai']];
-const aliases={paragraph:['text','plain'],h1:['heading1','title'],h2:['heading2','subtitle'],h3:['heading3'],bullet:['ul','unordered','bullets'],number:['ol','ordered','numbered'],todo:['task','tasks','checklist','checkbox'],toggle:['collapse','collapsible','details','fold'],table:['grid','rows','columns','spreadsheet'],link:['url','bookmark','reference'],image:['picture','photo','media'],file:['attachment','document','pdf'],code:['fence','snippet'],divider:['hr','separator','line'],'note-link':['wiki','mention','page','backlink'],embed:['iframe','website','site','web','video','youtube','figma','frame','live'],import:['upload','convert','pdf','docx','word','markdown','md','ocr','scan'],ai:['assistant','write','generate']};
-const GROUPS=[['Basic blocks',['paragraph','h1','h2','h3']],['Lists',['bullet','number','todo','toggle']],['Media and links',['link','note-link','embed','image','file']],['Advanced',['quote','callout','code','table','divider']],['Import',['import']],['AI',['ai']]];
+const SLASH_EXTRAS=[['page','Page','A new page inside this one.','page'],['note-link','Link to note','Link another note or saved item.','note'],['embed','Embed','A live website, video, design or PDF.','embed'],['import','Import file','PDF, Word, Markdown and more, as blocks.','import'],['ai','Ask AI','Write or edit with AI.','ai']];
+const aliases={paragraph:['text','plain'],h1:['heading1','title'],h2:['heading2','subtitle'],h3:['heading3'],bullet:['ul','unordered','bullets'],number:['ol','ordered','numbered'],todo:['task','tasks','checklist','checkbox'],toggle:['collapse','collapsible','details','fold'],table:['grid','rows','columns','spreadsheet'],link:['url','bookmark','reference'],image:['picture','photo','media'],file:['attachment','document','pdf'],code:['fence','snippet'],divider:['hr','separator','line'],page:['subpage','child','nested','newpage'],'note-link':['wiki','mention','backlink'],embed:['iframe','website','site','web','video','youtube','figma','frame','live'],import:['upload','convert','pdf','docx','word','markdown','md','ocr','scan'],ai:['assistant','write','generate']};
+const GROUPS=[['Basic blocks',['paragraph','h1','h2','h3','page']],['Lists',['bullet','number','todo','toggle']],['Media and links',['link','note-link','embed','image','file']],['Advanced',['quote','callout','code','table','divider']],['Import',['import']],['AI',['ai']]];
 const SHORTCUT_HINTS={h1:'#',h2:'##',h3:'###',bullet:'-',number:'1.',todo:'[]',quote:'>',callout:'>!',code:'```',divider:'---'};
 const normalize=value=>String(value).toLowerCase().replace(/[\s_\-/]+/g,'');
+/** The slash menu catalogue: the block commands plus the extras the host enabled (links, page, embed, import, ai). */
+export function slashCatalogue({links=false,page=false,embed=false,importFiles=false,ai=false}={}){
+ const on={'note-link':links,page,embed,import:importFiles,ai};
+ return [...BLOCK_COMMANDS,...SLASH_EXTRAS.filter(c=>on[c[0]])];
+}
 // All terms must match an id, label or alias; exact and prefix matches rank first, then catalogue order.
 export function findBlockCommands(query='',catalog=BLOCK_COMMANDS){
  const terms=String(query).replace(/^\//,'').trim().split(/\s+/).map(normalize).filter(Boolean);
@@ -298,6 +309,8 @@ function htmlBlocks(nodes,indent=0){
   const tag=node.tagName,classes=classesOf(node);
   if(!BLOCK_TAGS.has(tag)){if(hasBlock(node)){flush();blocks.push(...htmlBlocks(node.childNodes,indent));}else run.push(node);continue;}
   flush();
+  // A page row copied from a preview (or the editor) pastes back as the same page block, not as its visible text.
+  if((classes.includes('markdown-page')||classes.includes('rich-page'))&&attr(node,'data-target')){blocks.push({type:'page',text:'',target:attr(node,'data-target'),label:attr(node,'data-label')||''});continue;}
   if(/^H[1-6]$/.test(tag)){const text=inlineMarkdown(node.childNodes).replace(/\s*\n\s*/g,' ');if(text)blocks.push({type:'h'+Math.min(3,Number(tag[1])),text});continue;}
   if(tag==='HR'){blocks.push({type:'divider',text:''});continue;}
   if(tag==='PRE'){const code=node.childNodes.find(c=>c.nodeType===1&&c.tagName==='CODE'),info=`${attr(code||{},'class')||''} ${attr(node,'class')||''}`;blocks.push({type:'code',text:rawText(node).replace(/\n$/,''),language:(attr(code||{},'data-language')||attr(node,'data-language')||(/(?:language|lang)-([\w+#.-]+)/.exec(info)||[])[1]||'').replace(/[\s`]+/g,' ').trim().slice(0,40)});continue;}
@@ -339,7 +352,7 @@ export function htmlToMarkdown(html){
 const MD_MIME='text/x-still-markdown';
 const LIST=new Set(['bullet','number','todo']),TEXT=new Set(['paragraph','h1','h2','h3','bullet','number','todo','quote','callout','code']);
 // Blocks without text: selected as a whole, skipped by caret moves.
-const ATOMIC=new Set(['divider','embed']);
+const ATOMIC=new Set(['divider','embed','page']);
 const MODES=[['blocks','Blocks'],['markdown','Markdown'],['preview','Preview']];
 const PLACEHOLDERS={h1:'Heading 1',h2:'Heading 2',h3:'Heading 3',bullet:'List',number:'List',todo:'To-do',quote:'Quote',callout:'Callout'};
 const TYPE_ICONS={note:'note',bookmark:'bookmark',article:'note',image:'image',video:'file',file:'file'};
@@ -353,6 +366,7 @@ export function mountBlockEditor(textarea,options={}){
  const onAskAi=typeof options.onAskAi==='function'?options.onAskAi:null;
  const onImport=typeof options.onImport==='function'?options.onImport:null;
  const onEmbed=typeof options.onEmbed==='function'?options.onEmbed:null;
+ const onCreatePage=typeof options.onCreatePage==='function'?options.onCreatePage:null;
  const mountEmbed=typeof options.mountEmbed==='function'?options.mountEmbed:null;
  const searchLinks=typeof options.searchLinks==='function'?options.searchLinks:null;
  const resolveLink=typeof options.resolveLink==='function'?options.resolveLink:()=>null;
@@ -500,6 +514,14 @@ export function mountBlockEditor(textarea,options={}){
   const kind=b.target?'file':info?.kind||'site',button=(action,name,text)=>`<button type="button" class="block-editor-btn rich-embed-btn" data-embed-action="${action}" data-embed-id="${b.id}" aria-label="${esc(text)}" data-tooltip="${esc(text)}">${icon(name)}</button>`;
   return `<div class="rich-embed" contenteditable="false" data-embed-kind="${esc(kind)}" role="group" aria-label="${esc(`Embed: ${label}`)}"><div class="rich-embed-bar"><span class="rich-embed-icon" aria-hidden="true">${icon(kind==='file'?'file':kind==='video'?'video':'globe')}</span><span class="rich-embed-text"><span class="rich-embed-title">${esc(label)}</span>${meta?`<span class="rich-embed-meta">${esc(meta)}</span>`:''}</span><span class="rich-embed-actions">${button('size','resize','Change height')}${button('link','link','Show as a link')}${button('open','open',b.target?'Open the item':'Open in a new tab')}</span></div><div class="rich-embed-frame" data-embed-frame="${b.id}"></div>${kind==='site'?'<p class="rich-embed-hint">Some sites refuse to appear inside other pages. If this one stays blank, open it in a new tab.</p>':''}</div>`;
  }
+ // A page block is one button: icon, the page's current title and the host's meta line. A page that is gone (or in
+ // Trash) reads "Deleted page" with its last known title, and opening it explains that instead of failing silently.
+ function pageHit(b){let hit=null;try{hit=resolveLink(b.target)||null;}catch{hit=null;}return hit&&hit.id!=null&&String(hit.id)===b.target?hit:null;}
+ function pageMarkup(b){
+  const hit=pageHit(b),title=hit?String(hit.title??'').trim()||b.label||'Untitled page':'Deleted page';
+  const meta=hit?String(hit.meta||''):b.label;
+  return `<div class="rich-page${hit?'':' is-missing'}" contenteditable="false" data-target="${esc(b.target)}" data-label="${esc(hit?title:b.label)}"><button type="button" class="rich-page-open" data-page-open="${b.id}"${hit?'':' aria-disabled="true"'}><span class="rich-page-icon" aria-hidden="true">${icon('page')}</span><span class="rich-page-title">${esc(title)}</span>${meta?`<span class="rich-page-meta">${esc(meta)}</span>`:''}</button></div>`;
+ }
  function sizeEmbed(el,b){
   const box=el?.querySelector('[data-embed-frame]');if(!box)return;
   const info=b.url?describeEmbed(b.url):null,height=Number(b.height)>0?clampEmbedHeight(b.height):0;
@@ -538,6 +560,7 @@ export function mountBlockEditor(textarea,options={}){
   else if(b.type==='toggle')content=toggleMarkup(b);
   else if(b.type==='divider')content='<div class="block-divider" contenteditable="false" role="separator"><hr></div>';
   else if(b.type==='embed')content=embedMarkup(b);
+  else if(b.type==='page')content=pageMarkup(b);
   else content=editableMarkup(b);
   const gutter=`<div class="block-gutter" contenteditable="false"><button type="button" class="block-handle" data-block-add="${b.id}" tabindex="-1" aria-label="Add a block below" data-tooltip="Add a block below">${icon('plus')}</button><button type="button" class="block-handle block-handle-drag" data-block-drag="${b.id}" draggable="true" tabindex="-1" aria-label="Block options" data-tooltip="Drag to move, click for options">${icon('grip')}</button></div>`;
   return `<div class="note-block block-${b.type}${selected.has(b.id)?' is-selected':''}${b.type==='todo'&&b.checked?' is-checked':''}" data-block-id="${b.id}" data-type="${b.type}"${b.type==='callout'?` data-kind="${kind}"`:''}${indent?` style="--indent:${indent}"`:''}>${gutter}${marker}${content}</div>`;
@@ -885,7 +908,7 @@ export function mountBlockEditor(textarea,options={}){
  function movePopup(delta){const s=popupState;if(!s?.items.length)return;s.index=(s.index+delta+s.items.length)%s.items.length;renderPopup();}
  function choose(index){const s=popupState;const item=s?.items[index];if(!item)return;s.index=index;item.run();}
  function slashItems(query){
-  const catalog=[...BLOCK_COMMANDS,...SLASH_EXTRAS.filter(c=>(c[0]!=='note-link'||searchLinks)&&(c[0]!=='ai'||onAskAi)&&(c[0]!=='import'||onImport)&&(c[0]!=='embed'||onEmbed))];
+  const catalog=slashCatalogue({links:!!searchLinks,page:!!onCreatePage,embed:!!onEmbed,importFiles:!!onImport,ai:!!onAskAi});
   const grouped=!String(query).trim(),found=findBlockCommands(query,catalog);
   const groupOf=id=>GROUPS.findIndex(g=>g[1].includes(id));
   if(grouped)found.sort((a,b)=>groupOf(a[0])-groupOf(b[0])||catalog.indexOf(a)-catalog.indexOf(b));
@@ -922,9 +945,9 @@ export function mountBlockEditor(textarea,options={}){
   const s=popupState;closePopup();const hit=s&&triggerRange(s);if(!hit)return;const {ed,from,to}=hit;const b=readBlock(ed);if(!b)return;
   beginChange();const total=visibleLength(ed),before=rangeMarkdown(ed,0,from),after=withoutSentinel(ed,rangeMarkdown(ed,to,total));
   b.text=joinMarkdown(before,after);const empty=!b.text.trim(),caret=textLength(before);
-  if(id==='ai'||id==='link'||id==='image'||id==='file'||id==='note-link'||id==='import'||id==='embed'){
+  if(id==='ai'||id==='link'||id==='image'||id==='file'||id==='note-link'||id==='import'||id==='embed'||id==='page'){
    commit();renderBlock(b.id);const el=editableOf(b.id);if(el){el.focus({preventScroll:true});placeCaret(el,caret);}
-   if(id==='ai')askAi('');else if(id==='import')onImport?.({files:[]});else if(id==='embed')onEmbed?.();else if(id==='note-link'&&el){insertPlain(el,'[[');const sel=win.getSelection(),r=sel.getRangeAt(0);if(r.startContainer.nodeType===3)openLinkPicker(el,r.startContainer,r.startOffset-2);}
+   if(id==='ai')askAi('');else if(id==='import')onImport?.({files:[]});else if(id==='embed')onEmbed?.();else if(id==='page')onCreatePage?.();else if(id==='note-link'&&el){insertPlain(el,'[[');const sel=win.getSelection(),r=sel.getRangeAt(0);if(r.startContainer.nodeType===3)openLinkPicker(el,r.startContainer,r.startOffset-2);}
    else openLinkForm(id);
    return;
   }
@@ -943,6 +966,10 @@ export function mountBlockEditor(textarea,options={}){
   items.push({id:'duplicate',label:'Duplicate',icon:'copy',group:'Actions',hint:isMac?'⌘D':'Ctrl+D',run:()=>{closePopup({refocus:true});duplicateBlocks(ids);}});
   items.push({id:'up',label:'Move up',icon:'up',group:'Actions',hint:isMac?'⌥⇧↑':'Alt+Shift+↑',run:()=>{closePopup({refocus:true});moveBlocks(ids,-1);}});
   items.push({id:'down',label:'Move down',icon:'down',group:'Actions',hint:isMac?'⌥⇧↓':'Alt+Shift+↓',run:()=>{closePopup({refocus:true});moveBlocks(ids,1);}});
+  if(b.type==='page'&&ids.length===1){
+   items.push({id:'open-page',label:'Open page',icon:'open',group:'Actions',run:()=>{closePopup({refocus:true});openPage(id);}});
+   items.push({id:'page-link',label:'Show as link',icon:'link',group:'Actions',run:()=>{closePopup();pageAsLink(id);}});
+  }
   if(TEXT.has(b.type)||b.type==='toggle'){for(const type of ['paragraph','h1','h2','h3','bullet','number','todo','quote','callout','code','toggle']){const c=BLOCK_COMMANDS.find(x=>x[0]===type);items.push({id:'turn-'+type,label:c[1],icon:c[3],group:'Turn into',current:b.type===type,run:()=>{closePopup();turnInto(type);if(ids.length===1&&block(id)){clearSelection();focusBlock(id);}}});}}
   items.push({id:'delete',label:ids.length>1?'Delete blocks':'Delete',icon:'trash',separator:true,danger:true,hint:'Del',run:()=>{closePopup();removeBlocks(ids);}});
   openPopup({kind:'actions',label:'Block options',role:'menu',focus:'popup',blockId:id,anchorEl,items,restore});
@@ -1009,7 +1036,9 @@ export function mountBlockEditor(textarea,options={}){
 
  // Modes
  function autosize(){textarea.style.height='auto';textarea.style.height=Math.max(textarea.scrollHeight,160)+'px';}
- function renderPreview(){const value=textarea.value;preview.innerHTML=value.trim()?renderMarkdown(value,{interactiveTasks:true,resolveLink}):'<p class="block-editor-empty">Nothing to preview yet.</p>';}
+ const previewHtml=()=>{const value=textarea.value;return value.trim()?renderMarkdown(value,{interactiveTasks:true,resolveLink}):'<p class="block-editor-empty">Nothing to preview yet.</p>';};
+ let previewDrawn='';
+ function renderPreview(){previewDrawn=previewHtml();preview.innerHTML=previewDrawn;}
  function setMode(next){
   if(!MODES.some(m=>m[0]===next))return;if(mode==='blocks'){readAll();if(serializeNoteBlocks(blocks)!==lastSnapshot)commit({coalesce:true});}
   closePopup();hideToolbar();closeLinkForm();clearSelection(false);
@@ -1118,6 +1147,7 @@ export function mountBlockEditor(textarea,options={}){
   const formatButton=t.closest('[data-format]');if(formatButton){format(formatButton.dataset.format);return;}
   const item=t.closest('[data-popup-index]');if(item&&popup.contains(item)){choose(Number(item.dataset.popupIndex));return;}
   const embedButton=t.closest('[data-embed-action]');if(embedButton&&list.contains(embedButton)){embedAction(embedButton.dataset.embedAction,embedButton.dataset.embedId);return;}
+  const pageButton=t.closest('[data-page-open]');if(pageButton&&list.contains(pageButton)){openPage(pageButton.dataset.pageOpen);return;}
   const action=t.closest('[data-editor-action]')?.dataset.editorAction;
   if(action==='ask-ai'){askAi();return;}if(action==='link-save'){submitLinkForm();return;}if(action==='link-cancel'){closeLinkForm(true);return;}if(action==='link-remove'){removeLink();return;}
   const add=t.closest('[data-block-add]');if(add){addBelow(add.dataset.blockAdd);return;}
@@ -1138,6 +1168,24 @@ export function mountBlockEditor(textarea,options={}){
   readAll();beginChange();activeId=id;
   if(action==='size'){b.height=nextEmbedHeight(b.height,b.target?640:describeEmbed(b.url)?.height||480);commit();sizeEmbed(blockEl(id),b);report(`Height ${b.height} pixels`);return;}
   if(action==='link'){const label=b.label||(b.target?'':describeEmbed(b.url)?.label||b.url);const text=b.target?`[[${b.target}${b.label?'|'+b.label:''}]]`:linkMarkdown(escapeText(label),b.url);const next={id:uid(),type:'paragraph',text,checked:false,language:''};blocks[indexOf(id)]=next;commit();render();focusBlock(next.id,{at:'end'});}
+ }
+ // Opening a page block hands its id to the host; removing the block (Delete, Backspace, cut) never touches the page.
+ function openPage(id){const b=block(id);if(!b||b.type!=='page')return;const hit=pageHit(b);if(hit)onOpenLink(String(hit.id));else report('That page is no longer in your library.');}
+ function pageAsLink(id){
+  const b=block(id);if(!b||b.type!=='page')return;readAll();beginChange();activeId=id;
+  const label=pageText(pageHit(b)?.title||b.label);
+  const next={id:uid(),type:'paragraph',text:`[[${pageText(b.target)}${label?'|'+label:''}]]`,checked:false,language:''};
+  blocks[indexOf(id)]=next;commit();render();focusBlock(next.id,{at:'end'});
+ }
+ // Page blocks go where embeds go: in place of an empty paragraph or below the current block, with a paragraph after.
+ function insertPage(spec={}){
+  const target=pageText(spec.target);if(!target){report('Choose a page to insert.');return false;}
+  if(mode!=='blocks')setMode('blocks');
+  readAll();beginChange();
+  const id=currentId(),b=block(id),fresh={id:uid(),type:'page',text:'',checked:false,language:'',target,label:pageText(spec.label)||'Untitled page'};
+  if(b&&b.type==='paragraph'&&!b.text.trim()){fresh.id=b.id;blocks[indexOf(b.id)]=fresh;}else blocks.splice(indexOf(id)+1,0,fresh);
+  let next=blocks[indexOf(fresh.id)+1];if(!next||!TEXT.has(next.type)||next.text){next=freshBlock();blocks.splice(indexOf(fresh.id)+1,0,next);}
+  clearSelection(false);commit();render();focusBlock(next.id,{at:'start'});return true;
  }
  // Embeds replace an empty paragraph or go below the current block; a paragraph after them keeps typing easy.
  function insertEmbed(spec={}){
@@ -1343,6 +1391,7 @@ export function mountBlockEditor(textarea,options={}){
     openLinkForm(name);return;
    }
    if(name==='embed')return insertEmbed(args);
+   if(name==='page')return insertPage(args);
    if(TEXT.has(name)||['toggle','table','divider'].includes(name))turnInto(name,args);
   },
   format,
@@ -1354,6 +1403,13 @@ export function mountBlockEditor(textarea,options={}){
   },
   setMode,
   getMode:()=>mode,
+  // Page titles come from the host's resolver, so a rename elsewhere shows once the host calls this. Only page blocks
+  // are redrawn (they hold no caret), and only when their markup changed.
+  refresh(){
+   if(mode==='preview'){if(previewHtml()!==previewDrawn)renderPreview();return;}
+   if(mode!=='blocks')return;
+   for(const b of blocks){if(b.type!=='page')continue;const known=drawn.get(b.id);if(known?.el.isConnected&&known.html!==blockHtml(b,0))renderBlock(b.id);}
+  },
   destroy(){
    closePopup();hideToolbar();closeLinkForm();clearTimeout(searchTimer);if(selFrame)win.cancelAnimationFrame(selFrame);for(const el of [...frames.keys()])unmountFrame(el);
    for(const [target,type,fn,opts] of listeners)target.removeEventListener(type,fn,opts);

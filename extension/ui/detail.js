@@ -4,11 +4,12 @@
 // Notes (notes about this item) and Ask (hands the item to the assistant).
 import { html, raw, cx, safeHref, plural } from './html.js';
 import { icon } from './icons.js';
-import { button, iconButton, collectionIcon, favicon, relativeDate, shortDate, fileSize, emptyState, TYPE_LABELS, TYPE_ICONS } from './components.js';
+import { button, iconButton, collectionIcon, favicon, siteIcon, relativeDate, shortDate, fileSize, emptyState, TYPE_LABELS, TYPE_ICONS, domainOf } from './components.js';
 import { registerActions, registerMount } from './runtime.js';
-import { renderItem, renderItemLink, generatedArt, coverOf, readingMinutes, itemSource } from './cards.js';
-import { pickCollection, parseTags, trashItems, setArchived, moveItems, addNoteFor, menuOpenFor } from './library.js';
-import { renderInlineEditor } from './note-editor.js';
+import { researchOffered } from './research-view.js';
+import { renderItem, renderItemLink, generatedArt, coverOf, readingMinutes, itemSource, noteLinkResolver } from './cards.js';
+import { pickCollection, parseTags, trashItems, setArchived, moveItems, addNoteFor, menuOpenFor, researchMenuItem } from './library.js';
+import { renderInlineEditor, addSubpage, displayTitle, openNote } from './note-editor.js';
 import { renderTagInput } from './pickers.js';
 import { createNote } from './notes.js';
 import { askAi } from './ai-panel.js';
@@ -109,11 +110,13 @@ const fullDate = iso => { const d = new Date(iso); return Number.isNaN(d.getTime
 const sentence = text => text === 'Just now' ? 'just now' : text;
 const prettyUrl = url => { try { const u = new URL(url); return u.hostname.replace(/^www\./, '') + (u.pathname === '/' ? '' : decodeURI(u.pathname)); } catch { return url; } };
 
+// Subpages are listed in their own section, so the Notes section (pages about this item) leaves them out.
 function linkedNotes(ctx, item) {
   const out = new Map();
   if (item.url) for (const note of ctx.select.notesForUrl(item.url)) if (note.id !== item.id) out.set(note.id, note);
   for (const back of ctx.select.backlinks(item.id)) if (back.type === 'note' && !back.archived) out.set(back.id, back);
   for (const id of item.relatedIds || []) { const note = ctx.select.byId(id); if (note?.type === 'note' && !note.deletedAt) out.set(note.id, note); }
+  for (const child of ctx.select.children(item.id)) out.delete(child.id);
   return [...out.values()].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
@@ -160,14 +163,30 @@ function renderCover(ctx, item) {
     : html`<figure class="detail-cover is-generated">${generatedArt(ctx, item, { size: 'lg' })}${itemSource(item) ? html`<figcaption class="detail-cover-caption">${itemSource(item)}</figcaption>` : ''}${actions}</figure>`;
 }
 
+/**
+ * Who published a captured page: its site name (when it says more than the address), "By" its author and its publication
+ * date, from the article metadata a capture saves (siteName, author, publishedAt). [] when none is known.
+ */
+export function bylineParts(item) {
+  const site = String(item?.siteName || '').trim();
+  const domain = domainOf(item?.url || item?.sourceUrl || '');
+  const sameAsDomain = site && domain && site.toLowerCase().replace(/\s+/g, '') === domain.toLowerCase();
+  const author = String(item?.author || '').trim();
+  const published = item?.publishedAt ? shortDate(item.publishedAt) : '';
+  return [sameAsDomain ? '' : site, author ? `By ${author}` : '', published].filter(Boolean);
+}
+
 function renderSource(ctx, item) {
   const url = item.url || item.sourceUrl;
   const bits = [];
   if (item.articleContent) bits.push(html`<span>${TYPE_LABELS[item.type] || 'Item'}</span><span aria-hidden="true">·</span><span>${readingMinutes(item.articleContent)} min read</span>`);
   else bits.push(html`<span>${TYPE_LABELS[item.type] || 'Item'}</span>`);
   if (item.attachmentId && item.size) bits.push(html`<span aria-hidden="true">·</span><span>${fileSize(item.size)}</span>`);
+  for (const part of bylineParts(item)) bits.push(html`<span aria-hidden="true">·</span><span class="detail-byline">${part}</span>`);
+  // A captured page's own icon when it has one, on the site's letter tile (which stays if the image cannot load).
+  const glyph = url && item.icon ? siteIcon(url, { size: 14, src: item.icon, className: 'detail-page-icon' }) : url ? favicon(url, { size: 14 }) : '';
   return html`<p class="detail-source">
-    ${url ? html`${favicon(url, { size: 14 })}<a class="detail-url" href="${safeHref(url)}" target="_blank" rel="noopener noreferrer" title="${url}">${prettyUrl(url)}</a>
+    ${url ? html`${glyph}<a class="detail-url" href="${safeHref(url)}" target="_blank" rel="noopener noreferrer" title="${url}">${prettyUrl(url)}</a>
       ${iconButton({ icon: 'copy', label: 'Copy link', action: 'app.copy', data: { text: url, done: 'Link copied' }, size: 'sm', className: 'detail-copy' })}<span aria-hidden="true">·</span>` : ''}
     ${bits}
   </p>`;
@@ -209,9 +228,27 @@ function renderPersonalNote(ctx, item) {
   if (String(editor || '').trim()) return html`<div class="detail-note">${editor}</div>`;
   if (!item.content) return html`<button type="button" class="detail-note-empty" data-action="detail.edit-note" data-id="${item.id}">${icon('notebook-pen', { size: 16 })}<span>${item.type === 'note' ? 'Write your note' : 'Add a note'}</span></button>`;
   return html`<div class="detail-note is-preview">
-    <div class="markdown-body is-compact">${raw(renderMarkdown(item.content))}</div>
+    <div class="markdown-body is-compact">${raw(renderMarkdown(item.content, { resolveLink: noteLinkResolver(ctx) }))}</div>
     ${button({ label: 'Edit', icon: 'pencil', variant: 'ghost', size: 'sm', action: 'detail.edit-note', data: { id: item.id } })}
   </div>`;
+}
+
+/** Subpages of any item (research notes under a saved article, pages inside a note), with "New subpage". */
+function renderSubpages(ctx, item) {
+  const children = ctx.select.children(item.id);
+  if (!children.length || item.deletedAt) return '';
+  const add = button({ label: 'New subpage', icon: 'plus', variant: 'ghost', size: 'sm', action: 'detail.new-subpage', data: { id: item.id }, className: 'detail-section-action' });
+  return html`<section class="detail-section" aria-labelledby="detail-subpages-head">
+    <h2 class="detail-section-head" id="detail-subpages-head">Subpages<span class="detail-count">${children.length}</span>${add}</h2>
+    <div class="detail-links">${children.map(child => {
+      const inner = ctx.select.subpageCount(child.id);
+      return html`<div class="item-link" data-key="sub:${child.id}"><button type="button" class="item-link-main detail-subpage" data-action="detail.open-subpage" data-id="${child.id}">
+        <span class="detail-subpage-icon" aria-hidden="true">${icon('file-text', { size: 16 })}</span>
+        <span class="item-link-text"><span class="item-link-title">${displayTitle(child)}</span>
+          <span class="item-link-meta">${inner ? `${plural(inner, 'subpage')} · ` : ''}Edited ${sentence(relativeDate(child.updatedAt))}</span></span>
+      </button></div>`;
+    })}</div>
+  </section>`;
 }
 
 function renderHighlights(ctx, item) {
@@ -236,7 +273,8 @@ function renderHighlights(ctx, item) {
 }
 
 function renderConnections(ctx, item, notes) {
-  const noteIds = new Set(notes.map(note => note.id));
+  // Subpages have their own section above; they are not repeated as related items.
+  const noteIds = new Set([...notes, ...ctx.select.children(item.id)].map(note => note.id));
   const related = ctx.select.related(item.id).filter(other => !noteIds.has(other.id));
   const explicit = new Set(item.relatedIds || []);
   const similar = similarFor(ctx, item);
@@ -296,6 +334,7 @@ function renderDetails(ctx, item, notes) {
       <h2 class="detail-section-head" id="detail-note-head">${item.type === 'note' ? 'Note' : 'Your note'}${item.type === 'note' && !ctx.env.isSidepanel ? button({ label: 'Open in notes', icon: 'arrow-up-right', variant: 'ghost', size: 'sm', action: 'detail.open-note', data: { id: item.id }, className: 'detail-section-action' }) : ''}</h2>
       ${renderPersonalNote(ctx, item)}
     </section>
+    ${renderSubpages(ctx, item)}
     ${renderHighlights(ctx, item)}
     ${renderConnections(ctx, item, notes)}
     ${renderFile(ctx, item)}
@@ -376,6 +415,7 @@ export function renderDetail(ctx, id, { surface = 'full' } = {}) {
       ${side ? iconButton({ icon: 'arrow-left', label: 'Back', action: 'app.close-panel', size: 'sm', className: 'detail-back' }) : ''}
       ${renderTabs(ctx, item, tab, notes.length)}
       <span class="detail-head-actions">
+        ${!item.deletedAt && researchOffered(ctx) ? iconButton({ icon: 'telescope', label: 'Research with AI', action: 'research.start', data: { id: item.id }, size: 'sm', className: 'detail-research' }) : ''}
         ${item.url ? iconButton({ icon: 'external-link', label: 'Open page in a new tab', action: 'app.open-url', data: { url: item.url }, size: 'sm' }) : ''}
         ${side ? '' : iconButton({ icon: 'x', label: 'Close details', action: 'app.close-panel', size: 'sm' })}
       </span>
@@ -422,7 +462,7 @@ function paintHighlights(root, highlights) {
 registerMount('detail.reader', (el, ctx) => {
   const item = ctx.select.byId(el.dataset.id);
   if (!item) return null;
-  el.innerHTML = `<div class="reader-text markdown-body">${renderMarkdown(readerSource(item.articleContent))}</div><div class="reader-pop" role="toolbar" aria-label="Highlight selection" hidden></div>`;
+  el.innerHTML = `<div class="reader-text markdown-body">${renderMarkdown(readerSource(item.articleContent), { resolveLink: noteLinkResolver(ctx) })}</div><div class="reader-pop" role="toolbar" aria-label="Highlight selection" hidden></div>`;
   const textEl = el.querySelector('.reader-text');
   const pop = el.querySelector('.reader-pop');
   paintHighlights(textEl, item.highlights || []);
@@ -692,6 +732,13 @@ registerActions({
     await ctx.chrome('captureCurrent', { collectionId: item.collectionId || '' });
     ctx.toast('Saved the page text', { tone: 'success' });
   },
+  'detail.new-subpage': ({ ctx, data }) => addSubpage(ctx, data.id),
+  'detail.open-subpage': ({ ctx, data }) => {
+    const child = itemOf(ctx, data.id);
+    if (!child || child.deletedAt) throw new Error('That page is no longer in your library.');
+    // The note editor's page path leads back to this item.
+    if (child.type === 'note') openNote(ctx, child.id); else ctx.openItem(child.id);
+  },
   'detail.new-note': ({ ctx, data }) => {
     const item = itemOf(ctx, data.id);
     return item && addNoteFor(ctx, item);
@@ -745,6 +792,8 @@ registerActions({
       item.type !== 'note' && { label: 'Add note', icon: 'notebook-pen', run: () => ctx.run(() => addNoteFor(ctx, item)) },
       item.type !== 'note' && { label: item.cover ? 'Change cover…' : 'Add cover…', icon: 'image', run: () => ctx.run(() => ctx.dispatch('detail.cover', { data: { id: item.id } })) },
       { label: 'Ask AI about this', icon: 'sparkles', run: () => askAi(ctx, { scope: 'item', ids }) },
+      researchMenuItem(item, ctx),
+      { label: 'New subpage', icon: 'file-plus', run: () => ctx.run(() => addSubpage(ctx, item.id)) },
       { separator: true },
       { label: item.archived ? 'Unarchive' : 'Archive', icon: item.archived ? 'archive-restore' : 'archive', run: () => ctx.run(() => setArchived(ctx, ids, !item.archived)) },
       { label: 'Delete', icon: 'trash-2', danger: true, hint: 'Moves to Trash', run: () => ctx.run(() => trashItems(ctx, ids)) },

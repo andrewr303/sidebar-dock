@@ -858,7 +858,7 @@ a.note-link:focus-visible { outline: 2px solid var(--focus-ring); outline-offset
 
 /* ---------- Contrast and motion preferences ---------- */
 @media (prefers-reduced-motion: reduce) {
-  .block-gutter, .rich-table-tools, .rich-toggle-tools, .rich-toggle-chevron, .markdown-toggle > summary::before, .rich-embed, .rich-embed-actions { transition: none; }
+  .block-gutter, .rich-table-tools, .rich-toggle-tools, .rich-toggle-chevron, .markdown-toggle > summary::before, .rich-embed, .rich-embed-actions, .rich-page-open { transition: none; }
   .block-editor-float:not([hidden]) { animation: none; }
 }
 /* ---------- Embeds: live pages, videos, PDFs and library files ---------- */
@@ -933,6 +933,66 @@ a.note-link:focus-visible { outline: 2px solid var(--focus-ring); outline-offset
 .markdown-embed-title.is-missing { color: var(--fg-subtle); }
 .markdown-embed-meta { flex: none; margin-inline-start: auto; color: var(--fg-subtle); font-size: var(--text-xs); }
 
+/* ---------- Page blocks: [[id|Title]]{page} ---------- */
+/* In the editor a page block is one quiet row: page icon, the page's current title (underlined like a page link) and a
+   meta line. It never deletes the page it points at. */
+.rich-page { flex: 1; min-inline-size: 0; margin-block: var(--space-1); }
+.rich-page-open {
+  display: flex; align-items: center; gap: var(--space-4);
+  inline-size: 100%; min-block-size: var(--control-h-md);
+  padding: var(--space-2) var(--space-3);
+  border: 0; border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-default);
+  font: inherit; text-align: start;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.rich-page-open:hover { background: var(--bg-hover); }
+.rich-page-open:active { background: var(--bg-active); }
+.rich-page-open:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.rich-page-icon { display: inline-flex; flex: none; color: var(--fg-subtle); }
+.rich-page-title {
+  min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: var(--weight-medium);
+  text-decoration-line: underline; text-decoration-color: var(--border-strong); text-decoration-thickness: 1px; text-underline-offset: 3px;
+}
+.rich-page-meta { flex: none; margin-inline-start: auto; color: var(--fg-subtle); font-size: var(--text-xs); }
+.rich-page.is-missing .rich-page-open { cursor: default; }
+.rich-page.is-missing .rich-page-open:hover { background: transparent; }
+.rich-page.is-missing :is(.rich-page-title, .rich-page-icon) { color: var(--fg-subtle); text-decoration: none; }
+.note-block.block-page.is-selected { background: transparent; }
+.note-block.is-selected .rich-page-open { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+
+/* Outside the editor (previews, cards, the reader, the detail panel) a page block is a link row that opens the page. */
+.markdown-page { margin: 0 0 var(--space-2); }
+.markdown-body .markdown-page-link,
+.markdown-page-link {
+  display: flex; align-items: center; gap: var(--space-4);
+  max-inline-size: 100%;
+  padding: var(--space-2) var(--space-3);
+  margin-inline: calc(var(--space-3) * -1);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-default);
+  font-weight: var(--weight-regular);
+  text-decoration: none;
+}
+a.markdown-page-link:hover { background: var(--bg-hover); }
+a.markdown-page-link:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.markdown-page-icon { flex: none; inline-size: var(--icon-md); block-size: var(--icon-md); color: var(--fg-subtle); }
+.markdown-page-title {
+  min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: var(--weight-medium);
+  text-decoration-line: underline; text-decoration-color: var(--border-strong); text-decoration-thickness: 1px; text-underline-offset: 3px;
+}
+.markdown-page.is-missing :is(.markdown-page-title, .markdown-page-icon) { color: var(--fg-subtle); text-decoration: none; }
+
+/* A line that is only an image shows the image, never wider than the text column. */
+.markdown-image { margin: 0 0 var(--space-4); }
+.markdown-image > img { display: block; max-inline-size: 100%; block-size: auto; border-radius: var(--radius-sm); background: var(--bg-sunken); }
+.markdown-body.is-compact .markdown-image > img { max-block-size: 180px; object-fit: cover; }
+
 @media (prefers-contrast: more) {
   .block-editor, .markdown-body { --be-link-line: currentColor; }
   .block-quote .block-editable, .markdown-body blockquote { border-inline-start-color: var(--fg-muted); }
@@ -948,6 +1008,7 @@ a.note-link:focus-visible { outline: 2px solid var(--focus-ring); outline-offset
   .block-editor-item.is-active { outline: 2px solid Highlight; outline-offset: -2px; }
   .block-editor-float, .block-callout, .markdown-callout, .block-code .block-editable, .markdown-body .markdown-code { border: 1px solid CanvasText; }
   .note-block.is-selected .rich-embed { outline: 2px solid Highlight; outline-offset: -2px; }
+  .note-block.is-selected .rich-page-open { outline: 2px solid Highlight; outline-offset: -2px; }
   .note-link { border: 1px solid LinkText; }
   .block-editable mark, .markdown-body mark { forced-color-adjust: none; background: Mark; color: MarkText; box-shadow: none; }
 }

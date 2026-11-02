@@ -5,7 +5,7 @@
 // The rails dock beside the conversation when the main column is wide enough and open as sheets over it otherwise.
 import { html, cx, plural } from './html.js';
 import { icon } from './icons.js';
-import { button, iconButton, collectionIcon, relativeDate, shortDate, skeleton } from './components.js';
+import { button, iconButton, collectionIcon, relativeDate, shortDate, skeleton, siteIcon, TYPE_ICONS, TYPE_LABELS } from './components.js';
 import { registerActions, registerMount, registerShortcuts } from './runtime.js';
 import { navToggle } from './sidebar.js';
 import { greetingFor } from './dashboard/state.js';
@@ -13,8 +13,11 @@ import { settingsGroup } from '../lib/settings-schema.js';
 import {
   renderAiPanel, aiState, aiContext, contextChipView, renderContextChip, citationsOf, renderSourceRows, suggestionsFor, historyGroups,
   filterConversations, plainPreview, latestAnswer, conversationIdOf, shortModelLabel, newAiChat, openAiConversation, ensureAiHistory, refreshAiHistory,
-  setAiScope, renameAiConversation, exportConversation,
+  setAiScope, renameAiConversation, exportConversation, historyGlyph, approvalNote, researchOf,
 } from './ai-panel.js';
+import {
+  researchState, formatUsd, stepCount, latestResearchMessage, isResearchRunning, researchSources, researchSubject, renderSubpageChips,
+} from './research-view.js';
 
 /** Main-column widths where the rails dock: both from 1120px, the chats rail alone from 760px. */
 export const ASSISTANT_LAYOUT = Object.freeze({ wide: 1120, medium: 760 });
@@ -93,7 +96,9 @@ function renderHeader(ctx, place) {
   const title = conversation?.title || (s.run ? s.run.question : 'New chat');
   const chatsOpen = place.chats !== 'hidden';
   const contextOpen = place.context !== 'hidden';
-  const editable = !!conversation && !s.run;
+  // While an answer or a research run is writing the chat, it is not renamed, exported or deleted from here.
+  const busy = !!s.run || isResearchRunning(conversation);
+  const editable = !!conversation && !busy;
   return html`<header class="asst-head" data-key="asst-head">
     <div class="asst-head-lead">
       ${navToggle(ctx)}
@@ -109,9 +114,9 @@ function renderHeader(ctx, place) {
     </div>
     <div class="asst-head-actions" role="group" aria-label="Chat actions">
       ${iconButton({ icon: 'square-pen', label: 'New chat', action: 'assistant.new', disabled: !ctx.ai || (!hasThread && !s.draft) })}
-      ${pageUi(ctx).layout === 'narrow' ? '' : iconButton({ icon: 'download', label: 'Export chat', action: 'assistant.export', disabled: !conversation?.messages?.length || !!s.run,
+      ${pageUi(ctx).layout === 'narrow' ? '' : iconButton({ icon: 'download', label: 'Export chat', action: 'assistant.export', disabled: !conversation?.messages?.length || busy,
         expanded: menuOpenFor(ctx, 'assistant.export') })}
-      ${iconButton({ icon: 'ellipsis', label: 'More chat actions', action: 'assistant.more', disabled: !conversation || !!s.run,
+      ${iconButton({ icon: 'ellipsis', label: 'More chat actions', action: 'assistant.more', disabled: !conversation || busy,
         expanded: menuOpenFor(ctx, 'assistant.more'), tooltipPlacement: contextOpen ? undefined : 'bottom end' })}
       ${iconButton({ icon: 'panel-right', label: contextOpen ? 'Hide context and sources' : 'Show context and sources', action: 'assistant.toggle-context',
         controls: 'asst-context', id: 'asst-context-toggle', tooltipPlacement: 'bottom end', attrs: { 'aria-expanded': contextOpen ? 'true' : 'false' } })}
@@ -120,8 +125,12 @@ function renderHeader(ctx, place) {
 }
 
 function renderModelBadge(ctx) {
-  const t = aiState(ctx).target;
-  if (!ctx.ai || t === undefined) return '';
+  const s = aiState(ctx);
+  const t = s.target;
+  if (!ctx.ai) return '';
+  // A research conversation runs on the research agent, not the chat model the picker changes.
+  if (researchOf(s)) return html`<span class="asst-model is-static" data-tooltip="Claude Sonnet 5.5 with web search">${icon('telescope', { size: 14 })}<span class="asst-model-label">Research agent</span></span>`;
+  if (t === undefined) return '';
   // A narrow header shows only the plug icon (assistant.css), so the button carries its name and tooltip itself.
   if (t === null) return html`<button type="button" class="asst-model is-missing" data-action="ai.settings" aria-label="Connect a model"
     data-tooltip="Connect a model">${icon('plug', { size: 14 })}<span class="asst-model-label">Connect a model</span></button>`;
@@ -143,7 +152,7 @@ function renderPageEmpty(ctx, resolved) {
   const name = String(settingsGroup(ctx.library?.settings, 'newTab').name || '').trim();
   const lede = resolved.kind === 'collection' ? `Answers use what is in ${collectionName} and cite the items they come from.`
     : resolved.kind === 'items' ? `Answers use ${count === 1 ? 'the item you chose' : `the ${count} items you chose`} and cite them.`
-      : 'Answers cite the items they come from. Changes to your library always wait for your approval.';
+      : approvalNote(s.settings);
   return html`<div class="asst-empty">
     <span class="asst-mark" aria-hidden="true">${icon('sparkles', { size: 22 })}</span>
     <h2 class="asst-greeting">${greetingFor()}${name ? `, ${name}` : ''}</h2>
@@ -191,7 +200,7 @@ function renderChats(ctx, { sheet, covered = false }) {
     const title = entry.title || 'New conversation';
     return html`<li class="${cx('asst-chat', current && 'is-current')}" data-key="chat:${entry.id}">
       <button type="button" class="asst-chat-main" data-action="assistant.open" data-id="${entry.id}" ${current ? html`aria-current="page"` : ''} title="${title}">
-        <span class="asst-chat-title">${title}</span>
+        <span class="asst-chat-title">${historyGlyph(entry)}${title}</span>
         <span class="asst-chat-meta">${plainPreview(entry.preview) || relativeDate(entry.updatedAt)}</span>
       </button>
       ${iconButton({ icon: 'ellipsis', label: 'Chat actions', size: 'sm', action: 'assistant.chat-menu', data: { id: entry.id }, className: 'asst-chat-more',
@@ -253,19 +262,68 @@ function modelName(s, id) {
   return id;
 }
 
-function renderContext(ctx, { sheet, covered = false }) {
-  const s = aiState(ctx);
-  const resolved = aiContext(ctx);
+// A research conversation also shows how far it got and what it cost (research.usage, the run's spending cap).
+function researchFacts(conversation) {
+  if (!conversation) return '';
+  const state = researchState(conversation);
+  const steps = stepCount(latestResearchMessage(conversation)?.research?.steps);
+  const spent = state.costUsd !== null ? `${formatUsd(state.costUsd)}${state.budgetUsd ? ` of ${formatUsd(state.budgetUsd)}` : ''}` : '';
+  return html`<div><dt>Research</dt><dd>${state.label}</dd></div>
+    ${steps ? html`<div><dt>Steps</dt><dd>${steps.toLocaleString()}</dd></div>` : ''}
+    ${spent ? html`<div><dt>Spent</dt><dd>${spent}</dd></div>` : ''}`;
+}
+
+// The chat's scope: what the next question is about, with the controls that change it.
+function renderScopeSection(ctx, resolved, { sheet }) {
   const summary = scopeSummary(ctx, resolved);
   const { value, options } = scopeOptions(ctx.select?.tree?.() || [], { kind: resolved.kind, collectionId: resolved.scope.collectionId ?? null, itemCount: resolved.scope.ids?.length || 0 });
   const added = resolved.chips.filter(chip => chip.kind === 'items' && chip.removable);
+  return html`<section class="asst-section" aria-labelledby="asst-scope-title">
+    <h3 class="asst-section-title" id="asst-scope-title">Asking about</h3>
+    <div class="asst-scope-card">${summary.glyph}<span class="asst-scope-text"><span class="asst-scope-name">${summary.title}</span><span class="asst-scope-meta">${summary.meta}</span></span></div>
+    <label class="asst-field">
+      <span class="asst-field-label">Change what the next question is about</span>
+      <span class="select select-sm"><select id="asst-scope" data-change="assistant.scope">
+        ${options.map(option => html`<option value="${option.value}" ${option.value === value ? html`selected` : ''}>${option.label}</option>`)}
+      </select>${icon('chevrons-up-down', { size: 14, className: 'select-icon' })}</span>
+    </label>
+    ${added.length ? html`<div class="asst-added" role="list" aria-label="Added items">${added.map(chip => renderContextChip(ctx, chip))}</div>` : ''}
+    ${button({ label: 'Add items', icon: 'plus', size: 'sm', variant: 'ghost', action: 'ai.add-context', className: 'asst-add-items',
+      attrs: { 'data-placement': sheet ? 'bottom-start' : 'bottom-end', 'aria-haspopup': 'dialog' } })}
+  </section>`;
+}
+
+// A research conversation is about one saved page, which never changes: the page and the subpages the research created
+// stand where a chat's scope controls would.
+function renderResearchSection(ctx, conversation) {
+  const state = researchState(conversation);
+  const found = state.itemId ? ctx.select?.byId?.(state.itemId) : null;
+  const item = found && !found.deletedAt ? found : null;
+  const pages = (Array.isArray(conversation.research.pages) ? conversation.research.pages : []).filter(page => page && typeof page.id === 'string' && page.id);
+  const meta = item ? [TYPE_LABELS[item.type] || 'Saved item', pages.length ? plural(pages.length, 'subpage') : ''].filter(Boolean).join(' · ') : 'No longer in your library';
+  return html`<section class="asst-section" aria-labelledby="asst-scope-title">
+    <h3 class="asst-section-title" id="asst-scope-title">${state.active ? 'Researching' : 'Research on'}</h3>
+    <div class="asst-scope-card"><span class="asst-scope-tile">${icon(TYPE_ICONS[item?.type] || 'file-text', { size: 16 })}</span><span class="asst-scope-text"><span class="asst-scope-name">${researchSubject(conversation, item)}</span><span class="asst-scope-meta">${meta}</span></span></div>
+    ${item ? button({ label: 'Open note', icon: 'arrow-up-right', size: 'sm', variant: 'ghost', action: 'research.open-item', data: { id: item.id }, className: 'asst-open-item' }) : ''}
+    ${pages.length ? renderSubpageChips(ctx, { research: { subpages: pages } }) : ''}
+  </section>`;
+}
+
+// The web pages a research conversation read, numbered; each opens in a tab.
+const researchSourceRows = sources => sources.map(source => html`<li><button type="button" class="ai-source" data-action="app.open-url" data-url="${source.url}" title="${source.url}">
+  <span class="ai-source-n">${source.n}</span>${siteIcon(source.url, { size: 16 })}<span class="ai-source-title">${source.title}</span></button></li>`);
+
+function renderContext(ctx, { sheet, covered = false }) {
+  const s = aiState(ctx);
+  const resolved = aiContext(ctx);
+  const research = researchOf(s);
   const answer = latestAnswer(threadOf(s));
-  const sources = answer ? citationsOf(ctx, answer) : [];
-  const rows = renderSourceRows(ctx, sources);
+  const rows = research ? researchSourceRows(researchSources(research)) : renderSourceRows(ctx, answer ? citationsOf(ctx, answer) : []);
   const conversation = s.conversation;
   const writing = !!answer?.live;
-  const sourcesHint = !answer ? 'Sources cited in the latest answer appear here. Select one to open it.'
-    : writing ? 'Sources appear here as the answer cites them.' : 'The latest answer does not cite any saved items.';
+  const sourcesHint = research ? 'Pages the research reads appear here. Select one to open it.'
+    : !answer ? 'Sources cited in the latest answer appear here. Select one to open it.'
+      : writing ? 'Sources appear here as the answer cites them.' : 'The latest answer does not cite any saved items.';
   return html`<aside class="${cx('asst-context', sheet && 'is-sheet')}" id="asst-context" data-key="asst-context" aria-labelledby="asst-context-title"
     ${sheet ? html`role="dialog"` : ''} ${covered ? html`inert` : ''}>
     <div class="asst-pane-head">
@@ -273,19 +331,7 @@ function renderContext(ctx, { sheet, covered = false }) {
       ${iconButton({ icon: 'x', label: sheet ? 'Close context and sources' : 'Hide context and sources', action: sheet ? 'assistant.close-sheet' : 'assistant.toggle-context', tooltipPlacement: 'bottom end' })}
     </div>
     <div class="asst-pane-scroll">
-      <section class="asst-section" aria-labelledby="asst-scope-title">
-        <h3 class="asst-section-title" id="asst-scope-title">Asking about</h3>
-        <div class="asst-scope-card">${summary.glyph}<span class="asst-scope-text"><span class="asst-scope-name">${summary.title}</span><span class="asst-scope-meta">${summary.meta}</span></span></div>
-        <label class="asst-field">
-          <span class="asst-field-label">Change what the next question is about</span>
-          <span class="select select-sm"><select id="asst-scope" data-change="assistant.scope">
-            ${options.map(option => html`<option value="${option.value}" ${option.value === value ? html`selected` : ''}>${option.label}</option>`)}
-          </select>${icon('chevrons-up-down', { size: 14, className: 'select-icon' })}</span>
-        </label>
-        ${added.length ? html`<div class="asst-added" role="list" aria-label="Added items">${added.map(chip => renderContextChip(ctx, chip))}</div>` : ''}
-        ${button({ label: 'Add items', icon: 'plus', size: 'sm', variant: 'ghost', action: 'ai.add-context', className: 'asst-add-items',
-          attrs: { 'data-placement': sheet ? 'bottom-start' : 'bottom-end', 'aria-haspopup': 'dialog' } })}
-      </section>
+      ${research ? renderResearchSection(ctx, research) : renderScopeSection(ctx, resolved, { sheet })}
       <section class="asst-section" aria-labelledby="asst-sources-title">
         <h3 class="asst-section-title" id="asst-sources-title">Sources${rows.length ? html`<span class="asst-count">${rows.length}</span>` : ''}</h3>
         ${rows.length ? html`<ol class="ai-sources asst-sources" role="list">${rows}</ol>` : html`<p class="asst-hint">${sourcesHint}</p>`}
@@ -296,6 +342,7 @@ function renderContext(ctx, { sheet, covered = false }) {
           <div><dt>Started</dt><dd>${shortDate(conversation.createdAt)}</dd></div>
           <div><dt>Messages</dt><dd>${(conversation.messages || []).length.toLocaleString()}</dd></div>
           ${conversation.model ? html`<div><dt>Model</dt><dd>${modelName(s, conversation.model)}</dd></div>` : ''}
+          ${researchFacts(researchOf(s))}
         </dl>
       </section>` : ''}
     </div>

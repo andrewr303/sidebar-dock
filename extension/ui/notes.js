@@ -1,16 +1,22 @@
 // Notes surfaces (SPEC §6): the full-tab workspace (list column, editor, info rail), the side panel Notes tab
 // (re:note style cards and the editor screen), notes on the current page for the This page tab, the Tasks view and
 // note creation (blank, templates, daily note). The editor itself lives in note-editor.js.
-import { html, raw, cx, safeHref } from './html.js';
+//
+// Subpages: without a search the lists show top-level notes only; a note with subpages gets a disclosure chevron in the
+// full-tab list (expanded ids persist in prefs.expandedPages) and a subpage count on side-panel cards. Search results
+// stay flat and name each subpage's parent path.
+import { html, raw, cx, safeHref, plural } from './html.js';
 import { icon } from './icons.js';
 import { registerActions, registerMount } from './runtime.js';
+import { researchOffered } from './research-view.js';
 import { registerPopover } from './overlay.js';
 import { button, iconButton, segmented, searchField, emptyState, favicon, domainOf, relativeDate, shortDate, colorVar } from './components.js';
 import { searchRows } from './selectors.js';
 import * as pickers from './pickers.js';
-import { renderNoteEditor, openNote, closeNote, createNoteItem, editorFor, latestItem, rememberItem, displayTitle, titleValue, noteResolver, openInFullTab } from './note-editor.js';
+import { renderNoteEditor, openNote, closeNote, createNoteItem, editorFor, latestItem, rememberItem, displayTitle, titleValue, noteResolver, openInFullTab, addSubpage, subpagesMoving } from './note-editor.js';
+import { MAX_PAGE_DEPTH, parentIdOf } from '../lib/pages.js';
 import { renderMarkdown, renderInline } from '../lib/markdown.js';
-import { notePreviewSource as previewSource } from './cards.js';
+import { notePreviewSource as previewSource, pagePathLabel, pathOfItem } from './cards.js';
 import { extractTasks, toggleTask, taskProgress, noteExcerpt, noteTitleFromContent, outline, wordCount, dailyNoteTitle, noteTemplates } from '../lib/notes.js';
 
 export const NO_COLLECTION = '__none';
@@ -41,6 +47,40 @@ export function filterNotes(notes, { query = '', collectionId = '', sort = 'upda
   return [...rows].sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || by(a, b));
 }
 
+/**
+ * Rows for the full-tab Notes list. Without a search a note inside another live item is not a row of its own: it sits
+ * under its parent and shows while the parent is expanded. That holds only while the parent is itself listed: a note
+ * under a saved article (research findings), an archived note or a note filtered out stays a top-level row, so no
+ * note becomes unreachable. With a search the rows stay flat (each one at depth 0).
+ * list: the filtered, sorted notes; expanded: Set of expanded ids; childrenOf(id): its subpages in sibling order;
+ * nested(note): true when the note has a live parent; listed: ids of every note the pane lists (default: list), for a
+ * pane split into groups (Pinned and the rest). Returns [{ note, depth, childCount, expanded }].
+ */
+export function noteTreeRows(list, { expanded = new Set(), childrenOf = () => [], nested = () => false, query = '', listed = null } = {}) {
+  if (String(query).trim()) return (list || []).map(note => ({ note, depth: 0, childCount: 0, expanded: false }));
+  const byId = new Map((list || []).map(note => [note.id, note]));
+  const shown = id => (listed ? listed.has(id) : byId.has(id));
+  const rows = [], seen = new Set();
+  const inCycle = note => {
+    const chain = new Set([note.id]);
+    for (let cur = byId.get(parentIdOf(note)); cur; cur = byId.get(parentIdOf(cur))) {
+      if (chain.has(cur.id)) return true;
+      chain.add(cur.id);
+    }
+    return false;
+  };
+  const visit = (note, depth) => {
+    if (seen.has(note.id) || depth > MAX_PAGE_DEPTH) return;
+    seen.add(note.id);
+    const kids = childrenOf(note.id) || [];
+    const open = kids.length > 0 && expanded.has(note.id);
+    rows.push({ note, depth, childCount: kids.length, expanded: open });
+    if (open) for (const kid of kids) visit(kid, depth + 1);
+  };
+  for (const note of list || []) if (!(nested(note) && shown(parentIdOf(note))) && !inCycle(note)) visit(note, 0);
+  return rows;
+}
+
 /** Note counts per collection: { total, none, byId: { [collectionId]: n } }. */
 export function collectionCounts(notes) {
   const byId = {};
@@ -52,7 +92,7 @@ export function collectionCounts(notes) {
   return { total: (notes || []).length, none, byId };
 }
 
-export { previewSource };
+export { previewSource, pagePathLabel };
 
 const TASK_HINT = /\[[ xX]\]/;
 /** Tasks grouped by note for the Tasks view, newest edited note first. filter: 'open' | 'done' | 'all'. */
@@ -142,6 +182,11 @@ function noteInfo(note) {
   });
 }
 const noteName = note => displayTitle(note, noteInfo(note).firstLine);
+const isNested = (ctx, note) => !!ctx.select.parentOf(note.id);
+const pathOf = (ctx, note) => pathOfItem(ctx, note, entry => (entry.type === 'note' ? noteName(entry) : entry.title));
+/** Subpages listed under a note in the Notes list: live, unarchived notes (the list never shows archived ones). */
+const listChildren = ctx => id => ctx.select.children(id).filter(note => note.type === 'note' && !note.archived);
+const expandedPages = ctx => new Set(ctx.prefs.get('expandedPages', []));
 
 function cardHtml(ctx, note, expanded) {
   const links = String(note.content || '').includes('[[') ? ctx.library?.updatedAt : '';
@@ -189,7 +234,8 @@ async function createFromTemplate(ctx, id) {
 export async function openToday(ctx) {
   const now = new Date();
   const title = dailyNoteTitle(now);
-  const existing = ctx.select.live().find(item => item.type === 'note' && item.title === title);
+  // Only a top-level note counts: a subpage that happens to carry today's date is not the daily note.
+  const existing = ctx.select.live().find(item => item.type === 'note' && item.title === title && !isNested(ctx, item));
   if (existing) { openNote(ctx, existing.id); return existing; }
   const template = noteTemplates(now).find(entry => entry.id === 'daily');
   const fallback = ctx.library?.settings?.defaultCollectionId;
@@ -239,6 +285,9 @@ function noteCard(ctx, note, { clamp = 8, showPage = true, from = '' } = {}) {
   const collection = note.collectionId ? ctx.select.collection(note.collectionId) : null;
   const name = noteName(note);
   const reminder = note.reminderAt && !note.reminderNotifiedAt;
+  const subpages = ctx.select.subpageCount(note.id);
+  // Where a subpage lives, also when its parent is not listed itself (a saved article, an archived note).
+  const path = pathOf(ctx, note);
   // A note whose only line is its title (a one-line sticky note) has no body to preview.
   const body = !String(note.content || '').trim() ? html`<p class="note-card-empty">Empty note</p>`
     : previewSource(note.content, note.title).trim() ? raw(cardHtml(ctx, note, expanded)) : '';
@@ -252,8 +301,10 @@ function noteCard(ctx, note, { clamp = 8, showPage = true, from = '' } = {}) {
     <button type="button" class="note-card-more" data-action="notes.card-expand" data-id="${note.id}" aria-expanded="${expanded ? 'true' : 'false'}" ${expanded ? '' : raw('hidden')}>${expanded ? 'Show less' : 'Show more'}</button>
     <footer class="note-card-foot">
       ${showPage && note.url ? html`<a class="note-card-page" href="${safeHref(note.url)}" target="_blank" rel="noopener noreferrer" title="${note.url}">${favicon(note.url, { size: 14 })}<span class="note-card-page-name">${domainOf(note.url)}</span></a>` : ''}
-      ${collection ? html`<span class="note-card-collection" title="${collection.name}">${dot(collection.color)}<span class="note-card-collection-name">${collection.name}</span></span>` : ''}
+      ${path ? html`<span class="note-card-path" title="In ${path}">${icon('file-text', { size: 14 })}<span class="note-card-path-name"><span class="sr-only">In </span>${path}</span></span>`
+        : collection ? html`<span class="note-card-collection" title="${collection.name}">${dot(collection.color)}<span class="note-card-collection-name">${collection.name}</span></span>` : ''}
       <span class="note-card-spacer"></span>
+      ${subpages ? html`<span class="note-card-subpages" title="${plural(subpages, 'subpage')}">${icon('files', { size: 14 })}<span aria-hidden="true">${subpages}</span><span class="sr-only">${plural(subpages, 'subpage')}</span></span>` : ''}
       ${reminder ? html`<span class="note-card-bell" title="Reminder set">${icon('bell', { size: 14 })}<span class="sr-only">Reminder set</span></span>` : ''}
       <time class="note-card-time" datetime="${note.updatedAt}">${editedLabel(note.updatedAt)}</time>
       ${iconButton({ icon: 'ellipsis', label: `Actions for ${name}`, action: 'notes.card-menu', data: { id: note.id, from }, size: 'sm', className: 'note-card-menu' })}
@@ -317,9 +368,17 @@ function renderListPane(ctx, { all, counts, list, selectedId }) {
   const s = notesState(ctx);
   const sortLabel = NOTE_SORTS.find(option => option.value === s.sort)?.label || NOTE_SORTS[0].label;
   const limit = listLimit;
-  const pinned = list.filter(note => note.pinned);
-  const rest = list.filter(note => !note.pinned);
+  // The open note's parents count as expanded, so a subpage opened from anywhere is visible in the list.
+  const expanded = expandedPages(ctx);
+  if (selectedId) for (const entry of ctx.select.pagePath(selectedId)) expanded.add(entry.id);
+  // A subpage sits under its parent wherever that parent is listed, Pinned included; one whose parent is not listed
+  // (an article, an archived note, another collection) is a top-level row that names its parent path.
+  const tree = { expanded, childrenOf: listChildren(ctx), nested: note => isNested(ctx, note), query: s.query, listed: new Set(list.map(note => note.id)) };
+  // A pinned note is a row of the Pinned group even when it is a subpage (pinning asks for it to be easy to reach).
+  const pinned = noteTreeRows(list.filter(note => note.pinned), { ...tree, nested: () => false });
+  const rest = noteTreeRows(list.filter(note => !note.pinned), tree);
   const shownRest = rest.slice(0, Math.max(0, limit - pinned.length));
+  const treeClass = rows => rows.some(row => row.childCount || row.depth) && 'is-tree';
   const filterName = s.collectionId === NO_COLLECTION ? 'No collection' : ctx.select.collection(s.collectionId)?.name || '';
   let body;
   if (!all.length) body = emptyState({ icon: 'sticky-note', title: 'No notes yet', body: 'Write what you learn while you browse. Notes can link to pages and to each other.', compact: true });
@@ -327,9 +386,9 @@ function renderListPane(ctx, { all, counts, list, selectedId }) {
   else if (!list.length) body = emptyState({ icon: 'folder', title: `No notes in ${filterName || 'this collection'}`, compact: true, actions: button({ label: 'Show all notes', variant: 'secondary', size: 'sm', action: 'notes.filter', data: { collection: '' } }) });
   else {
     body = html`${pinned.length && rest.length ? html`<h2 class="notes-group-title">Pinned</h2>` : ''}
-      ${pinned.length ? html`<ul class="notes-list" aria-label="Pinned notes">${pinned.map(note => noteRow(ctx, note, selectedId))}</ul>` : ''}
+      ${pinned.length ? html`<ul class="${cx('notes-list', treeClass(pinned))}" aria-label="Pinned notes">${pinned.map(row => noteRow(ctx, row, selectedId))}</ul>` : ''}
       ${pinned.length && rest.length ? html`<h2 class="notes-group-title">Notes</h2>` : ''}
-      ${shownRest.length ? html`<ul class="notes-list" aria-label="Notes">${shownRest.map(note => noteRow(ctx, note, selectedId))}</ul>` : ''}
+      ${shownRest.length ? html`<ul class="${cx('notes-list', treeClass(shownRest))}" aria-label="Notes">${shownRest.map(row => noteRow(ctx, row, selectedId))}</ul>` : ''}
       ${rest.length > shownRest.length ? html`<div class="notes-more">${button({ label: `Show ${Math.min(PAGE_SIZE, rest.length - shownRest.length)} more`, variant: 'ghost', size: 'sm', action: 'notes.list-more' })}</div>` : ''}`;
   }
   return html`<section class="notes-list-pane" aria-labelledby="notes-heading" data-key="notes-list-pane">
@@ -371,20 +430,30 @@ function renderChips(ctx, counts) {
   </div>`;
 }
 
-function noteRow(ctx, note, selectedId) {
+function noteRow(ctx, { note, depth = 0, childCount = 0, expanded = false }, selectedId) {
   const info = noteInfo(note);
   const collection = note.collectionId ? ctx.select.collection(note.collectionId) : null;
   const selected = note.id === selectedId;
   const reminder = note.reminderAt && !note.reminderNotifiedAt;
+  const name = noteName(note);
+  // A row under its parent needs no path; a subpage listed on its own (search, Pinned, a parent that is an article or
+  // archived) names where it lives.
+  const path = depth === 0 ? pathOf(ctx, note) : '';
+  const parent = depth > 0 ? ctx.select.parentOf(note.id) : null;
   const meta = [
-    collection ? html`<span class="notes-meta-item">${dot(collection.color)}<span class="notes-meta-text">${collection.name}</span></span>` : '',
+    path ? html`<span class="notes-meta-item notes-meta-path" title="In ${path}">${icon('file-text', { size: 12 })}<span class="sr-only">In </span><span class="notes-meta-text">${path}</span></span>` : '',
+    collection && depth === 0 ? html`<span class="notes-meta-item">${dot(collection.color)}<span class="notes-meta-text">${collection.name}</span></span>` : '',
     note.url ? html`<span class="notes-meta-item">${favicon(note.url, { size: 12 })}<span class="notes-meta-text">${domainOf(note.url)}</span></span>` : '',
     info.progress.total ? html`<span class="${cx('notes-meta-item', 'notes-meta-tasks', info.progress.done === info.progress.total && 'is-complete')}" title="${info.progress.done} of ${info.progress.total} tasks done">${icon('list-checks', { size: 12 })}${info.progress.done}/${info.progress.total}</span>` : '',
     reminder ? html`<span class="notes-meta-item" title="Reminder set">${icon('bell', { size: 12 })}<span class="sr-only">Reminder set</span></span>` : '',
     note.sticky ? html`<span class="notes-meta-item" title="Sticky note">${icon('sticker', { size: 12 })}<span class="sr-only">Sticky note</span></span>` : '',
   ].filter(part => String(part));
-  return html`<li data-key="nr:${note.id}"><button type="button" class="${cx('notes-row', selected && 'is-selected')}" data-action="notes.open" data-id="${note.id}" aria-current="${selected ? 'true' : 'false'}">
-    <span class="notes-row-top">${note.pinned ? icon('pin', { size: 12, className: 'notes-row-pin' }) : ''}<span class="notes-row-title">${noteName(note)}</span><time class="notes-row-time" datetime="${note.updatedAt}" title="${shortDate(note.updatedAt)}">${shortAgo(note.updatedAt)}</time></span>
+  // The chevron is its own button beside the row (a button cannot hold another); Right and Left arrows on a row do the same.
+  const toggle = childCount ? html`<button type="button" class="${cx('notes-chev', expanded && 'is-open')}" data-action="notes.toggle-page" data-id="${note.id}"
+    aria-expanded="${expanded ? 'true' : 'false'}" aria-label="${expanded ? 'Hide' : 'Show'} ${plural(childCount, 'subpage')} of ${name}">${icon('chevron-right', { size: 12 })}</button>` : '';
+  return html`<li data-key="nr:${note.id}" class="${cx('notes-item', depth && 'is-sub')}" style="--depth:${depth}">${toggle}<button type="button" class="${cx('notes-row', selected && 'is-selected')}" data-action="notes.open" data-id="${note.id}" aria-current="${selected ? 'true' : 'false'}"
+    data-children="${childCount}" data-expanded="${expanded ? 'true' : 'false'}" data-parent="${parent?.id || ''}" ${childCount ? html`aria-description="${plural(childCount, 'subpage')}, ${expanded ? 'shown' : 'hidden'}"` : ''}>
+    <span class="notes-row-top">${note.pinned ? icon('pin', { size: 12, className: 'notes-row-pin' }) : ''}<span class="notes-row-title">${name}</span><time class="notes-row-time" datetime="${note.updatedAt}" title="${shortDate(note.updatedAt)}">${shortAgo(note.updatedAt)}</time></span>
     ${info.preview || !String(note.content || '').trim() ? html`<span class="${cx('notes-row-preview', !info.preview && 'is-empty')}">${info.preview || 'No text yet'}</span>` : ''}
     ${meta.length ? html`<span class="notes-row-meta">${meta}</span>` : ''}
   </button></li>`;
@@ -411,8 +480,10 @@ function renderRail(ctx, note, open) {
   const headings = derive(`outline:${note.id}:${note.updatedAt}`, () => outline(content));
   const tasks = derive(`tasks:${note.id}:${note.updatedAt}`, () => extractTasks(content));
   const done = tasks.filter(task => task.done).length;
-  const backlinks = ctx.select.backlinks(note.id).filter(entry => !entry.deletedAt);
-  const outgoing = (note.relatedIds || []).map(id => ctx.select.byId(id)).filter(entry => entry && !entry.deletedAt);
+  // The parent page (page path) and the subpages (Subpages section) link here through page blocks; they are not repeated.
+  const parent = ctx.select.parentOf(note.id);
+  const backlinks = ctx.select.backlinks(note.id).filter(entry => !entry.deletedAt && entry.id !== parent?.id);
+  const outgoing = (note.relatedIds || []).map(id => ctx.select.byId(id)).filter(entry => entry && !entry.deletedAt && ctx.select.parentOf(entry.id)?.id !== note.id);
   const saved = note.url ? ctx.select.savedForUrl(note.url) : null;
   const words = derive(`words:${note.id}:${note.updatedAt}`, () => wordCount(content));
   const seen = new Map();
@@ -526,7 +597,10 @@ function renderSideList(ctx) {
   const pageNotes = url ? ctx.select.notesForUrl(url) : [];
   const notes = scope === 'page' ? pageNotes : all;
   const counts = collectionCounts(notes);
-  const list = filterNotes(notes, { query: s.query, collectionId: s.collectionId, sort: s.sort, collections: collectionMap(ctx) });
+  const filtered = filterNotes(notes, { query: s.query, collectionId: s.collectionId, sort: s.sort, collections: collectionMap(ctx) });
+  // All notes lists top-level notes; their subpages are a count on the card and a list in the open note.
+  const inList = new Set(filtered.map(note => note.id));
+  const list = scope === 'all' && !String(s.query).trim() ? filtered.filter(note => !(isNested(ctx, note) && inList.has(parentIdOf(note)))) : filtered;
   const shown = list.slice(0, listLimit);
   const filterName = !s.collectionId ? 'All collections' : s.collectionId === NO_COLLECTION ? 'No collection' : ctx.select.collection(s.collectionId)?.name || 'All collections';
   const filterColor = s.collectionId && s.collectionId !== NO_COLLECTION ? ctx.select.collection(s.collectionId)?.color : '';
@@ -598,6 +672,7 @@ function openCardMenu(ctx, anchor, id, from) {
   ctx.openMenu(anchor, [
     { label: 'Open', icon: 'square-pen', run: () => openNote(ctx, id, { from }) },
     { label: note.pinned ? 'Unpin' : 'Pin to top', icon: note.pinned ? 'pin-off' : 'pin', run: async () => rememberItem(await ctx.store.updateItem(id, { pinned: !note.pinned })) },
+    { label: 'Add subpage', icon: 'file-plus', run: () => ctx.run(() => addSubpage(ctx, id)) },
     { label: 'Move to…', icon: 'folder-input', run: () => moveNote(ctx, anchor, note) },
     { label: note.reminderAt && !note.reminderNotifiedAt ? 'Change reminder' : 'Remind me', icon: 'bell', run: () => ctx.openPopover('pick.reminder', anchor, {
       value: note.reminderAt || null,
@@ -606,13 +681,15 @@ function openCardMenu(ctx, anchor, id, from) {
     ...(!note.url && page ? [{ label: 'Link to this page', icon: 'link', run: async () => rememberItem(await ctx.store.updateItem(id, { url: page })) }] : []),
     { label: 'Copy as Markdown', icon: 'copy', run: async () => { await navigator.clipboard.writeText(note.content || ''); ctx.toast('Copied as Markdown'); } },
     ...(ctx.env.isSidepanel ? [{ label: 'Open in full tab', icon: 'external-link', run: () => openInFullTab(ctx, id) }] : []),
+    ...(researchOffered(ctx) ? [{ label: 'Research more with AI', icon: 'telescope', action: 'research.start', data: { id } }] : []),
     { separator: true },
     { label: 'Move to Trash', icon: 'trash-2', danger: true, run: async () => {
+      const subpages = subpagesMoving(ctx.library, [id]);
       // "Confirm before moving items to Trash" (Settings > General) asks first, as library.js trashItems does.
       if (ctx.library?.settings?.confirmDelete === true && !(await ctx.confirm({ title: `Move “${noteName(note)}” to Trash?`,
-        body: 'You can restore items from Trash until you empty it.', confirmLabel: 'Move to Trash' }))) return;
+        body: `${subpages ? `${subpages === 1 ? 'Its subpage moves' : `Its ${plural(subpages, 'subpage')} move`} to Trash too. ` : ''}You can restore items from Trash until you empty it.`, confirmLabel: 'Move to Trash' }))) return;
       rememberItem(await ctx.store.deleteItem(id));
-      ctx.toast('Moved to Trash', { action: { label: 'Undo', run: async () => rememberItem(await ctx.store.restoreItem(id)) } });
+      ctx.toast(subpages ? `Moved to Trash with ${plural(subpages, 'subpage')}` : 'Moved to Trash', { action: { label: 'Undo', run: async () => rememberItem(await ctx.store.restoreItem(id)) } });
     } },
   ], { label: `Actions for ${noteName(note)}`, placement: 'bottom-end' });
 }
@@ -685,11 +762,13 @@ registerActions({
   },
   'notes.list-more': ({ ctx }) => { listLimit += PAGE_SIZE; ctx.render(); },
   'notes.tasks-more': ({ ctx }) => { tasksLimit += 50; ctx.render(); },
+  'notes.toggle-page': ({ ctx, data }) => setPageExpanded(ctx, data.id),
   'notes.list-key': ({ ctx, el, event }) => {
-    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) || event.altKey || event.metaKey || event.ctrlKey) return;
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End', 'ArrowRight', 'ArrowLeft'].includes(event.key) || event.altKey || event.metaKey || event.ctrlKey) return;
     const rows = [...el.querySelectorAll('.notes-row')];
     const index = rows.indexOf(document.activeElement);
     if (index < 0) return;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { if (!event.shiftKey) treeKey(ctx, rows, index, event); return; }
     event.preventDefault();
     const next = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : Math.max(0, Math.min(rows.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)));
     rows[next].focus();
@@ -733,6 +812,41 @@ registerActions({
     if (input) input.value = '';
   },
 });
+
+/** Shows or hides a note's subpages in the Notes list (open: true | false | undefined to flip). Persists in prefs. */
+function setPageExpanded(ctx, id, open) {
+  const expanded = expandedPages(ctx);
+  const next = open ?? !expanded.has(id);
+  if (next === expanded.has(id)) return;
+  if (next) expanded.add(id); else expanded.delete(id);
+  ctx.prefs.set('expandedPages', [...expanded]);
+  ctx.render();
+}
+
+// Right shows a row's subpages (or moves to the first one when shown); Left hides them (or moves to the parent row).
+function treeKey(ctx, rows, index, event) {
+  const row = rows[index];
+  const children = Number(row.dataset.children) || 0;
+  const open = row.dataset.expanded === 'true';
+  const focusRow = target => {
+    if (!target) return;
+    target.focus();
+    target.scrollIntoView({ block: 'nearest' });
+    openNote(ctx, target.dataset.id);
+  };
+  if (event.key === 'ArrowRight') {
+    if (!children) return;
+    event.preventDefault();
+    if (!open) setPageExpanded(ctx, row.dataset.id, true);
+    else focusRow(rows[index + 1]);
+    return;
+  }
+  if (children && open) { event.preventDefault(); setPageExpanded(ctx, row.dataset.id, false); return; }
+  const parentId = row.dataset.parent;
+  if (!parentId) return;
+  event.preventDefault();
+  focusRow(rows.slice(0, index).reverse().find(other => other.dataset.id === parentId));
+}
 
 /** A note linked to the current page (title "Notes on …"), in the saved item's collection, opened in the side editor. */
 async function createPageNote(ctx, text, url = pageUrl(ctx)) {

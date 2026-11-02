@@ -4,8 +4,9 @@ import { html, cx } from './html.js';
 import { icon } from './icons.js';
 import { button, iconButton, collectionIcon, domainOf, relativeDate, shortDate, emptyState, skeleton, spinner, cover, highlightColor, TYPE_LABELS, TYPE_ICONS } from './components.js';
 import { registerActions } from './runtime.js';
+import { researchOffered } from './research-view.js';
 import { renderTagInput, openCollectionPicker } from './pickers.js';
-import { openAdd, ensureWindowId, requestPermission, defaultCollectionId, collectionLabel, saveCurrentTab, renderCaptureProgress } from './quick-add.js';
+import { openAdd, ensureWindowId, requestPermission, defaultCollectionId, collectionLabel, saveCurrentTab, renderCaptureProgress, renderPickerStatus } from './quick-add.js';
 import { renderPageNotes, createNote } from './notes.js';
 import { confirmTrash } from './note-editor.js';
 import { askAi } from './ai-panel.js';
@@ -154,6 +155,21 @@ async function newPageNote(ctx) {
 
 /* ------------------------------------------------------------------ view */
 
+/**
+ * Article capture for the current page: "Save article" opens the article preview, "Select parts" starts the page picker.
+ * A saved page offers "Update article" instead, plus "Research with AI" when research is offered (researchOffered).
+ */
+export function renderCaptureActions(ctx, { extension = true, item = null } = {}) {
+  const reading = ctx.state.articleCapture === 'reading';
+  const picking = ctx.state.picker?.status === 'selecting';
+  const only = extension ? '' : ' (extension only)';
+  return html`${button({ label: item ? 'Update article' : 'Save article', icon: 'newspaper', variant: 'ghost', size: 'sm', action: 'add.save-article',
+      disabled: !extension || reading, loading: reading, tooltip: extension ? (item ? 'Read the page again and replace the saved article text' : 'Save the readable text of this page') : `Save article${only}` })}
+    ${button({ label: 'Select parts', icon: 'square-dashed-mouse-pointer', variant: 'ghost', size: 'sm', action: 'add.select-parts', disabled: !extension || picking,
+      tooltip: extension ? 'Pick parts of the page to save' : `Select parts${only}` })}
+    ${item && researchOffered(ctx) ? button({ label: 'Research with AI', icon: 'telescope', variant: 'ghost', size: 'sm', action: 'research.start', data: { id: item.id } }) : ''}`;
+}
+
 const sectionHead = (id, title, count, trailing = '') => html`<div class="page-section-head">
   <h2 class="page-section-title" id="${id}">${title}</h2>${count ? html`<span class="page-section-count">${count}</span>` : ''}<span class="page-spacer"></span>${trailing}</div>`;
 
@@ -177,7 +193,8 @@ function renderSaveBar(ctx, page) {
     ${iconButton({ icon: 'notebook-pen', label: 'Save with note', action: 'add.save-with-note', variant: 'secondary' })}
     ${iconButton({ icon: 'camera', label: extension ? 'Screenshot' : 'Screenshot (extension only)', action: 'add.screenshot', variant: 'secondary', disabled: !extension })}
     ${iconButton({ icon: 'scan', label: extension ? 'Full-page screenshot' : 'Full-page screenshot (extension only)', action: 'add.full-page', variant: 'secondary', disabled: !extension || busy })}
-  </div>`;
+  </div>
+  <div class="page-quick" role="group" aria-label="Save the page content">${renderCaptureActions(ctx, { extension })}</div>`;
 }
 
 function renderSaved(ctx, page, item) {
@@ -201,6 +218,7 @@ function renderSaved(ctx, page, item) {
       ${button({ label: 'Edit details', icon: 'pencil', variant: 'ghost', size: 'sm', action: 'page.edit' })}
       ${button({ label: 'Screenshot', icon: 'camera', variant: 'ghost', size: 'sm', action: 'add.screenshot', disabled: !extension })}
       ${button({ label: 'Full page', icon: 'scan', variant: 'ghost', size: 'sm', action: 'add.full-page', disabled: !extension || busy })}
+      ${renderCaptureActions(ctx, { extension, item })}
     </div>`;
 }
 
@@ -345,7 +363,7 @@ export function renderPageTab(ctx) {
   const item = savedItem(ctx);
   return html`<div class="page-tab" data-key="page-tab:${canonical(page.url)}">
     ${page.demo ? html`<p class="page-demo">${icon('info', { size: 14 })}<span>Preview with a sample page. In Chrome this shows the tab you are on.</span></p>` : ''}
-    <section class="page-section page-save" aria-label="Save this page">${item ? renderSaved(ctx, page, item) : renderSaveBar(ctx, page)}${renderCaptureProgress(ctx)}</section>
+    <section class="page-section page-save" aria-label="Save this page">${item ? renderSaved(ctx, page, item) : renderSaveBar(ctx, page)}${renderCaptureProgress(ctx)}${renderPickerStatus(ctx)}</section>
     ${renderNotesSection(ctx, page)}
     ${renderHighlights(ctx, item)}
     ${renderRelated(ctx, page, item)}

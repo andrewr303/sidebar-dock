@@ -144,7 +144,27 @@
 .notes-meta-item > .icon { flex: none; }
 .notes-meta-text { min-width: 0; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .notes-meta-tasks.is-complete { color: var(--success); }
+/* Subpages in the list: rows indent under their parent; a chevron beside a row shows or hides its subpages. */
+.notes-item { position: relative; }
+.notes-list.is-tree .notes-row { padding-inline-start: calc(var(--space-5) + 18px + var(--depth, 0) * 14px); }
+.notes-chev {
+  position: absolute; z-index: 1;
+  inset-block-start: calc(var(--space-5) + 1px);
+  inset-inline-start: calc(var(--space-2) + var(--depth, 0) * 14px);
+  display: inline-grid; place-items: center;
+  width: 20px; height: 20px;
+  border-radius: var(--radius-xs);
+  color: var(--fg-subtle);
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.notes-chev::before { content: ""; position: absolute; inset: -2px; }
+.notes-chev:hover { background: var(--bg-active); color: var(--fg-default); }
+.notes-chev:focus-visible { outline-offset: 0; }
+.notes-chev > .icon { stroke-width: 2.25; transition: rotate var(--dur-base) var(--ease-out); }
+.notes-chev.is-open > .icon { rotate: 90deg; }
+.notes-meta-path .notes-meta-text { max-width: 200px; }
 [data-density="compact"] .notes-row { padding-block: var(--space-4); }
+[data-density="compact"] .notes-chev { inset-block-start: calc(var(--space-4) + 1px); }
 [data-density="compact"] .notes-row-preview { -webkit-line-clamp: 1; line-clamp: 1; }
 
 /* ---------- Editor pane ---------- */
@@ -480,6 +500,35 @@
 .ne-ai-title { margin: 0; color: var(--fg-default); font-size: var(--text-md); font-weight: var(--weight-semibold); line-height: var(--lh-md); }
 .ne-ai-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); flex: none; padding: var(--space-4) var(--space-4) var(--space-4) var(--space-6); border-block-start: 1px solid var(--border-subtle); background: var(--bg-sunken); }
 
+/* ---------- Page path (breadcrumbs above a subpage's title) ---------- */
+.ne-crumbs { margin-block-end: var(--space-4); margin-inline-start: calc(var(--space-3) * -1); }
+.ne-crumbs[hidden] { display: none; }
+.ne-crumbs-list { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1); margin: 0; padding: 0; list-style: none; min-width: 0; }
+.ne-crumb-item { display: inline-flex; align-items: center; gap: var(--space-1); min-width: 0; max-width: 100%; }
+.ne-crumb-sep { flex: none; color: var(--fg-faint); }
+.ne-crumb {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  min-width: 0; max-width: 240px; min-height: var(--control-h-xs);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  font-size: var(--text-xs); line-height: var(--lh-xs);
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.ne-crumb:hover { background: var(--bg-hover); color: var(--fg-default); }
+.ne-crumb:focus-visible { outline-offset: -2px; }
+.ne-crumb.is-more { min-width: var(--control-h-xs); justify-content: center; }
+.ne-crumb-icon { flex: none; color: var(--fg-subtle); }
+.ne-crumb-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ne-side .ne-crumb { max-width: 160px; }
+
+/* ---------- Subpages ---------- */
+.ne-subpages { margin-block-start: var(--space-10); padding-inline-start: var(--be-gutter); font-size: var(--ne-text); }
+.ne-full .ne-subpages { max-inline-size: calc(72ch + var(--be-gutter)); margin-inline: auto; }
+.ne-subpages[hidden] { display: none; }
+.ne-subpages + .ne-links { margin-block-start: var(--space-8); }
+.ne-subpages-foot { margin-block-start: var(--space-2); margin-inline-start: calc(var(--space-3) * -1); }
+
 /* ---------- Backlinks ---------- */
 .ne-links { margin-block-start: var(--space-10); padding-inline-start: var(--be-gutter); font-size: var(--ne-text); }
 .ne-full .ne-links { max-inline-size: calc(72ch + var(--be-gutter)); margin-inline: auto; }
@@ -680,6 +729,10 @@
 .note-card-collection { display: inline-flex; align-items: center; gap: var(--space-3); flex: 0 1 auto; min-width: 0; color: var(--fg-muted); }
 .note-card-spacer { flex: 1; min-width: 0; }
 .note-card-bell { flex: none; display: inline-flex; color: var(--accent-soft-fg); }
+.note-card-path { display: inline-flex; align-items: center; gap: var(--space-3); flex: 0 1 auto; min-width: 0; color: var(--fg-muted); }
+.note-card-path > .icon { flex: none; color: var(--fg-subtle); }
+.note-card-path-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-card-subpages { flex: none; display: inline-flex; align-items: center; gap: var(--space-1); color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
 .note-card-time { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .note-card-menu { flex: none; margin-inline-end: calc(var(--space-3) * -1); color: var(--fg-subtle); }
 
@@ -795,6 +848,7 @@
 @media (prefers-reduced-motion: reduce) {
   .ne-ai-card { animation: none; }
   .ne-ai-wait > span { animation: none; }
+  .notes-chev, .notes-chev > .icon, .ne-crumb { transition: none; }
 }
 @media (prefers-contrast: more) {
   .note-card, .task-group { box-shadow: 0 0 0 1px var(--border-strong); }

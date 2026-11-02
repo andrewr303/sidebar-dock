@@ -27,6 +27,21 @@
  *   openSidePanel | still:open-sidepanel { windowId? } -> { opened, windowId }, newNote | still:new-note,
  *   importBrowserBookmarks
  *   still:snapshots          { op: 'list'|'create'|'restore'|'delete', args[] } -> lib/storage/snapshots.js results
+ *   still:capture-article    { tabId?, windowId?, collectionId?, tags?, note?, title?, save?: boolean }
+ *                            -> save false (the side panel preview): { article, existing, url, tabId, windowId } where
+ *                               article is a cleaned ArticleResult ({ ok: false, code, error } when nothing was readable),
+ *                               existing the saved item at that address (summary) or null, url the address it saves under;
+ *                               save true: saved Item + { created, updated } (an already saved page only gets fresh article
+ *                               text and missing metadata). { needsPermission } exactly like getPageContext.
+ *   still:start-picker       { tabId?, windowId?, from: 'panel' | 'menu' } -> { requestId, tabId, windowId } | { needsPermission }
+ *                               Injects the page picker; its single result comes back as still:picker-result.
+ *   still:picker-result      content script only (the picker in frame 0 of the tab it was started in, with a request id
+ *                            the worker issued): { requestId, from, result } | { requestId, from, cancelled: true }.
+ *                            from 'menu' saves (badge + notification); from 'panel' is read by the side panel itself.
+ *
+ * Senders: content scripts share the extension id, so senders are classified by origin (sender.url outside
+ * chrome-extension://<id>/), never by sender.tab (a full-tab Still page has one). A content script may only send
+ * still:picker-result; everything else from a web page, including still:store, is refused.
  *
  * Storage safety (lib/storage/): on every worker start the snapshot gate compares the manifest version with
  * still.meta.v1.lastVersion and, when it changed, snapshots all Still data (reason 'update') before any library operation
@@ -39,7 +54,8 @@
  *   still:active-tab { tab: { tabId, windowId, url, title, favIconUrl, saved, itemId } }   (only with 'tabs')
  *   still:open-add  { payload: { url, title, kind: 'page'|'link'|'image', sourceUrl }, windowId, requestId }
  *   still:open-note { id, windowId, requestId }
- * still:open-add and still:open-note are retried for about 2 s while the side panel loads: the side panel
+ *   still:research  { itemId, windowId, requestId }   ("Save and research with AI": the item is already saved)
+ * still:open-add, still:open-note and still:research are retried for about 2 s while the side panel loads: the side panel
  * answers with sendResponse({ ok: true }) once handled and ignores a requestId it has already seen.
  */
 import {
@@ -48,8 +64,10 @@ import {
 } from './lib/store.js';
 import {
   buildCapture, readPageMetadata, readPageContext, collectionMenuEntries, parseSaveToMenuId, saveToMenuId,
-  resolveCaptureCollection, findSavedItem, indexSavedUrls, isPlaceholderTitle, isVideoUrl, normalizeTags,
+  resolveCaptureCollection, findSavedItem, indexSavedUrls, savedFromSource, isPlaceholderTitle, isVideoUrl, normalizeTags,
   normalizeRecentCollections, PAGE_TEXT_LIMIT, CHOOSE_MENU_ID, SEPARATOR_MENU_ID, INBOX_MENU_ID,
+  ARTICLE_LIMIT, ARTICLE_SCRIPT_FILES, PICKER_SCRIPT_FILES, runArticleExtract, startPagePicker, normalizeArticleResult,
+  articleSaveUrl, buildArticleCapture, savedSelectionMessage, PANEL_DRAFTS_KEY,
 } from './lib/capture.js';
 import { assertCaptureTab, captureRateLimiter, captureFullPagePixels, checkCaptureCancelled, pngDataUrlBlob } from './lib/full-page-capture.js';
 import { configureSnapshotWorker, handleSnapshotRequest, isSnapshotKey, SNAPSHOT_ALARM, SNAPSHOT_MESSAGE } from './lib/storage/snapshots.js';
@@ -82,6 +100,10 @@ const MENU_ITEMS = [
   { id: 'still-screenshot', title: 'Save a screenshot to Still', contexts: ['action'] },
   { id: 'still-screenshot-full', title: 'Save full-page screenshot to Still', contexts: ['page', 'action'], documentUrlPatterns: WEB_PAGES },
   { id: 'still-open-library', title: 'Open Still in a new tab', contexts: ['action'] },
+  // New top-level items go before the "Save … to" parents: those are recreated at the end on every rebuild.
+  { id: 'still-save-article', title: 'Save article to Still', contexts: ['page'], documentUrlPatterns: WEB_PAGES },
+  { id: 'still-select-parts', title: 'Select parts of page…', contexts: ['page'], documentUrlPatterns: WEB_PAGES },
+  { id: 'still-save-research', title: 'Save and research with AI', contexts: ['page'], documentUrlPatterns: WEB_PAGES },
   { id: 'still-save-page-to', title: 'Save page to', contexts: ['page'], documentUrlPatterns: WEB_PAGES },
   { id: 'still-save-link-to', title: 'Save link to', contexts: ['link'], targetUrlPatterns: WEB_PAGES },
   { id: 'still-save-image-to', title: 'Save image to', contexts: ['image'], targetUrlPatterns: WEB_PAGES },
@@ -90,7 +112,11 @@ const SAVE_TO_MENUS = { page: 'still-save-page-to', link: 'still-save-link-to', 
 const CAPTURE_MESSAGES = ['captureCurrent', 'saveCurrentTab', 'still:capture-current'];
 const MESSAGE_TYPES = ['still:store', SNAPSHOT_MESSAGE, ...CAPTURE_MESSAGES, 'captureScreenshot', 'still:capture-screenshot', 'captureFullPage',
   'cancelFullPageCapture', 'getFullPageCaptureJob', 'openLibrary', 'still:open-library', 'openSidePanel', 'still:open-sidepanel',
-  'newNote', 'still:new-note', 'importBrowserBookmarks', 'saveTabs', 'getActiveTab', 'getPageContext', 'listTabs'];
+  'newNote', 'still:new-note', 'importBrowserBookmarks', 'saveTabs', 'getActiveTab', 'getPageContext', 'listTabs',
+  'still:capture-article', 'still:start-picker', 'still:picker-result'];
+// Picker requests survive a worker restart in storage.session (cleared with the browser, never readable by pages).
+const PICKER_SESSION_KEY = 'still.capture.pickers.v1';
+const PICKER_TTL_MS = 30 * 60 * 1000;
 
 // Badge and broadcast calls are best effort: a closed view or a missing API never fails the capture.
 function attempt(call) {
@@ -321,8 +347,9 @@ async function saveTabs(input) {
     if (!url || seen.has(key)) { skipped++; continue; }
     seen.add(key);
     const existing = findSavedItem(library, url);
-    // An existing item keeps its type, title and (for quick saves) its collection.
-    const entry = { url, tags, collectionId: explicit || !existing ? target.collectionId : '' };
+    // An existing item keeps its type, title and (for quick saves) its collection. A tab an article was saved from under
+    // its canonical address updates that article (saved at its own address) instead of adding a copy.
+    const entry = { url: savedFromSource(existing, url) ? existing.url : url, tags, collectionId: explicit || !existing ? target.collectionId : '' };
     if (!existing) entry.type = isVideoUrl(url) ? 'video' : 'bookmark';
     if (!existing || isPlaceholderTitle(existing.title, url)) entry.title = tab.title || '';
     try {
@@ -358,6 +385,16 @@ async function getActiveTab(input) {
     saved: Boolean(saved), itemId: saved?.id || '' };
 }
 
+// An injection failed: name the grant the UI must request inside a click, or rethrow when access was already granted
+// (the page itself refuses scripts, for example the Chrome Web Store).
+async function missingAccess(tab, error) {
+  if (!tab.url) return { needsPermission: 'tabs', tabId: tab.id, windowId: tab.windowId };
+  const { protocol, hostname } = new URL(tab.url);
+  const origin = `${protocol}//${hostname}/*`;
+  if (await hasPermission({ origins: [origin] })) throw error;
+  return { needsPermission: origin, tabId: tab.id, windowId: tab.windowId };
+}
+
 async function getPageContext(input) {
   const tab = await targetTab(input);
   if (tab.url && !/^https?:\/\//i.test(tab.url)) throw new Error('Still can read web pages only (http or https).');
@@ -365,11 +402,7 @@ async function getPageContext(input) {
   try {
     [result] = await api.scripting.executeScript({ target: { tabId: tab.id }, func: readPageContext, args: [PAGE_TEXT_LIMIT] });
   } catch (error) {
-    if (!tab.url) return { needsPermission: 'tabs', tabId: tab.id, windowId: tab.windowId };
-    const { protocol, hostname } = new URL(tab.url);
-    const origin = `${protocol}//${hostname}/*`;
-    if (await hasPermission({ origins: [origin] })) throw error;
-    return { needsPermission: origin, tabId: tab.id, windowId: tab.windowId };
+    return missingAccess(tab, error);
   }
   const page = result?.result || {};
   let url = '';
@@ -379,6 +412,191 @@ async function getPageContext(input) {
   const text = typeof page.text === 'string' ? page.text.slice(0, PAGE_TEXT_LIMIT) : '';
   return { tabId: tab.id, url, title: page.title || tab.title || '', excerpt: page.excerpt || '', cover,
     selection: page.selection || '', text, truncated: page.truncated === true, lang: page.lang || '' };
+}
+
+/* ------------------------------------------------------------------ article capture and the page picker */
+
+const webAddress = value => { try { return /^https?:\/\//i.test(value || '') ? safeUrl(value) : ''; } catch { return ''; } };
+const newRequestId = () => globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+// The second injection targets the document the files ran in, so a navigation in between cannot mix two pages.
+const sameDocument = (tab, injected) => (typeof injected?.documentId === 'string' && injected.documentId
+  ? { tabId: tab.id, documentIds: [injected.documentId] } : { tabId: tab.id, frameIds: [0] });
+
+// Loads Readability and the extractor into frame 0 (isolated world), then reads the article from that same document.
+// Resolves { article, pageUrl } (article cleaned by normalizeArticleResult) or { needsPermission, tabId, windowId }.
+export async function extractArticle(tab) {
+  if (!Number.isInteger(tab?.id)) throw new Error('No active browser tab was found.');
+  if (tab.url && !/^https?:\/\//i.test(tab.url)) throw new Error('Still can read web pages only (http or https).');
+  let result;
+  try {
+    const [loaded] = await api.scripting.executeScript({ target: { tabId: tab.id, frameIds: [0] }, files: ARTICLE_SCRIPT_FILES });
+    [result] = await api.scripting.executeScript({ target: sameDocument(tab, loaded), func: runArticleExtract, args: [{ maxChars: ARTICLE_LIMIT }] });
+  } catch (error) {
+    return missingAccess(tab, error);
+  }
+  const pageUrl = webAddress(tab.url) || webAddress(result?.result?.url);
+  return { article: normalizeArticleResult(result?.result, { pageUrl }), pageUrl };
+}
+
+const itemSummary = item => (item ? { id: item.id, type: item.type, title: item.title, url: item.url, collectionId: item.collectionId || '', updatedAt: item.updatedAt } : null);
+
+// Saves a readable article. A page saved before (under the address it saves to, or under the tab's own address) keeps
+// its note, title, tags and collection and only gets fresh article text plus metadata it was missing.
+export async function saveArticle(tab, article, { pageUrl = webAddress(tab?.url) || article?.url, ...options } = {}) {
+  if (!article?.ok) throw new Error(article?.error || 'Still could not read an article on this page.');
+  const library = await readLibrary();
+  const url = articleSaveUrl(article, pageUrl);
+  const existing = findSavedItem(library, url) || (pageUrl ? findSavedItem(library, pageUrl) : null);
+  const target = existing ? { collectionId: '' } : resolveCaptureCollection(library, options.collectionId);
+  const input = buildArticleCapture(article, { ...options, url, pageUrl, existing, collectionId: target.collectionId, fallbackTitle: tab?.title });
+  const item = await saveItem(input);
+  await showSavedBadge(tab?.id);
+  const created = !(library.items || []).some(entry => entry?.id === item.id);
+  return { ...item, created, updated: !created, ...(target.collectionFallback ? { collectionFallback: true } : {}) };
+}
+
+async function captureArticleRequest(input) {
+  const tab = await targetTab(input);
+  const extracted = await extractArticle(tab);
+  if (extracted.needsPermission) return extracted;
+  const { article, pageUrl } = extracted;
+  if (input.save !== true) {
+    // The preview reads the article straight from this reply: no broadcast carries it.
+    if (!article.ok) return { article, existing: null, url: pageUrl, tabId: tab.id, windowId: tab.windowId ?? null };
+    const library = await readLibrary();
+    const url = articleSaveUrl(article, pageUrl);
+    const existing = findSavedItem(library, url) || (pageUrl ? findSavedItem(library, pageUrl) : null);
+    return { article, existing: itemSummary(existing), url: existing?.url || url, tabId: tab.id, windowId: tab.windowId ?? null };
+  }
+  return saveArticle(tab, article, { pageUrl, ...captureOptions(input) });
+}
+
+// Context-menu article save. When no article is readable (or the page refuses scripts) the page is saved the usual way,
+// so the click never loses the page.
+async function captureArticleForMenu(tab, info = {}) {
+  const page = { ...tab, url: tab?.url || info.pageUrl };
+  try {
+    const extracted = await extractArticle(page);
+    if (extracted.article?.ok) return await saveArticle(page, extracted.article, { pageUrl: extracted.pageUrl });
+    console.info('Still saved the page without article text:', extracted.article?.error || 'no access to the page');
+  } catch (error) { console.info('Still saved the page without article text:', error?.message); }
+  return captureTab(page, { pageUrl: info.pageUrl || page.url, menuItemId: 'still-save-page' });
+}
+
+// "Save and research with AI": the panel is opened inside the click (no await before it), the article is saved, then
+// the side panel is asked to start research on it. Without a panel the item opens in a Still tab instead.
+function saveAndResearch(tab, info) {
+  const opening = openSidePanel(tab).catch(() => false);
+  return (async () => {
+    const item = await captureArticleForMenu(tab, info);
+    const delivered = (await opening) && await deliverToPanel({ type: 'still:research', itemId: item.id, windowId: tab?.windowId });
+    if (!delivered) await openLibrary(item.id);
+    return item;
+  })();
+}
+
+const pickerRequests = new Map();
+const freshRecords = (records, now = Date.now()) => Object.fromEntries(Object.entries(records && typeof records === 'object' ? records : {})
+  .filter(([, record]) => record && typeof record === 'object' && now - Number(record.startedAt ?? record.createdAt) <= PICKER_TTL_MS));
+const newestRecords = (records, limit) => Object.fromEntries(Object.entries(records)
+  .sort(([, a], [, b]) => Number(b.startedAt ?? b.createdAt) - Number(a.startedAt ?? a.createdAt)).slice(0, limit));
+
+async function readSession(key) {
+  try { return (await api.storage?.session?.get?.(key))?.[key] || {}; } catch { return {}; }
+}
+async function writeSession(key, value) {
+  try { await api.storage?.session?.set?.({ [key]: value }); } catch (error) { console.warn('Still session storage:', error?.message); }
+}
+
+async function rememberPicker(requestId, record) {
+  pickerRequests.set(requestId, record);
+  const stored = freshRecords(await readSession(PICKER_SESSION_KEY));
+  stored[requestId] = record;
+  await writeSession(PICKER_SESSION_KEY, newestRecords(stored, 20));
+}
+
+async function findPicker(requestId) {
+  const record = pickerRequests.get(requestId) || (await readSession(PICKER_SESSION_KEY))[requestId];
+  return record && Date.now() - Number(record.startedAt) <= PICKER_TTL_MS ? record : null;
+}
+
+async function forgetPicker(requestId) {
+  pickerRequests.delete(requestId);
+  const stored = await readSession(PICKER_SESSION_KEY);
+  if (Object.hasOwn(stored, requestId)) { delete stored[requestId]; await writeSession(PICKER_SESSION_KEY, freshRecords(stored)); }
+}
+
+// Injects the picker into frame 0 and starts it with a fresh request id. Its one result message must come back from
+// that tab, frame and document with that id (handlePickerResult).
+export async function startPicker(tab, { from = 'panel' } = {}) {
+  const origin = from === 'menu' ? 'menu' : 'panel';
+  if (!Number.isInteger(tab?.id)) throw new Error('No active browser tab was found.');
+  if (tab.url && !/^https?:\/\//i.test(tab.url)) throw new Error('Still can select parts of web pages only (http or https).');
+  let loaded;
+  try { [loaded] = await api.scripting.executeScript({ target: { tabId: tab.id, frameIds: [0] }, files: PICKER_SCRIPT_FILES }); }
+  catch (error) { return missingAccess(tab, error); }
+  const requestId = newRequestId();
+  const documentId = typeof loaded?.documentId === 'string' ? loaded.documentId : '';
+  // Remembered before start(): a quick Done must find its request.
+  await rememberPicker(requestId, { tabId: tab.id, windowId: Number.isInteger(tab.windowId) ? tab.windowId : null, from: origin, documentId, startedAt: Date.now() });
+  let started;
+  try { [started] = await api.scripting.executeScript({ target: sameDocument(tab, loaded), func: startPagePicker, args: [{ requestId, from: origin }] }); }
+  catch (error) { await forgetPicker(requestId); throw error; }
+  if (started?.result?.started !== true) {
+    await forgetPicker(requestId);
+    throw new Error(started?.result?.error || 'The page picker could not start on this page.');
+  }
+  return { requestId, tabId: tab.id, windowId: Number.isInteger(tab.windowId) ? tab.windowId : null };
+}
+
+// Content scripts carry this extension's id too; only the origin tells them apart from Still's own pages.
+export function isContentSender(sender) {
+  const base = api.runtime.getURL('');
+  if (typeof sender?.url === 'string') return !sender.url.startsWith(base);
+  if (typeof sender?.origin === 'string') return `${sender.origin}/` !== base;
+  return false;
+}
+
+const pickerSenderMatches = (record, sender) => sender?.tab?.id === record.tabId && sender.frameId === 0
+  && (!record.documentId || typeof sender.documentId !== 'string' || sender.documentId === record.documentId);
+
+async function notify(id, title, message) {
+  await attempt(() => api.notifications.create(id, { type: 'basic', iconUrl: 'icons/icon128.png', title: String(title || 'Still').slice(0, 200), message, priority: 0 }));
+}
+
+// A side panel that is open in the picker's window takes the result straight from the page. When none is open (closed
+// while the user was selecting), the cleaned result waits in storage.session until that window's panel starts.
+async function stashPanelDraft(requestId, record, article) {
+  if (!article.ok || typeof api.runtime.getContexts !== 'function') return false;
+  let panels;
+  try {
+    panels = await api.runtime.getContexts({ contextTypes: ['SIDE_PANEL'], ...(Number.isInteger(record.windowId) ? { windowIds: [record.windowId] } : {}) });
+  } catch { return false; }
+  if (panels?.length) return false;
+  const drafts = freshRecords(await readSession(PANEL_DRAFTS_KEY));
+  drafts[requestId] = { draftId: requestId, windowId: record.windowId, tabId: record.tabId, createdAt: Date.now(), article };
+  await writeSession(PANEL_DRAFTS_KEY, newestRecords(drafts, 3));
+  return true;
+}
+
+async function handlePickerResult(input, sender) {
+  const requestId = typeof input.requestId === 'string' && input.requestId.length <= 200 ? input.requestId : '';
+  const record = requestId ? await findPicker(requestId) : null;
+  if (!record || !pickerSenderMatches(record, sender)) throw new Error('Still did not ask for this page selection.');
+  await forgetPicker(requestId);
+  if (input.cancelled === true) return { cancelled: true };
+  const pageUrl = webAddress(sender.url) || webAddress(sender.tab?.url);
+  const article = normalizeArticleResult(input.result, { pageUrl });
+  if (record.from !== 'menu') return { received: true, stashed: await stashPanelDraft(requestId, record, article) };
+  const site = pageUrl ? new URL(pageUrl).hostname.replace(/^www\./, '') : 'the page';
+  if (!article.ok) {
+    await notify(`still:capture:${requestId}`, 'Nothing was saved', `${article.error} (${site})`);
+    return { saved: false, error: article.error };
+  }
+  const tab = { id: record.tabId, windowId: record.windowId, url: pageUrl, title: sender.tab?.title || '' };
+  const item = await saveArticle(tab, article, { pageUrl });
+  await notify(`still:item:${item.id}`, item.title, savedSelectionMessage(article, item.url));
+  return { saved: true, id: item.id, created: item.created, updated: item.updated };
 }
 
 export async function createPageNote(tab) {
@@ -667,6 +885,12 @@ export async function handleMessage(message, sender) {
   if (!sender || sender.id !== api.runtime.id) throw new Error('Untrusted extension message.');
   if (!message || typeof message !== 'object') throw new Error('Invalid request.');
   const input = messageInput(message);
+  // A web page (through the picker content script) may only report the selection it was asked for.
+  if (isContentSender(sender)) {
+    if (message.type === 'still:picker-result') return handlePickerResult(input, sender);
+    throw new Error('Untrusted extension message.');
+  }
+  if (message.type === 'still:picker-result') throw new Error('Only the page picker reports selections.');
   if (message.type === 'still:store') return handleStoreOperation(input.operation, input.args);
   if (message.type === SNAPSHOT_MESSAGE) return handleSnapshotRequest(input.op, input.args, snapshots);
   if (CAPTURE_MESSAGES.includes(message.type)) return captureCurrentTab(input);
@@ -687,6 +911,8 @@ export async function handleMessage(message, sender) {
   if (message.type === 'listTabs') return listTabs(input);
   if (message.type === 'getActiveTab') return getActiveTab(input);
   if (message.type === 'getPageContext') return getPageContext(input);
+  if (message.type === 'still:capture-article') return captureArticleRequest(input);
+  if (message.type === 'still:start-picker') return startPicker(await targetTab(input), { from: input.from });
   throw new Error('Unknown Still request.');
 }
 
@@ -694,11 +920,21 @@ function handleMenuClick(info, tab) {
   if (info.menuItemId === 'still-open-library') { openLibrary().catch(reportError); return; }
   const saveTo = parseSaveToMenuId(info.menuItemId);
   if (saveTo?.choose) { chooseCollection(info, tab, saveTo.kind).catch(reportError); return; }
+  // Research lives in the side panel, so it opens even when saves are set to stay quiet.
+  if (info.menuItemId === 'still-save-research') { saveAndResearch(tab, info).catch(reportError); return; }
+  // The user is about to select on the page: no side panel (it would narrow the page); a notification confirms the save.
+  if (info.menuItemId === 'still-select-parts') {
+    startPicker({ ...tab, url: tab?.url || info.pageUrl }, { from: 'menu' })
+      .then(result => { if (result?.needsPermission) throw new Error('Chrome did not let Still select parts of this page.'); })
+      .catch(reportError);
+    return;
+  }
   // Side panel open is invoked directly inside the user gesture, before capture awaits.
   const quiet = libraryCache?.settings?.openPanelOnSave === false && !['still-screenshot', 'still-screenshot-full'].includes(info.menuItemId);
   const panelOpening = quiet ? Promise.resolve(false) : openSidePanel(tab).catch(reportError);
   if (info.menuItemId === 'still-screenshot') { captureScreenshot(tab).catch(reportError); return; }
   if (info.menuItemId === 'still-screenshot-full') { panelOpening.then(() => captureFullPage(tab)).catch(reportError); return; }
+  if (info.menuItemId === 'still-save-article') { captureArticleForMenu(tab, info).catch(reportError); return; }
   if (saveTo) {
     captureTab(tab, info, { collectionId: saveTo.collectionId })
       .then(item => (saveTo.collectionId && !item.collectionFallback ? touchRecentCollection(saveTo.collectionId) : null))
@@ -764,4 +1000,4 @@ if (api?.runtime?.onMessage) {
   hasPermission({ permissions: ['tabs'] }).then(granted => { if (granted) startTabTracking(); });
 }
 
-export { MENU_ITEMS, MESSAGE_TYPES, STORAGE_KEY };
+export { MENU_ITEMS, MESSAGE_TYPES, STORAGE_KEY, PANEL_DRAFTS_KEY };

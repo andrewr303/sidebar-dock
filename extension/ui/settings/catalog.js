@@ -26,6 +26,12 @@ export const SETTINGS_SECTIONS = Object.freeze([
   { id: 'ai', group: 'ai', label: 'AI models', icon: 'sparkles', summary: 'Providers, default models, local bridge',
     description: 'Connect the models Still uses for Ask, note writing tools and save suggestions.',
     keywords: 'ai model provider api key anthropic claude openai gpt chatgpt gemini ollama openrouter bridge assistant chat' },
+  { id: 'assistant', group: 'ai', label: 'Assistant permissions', icon: 'shield-check', summary: 'Changes the assistant makes without asking',
+    description: 'Choose which changes the assistant applies right away and which wait for your review. Every change can be undone.',
+    keywords: 'permissions permission approve approval ask allow confirm review auto apply automatic trusted full access custom undo create organize edit delete dashboard collections links folders notes tags trash' },
+  { id: 'research', group: 'ai', label: 'Research agent', icon: 'telescope', summary: 'Web and GitHub research for saved pages',
+    description: 'How Research with AI reads a saved page, searches the web and GitHub, and writes what it finds into the page.',
+    keywords: 'research agent expand deep dive web search fetch github managed agents claude sonnet anthropic subpages budget spending cost cap depth' },
   { id: 'search', group: 'ai', label: 'Semantic search', icon: 'brain', summary: 'Embeddings and the search index',
     description: 'Find items by meaning, not only by matching words.', keywords: 'semantic embeddings index vector voyage meaning' },
   { id: 'agents', group: 'ai', label: 'Agents & MCP', icon: 'terminal', summary: 'Claude Code, Codex, Claude Desktop',
@@ -46,7 +52,7 @@ export const SETTINGS_SECTIONS = Object.freeze([
 const SECTION_IDS = new Set(SETTINGS_SECTIONS.map(section => section.id));
 // Section ids from earlier versions and natural aliases, so old deep links keep working.
 const ALIASES = { theme: 'appearance', themes: 'appearance', 'new-tab': 'newtab', dashboard: 'newtab', wallpaper: 'newtab', backup: 'library',
-  models: 'ai', providers: 'ai', mcp: 'agents', account: 'accounts', keys: 'shortcuts' };
+  models: 'ai', providers: 'ai', mcp: 'agents', account: 'accounts', keys: 'shortcuts', permissions: 'assistant', approvals: 'assistant' };
 
 export const isSection = id => SECTION_IDS.has(id);
 export const sectionById = id => SETTINGS_SECTIONS.find(section => section.id === id) || null;

@@ -28,6 +28,7 @@ import * as settings from './ui/settings.js';
 import * as dashboard from './ui/dashboard/index.js';
 import * as stickies from './ui/stickies.js';
 import * as assistantPage from './ui/assistant-page.js';
+import * as research from './ui/research.js';
 
 const params = new URLSearchParams(location.search);
 const isExtension = !!globalThis.chrome?.runtime?.id;
@@ -300,7 +301,11 @@ function applyBootParams() {
   if (item && library.items.some(i => i.id === item)) state.panel = { kind: 'item', id: item, tab: 'details' };
 }
 
-const modules = [sidebar, command, collections, libraryView, detail, map, quickAdd, pickers, page, notes, noteEditor, aiPanel, settings, dashboard, stickies, assistantPage];
+// research (the side panel's still:research listener) starts before aiPanel: aiPanel's init waits for the AI connections
+// (a local bridge may take seconds to answer), and the worker retries "Save and research with AI" for only about 2 s, like
+// still:open-add and still:open-note, whose modules also start earlier. A request handled before aiPanel's init still
+// opens in the assistant: research events carry the whole conversation, so the panel repaints from the next one.
+const modules = [sidebar, command, collections, libraryView, detail, map, quickAdd, pickers, page, notes, noteEditor, research, aiPanel, settings, dashboard, stickies, assistantPage];
 
 /** Keeps the browser tab title in step with the view (the new tab always reads "New Tab"). */
 function updateTitle() {

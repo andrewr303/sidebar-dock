@@ -35,11 +35,11 @@ const library = () => ({ schemaVersion: 1, settings: {},
 
 test('CSV export writes the documented columns, escapes formulas and skips Trash', () => {
   const csv = exportItemsCsv(library());
-  assert.ok(csv.startsWith('﻿url,title,tags,note,excerpt,type,collection,created,updated\r\n'));
+  assert.ok(csv.startsWith('﻿url,title,tags,note,excerpt,type,collection,created,updated,site,author,published,language\r\n'));
   const rows = parseCsv(csv);
   assert.deepEqual(rows[0], [...CSV_COLUMNS]);
   assert.equal(rows.length, 4, 'header plus three items; the trashed one is left out');
-  assert.deepEqual(rows[1], ['https://example.com/?a=1&b=2', 'Useful, "quoted" link', 'design, ideas', 'Line one\nLine two', 'Short', 'bookmark', 'Research / Deeper', '2026-01-02T03:04:05.000Z', '2026-02-03T04:05:06.000Z']);
+  assert.deepEqual(rows[1], ['https://example.com/?a=1&b=2', 'Useful, "quoted" link', 'design, ideas', 'Line one\nLine two', 'Short', 'bookmark', 'Research / Deeper', '2026-01-02T03:04:05.000Z', '2026-02-03T04:05:06.000Z', '', '', '', '']);
   assert.equal(rows[2][1], "'=SUM(A1:A2)", 'a spreadsheet will not run it as a formula');
   assert.equal(rows[2][3], "'- [ ] a task");
   assert.equal(rows[2][0], '');

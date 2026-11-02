@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { hueForDomain, tileHue, notePreviewSource, readingMinutes } from '../extension/ui/cards.js';
 import { layoutFor, viewFacets, selectRange, dateGroupLabel, groupByDate, parseTags, unionTags, undoFor, planMerge, confirmTrash, trashItems } from '../extension/ui/library.js';
-import { findHighlightRanges, readerSource, reminderPresets, reminderLabel, highlightColor } from '../extension/ui/detail.js';
+import { findHighlightRanges, readerSource, reminderPresets, reminderLabel, highlightColor, bylineParts } from '../extension/ui/detail.js';
+import { siteIcon } from '../extension/ui/components.js';
 import { filterMapItems, similarEdges, relaxLayout, crowdedLabels, labelAnchor, nodeRadius, MAP_WIDTH, MAP_HEIGHT } from '../extension/ui/map.js';
 import { buildRelationshipGraph } from '../extension/lib/library-views.js';
 
@@ -220,4 +221,18 @@ test('moving to Trash asks first only when "Confirm before moving items to Trash
   await confirmTrash(untitled.ctx, [untitled.ctx.library.items[1]]);
   assert.equal(untitled.seen.asked[0].title, 'Move this item to Trash?');
   assert.equal(await confirmTrash(untitled.ctx, []), true, 'no prompt when nothing would move');
+});
+
+test('a captured article shows its site, author, date and its own page icon', () => {
+  const article = { url: 'https://blog.example.com/post', siteName: 'Example Blog', author: 'Ada Lovelace', publishedAt: '2024-03-05T00:00:00.000Z' };
+  const parts = bylineParts(article);
+  assert.deepEqual(parts.slice(0, 2), ['Example Blog', 'By Ada Lovelace']);
+  assert.match(parts[2], /2024/, 'an older publication date names its year');
+  assert.deepEqual(bylineParts({ url: 'https://example.com/a', siteName: 'example.com' }), [], 'a site name that only repeats the address is left out');
+  assert.deepEqual(bylineParts({ url: 'https://example.com/a', publishedAt: 'not a date' }), []);
+  assert.deepEqual(bylineParts(null), []);
+  const own = String(siteIcon('https://example.com/a', { size: 14, src: 'https://example.com/icon.png' }));
+  assert.match(own, /class="site-icon-img" src="https:\/\/example.com\/icon.png"[^>]*referrerpolicy="no-referrer"/);
+  assert.match(own, /class="favicon site-icon-fallback/, 'the letter tile stays underneath');
+  assert.doesNotMatch(String(siteIcon('https://example.com/a', { src: 'javascript:alert(1)' })), /javascript:/, 'only safe image addresses are used');
 });

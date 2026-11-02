@@ -161,10 +161,30 @@ function tagBits(item, limit = 3) {
 }
 
 const sentence = text => text === 'Just now' ? 'just now' : text;
-function itemDate(item, view) {
-  if (view === 'trash' && item.deletedAt) return `Deleted ${sentence(relativeDate(item.deletedAt))}`;
+function itemDate(item, view, ctx) {
+  if (view === 'trash' && item.deletedAt) {
+    // Subpages trashed with a page are not rows of their own in Trash: the page's row counts them.
+    const together = ctx?.select.trashedWith?.(item.id) || 0;
+    return `Deleted ${sentence(relativeDate(item.deletedAt))}${together ? ` with ${together === 1 ? '1 subpage' : `${together} subpages`}` : ''}`;
+  }
   return relativeDate(item.createdAt);
 }
+
+/** A subpage's parent path for list rows and search results: "Project › Research", the far end shortened with "…". */
+export function pagePathLabel(titles = [], max = 2) {
+  const names = (titles || []).map(title => String(title ?? '').trim()).filter(Boolean);
+  if (!names.length) return '';
+  return names.length > max ? ['…', ...names.slice(-max)].join(' › ') : names.join(' › ');
+}
+
+/** "Project › Research" for an item inside other pages (shown where lists are flat: search, favorites, tags). */
+export function pathOfItem(ctx, item, title = entry => entry.title) {
+  return pagePathLabel((ctx.select.pagePath?.(item.id) || []).map(entry => title(entry) || 'Untitled'));
+}
+const pathBit = (ctx, item) => {
+  const path = item.type === 'note' ? pathOfItem(ctx, item) : '';
+  return path ? html`${dot}<span class="item-path" title="In ${path}">${icon('file-text', { size: 12 })}<span class="sr-only">In </span><span class="item-path-text">${path}</span></span>` : '';
+};
 
 /** Small status icons on the end of a row: favorite, highlights, notes, tasks, reminder, sticky note, file. */
 export function indicators(ctx, item, { compact = false } = {}) {
@@ -179,6 +199,8 @@ export function indicators(ctx, item, { compact = false } = {}) {
   if (notes) parts.push(html`<span class="item-ind" title="${notes} ${notes === 1 ? 'note' : 'notes'} on this page">${icon('sticky-note', { size: 14 })}${notes}</span>`);
   else if (item.type !== 'note' && item.content && !compact) parts.push(html`<span class="item-ind" title="Has a note">${icon('notebook-pen', { size: 14 })}<span class="sr-only">Has a note</span></span>`);
   if (item.attachmentId && !compact) parts.push(html`<span class="item-ind" title="${item.fileName || 'Attached file'}">${icon('paperclip', { size: 14 })}<span class="sr-only">Attached file</span></span>`);
+  const subpages = item.deletedAt ? 0 : ctx.select.subpageCount?.(item.id) || 0;
+  if (subpages) parts.push(html`<span class="item-ind" title="${subpages} ${subpages === 1 ? 'subpage' : 'subpages'}">${icon('files', { size: 14 })}${subpages}<span class="sr-only"> ${subpages === 1 ? 'subpage' : 'subpages'}</span></span>`);
   if (item.favorite) parts.push(html`<span class="item-ind is-favorite" title="Favorite">${icon('star', { size: 14 })}<span class="sr-only">Favorite</span></span>`);
   return parts.length ? html`<span class="item-indicators">${parts}</span>` : '';
 }
@@ -230,7 +252,7 @@ function listRow(ctx, item, opts) {
     <span class="item-main">
       <span class="item-title">${item.title}</span>
       ${desc ? html`<span class="item-desc">${desc}</span>` : ''}
-      <span class="item-meta">${sourceBit(item)}${dot}<span class="item-date">${itemDate(item, opts.view)}</span>${opts.showCollection && item.collectionId ? html`${dot}${collectionBit(ctx, item)}` : ''}${tagBits(item)}</span>
+      <span class="item-meta">${sourceBit(item)}${dot}<span class="item-date">${itemDate(item, opts.view, ctx)}</span>${pathBit(ctx, item)}${opts.showCollection && item.collectionId ? html`${dot}${collectionBit(ctx, item)}` : ''}${tagBits(item)}</span>
       ${opts.view === 'highlights' ? quotes(item) : ''}
     </span>
     <span class="item-side">${indicators(ctx, item)}${rowActions(ctx, item, opts)}</span>`);
@@ -249,7 +271,7 @@ function headlineRow(ctx, item, opts) {
     <span class="item-lead">${item.url || item.sourceUrl ? favicon(item.url || item.sourceUrl, { size: 16 }) : html`<span class="item-type-glyph">${icon(TYPE_ICONS[item.type] || 'file', { size: 14 })}</span>`}${check(item, opts.selected)}</span>
     <span class="item-title">${item.title}</span>
     ${tagBits(item, 2)}
-    <span class="item-meta"><span class="item-source-text">${itemSource(item)}</span>${dot}<span class="item-date">${itemDate(item, opts.view)}</span></span>
+    <span class="item-meta"><span class="item-source-text">${itemSource(item)}</span>${dot}<span class="item-date">${itemDate(item, opts.view, ctx)}</span>${pathBit(ctx, item)}</span>
     <span class="item-side">${indicators(ctx, item, { compact: true })}${rowActions(ctx, item, opts)}</span>`);
 }
 
@@ -261,7 +283,7 @@ function noteCard(ctx, item, opts) {
     ${check(item, opts.selected)}
     <span class="note-head">${collection ? html`<span class="note-dot" style="--dot:${colorVar(collection.color)}" aria-hidden="true"></span>` : ''}<span class="item-title">${item.title}</span>${item.pinned ? html`<span class="note-pin" title="Pinned">${icon('pin', { size: 14 })}<span class="sr-only">Pinned</span></span>` : ''}</span>
     <span class="note-preview markdown-body">${previewOf(ctx, item)}</span>
-    <span class="item-meta">${domain ? html`<span class="item-source">${favicon(item.url, { size: 14 })}<span class="item-source-text">${domain}</span></span>${dot}` : ''}${tasks.total ? html`<span class="${cx('item-ind', tasks.done === tasks.total && 'is-done')}" title="${tasks.done} of ${tasks.total} tasks done">${icon('list-checks', { size: 14 })}${tasks.done}/${tasks.total}</span>${dot}` : ''}<span class="item-date">Edited ${sentence(relativeDate(item.updatedAt))}</span>${item.favorite ? html`<span class="item-ind is-favorite">${icon('star', { size: 14 })}<span class="sr-only">Favorite</span></span>` : ''}</span>
+    <span class="item-meta">${domain ? html`<span class="item-source">${favicon(item.url, { size: 14 })}<span class="item-source-text">${domain}</span></span>${dot}` : ''}${tasks.total ? html`<span class="${cx('item-ind', tasks.done === tasks.total && 'is-done')}" title="${tasks.done} of ${tasks.total} tasks done">${icon('list-checks', { size: 14 })}${tasks.done}/${tasks.total}</span>${dot}` : ''}<span class="item-date">Edited ${sentence(relativeDate(item.updatedAt))}</span>${pathBit(ctx, item)}${item.favorite ? html`<span class="item-ind is-favorite">${icon('star', { size: 14 })}<span class="sr-only">Favorite</span></span>` : ''}</span>
     ${rowActions(ctx, item, { ...opts, overlay: true })}`);
 }
 
@@ -274,7 +296,7 @@ function coverCard(ctx, item, opts) {
     <span class="item-card-body">
       <span class="item-title">${item.title}</span>
       ${item.excerpt ? html`<span class="item-desc">${item.excerpt}</span>` : ''}
-      <span class="item-meta">${sourceBit(item)}${dot}<span class="item-date">${itemDate(item, opts.view)}</span><span class="item-spacer"></span>${indicators(ctx, item, { compact: true })}</span>
+      <span class="item-meta">${sourceBit(item)}${dot}<span class="item-date">${itemDate(item, opts.view, ctx)}</span><span class="item-spacer"></span>${indicators(ctx, item, { compact: true })}</span>
     </span>`);
 }
 
@@ -294,7 +316,7 @@ function masonryTile(ctx, item, opts) {
 function sideMetaLine(ctx, item, opts) {
   const notes = notesOnPage(ctx, item);
   const highlights = item.highlights?.length || 0;
-  return html`<span class="item-media-meta"><span>${itemDate(item, opts.view)}</span>${notes ? html`<span class="item-ind" title="${notes} ${notes === 1 ? 'note' : 'notes'}">${icon('sticky-note', { size: 13 })}${notes}</span>` : ''}${highlights ? html`<span class="item-ind" title="${highlights} ${highlights === 1 ? 'highlight' : 'highlights'}">${icon('highlighter', { size: 13 })}${highlights}</span>` : ''}${item.favorite ? html`<span class="item-ind is-favorite" title="Favorite">${icon('star', { size: 13 })}<span class="sr-only">Favorite</span></span>` : ''}</span>`;
+  return html`<span class="item-media-meta"><span>${itemDate(item, opts.view, ctx)}</span>${notes ? html`<span class="item-ind" title="${notes} ${notes === 1 ? 'note' : 'notes'}">${icon('sticky-note', { size: 13 })}${notes}</span>` : ''}${highlights ? html`<span class="item-ind" title="${highlights} ${highlights === 1 ? 'highlight' : 'highlights'}">${icon('highlighter', { size: 13 })}${highlights}</span>` : ''}${item.favorite ? html`<span class="item-ind is-favorite" title="Favorite">${icon('star', { size: 13 })}<span class="sr-only">Favorite</span></span>` : ''}</span>`;
 }
 
 /** Side panel media card after the "Web Collections" reference: light = card with inset cover; dark = full-bleed cover under a scrim. */
@@ -317,7 +339,7 @@ function sideRow(ctx, item, opts) {
     <span class="item-lead">${itemThumb(ctx, item, { size: 'sm', className: 'is-small' })}${check(item, opts.selected)}</span>
     <span class="item-main">
       <span class="item-title">${item.title}</span>
-      <span class="item-meta">${sourceBit(item, { fav: 12 })}${dot}<span class="item-date">${itemDate(item, opts.view)}</span></span>
+      <span class="item-meta">${sourceBit(item, { fav: 12 })}${dot}<span class="item-date">${itemDate(item, opts.view, ctx)}</span>${pathBit(ctx, item)}</span>
     </span>
     <span class="item-side">${indicators(ctx, item, { compact: true })}${rowActions(ctx, item, opts)}</span>`);
 }

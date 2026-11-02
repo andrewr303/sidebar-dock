@@ -350,6 +350,11 @@ registerActions({
   'shell.side-menu': ({ ctx, el }) => ctx.openMenu(el, [
     { label: 'Open in full tab', icon: 'external-link', action: 'app.open-full' },
     { label: 'New collection', icon: 'folder-plus', run: () => openCollectionEditor(ctx, {}) },
+    // Page capture: the side panel sits next to the page it reads.
+    ...(ctx.env.isExtension && hasAction('add.save-article') ? [
+      { label: 'Save article…', icon: 'newspaper', action: 'add.save-article' },
+      { label: 'Select parts of page…', icon: 'square-dashed-mouse-pointer', action: 'add.select-parts', disabled: ctx.state.picker?.status === 'selecting' },
+    ] : []),
     ...(ctx.env.isExtension ? [{ label: 'Save all tabs', icon: 'layers', run: () => dispatchOr(ctx, 'add.save-tabs', () => openAdd(ctx, {})) }] : []),
     { separator: true },
     { label: nextTheme() === 'dark' ? 'Switch to dark theme' : 'Switch to light theme', icon: nextTheme() === 'dark' ? 'moon' : 'sun', run: () => ctx.store.updateSettings({ theme: nextTheme() }) },

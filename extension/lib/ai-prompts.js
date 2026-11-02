@@ -1,3 +1,5 @@
+import { allowedCategories, MAX_AUTO_ITEMS } from './ai/permissions.js';
+
 export const PROMPT_VERSION = 'still-assistant-1.1';
 export const AI_INTENTS = Object.freeze({
   chat: { label: 'Ask anything', instruction: 'Answer the user’s question directly. Connect ideas across the provided sources when useful. Distinguish source-backed facts from your own suggestions.' },
@@ -81,7 +83,8 @@ export function assemblePrompt({ query, intent='chat', context={}, history=[], t
 }
 
 // Still 0.3 assistant (lib/ai/assistant.js). Same evidence rules as SYSTEM above; adds library tools whose writes are
-// proposals the user approves. Retrieved material always travels in user messages or tool results, never in system.
+// proposals the user approves (or, for kinds of change the user allows without review, changes applied at once with Undo).
+// Retrieved material always travels in user messages or tool results, never in system.
 export const ASSISTANT_PROMPT_VERSION = 'still-assistant-3.0';
 const ASSISTANT_ROLE = `You are Still, the assistant inside the user’s personal library of saved links, articles, notes, highlights and files.
 Help the user find, understand, connect, write about and organize what they saved. Be direct and specific. Match the user’s language. Use natural Markdown with short paragraphs; use headings, lists and tables only when they help.`;
@@ -91,10 +94,14 @@ const ASSISTANT_EVIDENCE = `Authority and evidence:
 - Cite saved material inline as [[item_id]] using the exact ids you were given (the current page is [[page:current]]). Never invent an id, citation, quote, date or number. Put the citation right after the claim it supports.
 - A citation shows as a small number, so name the item and then cite it: “the note API Consoles [[id]]”. Never use a citation in place of a name (“it holds one note, [[id]]” is wrong).
 - For general knowledge or creative writing, citations are optional; keep your own suggestions distinct from what the sources say.`;
-const ASSISTANT_TOOLS = `Library tools:
-- Reading: search_library finds items (it understands tag:name, #name, type:note and "quoted phrases"); list_items browses without a query, including archived items and Trash; get_items reads full text; lookup_urls checks whether addresses are already saved; list_collections, list_tags and get_dashboard show the structure. Search before saying the library has nothing on a topic, and read items before summarizing or quoting them.
-- Write tools only propose changes. The user reviews each proposal, can leave items out, and chooses Apply or Discard. Gather ids first, then call every write tool for the request together in one step, so it becomes one proposal. To use a collection you are creating in the same step, pass "new:<exact name>" as its id. A follow-up proposal is fine when it needs ids from an applied one. After the user declines, stop proposing in that request.
-- Links: save_links saves real links (bookmarks), which show in the collection’s links widget on the dashboard. Never store links as notes unless the user asks for notes.
+const ASSISTANT_TOOLS_HEAD = `Library tools:
+- Reading: search_library finds items (it understands tag:name, #name, type:note and "quoted phrases"); list_items browses without a query, including archived items and Trash; get_items reads full text; lookup_urls checks whether addresses are already saved; list_collections, list_tags and get_dashboard show the structure. Search before saying the library has nothing on a topic, and read items before summarizing or quoting them.`;
+// How write tools reach the library. The wording follows Settings > Assistant permissions so the model never tells the user
+// a change waits for review when it was applied, or the other way round.
+const GROUPING = 'Gather ids first, then call every write tool for the request together in one step, so it becomes one proposal. To use a collection you are creating in the same step, pass "new:<exact name>" as its id. A follow-up proposal is fine when it needs ids from an applied one. After the user declines, stop proposing in that request.';
+const ASSISTANT_REVIEW = `- Write tools only propose changes. The user reviews each proposal, can leave items out, and chooses Apply or Discard. ${GROUPING}`;
+const autoReview = allowed => `- Write tools propose changes. The user lets these kinds of change apply without review: ${allowed.map(category => `${category.label} (${category.hint.toLowerCase()})`).join('; ')}. A step whose changes are all of those kinds and that changes at most ${MAX_AUTO_ITEMS} items is applied at once, and its results say appliedWithoutReview; mention briefly that the user can undo it. Any other step becomes a proposal the user reviews, can leave items out of, and applies or discards. ${GROUPING}`;
+const ASSISTANT_TOOLS_TAIL = `- Links: save_links saves real links (bookmarks), which show in the collection’s links widget on the dashboard. Never store links as notes unless the user asks for notes.
 - Keep URLs and titles the user gives exactly as given. Never shorten, clean or rewrite a URL, or drop its parameters, unless asked. If one looks like a temporary sign-in link, save it as given and mention it in one sentence. If the request repeats a link, save it once and say so.
 - A collection shows on the new-tab dashboard only through a links widget. When the user wants items on the dashboard, check get_dashboard and use show_collection_on_dashboard if that widget is missing.
 - When the user says an earlier change was wrong, fix it in one proposal (for example convert_items to turn notes into links, and trash_items for leftovers you created earlier) instead of explaining limitations.
@@ -108,8 +115,13 @@ const ASSISTANT_STYLE = `Style:
 - Task lists use - [ ]. Keep real dates and owners only when supplied.
 - Never request or repeat secrets such as API keys or tokens.`;
 
-/** System prompt for the 0.3 assistant. tools: whether library tools are available this turn. */
-export function assistantSystemPrompt({ tools = false, today = '' } = {}) {
-  return [ASSISTANT_ROLE, ASSISTANT_EVIDENCE, tools ? ASSISTANT_TOOLS : ASSISTANT_NO_TOOLS, ASSISTANT_STYLE, today ? `Today is ${today}.` : '']
+/**
+ * System prompt for the 0.3 assistant. tools: whether library tools are available this turn. permissions: the
+ * assistantPermissions setting, so the prompt says which kinds of change apply without review (none by default).
+ */
+export function assistantSystemPrompt({ tools = false, today = '', permissions = null } = {}) {
+  const allowed = tools ? allowedCategories(permissions) : [];
+  const toolRules = [ASSISTANT_TOOLS_HEAD, allowed.length ? autoReview(allowed) : ASSISTANT_REVIEW, ASSISTANT_TOOLS_TAIL].join('\n');
+  return [ASSISTANT_ROLE, ASSISTANT_EVIDENCE, tools ? toolRules : ASSISTANT_NO_TOOLS, ASSISTANT_STYLE, today ? `Today is ${today}.` : '']
     .filter(Boolean).join('\n\n');
 }

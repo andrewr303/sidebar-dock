@@ -9,6 +9,8 @@
 import { EFFORT_LEVELS, getProvider, hostOf, modelFromCatalog, normalizeBaseUrl, originPattern, requireProvider } from './catalog.js';
 import { SECRETS_KEY, connectionIdsWithKeys, deleteApiKey, getApiKey, setApiKey, validateApiKey } from './secrets.js';
 import { aiError, authHeaders, providerFetch, readJsonBody } from './http.js';
+import { DEFAULT_PERMISSIONS, PERMISSION_CATEGORIES, PERMISSION_LEVELS, normalizePermissions } from './permissions.js';
+import { RESEARCH_DEFAULTS, normalizeResearchSettings } from './research/settings.js';
 import * as integrationsModule from '../integrations.js';
 import * as anthropicTransport from './transports/anthropic.js';
 import * as responsesTransport from './transports/openai-responses.js';
@@ -32,7 +34,13 @@ export const DEFAULT_AI_SETTINGS = Object.freeze({
   autoSuggestOnSave: true,
   includePageText: true,
   handoffTarget: 'claude',
+  // Which kinds of assistant change apply without review (lib/ai/permissions.js), and how the research agent runs.
+  assistantPermissions: DEFAULT_PERMISSIONS,
+  research: RESEARCH_DEFAULTS,
 });
+// Settings that never leave this device: backups do not carry them and importAiConfig never restores them, so a crafted
+// file cannot turn on auto-apply, give the research agent the right to edit originals, or raise its spending cap.
+const DEVICE_ONLY_SETTINGS = new Set(['assistantPermissions', 'research']);
 
 const AGENT_IDS = { claude: 'agent:claude-code', codex: 'agent:codex' };
 const LEGACY_IDS = { 'cli:codex': 'agent:codex', 'cli:claude': 'agent:claude-code' };
@@ -259,6 +267,10 @@ function mergeSettings(stored = {}) {
     if (isObject(value) && isObject(result[key])) result[key] = { ...result[key], ...value };
     else if (value !== undefined) result[key] = value;
   }
+  // Read complete and valid whatever was stored (by an older or newer build, or damaged): the engine acts on these two
+  // without re-checking, and a write of any other setting must not fail on a stale value here.
+  result.assistantPermissions = normalizePermissions(result.assistantPermissions);
+  result.research = normalizeResearchSettings(result.research);
   return result;
 }
 
@@ -285,6 +297,37 @@ function validateSettings(settings) {
   for (const key of ['autoSuggestOnSave', 'includePageText']) if (typeof settings[key] !== 'boolean') throw aiError(`AI setting ${key} must be on or off.`, { code: 'bad_request' });
   if (typeof settings.embeddings.enabled !== 'boolean') throw aiError('Semantic search must be on or off.', { code: 'bad_request' });
   if (typeof settings.handoffTarget !== 'string' || !/^[\w-]{1,40}$/.test(settings.handoffTarget)) throw aiError('Choose a supported app to open answers in.', { code: 'bad_request' });
+  validatePermissions(settings.assistantPermissions);
+  validateResearch(settings.research);
+}
+
+const CATEGORY_IDS = new Set(PERMISSION_CATEGORIES.map(category => category.id));
+function validatePermissions(value) {
+  if (!isObject(value)) throw aiError('Assistant permissions must list each kind of change.', { code: 'bad_request' });
+  for (const [key, level] of Object.entries(value)) {
+    if (!CATEGORY_IDS.has(key)) throw aiError('Assistant permissions only cover create, organize, edit, dashboard and delete.', { code: 'bad_request' });
+    if (!PERMISSION_LEVELS.includes(level)) throw aiError('Each assistant permission is either Ask or Allow.', { code: 'bad_request' });
+  }
+}
+
+const RESEARCH_ERRORS = {
+  enabled: 'Research must be on or off.',
+  connectionId: 'Choose a valid connection for research.',
+  github: 'Choose when research uses GitHub: automatically, always or never.',
+  depth: 'Choose a research depth: quick, standard or deep.',
+  maxSubpages: 'Research can create 0 to 12 subpages per run.',
+  budgetUsd: 'Set a research spending cap between $1 and $50.',
+  allowOriginalEdits: 'Editing the original must be on or off.',
+};
+// Valid means already in the form normalizeResearchSettings gives (lib/ai/research/settings.js owns the ranges): a value
+// it would have to clamp, round or replace is refused rather than silently changed.
+function validateResearch(value) {
+  if (!isObject(value)) throw aiError('Research agent settings must be an object.', { code: 'bad_request' });
+  const normal = normalizeResearchSettings(value);
+  for (const key of Object.keys(value)) if (!Object.hasOwn(normal, key)) throw aiError('That is not a research agent setting.', { code: 'bad_request' });
+  for (const [key, expected] of Object.entries(normal)) {
+    if (!Object.is(value[key], expected)) throw aiError(RESEARCH_ERRORS[key] || 'Research agent settings are not valid.', { code: 'bad_request' });
+  }
 }
 
 export async function getAiSettings() {
@@ -680,6 +723,7 @@ export async function deleteConnection(id) {
     for (const section of ['chat', 'quick', 'embeddings']) {
       if (settings[section].connectionId === connectionId) settings[section] = { ...settings[section], connectionId: '', model: '', ...(section === 'embeddings' ? { enabled: false } : {}) };
     }
+    if (settings.research.connectionId === connectionId) settings.research = { ...settings.research, connectionId: '' };
     state.settings = settings;
   });
   return { deleted: true, id: connectionId };
@@ -710,13 +754,15 @@ function portableConnection(record) {
 
 /**
  * The AI configuration for a backup: { version: 2, settings, connections }. Connections carry only non-secret fields
- * (no API keys, tokens or bridge sign-in state), including ones for providers this build does not know. Throws (code
- * 'newer_version') when the stored state belongs to a newer build, rather than exporting a blank stand-in.
+ * (no API keys, tokens or bridge sign-in state), including ones for providers this build does not know; settings leave
+ * out the device-only ones (assistant permissions, research agent). Throws (code 'newer_version') when the stored state
+ * belongs to a newer build, rather than exporting a blank stand-in.
  */
 export async function exportAiConfig() {
   const { kind, state } = await readState();
   if (kind === 'foreign') throw newerStateError();
-  return { version: AI_STATE_VERSION, settings: withoutSecrets(state.settings), connections: state.connections.filter(entry => !isBridgedId(entry.id)).map(portableConnection) };
+  const settings = Object.fromEntries(Object.entries(isObject(state.settings) ? state.settings : {}).filter(([key]) => !DEVICE_ONLY_SETTINGS.has(key)));
+  return { version: AI_STATE_VERSION, settings: withoutSecrets(settings), connections: state.connections.filter(entry => !isBridgedId(entry.id)).map(portableConnection) };
 }
 
 // A backed-up connection, checked as if it were typed in: a direct provider (or one this build does not know, which
@@ -750,7 +796,8 @@ function importableConnection(entry, now) {
 /**
  * Restores a backup's AI configuration without touching what this device already has: connections are added when their
  * id is new here (never overwritten, never with a key, and turned off until the person turns them on), and settings this
- * device has never saved are filled in when valid and pointing at a connection it already had.
+ * device has never saved are filled in when valid and pointing at a connection it already had. Device-only settings
+ * (assistant permissions, research agent) are never restored from a file.
  * Returns { connectionsAdded, settingsAdded: [setting names] }.
  */
 export async function importAiConfig(data) {
@@ -761,7 +808,7 @@ export async function importAiConfig(data) {
   const incoming = (data.connections || []).slice(0, MAX_IMPORTED_CONNECTIONS).map(entry => importableConnection(entry, now)).filter(Boolean);
   const settings = {};
   if (isObject(data.settings)) for (const [key, value] of Object.entries(data.settings)) {
-    if (UNSAFE_KEYS.has(key)) continue;
+    if (UNSAFE_KEYS.has(key) || DEVICE_ONLY_SETTINGS.has(key)) continue;
     try { checkSettingsValue(key, value); } catch { continue; }
     settings[key] = structuredClone(value);
   }

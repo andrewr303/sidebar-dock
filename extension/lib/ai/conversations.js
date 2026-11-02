@@ -15,6 +15,9 @@ const SCOPES = ['page', 'item', 'items', 'collection', 'library'];
 const MESSAGE_KEYS = ['id', 'role', 'text', 'thinking', 'citations', 'tools', 'proposals', 'error', 'createdAt', 'model', 'connectionId', 'stopReason', 'thinkingMs', 'usage', 'context'];
 const CONVERSATION_KEYS = ['id', 'title', 'createdAt', 'updatedAt', 'connectionId', 'model', 'scope', 'messages'];
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+// Research conversations (kind 'research', lib/ai/research/run.js) keep a run record on the conversation and progress on
+// each assistant message. Both are plain data that survive as unknown fields; these caps keep them bounded.
+export const RESEARCH_RECORD_LIMITS = Object.freeze({ handled: 300, steps: 200 });
 // Bodies written per storage call when importing many conversations; an interrupted import leaves bodies the index
 // lacks, which the next load recovers.
 const IMPORT_BATCH = 20;
@@ -117,7 +120,20 @@ export function normalizeMessage(input = {}, now = new Date().toISOString()) {
   if (input.usage && typeof input.usage === 'object') message.usage = plain(input.usage);
   if (input.context && typeof input.context === 'object') message.context = normalizeScope(input.context) || undefined;
   if (!message.context) delete message.context;
+  if ('research' in message) {
+    if (!isObject(message.research)) delete message.research;
+    else if (Array.isArray(message.research.steps) && message.research.steps.length > RESEARCH_RECORD_LIMITS.steps) message.research.steps = message.research.steps.slice(-RESEARCH_RECORD_LIMITS.steps);
+  }
   return message;
+}
+
+// The conversation-level research record: plain data (unknown fields kept); `handled` (custom tool results by event id,
+// insertion order) keeps its newest entries.
+function normalizeResearchRecord(record) {
+  if (!isObject(record)) return undefined;
+  if (!('handled' in record)) return record;
+  const entries = isObject(record.handled) ? Object.entries(record.handled).filter(([key, value]) => !UNSAFE_KEYS.has(key) && typeof value === 'string') : [];
+  return { ...record, handled: Object.fromEntries(entries.slice(-RESEARCH_RECORD_LIMITS.handled)) };
 }
 
 export function normalizeConversation(input = {}, { now = new Date().toISOString() } = {}) {
@@ -141,6 +157,12 @@ export function normalizeConversation(input = {}, { now = new Date().toISOString
     scope: normalizeScope(input.scope),
     messages,
   };
+  if ('kind' in conversation && (typeof conversation.kind !== 'string' || !conversation.kind)) delete conversation.kind;
+  else if (typeof conversation.kind === 'string') conversation.kind = conversation.kind.slice(0, 40);
+  if ('research' in conversation) {
+    const research = normalizeResearchRecord(conversation.research);
+    if (research) conversation.research = research; else delete conversation.research;
+  }
   // Oldest turns go first when one conversation grows past the byte cap; the latest exchange always stays.
   while (messages.length > 2 && JSON.stringify(conversation).length > CONVERSATION_LIMITS.bytes) {
     messages = messages.slice(1);
@@ -149,11 +171,16 @@ export function normalizeConversation(input = {}, { now = new Date().toISOString
   return conversation;
 }
 
+// The history list's entry. A research conversation also carries its kind and { status, itemId }, so the list can badge
+// it and a new run can find one already researching the same item without loading every body.
 const summarize = conversation => {
   const lastAnswer = [...conversation.messages].reverse().find(m => m.role === 'assistant' && m.text)?.text || '';
-  return { id: conversation.id, title: conversation.title, createdAt: conversation.createdAt, updatedAt: conversation.updatedAt,
+  const summary = { id: conversation.id, title: conversation.title, createdAt: conversation.createdAt, updatedAt: conversation.updatedAt,
     connectionId: conversation.connectionId, model: conversation.model, scope: conversation.scope,
     messageCount: conversation.messages.length, preview: lastAnswer.replace(/\s+/g, ' ').trim().slice(0, 140) };
+  if (typeof conversation.kind === 'string' && conversation.kind) summary.kind = conversation.kind;
+  if (isObject(conversation.research)) summary.research = { status: text(conversation.research.status, 20), itemId: text(conversation.research.itemId, 200) };
+  return summary;
 };
 
 /** Converts the 0.2 `still.ai.chats.v1` array into v2 conversations. Interrupted answers keep their text and get an error. */

@@ -14,6 +14,13 @@ import { openSettings } from './settings.js';
 import { createNote } from './notes.js';
 import { openAddForPage } from './quick-add.js';
 import { CONVERSATIONS_KEY } from '../lib/ai/conversations.js';
+import { allowedCategories } from '../lib/ai/permissions.js';
+import { aiState, assistantUrl } from './ai-state.js';
+// The research view, not research.js: research.js (the research actions) imports this module.
+import {
+  isResearchConversation, isResearchRunning, researchState, requestResearchAccess, handleResearchError, renderResearchBar, renderResearchSteps,
+  renderSubpageChips, renderResearchChip, renderResearchNotice, watchStale, openResearchTab, latestResearchMessage,
+} from './research-view.js';
 
 registerIcons({
   'chevrons-left-right': '<path d="m9 7-5 5 5 5"/><path d="m15 7 5 5-5 5"/>',
@@ -53,6 +60,8 @@ const CITATION = /\[\[([\w:.-]+)\]\]/g;
 export const CONVERSATION_BODY_PREFIX = 'still.ai.conversation.v2:';
 
 const isWebUrl = url => /^https?:\/\/[^/\s]/i.test(String(url || ''));
+// Research statuses whose session may still run or continue (lib/ai/research/run.js).
+const OPEN_RESEARCH = new Set(['starting', 'running', 'waiting']);
 const unique = list => [...new Set((list || []).filter(id => typeof id === 'string' && id))];
 const text = value => typeof value === 'string' ? value : '';
 const lowerFirst = value => value ? value[0].toLowerCase() + value.slice(1) : value;
@@ -362,6 +371,17 @@ export function markdownFileName(title) {
 
 /** The id of the open conversation, or of the one the running answer is creating. */
 export const conversationIdOf = s => s?.conversation?.id || s?.run?.conversationId || '';
+/** The open conversation when it is a research run (its composer asks the research agent, not the chat model). */
+export const researchOf = s => !s?.run && isResearchConversation(s?.conversation) ? s.conversation : null;
+
+/**
+ * The empty state's promise about library changes, true to the assistant permissions (Settings > Assistant
+ * permissions): changes wait for approval unless some kinds are allowed to apply at once.
+ */
+export function approvalNote(settings) {
+  return allowedCategories(settings?.assistantPermissions).length ? 'Answers cite the items they come from. Changes your assistant permissions allow apply right away, and you can undo them.'
+    : 'Answers cite the items they come from. Changes to your library always wait for your approval.';
+}
 const newConversationId = () => `conversation_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
 
 // ------------------------------------------------------------------------------------------------ state
@@ -371,15 +391,8 @@ const proposalUi = new Map();
 let transcript = null;
 let runSeq = 0;
 
-function st(ctx) {
-  const s = ctx.state.ai ||= {};
-  if (!s.init) {
-    Object.assign(s, { init: true, conversation: null, draft: '', editing: null, run: null, explicit: null, added: [], dismissed: new Set(),
-      target: undefined, connections: [], settings: null, history: null, historyQuery: '', ctxQuery: '', ctxActive: 0, ctxOptions: [],
-      modelView: 'models', open: new Set(), pagePermission: null, modelNotice: false, suggestions: [], version: 0, announce: '' });
-  }
-  return s;
-}
+// The shared state lives in ai-state.js, so the research view reads it without importing this module.
+const st = aiState;
 
 function bump(ctx, { render = false } = {}) {
   st(ctx).version++;
@@ -500,6 +513,8 @@ function submit(ctx, { question, scope, replace } = {}) {
   const value = String(question ?? s.draft).trim();
   if (!value) return null;
   if (value.length > MAX_QUESTION) { ctx.toast(`Shorten the question to ${MAX_QUESTION.toLocaleString()} characters or less.`, { tone: 'danger' }); return null; }
+  const research = researchOf(s);
+  if (research) return submitResearch(ctx, research, value, { fromDraft: question === undefined });
   // Said next to the composer, not in a toast: a toast sits over the composer's end and its Send button.
   // A trailing no-break space on every other send changes the live region's text, so each Enter is announced again.
   if (s.target === null) { s.modelNotice = true; announce(ctx, s.announce === MODEL_NOTICE ? `${MODEL_NOTICE}\u00a0` : MODEL_NOTICE); ctx.render(); return null; }
@@ -510,6 +525,47 @@ function submit(ctx, { question, scope, replace } = {}) {
   s.editing = null;
   s.pagePermission = null;
   return startRun(ctx, { question: value, scope: scope || contextFor(ctx).scope, replaceFrom, access, fromDraft });
+}
+
+/**
+ * A follow-up in a research conversation goes to the research agent (continueResearch), never to the chat model, so
+ * no chat model is needed. Like submit, call it from the click or key press: host access is asked for first.
+ */
+function submitResearch(ctx, conversation, value, { fromDraft = true } = {}) {
+  const s = st(ctx);
+  if (s.researchSending || researchState(conversation).running) return null;
+  if (typeof ctx.ai.continueResearch !== 'function') { ctx.toast('Research is not available in this version of Still.'); return null; }
+  const access = requestResearchAccess(ctx);
+  const restore = () => {
+    if (!fromDraft || s.draft) return;
+    s.draft = value;
+    const input = composer();
+    if (input) input.value = value;
+  };
+  if (fromDraft) { s.draft = ''; const input = composer(); if (input) input.value = ''; }
+  s.researchSending = true;
+  if (transcript) transcript.stick = true;
+  announce(ctx, 'Sending to the research agent');
+  bump(ctx, { render: true });
+  // Allow access is a new click: the question waiting in the composer is sent from there.
+  const retry = () => submitResearch(ctx, conversation, value, { fromDraft: s.draft.trim() === value });
+  return (async () => {
+    try {
+      if (!(await access)) {
+        restore();
+        handleResearchError(ctx, { code: 'permission' }, { allow: retry, openSettings });
+        return;
+      }
+      await ctx.ai.continueResearch(conversation.id, value);
+      announce(ctx, 'The research continues.');
+    } catch (error) {
+      restore();
+      handleResearchError(ctx, error, { allow: retry, openSettings });
+    } finally {
+      s.researchSending = false;
+      bump(ctx, { render: true });
+    }
+  })();
 }
 
 async function startRun(ctx, { question, scope, replaceFrom, access, fromDraft }) {
@@ -606,7 +662,12 @@ function onEvent(ctx, run, event) {
       break;
     case 'proposal':
       registerProposal(run, event.proposal);
-      announce(ctx, 'Proposed changes are waiting for your review.');
+      // Changes the assistant permissions allow apply at once (lib/ai/tools.js): no card waits for a decision.
+      if (event.proposal?.autoApproved) {
+        const ui = proposalUi.get(event.proposal.id);
+        if (ui?.status === 'pending') ui.status = 'applying';
+        announce(ctx, 'Applying changes your assistant permissions allow.');
+      } else announce(ctx, 'Proposed changes are waiting for your review.');
       render = true;
       break;
     case 'proposal_result':
@@ -666,7 +727,7 @@ function proposalResult(ctx, run, event) {
       if (record) record.excluded = excluded;
       ui.lines = excluded.length && record ? appliedLines(record, excluded) : null;
     }
-    announce(ctx, 'Changes applied.');
+    announce(ctx, event.autoApproved || record?.autoApproved ? 'Changes applied automatically. You can undo them.' : 'Changes applied.');
   } else if (event.status === 'failed') announce(ctx, `Changes failed: ${ui.error || 'nothing was changed.'}`);
 }
 
@@ -680,7 +741,8 @@ function stopRun(ctx) {
 function newChat(ctx, { focus = true } = {}) {
   const s = st(ctx);
   if (s.run) { stopRun(ctx); s.run = null; }
-  Object.assign(s, { conversation: null, editing: null, pagePermission: null, added: [] });
+  // A research request's Allow access notice belongs to the chat it was shown in.
+  Object.assign(s, { conversation: null, editing: null, pagePermission: null, researchAccess: null, added: [] });
   ctx.closePopover?.({ restore: false });
   bump(ctx, { render: true });
   if (focus) ctx.nextFrame(() => composer()?.focus({ preventScroll: true }));
@@ -690,14 +752,22 @@ async function openConversation(ctx, id) {
   const s = st(ctx);
   ctx.closePopover?.({ restore: false });
   if (s.conversation?.id === id && !s.run) return;
+  // The answer being written is this conversation's: it is already open.
+  if (s.run && conversationIdOf(s) === id) return;
   const conversation = await ctx.ai.getConversation(id);
   if (!conversation) { ctx.toast('That conversation is no longer on this device.'); refreshHistory(ctx); return; }
+  if (s.run && isResearchConversation(conversation)) {
+    // Research runs on its own, so opening it never aborts the answer this view is writing: it is offered in a new tab
+    // instead (and opens here from the history once the answer is done).
+    ctx.toast('This answer is still being written. Open the research in a new tab?', { action: { label: 'Open in new tab', run: () => openResearchTab(ctx, id) } });
+    return;
+  }
   if (s.run) { stopRun(ctx); s.run = null; }
   const scope = conversation.scope;
   let explicit = null;
   if (scope?.scope === 'page') explicit = scope.page?.url && scope.page.url === ctx.state.page?.url ? { scope: 'page' } : null;
   else if (scope && scope.scope !== 'library') explicit = { scope: scope.scope, ids: scope.ids || [], collectionId: scope.collectionId || '' };
-  Object.assign(s, { conversation, editing: null, pagePermission: null, added: [], explicit });
+  Object.assign(s, { conversation, editing: null, pagePermission: null, researchAccess: null, added: [], explicit });
   if (transcript) transcript.stick = true;
   bump(ctx, { render: true });
   ctx.nextFrame(() => composer()?.focus({ preventScroll: true }));
@@ -745,7 +815,8 @@ export function askAi(ctx, { prompt = '', scope, ids, collectionId, send = false
     const explicit = { scope: kind, ids: unique(ids).slice(0, 200), collectionId: text(collectionId) };
     const current = s.conversation?.scope;
     const same = current && current.scope === kind && (current.collectionId || '') === explicit.collectionId && unique(current.ids).join() === explicit.ids.join();
-    if (!s.run && s.conversation?.messages?.length && !same) newChat(ctx, { focus: false });
+    // A research conversation about the same item is not a chat: questions about the item start one.
+    if (!s.run && s.conversation?.messages?.length && (!same || researchOf(s))) newChat(ctx, { focus: false });
     s.explicit = explicit;
     s.added = [];
     if (kind === 'page' && ctx.state.page?.url) s.dismissed.delete(`page:${ctx.state.page.url}`);
@@ -769,8 +840,8 @@ export const newAiChat = (ctx, options) => newChat(ctx, options);
 export const openAiConversation = (ctx, id) => openConversation(ctx, id);
 /** Re-reads the chat history list (quiet: no toast when it cannot be read). */
 export const refreshAiHistory = (ctx, options) => refreshHistory(ctx, options);
-/** The shared assistant state (conversation, run, draft, history, context, model target). */
-export const aiState = ctx => st(ctx);
+/** The shared assistant state (conversation, run, draft, history, context, model target); see ai-state.js. */
+export { aiState, assistantUrl };
 /** The context the next question is asked with: { kind, chips, scope } (see resolveContext). */
 export const aiContext = ctx => contextFor(ctx);
 /** Label, tooltip and glyph for a context chip. */
@@ -803,16 +874,23 @@ export function setAiScope(ctx, scope = { scope: 'library' }) {
   ctx.render();
 }
 
-/** Renames a saved conversation; returns the saved title, or null when the name is blank or the chat is gone. */
+/**
+ * Renames a saved conversation; returns the saved title, or null when the name is blank or the chat is gone. While an
+ * answer or a research run is writing the open conversation, the stored copy is renamed (the run adopts the new title
+ * when it next saves), never the copy the run is still changing.
+ */
 export async function renameAiConversation(ctx, id, name) {
   const s = st(ctx);
   const title = String(name ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
   if (!title || !ctx.ai?.getConversation) return null;
-  const conversation = s.conversation?.id === id && !s.run ? s.conversation : await ctx.ai.getConversation(id);
+  const busy = !!s.run || isResearchRunning(s.conversation);
+  const conversation = s.conversation?.id === id && !busy ? s.conversation : await ctx.ai.getConversation(id);
   if (!conversation) return null;
   if (conversation.title === title) return title;
   const saved = await ctx.ai.saveConversation({ ...conversation, title });
-  if (s.conversation?.id === id) s.conversation = { ...s.conversation, title: saved.title };
+  // A research run this page drives hands out its own copy with every event: renamed in place, the header keeps the new
+  // name until the run's next save adopts it.
+  if (s.conversation?.id === id) s.conversation = isResearchRunning(s.conversation) ? Object.assign(s.conversation, { title: saved.title }) : { ...s.conversation, title: saved.title };
   await refreshHistory(ctx, { quiet: true });
   ctx.render();
   return saved.title;
@@ -846,15 +924,6 @@ export async function exportConversation(ctx, how) {
   }
   await navigator.clipboard.writeText(markdown);
   ctx.toast('Copied the chat as Markdown');
-}
-
-/** The full-tab address of the full-screen assistant, optionally opening a conversation. */
-export function assistantUrl(conversationId = '') {
-  const runtime = globalThis.chrome?.runtime;
-  const url = new URL(runtime?.id && typeof runtime.getURL === 'function' ? runtime.getURL('index.html') : new URL('index.html', location.href));
-  url.searchParams.set('libraryView', 'assistant');
-  if (conversationId) url.searchParams.set('conversation', conversationId);
-  return url.href;
 }
 
 /**
@@ -908,9 +977,40 @@ async function followConversation(ctx, id, value) {
   if (value.updatedAt === current.updatedAt && value.title === current.title && (value.messages || []).length === current.messages.length) return;
   const conversation = await ctx.ai?.getConversation?.(id);
   if (!conversation || s.run || s.conversation?.id !== id) return;
+  // A research run saves its progress about once a second: only a new message scrolls to the end, so the conversation
+  // can be read while it grows (the transcript still follows the end while it is scrolled there).
+  const grew = (conversation.messages || []).length > (s.conversation.messages || []).length;
   s.conversation = conversation;
-  if (transcript) transcript.stick = true;
+  if (transcript && grew) transcript.stick = true;
   bump(ctx, { render: true });
+}
+
+// The page that drives a research run hears every event (live text included) before it reaches storage: the open
+// conversation follows the run's own copy. Only a change the bar or header shows (status, any step's state or label,
+// writes, cost, a message) redraws the page; streamed text repaints the transcript alone.
+const researchSignature = conversation => {
+  const research = conversation?.research || {};
+  const meta = latestResearchMessage(conversation)?.research || {};
+  const steps = (Array.isArray(meta.steps) ? meta.steps : []).map(step => `${step?.id}:${step?.state}:${step?.label}`).join('|');
+  return [research.status, research.reason, research.error, research.undoneAt, research.writes, meta.writes, conversation?.title, conversation?.messages?.length,
+    research.usage?.costUsd, (research.pages || []).length, steps].join('|');
+};
+
+function followResearch(ctx, event) {
+  const s = st(ctx);
+  const conversation = event?.conversation;
+  if (event?.type !== 'research' || !isResearchConversation(conversation) || s.run || s.conversation?.id !== event.conversationId) return;
+  const signature = researchSignature(conversation);
+  const count = (conversation.messages || []).length;
+  // The run changes its copy in place, so the open conversation can be the event's very object: the message count seen
+  // last is kept apart, and a new turn still scrolls into view.
+  const known = s.conversation === conversation && Number.isInteger(s.researchMessageCount) ? s.researchMessageCount : (s.conversation.messages || []).length;
+  const redraw = s.conversation !== conversation || signature !== s.researchSignature;
+  if (count > known && transcript) transcript.stick = true;
+  s.conversation = conversation;
+  s.researchSignature = signature;
+  s.researchMessageCount = count;
+  bump(ctx, { render: redraw });
 }
 
 function watchConversations(ctx) {
@@ -935,6 +1035,7 @@ export async function init(ctx) {
   if (!ctx.ai) { ctx.render(); return; }
   try { ctx.ai.onConnectionsChanged?.(() => refreshTarget(ctx)); } catch (error) { console.error(error); }
   try { watchConversations(ctx); } catch (error) { console.error(error); }
+  try { ctx.ai.subscribeResearch?.(event => followResearch(ctx, event)); } catch (error) { console.error(error); }
   await refreshTarget(ctx);
   if (s.target === undefined) s.target = null;
 }
@@ -950,8 +1051,11 @@ export function renderAiPanel(ctx, { surface = ctx.env?.isSidepanel ? 'side' : '
   const ready = !!ctx.ai;
   const hasThread = !!(s.conversation?.messages?.length || s.run);
   const resolved = contextFor(ctx);
+  const research = ready ? researchOf(s) : null;
+  watchStale(ctx, research);
   return html`<section class="ai-panel" data-surface="${surface}" aria-label="Assistant">
     ${head === undefined ? renderHead(ctx, surface, hasThread) : head}
+    ${research ? renderResearchBar(ctx, research) : ''}
     ${!ready ? s.engineSettled ? html`<div class="ai-scroll ai-start" data-key="ai.unavailable">${emptyState({ icon: 'sparkles', title: 'The assistant is not available',
       body: 'Still could not load its AI engine. Reload Still to try again.', actions: button({ label: 'Reload', icon: 'refresh-cw', action: 'app.retry-boot', size: 'sm' }) })}</div>`
       : html`<div class="ai-scroll ai-start" data-key="ai.loading" aria-busy="true"></div>`
@@ -987,7 +1091,7 @@ function renderEmpty(ctx, resolved) {
   const body = resolved.kind === 'page' ? 'Answers use this page and what you saved, with sources you can open.'
     : resolved.kind === 'collection' ? `Answers use what is in ${collectionName(ctx, resolved.scope.collectionId)}, with sources you can open.`
       : resolved.kind === 'items' ? `Answers use ${count === 1 ? 'this item' : 'these items'}, with sources you can open.`
-        : 'Answers cite the items they come from. Changes to your library always wait for your approval.';
+        : approvalNote(s.settings);
   return html`<div class="ai-empty">
     <span class="ai-mark" aria-hidden="true">${icon('sparkles', { size: 18 })}</span>
     <h2 class="ai-empty-title">Ask about your library</h2>
@@ -1019,30 +1123,36 @@ function renderSetup(ctx) {
 
 function renderDock(ctx, resolved) {
   const s = st(ctx);
-  const running = !!s.run;
+  const research = ctx.ai ? researchOf(s) : null;
+  const researching = !!research && researchState(research).running;
+  const running = !!s.run || researching;
   const length = s.draft.length;
   const over = length > MAX_QUESTION;
-  const canSend = !running && !!s.draft.trim() && !over && s.target !== null;
+  // A research follow-up goes to the research agent, so it needs no chat model.
+  const canSend = !running && !s.researchSending && !!s.draft.trim() && !over && (!!research || s.target !== null);
+  const stop = research ? html`<button type="button" class="ai-send is-stop" data-action="ai.stop" aria-label="Stop the research" data-tooltip="Stop the research">${icon('square', { size: 12 })}</button>`
+    : html`<button type="button" class="ai-send is-stop" data-action="ai.stop" aria-label="Stop" data-tooltip="Stop (Esc)" aria-keyshortcuts="Escape">${icon('square', { size: 12 })}</button>`;
   return html`<div class="ai-dock">
+    ${s.researchAccess ? renderResearchNotice(ctx) : ''}
     ${s.pagePermission ? renderPageNotice(ctx) : ''}
-    ${s.modelNotice && s.target === null ? renderModelNotice({ handoffs: !!(s.conversation?.messages?.length || s.run) }) : ''}
-    <form class="${cx('ai-composer', running && 'is-running')}" data-submit="ai.send" aria-label="Ask the assistant">
-      <div class="ai-chips" role="list" aria-label="Context">${resolved.chips.map(chip => renderChip(ctx, chip))}</div>
+    ${s.modelNotice && s.target === null && !research ? renderModelNotice({ handoffs: !!(s.conversation?.messages?.length || s.run) }) : ''}
+    <form class="${cx('ai-composer', running && 'is-running', research && 'is-research')}" data-submit="ai.send" aria-label="${research ? 'Ask the research agent' : 'Ask the assistant'}">
+      <div class="ai-chips" role="list" aria-label="Context">${research ? renderResearchChip(ctx, research) : resolved.chips.map(chip => renderChip(ctx, chip))}</div>
       ${s.editing ? html`<div class="ai-editing">${icon('pencil', { size: 12 })}<span>Editing your last question</span>
         <button type="button" class="ai-editing-cancel" data-action="ai.edit-cancel">Cancel</button></div>` : ''}
       <textarea class="ai-input" id="ai-input" data-focus-key="ai-input" name="prompt" rows="1" aria-label="Message" aria-describedby="ai-footnote"
-        placeholder="${placeholderFor(ctx, resolved)}" data-input="ai.draft" data-keydown="ai.key" spellcheck="true">${s.draft}</textarea>
+        placeholder="${research ? researching ? 'The research is running. Ask for more once it ends.' : 'Ask the research agent for more' : placeholderFor(ctx, resolved)}"
+        data-input="ai.draft" data-keydown="ai.key" spellcheck="true">${s.draft}</textarea>
       <div class="ai-composer-foot">
-        ${iconButton({ icon: 'plus', label: 'Add context', action: 'ai.add-context', size: 'sm', expanded: popoverOpen(ctx, 'ai.context') })}
-        ${renderModelButton(ctx)}
+        ${research ? html`<span class="ai-model-btn is-static" data-tooltip="Claude Sonnet 5.5 with web search">${icon('telescope', { size: 12 })}<span class="ai-model-label">Research agent</span></span>`
+          : html`${iconButton({ icon: 'plus', label: 'Add context', action: 'ai.add-context', size: 'sm', expanded: popoverOpen(ctx, 'ai.context') })}${renderModelButton(ctx)}`}
         <span class="spacer"></span>
         ${length >= COUNT_FROM ? html`<span class="${cx('ai-count', over && 'is-over')}">${length.toLocaleString()} / ${MAX_QUESTION.toLocaleString()}</span>` : ''}
-        ${running
-          ? html`<button type="button" class="ai-send is-stop" data-action="ai.stop" aria-label="Stop" data-tooltip="Stop (Esc)" aria-keyshortcuts="Escape">${icon('square', { size: 12 })}</button>`
-          : html`<button type="submit" class="ai-send" aria-label="Send" data-tooltip="Send" aria-keyshortcuts="Enter" ${canSend ? '' : raw('disabled')}>${icon('arrow-up', { size: 16, strokeWidth: 2 })}</button>`}
+        ${running ? stop
+          : html`<button type="submit" class="ai-send" aria-label="Send" data-tooltip="Send" aria-keyshortcuts="Enter" ${canSend ? '' : raw('disabled')} ${s.researchSending ? raw('aria-busy="true"') : ''}>${icon('arrow-up', { size: 16, strokeWidth: 2 })}</button>`}
       </div>
     </form>
-    <p class="ai-footnote" id="ai-footnote">${icon('info', { size: 12 })}${footnote(ctx)}</p>
+    <p class="ai-footnote" id="ai-footnote">${icon('info', { size: 12 })}${research ? 'Follow-ups continue this research with Claude Sonnet 5.5 in your Anthropic account.' : footnote(ctx)}</p>
   </div>`;
 }
 
@@ -1126,9 +1236,11 @@ function paint(view) {
   const lastUser = messages.findLast(message => message.role === 'user');
   const lastAnswer = messages.findLast(message => message.role === 'assistant');
   const waiting = s.run ? null : unansweredQuestion(messages);
+  const research = researchOf(s);
   morph(el, html`${messages.map(message => message.role === 'user'
     ? renderQuestion(ctx, message, { last: message === lastUser })
-    : renderAnswer(ctx, view, message, { last: message === lastAnswer }))}
+    : research && message.research ? renderResearchAnswer(ctx, view, message, research, { last: message === lastAnswer })
+      : renderAnswer(ctx, view, message, { last: message === lastAnswer }))}
     ${waiting ? renderUnanswered(ctx, waiting) : ''}`);
   if (stick) el.scrollTop = el.scrollHeight;
 }
@@ -1164,7 +1276,7 @@ function renderQuestion(ctx, message, { last }) {
     <div class="ai-bubble">${message.text}</div>
     ${message.live ? '' : html`<div class="ai-q-actions">
       ${iconButton({ icon: 'copy', label: 'Copy', size: 'sm', action: 'ai.copy', data: { id: message.id } })}
-      ${last && !s.run ? iconButton({ icon: 'pencil', label: 'Edit', size: 'sm', action: 'ai.edit', data: { id: message.id } }) : ''}
+      ${last && !s.run && !researchOf(s) ? iconButton({ icon: 'pencil', label: 'Edit', size: 'sm', action: 'ai.edit', data: { id: message.id } }) : ''}
     </div>`}
   </div>`;
 }
@@ -1193,7 +1305,8 @@ function renderAnswer(ctx, view, message, { last }) {
   const typing = live && run?.lastEvent === 'text';
   const pushText = (part, from, tail = false) => {
     if (!part.trim()) return;
-    const key = live ? `md:${message.id}:${from}:${part.length}${tail ? ':tail' : ''}` : `md:${message.id}:${from}:${signature}`;
+    // The key changes whenever the text does, so a stored answer that grows (followed from another window) repaints.
+    const key = live ? `md:${message.id}:${from}:${part.length}${tail ? ':tail' : ''}` : `md:${message.id}:${from}:${part.length}:${signature}`;
     blocks.push(skipBlock(view, key, cx('ai-md markdown-body is-compact', tail && 'is-typing'), () => renderMd(ctx, part, citations)));
   };
   for (const { proposal, at } of cards) {
@@ -1214,6 +1327,36 @@ function renderAnswer(ctx, view, message, { last }) {
     ${renderActions(ctx, message, { last, citations })}
   </article>`;
 }
+
+/**
+ * One research turn (lib/ai/research/run.js): its progress timeline, the agent's Markdown (the finished messages, then
+ * the message being written while the run is live), the subpages it created and how the turn ended. The stored message
+ * grows while the run saves progress, so every Markdown key carries its text length (a new length repaints it). The
+ * run's actions live in the research bar above the conversation. view: the transcript mount (null renders in full).
+ */
+function renderResearchAnswer(ctx, view, message, conversation, { last }) {
+  const meta = message.research && typeof message.research === 'object' ? message.research : {};
+  const live = !!meta.live && last && researchState(conversation).running;
+  const finished = text(message.text);
+  const preview = live && meta.preview && typeof meta.preview === 'object' ? text(meta.preview.text) : '';
+  const block = (key, className, value) => view ? skipBlock(view, key, className, () => renderMd(ctx, value, []))
+    : html`<div class="${className}" data-key="${key}">${renderMd(ctx, value, [])}</div>`;
+  const error = text(message.error);
+  return html`<article class="${cx('ai-a', 'is-research', live && 'is-live')}" data-key="a:${message.id}" aria-busy="${live ? 'true' : 'false'}">
+    ${renderResearchSteps(ctx, message, { live })}
+    ${finished.trim() ? block(`rmd:${message.id}:${finished.length}`, 'ai-md markdown-body is-compact', finished) : ''}
+    ${preview.trim() ? block(`rpv:${message.id}:${text(meta.preview.id)}:${preview.length}`, 'ai-md markdown-body is-compact is-typing', preview) : ''}
+    ${live && !finished.trim() && !preview.trim() ? html`<p class="ai-status"><span class="ai-shimmer">${(meta.steps || []).length ? 'Researching…' : 'Starting the research…'}</span></p>` : ''}
+    ${renderSubpageChips(ctx, message)}
+    ${error === 'Stopped' ? html`<p class="ai-stopped">${icon('circle-stop', { size: 14 })}<span>Stopped</span></p>`
+      : error ? html`<div class="ai-error" role="alert">${icon('circle-alert', { size: 16 })}<div class="ai-error-text"><p>${error}</p></div></div>` : ''}
+    ${!live && finished.trim() ? html`<div class="${cx('ai-actions', last && 'is-last')}" role="toolbar" aria-label="Answer actions">
+      ${iconButton({ icon: 'copy', label: 'Copy', size: 'sm', action: 'ai.copy', data: { id: message.id } })}</div>` : ''}
+  </article>`;
+}
+
+/** A research turn as the transcript draws it, outside the transcript mount (tests, previews). */
+export const renderResearchMessage = (ctx, message, conversation, { last = true } = {}) => renderResearchAnswer(ctx, null, message, conversation, { last });
 
 function statusLabel(message, run) {
   const label = text(message.status);
@@ -1514,6 +1657,11 @@ export function changeLabel(ctx, change, included, createdIds = new Set(), creat
 function renderProposal(ctx, proposal) {
   const status = proposalStatus(proposal);
   if (!['pending', 'applying'].includes(status)) return renderReceipt(ctx, proposal, status);
+  // Allowed by the assistant permissions: it applies without a decision, so no card with Apply is shown meanwhile.
+  if (proposal.autoApproved) {
+    return html`<div class="ai-receipt" data-status="applying" data-auto="true" data-key="pr:${proposal.id}" aria-busy="true">
+      ${spinner({ size: 16 })}<div class="ai-receipt-text"><p class="ai-receipt-title">Applying changes automatically…</p></div></div>`;
+  }
   const ui = proposalUi.get(proposal.id) || newProposalUi();
   const changes = proposal.changes || [];
   const createdIds = new Set(changes.filter(change => change.op === 'create_collection').map(change => change.collectionId));
@@ -1575,12 +1723,17 @@ function renderReceipt(ctx, proposal, status) {
   const lines = ui?.lines || proposal.appliedLines || appliedLines(proposal, proposal.excluded || []);
   const undoing = !!ui?.undoing;
   if (status === 'applied') {
-    const title = lines.length === 1 ? `Applied: ${lowerFirst(lines[0])}` : `Applied ${plural(lines.length, 'change')}`;
+    // Applied without review because the assistant permissions allow it: the receipt says so and keeps Undo.
+    const auto = !!proposal.autoApproved;
+    const title = auto ? lines.length === 1 ? `Applied automatically: ${lowerFirst(lines[0])}` : `Applied ${plural(lines.length, 'change')} automatically`
+      : lines.length === 1 ? `Applied: ${lowerFirst(lines[0])}` : `Applied ${plural(lines.length, 'change')}`;
     const undoable = typeof ui?.undo === 'function' || savedUndo(ctx, proposal);
-    return html`<div class="ai-receipt" data-status="applied" data-key="pr:${proposal.id}">
+    return html`<div class="ai-receipt" data-status="applied" ${auto ? raw('data-auto="true"') : ''} data-key="pr:${proposal.id}">
       ${icon('circle-check', { size: 16, className: 'ai-receipt-icon' })}
       <div class="ai-receipt-text"><p class="ai-receipt-title">${title}</p>
-        ${lines.length > 1 ? html`<ul class="ai-receipt-lines" role="list">${lines.map(line => html`<li>${line}</li>`)}</ul>` : ''}</div>
+        ${lines.length > 1 ? html`<ul class="ai-receipt-lines" role="list">${lines.map(line => html`<li>${line}</li>`)}</ul>` : ''}
+        ${auto ? html`<p class="ai-receipt-note">Your assistant permissions allow these changes without review.
+          <button type="button" class="ai-link" data-action="ai.permissions">Change permissions</button></p>` : ''}</div>
       ${undoable ? button({ label: 'Undo', icon: 'undo-2', variant: 'ghost', size: 'sm', action: 'ai.proposal-undo', data: { id: proposal.id }, loading: undoing }) : ''}
     </div>`;
   }
@@ -1596,6 +1749,10 @@ export const renderProposalCard = (ctx, proposal) => renderProposal(ctx, proposa
 
 // ------------------------------------------------------------------------------------------------ popovers
 
+/** The telescope a research conversation carries in the history lists; named for screen readers unless its title says Research. */
+export const historyGlyph = entry => entry?.kind !== 'research' ? ''
+  : icon('telescope', { size: 12, className: 'ai-history-kind', label: /^research\b/i.test(text(entry.title)) ? undefined : 'Research:' });
+
 function renderHistoryPopover(ctx) {
   const s = st(ctx);
   const query = s.historyQuery.trim();
@@ -1604,7 +1761,7 @@ function renderHistoryPopover(ctx) {
     const current = entry.id === s.conversation?.id;
     return html`<li class="${cx('ai-history-row', current && 'is-current')}" data-key="h:${entry.id}">
       <button type="button" class="ai-history-main" data-action="ai.history-open" data-id="${entry.id}" ${current ? raw('aria-current="true"') : ''}>
-        <span class="ai-history-title">${entry.title || 'New conversation'}</span>
+        <span class="ai-history-title">${historyGlyph(entry)}${entry.title || 'New conversation'}</span>
         <span class="ai-history-meta">${relativeDate(entry.updatedAt)}${entry.preview ? html` · ${plainPreview(entry.preview)}` : ''}</span></button>
       <span class="ai-history-tools">
         ${iconButton({ icon: 'pencil', label: 'Rename', size: 'sm', action: 'ai.history-rename', data: { id: entry.id } })}
@@ -1820,7 +1977,7 @@ registerActions({
     const before = s.draft;
     s.draft = el.value;
     const send = el.form?.querySelector('.ai-send[type="submit"]');
-    if (send) send.disabled = !s.draft.trim() || s.draft.length > MAX_QUESTION || s.target === null;
+    if (send) send.disabled = !s.draft.trim() || s.draft.length > MAX_QUESTION || !!s.researchSending || (s.target === null && !researchOf(s));
     if ((before.length >= COUNT_FROM) !== (s.draft.length >= COUNT_FROM) || !before !== !s.draft) ctx.render();
   },
   'ai.key': ({ ctx, el, event }) => {
@@ -1839,7 +1996,8 @@ registerActions({
       else el.blur();
       return;
     }
-    if (event.key === 'ArrowUp' && !el.value && !s.run && !event.shiftKey) {
+    // A research request cannot be edited and asked again; its follow-ups continue the run.
+    if (event.key === 'ArrowUp' && !el.value && !s.run && !event.shiftKey && !researchOf(s)) {
       const question = (s.conversation?.messages || []).findLast(message => message.role === 'user');
       if (!question) return;
       event.preventDefault();
@@ -1851,7 +2009,13 @@ registerActions({
     }
   },
   'ai.send': ({ ctx }) => { submit(ctx); },
-  'ai.stop': ({ ctx }) => { stopRun(ctx); bump(ctx, { render: true }); },
+  'ai.stop': ({ ctx }) => {
+    const research = researchOf(st(ctx));
+    if (research) return ctx.dispatch('research.stop', { data: { id: research.id } });
+    stopRun(ctx);
+    bump(ctx, { render: true });
+    return undefined;
+  },
   'ai.escape': ({ ctx }) => {
     if (st(ctx).run) { stopRun(ctx); bump(ctx, { render: true }); }
     else if (!ctx.env.isSidepanel && ctx.state.panel?.kind === 'ai') ctx.closePanel();
@@ -1893,6 +2057,7 @@ registerActions({
   },
   'ai.setup': ({ ctx, data }) => openSettings(ctx, 'ai', { providerId: data.provider }),
   'ai.settings': ({ ctx }) => { ctx.closePopover?.({ restore: false }); openSettings(ctx, 'ai'); },
+  'ai.permissions': ({ ctx }) => { ctx.closePopover?.({ restore: false }); openSettings(ctx, 'assistant'); },
   'ai.chip-remove': ({ ctx, data }) => {
     const s = st(ctx);
     const resolved = contextFor(ctx);
@@ -2023,6 +2188,11 @@ registerActions({
     const entry = (s.history || []).find(item => item.id === data.id) || (s.conversation?.id === data.id ? s.conversation : null);
     const ok = await ctx.confirm({ title: 'Delete this chat?', body: `“${entry?.title || 'This chat'}” is removed from this device. Saved notes and items stay.`, confirmLabel: 'Delete', tone: 'danger' });
     if (!ok) return;
+    // A research run that is still going (or paused) is stopped first, so its session stops spending.
+    const record = s.conversation?.id === data.id ? s.conversation : entry;
+    if (record?.kind === 'research' && OPEN_RESEARCH.has(record.research?.status) && typeof ctx.ai.stopResearch === 'function') {
+      try { await ctx.ai.stopResearch(data.id); } catch (error) { console.warn('[still] could not stop the research before deleting it', error); }
+    }
     await ctx.ai.deleteConversation(data.id);
     if (s.conversation?.id === data.id) newChat(ctx, { focus: false });
     await refreshHistory(ctx, { quiet: true });

@@ -1,6 +1,6 @@
 // Knowledge map: explicit links between items (lib/library-views.js buildRelationshipGraph, 920×580 space) laid out
 // with a deterministic force pass, scoped to all items, the Inbox or a collection, filtered by text and type, and
-// optionally joined by dashed "similar" edges from the semantic index.
+// optionally joined by dashed "similar" edges from the semantic index. A subpage is linked to the page it sits in.
 import { html, cx, plural } from './html.js';
 import { icon, hasIcon } from './icons.js';
 import { button, iconButton, segmented, searchField, switchToggle, emptyState, collectionIcon, colorVar, TYPE_LABELS } from './components.js';
@@ -8,6 +8,7 @@ import { registerActions, registerMount } from './runtime.js';
 import { searchRows } from './selectors.js';
 import { buildRelationshipGraph } from '../lib/library-views.js';
 import { createNote } from './notes.js';
+import { parentIdOf } from '../lib/pages.js';
 
 export const MAP_WIDTH = 920;
 export const MAP_HEIGHT = 580;
@@ -24,6 +25,29 @@ const typeMatches = (item, type) => type === 'all' || !type ? true
   : type === 'link' ? ['bookmark', 'article'].includes(item.type)
   : type === 'media' ? ['image', 'video', 'file'].includes(item.type)
   : item.type === type;
+
+/**
+ * Adds page edges: a parent links to each of its subpages in the set (as if its relatedIds named them). Only parents
+ * that gain a link are copied; the library's records are never changed.
+ */
+export function withPageLinks(items) {
+  const ids = new Set(items.map(item => item.id));
+  const extra = new Map();
+  for (const item of items) {
+    const parentId = parentIdOf(item);
+    if (!parentId || !ids.has(parentId)) continue;
+    if (!extra.has(parentId)) extra.set(parentId, []);
+    extra.get(parentId).push(item.id);
+  }
+  if (!extra.size) return items;
+  return items.map(item => {
+    const children = extra.get(item.id);
+    if (!children) return item;
+    const related = item.relatedIds || [];
+    const added = children.filter(id => !related.includes(id));
+    return added.length ? { ...item, relatedIds: [...related, ...added] } : item;
+  });
+}
 
 /**
  * Items for the map: type filter first, then the text query keeps matching items plus their direct neighbours
@@ -174,7 +198,7 @@ function graphFor(ctx) {
   const scope = m.scope && m.scope !== 'inbox' && !ctx.select.collection(m.scope) ? '' : m.scope;
   const key = [ctx.library?.updatedAt, scope, m.query, m.type].join('|');
   if (!graphCache.has(key)) {
-    const scoped = scopedItems(ctx, scope);
+    const scoped = withPageLinks(scopedItems(ctx, scope));
     const { items, matches } = filterMapItems(scoped, { query: m.query, type: m.type });
     graphCache.set(key, { key, scope, scopedCount: scoped.length, matches, graph: buildRelationshipGraph(items, { limit: LIMIT }) });
     if (graphCache.size > 6) graphCache.delete(graphCache.keys().next().value);
