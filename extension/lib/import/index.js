@@ -84,7 +84,8 @@ export function decodeText(bytes) {
 /* ---------------------------------------------------------------- Markdown */
 
 const HTML_BLOCK = /^ {0,3}<(?:div|p|table|details|h[1-6]|ul|ol|blockquote|pre|center|section|article|figure|picture|img|a|dl|hr|br)\b/i;
-const NOT_SETEXT = /^\s*(?:[-*+]\s|\d+[.)]\s|>|#|\||```|~~~)/;
+const NOT_SETEXT = /^\s*(?:[-*+]\s|\d+[.)]\s|>|#|\||```|~~~|!\[)/;
+export const pdfImageToken = (index, label = '') => `![${String(label || `Image ${index + 1}`).replace(/[\[\]\r\n]+/g, ' ').trim()}](pdf-image://${index})`;
 /** Neutralizes embed syntax in imported or generated Markdown: a file or a model never adds live frames to a note. */
 export function withoutEmbeds(line) {
   return line.replace(/^(\s*)::embed\[((?:\\.|[^\]\\])*)\]\(([^)\s]*)\)(?:\{[^}]*\})?\s*$/, (_, lead, label, url) => `${lead}[${label || url}](${url})`).replace(/^(\s*)!\[\[/, '$1[[');
@@ -317,15 +318,40 @@ export async function convertFile(file, { signal } = {}) {
       if (!format) throw new ImportError(LEGACY.zip, 'unsupported');
     }
   }
-  const result = { name, format, label: IMPORT_FORMATS[format]?.label || 'File', markdown: '', title: '', warnings: [], needsAi: null, bytes: null, pages: 0 };
+  const result = { name, format, label: IMPORT_FORMATS[format]?.label || 'File', markdown: '', title: '', warnings: [], needsAi: null, bytes: null, pages: 0, images: [] };
   const ext = extensionOf(name);
   switch (format) {
     case 'pdf': {
       const pdf = await extractPdf(bytes);
       result.pages = pdf.pages;
       result.bytes = bytes;
+      const base = baseName(name) || 'PDF';
+      result.images = (pdf.images || []).map((img, k) => ({
+        ...img,
+        index: k,
+        name: `${base} - image ${k + 1}.${img.ext || 'png'}`,
+        label: img.alt || (pdf.images.length === 1 ? `${base} — image` : `${base} — image ${k + 1}`),
+      }));
       if (pdf.needsAi) result.needsAi = { kind: 'pdf', reason: pdf.reason, mediaType: 'application/pdf' };
-      else result.markdown = markdownOf(pdf.blocks.map(block => block.type === 'table' ? { type: 'table', rows: block.rows.map(row => row.map(inline)) } : { ...block, html: inline(block.parts) }));
+      else {
+        const chunks = [];
+        let run = [];
+        const flushRun = () => {
+          if (!run.length) return;
+          const md = markdownOf(run.map(block => block.type === 'table' ? { type: 'table', rows: block.rows.map(row => row.map(inline)) } : { ...block, html: inline(block.parts) }));
+          if (md) chunks.push(md);
+          run = [];
+        };
+        for (const block of pdf.blocks) {
+          if (block.type === 'image') {
+            flushRun();
+            const meta = result.images[block.index] || block;
+            chunks.push(pdfImageToken(block.index, meta.label));
+          } else run.push(block);
+        }
+        flushRun();
+        result.markdown = chunks.join('\n');
+      }
       if (pdf.truncated) result.warnings.push('Only the first part of this PDF was imported.');
       break;
     }
@@ -372,6 +398,7 @@ export async function convertFile(file, { signal } = {}) {
 
 /** The first "# Title" of imported Markdown, if the text starts with one. */
 export function leadingTitle(markdown) {
-  const m = /^# (.+)\n?/.exec(String(markdown || '').replace(/^\s+/, ''));
+  const body = String(markdown || '').replace(/^(?:\s*(?:!\[[^\n]*\]\(pdf-image:\/\/\d+\)|!\[\[[^\n]+\]\])\s*\n)+/, '').replace(/^\s+/, '');
+  const m = /^# (.+)\n?/.exec(body);
   return m ? m[1].replace(/\\([\\`*_{}[\]()#+\-.!|>~])/g, '$1').replace(/[*_`~]/g, '').trim() : '';
 }

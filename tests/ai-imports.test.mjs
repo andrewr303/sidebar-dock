@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createImports, splitForAi, cleanImportOutput, toBase64, wordCount, CHUNK_CHARS } from '../extension/lib/ai/imports.js';
+import { createImports, splitForAi, cleanImportOutput, restorePdfImages, toBase64, wordCount, CHUNK_CHARS } from '../extension/lib/ai/imports.js';
 import { getProvider } from '../extension/lib/ai/catalog.js';
 import { normalizeMessages } from '../extension/lib/ai/chat.js';
 import { toAnthropicMessages } from '../extension/lib/ai/transports/anthropic.js';
@@ -131,6 +131,24 @@ test('small text PDFs are tidied from the file; a thin answer falls back to tidy
   const viaText = harness({ target: TARGETS.ollama, answer: call => call.part });
   await viaText.importDocument(pdf, { mode: 'tidy' });
   assert.deepEqual(viaText.calls.map(call => call.attachments.length), [0], 'without PDF support the extracted text is tidied');
+
+  const withImages = [
+    '# Heading',
+    '![Figure 1](pdf-image://0)',
+    'real words in the pdf '.repeat(40).trim(),
+    '![Figure 2](pdf-image://1)',
+    'more words at the end '.repeat(20).trim(),
+  ].join('\n');
+  const pdfWithImages = doc(withImages, { name: 'figs.pdf', format: 'pdf', bytes: Uint8Array.of(1, 2, 3), pages: 2, images: [{ mime: 'image/png' }, { mime: 'image/png' }] });
+  const droppedByModel = harness({
+    answer: () => `# Heading\n\n${'real words in the pdf '.repeat(40).trim()}\n\n${'more words at the end '.repeat(20).trim()}`,
+  });
+  const restored = await droppedByModel.importDocument(pdfWithImages, { mode: 'tidy' });
+  assert.match(restored.markdown, /!\[Figure 1\]\(pdf-image:\/\/0\)/);
+  assert.match(restored.markdown, /!\[Figure 2\]\(pdf-image:\/\/1\)/);
+  assert.ok(restored.markdown.indexOf('pdf-image://0') < restored.markdown.indexOf('more words at the end'));
+  assert.equal(restorePdfImages('# Title\nParagraph one.\nParagraph two.', '# Title\n![Figure 1](pdf-image://0)\nParagraph one.\nParagraph two.'), '# Title\n![Figure 1](pdf-image://0)\nParagraph one.\nParagraph two.');
+  assert.equal(wordCount('Two words\n![Figure 1](pdf-image://0)'), 2, 'image placeholders do not inflate word counts');
 });
 
 test('output cleanup, base64 and word counts', () => {

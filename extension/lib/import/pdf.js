@@ -135,6 +135,7 @@ class PdfDocument {
     this.objects = new Map();
     this.decoded = new Map();
     this.fonts = new Map();
+    this.images = new Map();
   }
   scan() {
     const { src } = this;
@@ -189,23 +190,28 @@ class PdfDocument {
   }
   entryOf(value) { return value && typeof value === 'object' && 'ref' in value ? this.objects.get(value.ref) || null : null; }
   get(dict, key) { return dict instanceof Map ? this.resolve(dict.get(key)) : undefined; }
-  async streamBytes(entry) {
-    if (!entry?.stream) return new Uint8Array(0);
-    if (this.decoded.has(entry)) return this.decoded.get(entry);
-    let data = this.bytes.subarray(entry.stream.start, entry.stream.end);
-    const filter = this.get(entry.value, 'Filter');
-    const filters = (Array.isArray(filter) ? filter : filter ? [filter] : []).map(f => this.resolve(f));
-    const params = this.get(entry.value, 'DecodeParms');
+  async decodeFilterChain(data, filterVal, paramsVal, { stopAtImage = false } = {}) {
+    const filters = (Array.isArray(filterVal) ? filterVal : filterVal ? [filterVal] : []).map(f => this.resolve(f));
     for (const [k, name] of filters.entries()) {
-      const param = this.resolve(Array.isArray(params) ? params[k] : params);
+      const param = this.resolve(Array.isArray(paramsVal) ? paramsVal[k] : paramsVal);
+      if (stopAtImage && (name === '/DCTDecode' || name === '/DCT' || name === '/JPXDecode')) return { data, filter: name };
       if (name === '/FlateDecode' || name === '/Fl') {
         try { data = await inflate(data, 'deflate', 256 * 1024 * 1024); } catch { data = await inflate(data, 'deflate-raw', 256 * 1024 * 1024); }
         const predictor = this.get(param, 'Predictor');
         if (predictor >= 10) data = unpredictPng(data, this.get(param, 'Columns') || 1, this.get(param, 'Colors') || 1, this.get(param, 'BitsPerComponent') || 8);
+        else if (predictor === 2) data = unpredictTiff(data, this.get(param, 'Columns') || 1, this.get(param, 'Colors') || 1, this.get(param, 'BitsPerComponent') || 8);
       } else if (name === '/ASCIIHexDecode' || name === '/AHx') data = bytesOf(hexString('<' + latin1(data), 0)[0].s);
       else if (name === '/ASCII85Decode' || name === '/A85') data = ascii85(data);
+      else if (name === '/RunLengthDecode' || name === '/RL') data = runLengthDecode(data);
       else throw new ImportError('This PDF uses an encoding that cannot be read here.', 'unsupported');
     }
+    return { data, filter: filters.at(-1) || '' };
+  }
+  async streamBytes(entry) {
+    if (!entry?.stream) return new Uint8Array(0);
+    if (this.decoded.has(entry)) return this.decoded.get(entry);
+    const raw = this.bytes.subarray(entry.stream.start, entry.stream.end);
+    const { data } = await this.decodeFilterChain(raw, this.get(entry.value, 'Filter'), this.get(entry.value, 'DecodeParms'));
     this.decoded.set(entry, data);
     return data;
   }
@@ -257,6 +263,25 @@ function unpredictPng(data, columns, colors, bits) {
   }
   return out;
 }
+function unpredictTiff(data, columns, colors, bits) {
+  if (bits !== 8) return data;
+  const row = columns * colors, rows = Math.floor(data.length / row), out = new Uint8Array(data);
+  for (let r = 0; r < rows; r++) {
+    const base = r * row;
+    for (let k = colors; k < row; k++) out[base + k] = (out[base + k] + out[base + k - colors]) & 255;
+  }
+  return out;
+}
+function runLengthDecode(data) {
+  const out = [];
+  for (let i = 0; i < data.length;) {
+    const b = data[i++];
+    if (b === 128) break;
+    if (b < 128) { for (let k = 0; k <= b && i < data.length; k++) out.push(data[i++]); }
+    else if (i < data.length) { const v = data[i++], count = 257 - b; for (let k = 0; k < count; k++) out.push(v); }
+  }
+  return Uint8Array.from(out);
+}
 function ascii85(data) {
   const text = latin1(data).replace(/\s+/g, '').replace(/^<~/, '').replace(/~>.*$/, '');
   const out = [];
@@ -271,6 +296,258 @@ function ascii85(data) {
     out.push(...group.slice(0, chunk.length - 1));
   }
   return Uint8Array.from(out);
+}
+
+/* ---------------------------------------------------------------- images & PNG encoding */
+
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+function crc32(bytes) {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function pngChunk(type, data) {
+  const len = data.length, out = new Uint8Array(12 + len), view = new DataView(out.buffer);
+  view.setUint32(0, len);
+  for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+  out.set(data, 8);
+  view.setUint32(8 + len, crc32(out.subarray(4, 8 + len)));
+  return out;
+}
+async function deflate(bytes) {
+  const cs = new CompressionStream('deflate');
+  const writer = cs.writable.getWriter();
+  writer.write(bytes).catch(() => {});
+  writer.close().catch(() => {});
+  const chunks = [];
+  const reader = cs.readable.getReader();
+  let total = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    total += value.byteLength;
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) { out.set(chunk, at); at += chunk.byteLength; }
+  return out;
+}
+/** Encodes 8-bit 1/3/4-channel raw pixels into a PNG file (Uint8Array). */
+export async function encodePng(width, height, channels, pixels) {
+  const colorType = channels === 4 ? 6 : channels === 3 ? 2 : 0;
+  const rowLen = width * channels, raw = new Uint8Array(height * (rowLen + 1));
+  for (let y = 0; y < height; y++) {
+    raw[y * (rowLen + 1)] = 0;
+    raw.set(pixels.subarray(y * rowLen, (y + 1) * rowLen), y * (rowLen + 1) + 1);
+  }
+  const ihdr = new Uint8Array(13), view = new DataView(ihdr.buffer);
+  view.setUint32(0, width);
+  view.setUint32(4, height);
+  ihdr[8] = 8;
+  ihdr[9] = colorType;
+  const idat = await deflate(raw);
+  const sig = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a);
+  const c1 = pngChunk('IHDR', ihdr), c2 = pngChunk('IDAT', idat), c3 = pngChunk('IEND', new Uint8Array(0));
+  const out = new Uint8Array(sig.length + c1.length + c2.length + c3.length);
+  out.set(sig, 0);
+  out.set(c1, sig.length);
+  out.set(c2, sig.length + c1.length);
+  out.set(c3, sig.length + c1.length + c2.length);
+  return out;
+}
+
+async function resolveColorSpace(pdf, cs, imageMask) {
+  if (imageMask) return { kind: 'mask', components: 1 };
+  if (!cs || cs === '/DeviceGray' || cs === '/G' || cs === '/CalGray') return { kind: 'gray', components: 1 };
+  if (cs === '/DeviceRGB' || cs === '/RGB' || cs === '/CalRGB') return { kind: 'rgb', components: 3 };
+  if (cs === '/DeviceCMYK' || cs === '/CMYK') return { kind: 'cmyk', components: 4 };
+  if (Array.isArray(cs)) {
+    const head = pdf.resolve(cs[0]);
+    if (head === '/DeviceGray' || head === '/G' || head === '/CalGray') return { kind: 'gray', components: 1 };
+    if (head === '/DeviceRGB' || head === '/RGB' || head === '/CalRGB') return { kind: 'rgb', components: 3 };
+    if (head === '/DeviceCMYK' || head === '/CMYK') return { kind: 'cmyk', components: 4 };
+    if (head === '/ICCBased') {
+      const entry = pdf.entryOf(cs[1]);
+      const dict = entry?.value instanceof Map ? entry.value : pdf.resolve(cs[1]);
+      const n = Number(pdf.get(dict, 'N')) || 3;
+      return { kind: n === 1 ? 'gray' : n === 4 ? 'cmyk' : 'rgb', components: n === 1 ? 1 : n === 4 ? 4 : 3 };
+    }
+    if (head === '/Indexed' || head === '/I') {
+      const base = await resolveColorSpace(pdf, pdf.resolve(cs[1]), false);
+      if (!base) return null;
+      const hival = Math.min(255, Math.max(0, Number(pdf.resolve(cs[2])) || 255));
+      const lookupEntry = pdf.entryOf(cs[3]);
+      let table = null;
+      if (lookupEntry?.stream) table = await pdf.streamBytes(lookupEntry).catch(() => null);
+      else {
+        const resolved = pdf.resolve(cs[3]);
+        if (resolved?.s !== undefined) table = bytesOf(resolved.s);
+        else if (Array.isArray(resolved)) table = Uint8Array.from(resolved.map(v => Number(pdf.resolve(v)) & 255));
+      }
+      if (!table) return null;
+      return { kind: 'indexed', components: 1, base, hival, table };
+    }
+    if (head === '/Separation') return { kind: 'separation', components: 1 };
+  }
+  return null;
+}
+
+function unpackSamples(data, width, height, components, bpc, scaleToByte = true) {
+  const rowSamples = width * components;
+  const rowBytes = Math.ceil((rowSamples * bpc) / 8);
+  if (data.length < rowBytes * height) return null;
+  const out = new Uint8Array(rowSamples * height);
+  if (bpc === 8) {
+    out.set(data.subarray(0, out.length));
+    return out;
+  }
+  if (bpc === 16) {
+    for (let i = 0; i < out.length; i++) out[i] = data[i * 2];
+    return out;
+  }
+  if (bpc !== 1 && bpc !== 2 && bpc !== 4) return null;
+  const max = (1 << bpc) - 1, scale = scaleToByte ? 255 / max : 1;
+  let dst = 0;
+  for (let y = 0; y < height; y++) {
+    const rowStart = y * rowBytes;
+    let bitPos = 0;
+    for (let x = 0; x < rowSamples; x++) {
+      const byteIdx = rowStart + (bitPos >> 3);
+      const shift = 8 - bpc - (bitPos & 7);
+      const val = (data[byteIdx] >> shift) & max;
+      out[dst++] = Math.round(val * scale);
+      bitPos += bpc;
+    }
+  }
+  return out;
+}
+
+async function decodePdfImage(pdf, dict, rawBytes, resources) {
+  if (!(dict instanceof Map) || !rawBytes?.length) return null;
+  const width = Number(pdf.get(dict, 'Width') ?? pdf.get(dict, 'W') ?? 0);
+  const height = Number(pdf.get(dict, 'Height') ?? pdf.get(dict, 'H') ?? 0);
+  const titleObj = pdf.get(dict, 'Title') ?? pdf.get(dict, 'Alt');
+  const label = titleObj?.s ? cp1252(bytesOf(titleObj.s)).trim() : '';
+  let decoded;
+  try {
+    decoded = await pdf.decodeFilterChain(rawBytes, pdf.get(dict, 'Filter') ?? pdf.get(dict, 'F'), pdf.get(dict, 'DecodeParms') ?? pdf.get(dict, 'DP'), { stopAtImage: true });
+  } catch { return null; }
+  const { data, filter } = decoded;
+  if (!data?.length) return null;
+  if (filter === '/DCTDecode' || filter === '/DCT' || (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff)) {
+    return { mime: 'image/jpeg', ext: 'jpg', data, width, height, label, hash: `jpg:${data.length}:${crc32(data)}` };
+  }
+  if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) {
+    return { mime: 'image/png', ext: 'png', data, width, height, label, hash: `png:${data.length}:${crc32(data)}` };
+  }
+  if (!(width > 0 && height > 0 && width <= 16384 && height <= 16384 && width * height <= 36_000_000)) return null;
+  const imageMask = (pdf.get(dict, 'ImageMask') ?? pdf.get(dict, 'IM')) === true;
+  const bpc = Number(pdf.get(dict, 'BitsPerComponent') ?? pdf.get(dict, 'BPC') ?? (imageMask ? 1 : 8));
+  let csVal = pdf.get(dict, 'ColorSpace') ?? pdf.get(dict, 'CS');
+  const csResources = pdf.get(resources, 'ColorSpace');
+  if (typeof csVal === 'string' && csResources instanceof Map && csResources.has(csVal.slice(1))) csVal = pdf.get(csResources, csVal.slice(1));
+  const cs = await resolveColorSpace(pdf, csVal, imageMask);
+  if (!cs) return null;
+  const samples = unpackSamples(data, width, height, cs.components, bpc, cs.kind !== 'indexed');
+  if (!samples) return null;
+  const decodeArr = pdf.get(dict, 'Decode') ?? pdf.get(dict, 'D');
+  if (Array.isArray(decodeArr) && cs.kind !== 'indexed') {
+    for (let c = 0; c < cs.components; c++) {
+      const dMin = Number(pdf.resolve(decodeArr[c * 2])), dMax = Number(pdf.resolve(decodeArr[c * 2 + 1]));
+      if (dMin > dMax) for (let i = c; i < samples.length; i += cs.components) samples[i] = 255 - samples[i];
+    }
+  }
+  let alpha = null;
+  const smaskEntry = pdf.entryOf(dict.get('SMask'));
+  if (smaskEntry?.value instanceof Map && smaskEntry.stream) {
+    try {
+      const sDict = smaskEntry.value;
+      const sW = Number(pdf.get(sDict, 'Width') ?? 0), sH = Number(pdf.get(sDict, 'Height') ?? 0);
+      if (sW === width && sH === height) {
+        const sBytes = await pdf.streamBytes(smaskEntry);
+        alpha = unpackSamples(sBytes, width, height, 1, Number(pdf.get(sDict, 'BitsPerComponent') || 8), true);
+      }
+    } catch { alpha = null; }
+  }
+  const pixelCount = width * height;
+  let channels, pixels;
+  if (cs.kind === 'gray' || cs.kind === 'mask' || cs.kind === 'separation') {
+    const invert = cs.kind === 'separation';
+    if (alpha) {
+      channels = 4;
+      pixels = new Uint8Array(pixelCount * 4);
+      for (let i = 0; i < pixelCount; i++) {
+        const v = invert ? 255 - samples[i] : samples[i];
+        pixels[i * 4] = v; pixels[i * 4 + 1] = v; pixels[i * 4 + 2] = v; pixels[i * 4 + 3] = alpha[i];
+      }
+    } else {
+      channels = 1;
+      pixels = invert ? samples.map(v => 255 - v) : samples;
+    }
+  } else if (cs.kind === 'rgb') {
+    if (alpha) {
+      channels = 4;
+      pixels = new Uint8Array(pixelCount * 4);
+      for (let i = 0; i < pixelCount; i++) {
+        pixels[i * 4] = samples[i * 3]; pixels[i * 4 + 1] = samples[i * 3 + 1]; pixels[i * 4 + 2] = samples[i * 3 + 2]; pixels[i * 4 + 3] = alpha[i];
+      }
+    } else {
+      channels = 3;
+      pixels = samples;
+    }
+  } else if (cs.kind === 'cmyk') {
+    channels = alpha ? 4 : 3;
+    pixels = new Uint8Array(pixelCount * channels);
+    for (let i = 0; i < pixelCount; i++) {
+      const c = samples[i * 4] / 255, m = samples[i * 4 + 1] / 255, y = samples[i * 4 + 2] / 255, k = samples[i * 4 + 3] / 255;
+      const dst = i * channels;
+      pixels[dst] = Math.round(255 * (1 - c) * (1 - k));
+      pixels[dst + 1] = Math.round(255 * (1 - m) * (1 - k));
+      pixels[dst + 2] = Math.round(255 * (1 - y) * (1 - k));
+      if (alpha) pixels[dst + 3] = alpha[i];
+    }
+  } else if (cs.kind === 'indexed') {
+    channels = alpha ? 4 : 3;
+    pixels = new Uint8Array(pixelCount * channels);
+    const bComp = cs.base.components, t = cs.table;
+    for (let i = 0; i < pixelCount; i++) {
+      const idx = Math.min(cs.hival, samples[i]) * bComp;
+      const dst = i * channels;
+      if (cs.base.kind === 'gray') {
+        const g = t[idx] ?? 0;
+        pixels[dst] = g; pixels[dst + 1] = g; pixels[dst + 2] = g;
+      } else if (cs.base.kind === 'cmyk') {
+        const c = (t[idx] ?? 0) / 255, m = (t[idx + 1] ?? 0) / 255, y = (t[idx + 2] ?? 0) / 255, k = (t[idx + 3] ?? 0) / 255;
+        pixels[dst] = Math.round(255 * (1 - c) * (1 - k));
+        pixels[dst + 1] = Math.round(255 * (1 - m) * (1 - k));
+        pixels[dst + 2] = Math.round(255 * (1 - y) * (1 - k));
+      } else {
+        pixels[dst] = t[idx] ?? 0; pixels[dst + 1] = t[idx + 1] ?? 0; pixels[dst + 2] = t[idx + 2] ?? 0;
+      }
+      if (alpha) pixels[dst + 3] = alpha[i];
+    }
+  } else return null;
+  const png = await encodePng(width, height, channels, pixels);
+  return { mime: 'image/png', ext: 'png', data: png, width, height, label, hash: `png:${png.length}:${crc32(png)}` };
+}
+
+async function extractXObjectImage(pdf, entry, resources) {
+  if (!entry?.stream || !(entry.value instanceof Map)) return null;
+  if (pdf.images.has(entry.num)) return pdf.images.get(entry.num);
+  const raw = pdf.bytes.subarray(entry.stream.start, entry.stream.end);
+  const decoded = await decodePdfImage(pdf, entry.value, raw, resources);
+  const result = decoded ? { ...decoded, key: `obj:${entry.num}` } : null;
+  pdf.images.set(entry.num, result);
+  return result;
 }
 
 /* ---------------------------------------------------------------- fonts */
@@ -435,7 +712,7 @@ const mul = (m, n) => [m[0] * n[0] + m[1] * n[2], m[0] * n[1] + m[1] * n[3], m[2
 const ID = [1, 0, 0, 1, 0, 0];
 const LIGATURES = { '\ufb00': 'ff', '\ufb01': 'fi', '\ufb02': 'fl', '\ufb03': 'ffi', '\ufb04': 'ffl', '\ufb05': 'st', '\ufb06': 'st' };
 
-async function readContent(pdf, source, resources, ctm0, runs, stats, depth = 0) {
+async function readContent(pdf, source, resources, ctm0, runs, stats, depth = 0, pageImages = []) {
   if (depth > 8) return;
   const fontsDict = pdf.get(resources, 'Font');
   const xobjects = pdf.get(resources, 'XObject');
@@ -510,19 +787,47 @@ async function readContent(pdf, source, resources, ctm0, runs, stats, depth = 0)
       case 'Do': {
         const name = operands.at(-1);
         const entry = typeof name === 'string' && xobjects instanceof Map ? pdf.entryOf(xobjects.get(name.slice(1))) : null;
-        if (entry?.value instanceof Map && entry.value.get('Subtype') === '/Image') stats.images++;
+        if (entry?.value instanceof Map && entry.value.get('Subtype') === '/Image') {
+          stats.images++;
+          const img = await extractXObjectImage(pdf, entry, resources);
+          if (img) {
+            const yMid = ctm[5] + (ctm[1] + ctm[3]) * 0.5;
+            pageImages.push({ image: img, x: ctm[4], y: yMid, order: (stats.order = (stats.order || 0) + 1) });
+          }
+        }
         if (entry?.value instanceof Map && entry.value.get('Subtype') === '/Form' && entry.stream) {
           const matrix = pdf.get(entry.value, 'Matrix');
           const inner = latin1(await pdf.streamBytes(entry).catch(() => new Uint8Array(0)));
-          await readContent(pdf, inner, pdf.get(entry.value, 'Resources') || resources, Array.isArray(matrix) && matrix.length === 6 ? mul(matrix.map(Number), ctm) : ctm, runs, stats, depth + 1);
+          await readContent(pdf, inner, pdf.get(entry.value, 'Resources') || resources, Array.isArray(matrix) && matrix.length === 6 ? mul(matrix.map(Number), ctm) : ctm, runs, stats, depth + 1, pageImages);
         }
         break;
       }
       case 'BI': {
         stats.images++;
-        const data = s.indexOf('ID', i);
-        const end = data < 0 ? -1 : s.slice(data).search(/\sEI(?=[\s]|$)/);
-        i = end < 0 ? s.length : data + end + 3;
+        const inlineDict = new Map();
+        while (i < s.length) {
+          let tok, nxt;
+          try { [tok, nxt] = parseValue(s, i, { refs: false }); } catch { break; }
+          if (nxt <= i) { i++; continue; }
+          i = nxt;
+          if (!tok || (typeof tok === 'object' && tok.op === 'ID')) break;
+          if (typeof tok === 'string' && tok.startsWith('/')) {
+            const [val, nxt2] = parseValue(s, i, { refs: false });
+            i = Math.max(i, nxt2);
+            inlineDict.set(tok.slice(1), val);
+          }
+        }
+        if (WS.has(s.charCodeAt(i))) i++;
+        const end = s.slice(i).search(/\sEI(?=[\s/]|$)/);
+        const rawEnd = end < 0 ? s.length : i + end;
+        const rawInline = new Uint8Array(Math.max(0, rawEnd - i));
+        for (let k = 0; k < rawInline.length; k++) rawInline[k] = s.charCodeAt(i + k) & 0xff;
+        const img = await decodePdfImage(pdf, inlineDict, rawInline, resources).catch(() => null);
+        if (img) {
+          const yMid = ctm[5] + (ctm[1] + ctm[3]) * 0.5;
+          pageImages.push({ image: img, x: ctm[4], y: yMid, order: (stats.order = (stats.order || 0) + 1) });
+        }
+        i = end < 0 ? s.length : i + end + 3;
         break;
       }
       default: break;
@@ -625,16 +930,17 @@ const median = values => quantile(values, 0.5);
 
 /**
  * Turns page lines into blocks: { type: 'h', level, parts } | { type: 'p', parts } | { type: 'li', ordered, start, level, parts }
- * | { type: 'table', rows: [[parts]] }. Parts are inline runs: { text, bold, italic }.
+ * | { type: 'table', rows: [[parts]] } | { type: 'image', index, name, label, mime, ext, data, width, height, page }.
+ * Parts are inline runs: { text, bold, italic }.
  */
 export function layoutBlocks(pages) {
-  const all = pages.flat();
-  if (!all.length) return [];
+  const all = pages.flat().filter(item => item.type !== 'image');
+  if (!all.length) return pages.flat().filter(item => item.type === 'image');
   const bySize = new Map();
   for (const line of all) { const k = Math.round(line.size * 2) / 2; bySize.set(k, (bySize.get(k) || 0) + line.text.length); }
   const body = [...bySize].sort((a, b) => b[1] - a[1])[0][0];
   const gaps = [];
-  for (const lines of pages) for (let k = 1; k < lines.length; k++) if (Math.abs(lines[k].size - body) < body * 0.1 && Math.abs(lines[k - 1].size - body) < body * 0.1) gaps.push(lines[k - 1].y - lines[k].y);
+  for (const lines of pages) for (let k = 1; k < lines.length; k++) if (lines[k].type !== 'image' && lines[k - 1].type !== 'image' && Math.abs(lines[k].size - body) < body * 0.1 && Math.abs(lines[k - 1].size - body) < body * 0.1) gaps.push(lines[k - 1].y - lines[k].y);
   // Line spacing is the common small gap; the median would land on paragraph gaps in documents of short paragraphs.
   const leading = quantile(gaps.filter(g => g > body * 0.5 && g < body * 3), 0.25) || body * 1.2;
   const left = median(all.filter(l => Math.abs(l.size - body) < body * 0.1).map(l => l.x));
@@ -651,6 +957,12 @@ export function layoutBlocks(pages) {
   for (const [pageIndex, lines] of pages.entries()) {
     let previous = null;
     for (const line of lines) {
+      if (line.type === 'image') {
+        flush();
+        blocks.push(line);
+        previous = null;
+        continue;
+      }
       const big = line.size >= body * 1.15 && line.text.length <= 200;
       const bullet = BULLET.exec(line.text), numbered = !big && NUMBERED.exec(line.text);
       const gap = previous ? previous.y - line.y : 0;
@@ -691,7 +1003,7 @@ export function layoutBlocks(pages) {
 }
 
 /**
- * extractPdf(bytes) -> { pages, blocks, chars, needsAi, reason, encrypted }
+ * extractPdf(bytes) -> { pages, blocks, images, chars, needsAi, reason, encrypted }
  * needsAi is set for pages without a text layer (scans), encrypted files and fonts whose text cannot be mapped.
  */
 export async function extractPdf(input, { maxPages = MAX_PDF_PAGES } = {}) {
@@ -702,27 +1014,52 @@ export async function extractPdf(input, { maxPages = MAX_PDF_PAGES } = {}) {
   await pdf.expandObjectStreams();
   const encrypted = pdf.encrypted();
   const pageList = pdf.pages().slice(0, maxPages);
-  if (encrypted) return { pages: pageList.length, blocks: [], chars: 0, needsAi: true, reason: 'encrypted', encrypted: true };
+  if (encrypted) return { pages: pageList.length, blocks: [], images: [], chars: 0, needsAi: true, reason: 'encrypted', encrypted: true };
   const stats = { chars: 0, bad: 0, images: 0 };
   const pageLines = [];
+  const pageImages = [];
   let total = 0;
   for (const page of pageList) {
     const contents = page.dict.get('Contents');
     const parts = (Array.isArray(pdf.resolve(contents)) ? pdf.resolve(contents) : [contents]).map(ref => pdf.entryOf(ref)).filter(Boolean);
     let source = '';
     for (const part of parts) { try { source += latin1(await pdf.streamBytes(part)) + '\n'; } catch { /* unreadable part */ } }
-    const runs = [];
-    await readContent(pdf, source, page.resources, ID, runs, stats);
+    const runs = [], imgs = [];
+    await readContent(pdf, source, page.resources, ID, runs, stats, 0, imgs);
     const lines = linesOf(runs);
     pageLines.push(lines);
+    pageImages.push(imgs);
     total += lines.reduce((sum, line) => sum + line.text.length, 0);
     if (total > MAX_CHARS) break;
   }
   const cleaned = dropRunningLines(pageLines);
   const chars = cleaned.flat().reduce((sum, line) => sum + line.text.replace(/\s/g, '').length, 0);
+  const images = [];
+  const byKey = new Map(), byHash = new Map();
+  for (let pageIndex = 0; pageIndex < cleaned.length; pageIndex++) {
+    const imgs = (pageImages[pageIndex] || []).slice().sort((a, b) => (b.y - a.y) || (a.order - b.order));
+    for (const placement of imgs) {
+      const img = placement.image;
+      if (!img?.data?.length) continue;
+      let record = (img.key && byKey.get(img.key)) || (img.hash !== undefined && byHash.get(img.hash));
+      if (!record) {
+        const index = images.length;
+        const ext = img.ext || (img.mime === 'image/jpeg' ? 'jpg' : 'png');
+        record = { index, name: `image-${index + 1}.${ext}`, label: img.label || `Page ${pageIndex + 1} image ${index + 1}`, alt: img.label || '', mime: img.mime, ext, data: img.data, bytes: img.data, width: img.width, height: img.height, page: pageIndex + 1 };
+        images.push(record);
+        if (img.key) byKey.set(img.key, record);
+        if (img.hash !== undefined) byHash.set(img.hash, record);
+      }
+      const list = cleaned[pageIndex];
+      const insertAt = list.findIndex(item => item.type !== 'image' && item.y < placement.y);
+      const block = { type: 'image', ...record, x: placement.x, y: placement.y };
+      if (insertAt < 0) list.push(block);
+      else list.splice(insertAt, 0, block);
+    }
+  }
   const pages = pageList.length;
-  // Scans are pages of pictures: no text at all, or a few stray characters beside drawn images.
-  const scanned = pages > 0 && (chars === 0 || (chars / pages < 25 && stats.images >= pages));
+  // Scans are pages of pictures: no text at all, or a few stray characters beside undecoded images.
+  const scanned = pages > 0 && !images.length && (chars === 0 || (chars / pages < 25 && stats.images >= pages));
   const garbled = stats.chars > 50 && stats.bad / stats.chars > 0.3;
-  return { pages, blocks: scanned || garbled ? [] : layoutBlocks(cleaned), chars, needsAi: scanned || garbled || !pages, reason: !pages ? 'empty' : scanned ? 'scanned' : garbled ? 'fonts' : '', encrypted: false, truncated: total > MAX_CHARS || pdf.pages().length > maxPages };
+  return { pages, blocks: scanned || garbled ? [] : layoutBlocks(cleaned), images, chars, needsAi: scanned || garbled || !pages, reason: !pages ? 'empty' : scanned ? 'scanned' : garbled ? 'fonts' : '', encrypted: false, truncated: total > MAX_CHARS || pdf.pages().length > maxPages };
 }
