@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
 import { readFile } from 'node:fs/promises';
-import { convertFile, detectFormat, normalizeMarkdown, parseDelimited, rtfToBlocks, withoutEmbeds, decodeText, clampMarkdown, leadingTitle, baseName, IMPORT_ACCEPT, MAX_IMPORT_BYTES } from '../extension/lib/import/index.js';
+import { convertFile, detectFormat, normalizeMarkdown, parseDelimited, rtfToBlocks, withoutEmbeds, decodeText, clampMarkdown, leadingTitle, baseName, pdfImageToken, IMPORT_ACCEPT, MAX_IMPORT_BYTES } from '../extension/lib/import/index.js';
 import { readZip, inflate } from '../extension/lib/import/zip.js';
 import { parseXml, children, textOf, attr } from '../extension/lib/import/xml.js';
-import { extractPdf, parseCMap, glyphToUnicode, parseValue } from '../extension/lib/import/pdf.js';
+import { extractPdf, encodePng, parseCMap, glyphToUnicode, parseValue } from '../extension/lib/import/pdf.js';
 import { blocksToHtml, inline, cp1252 } from '../extension/lib/import/blocks.js';
 import { parseNoteBlocks } from '../extension/lib/markdown.js';
 
@@ -249,6 +249,66 @@ test('PDFs without a text layer or with encryption ask for AI instead of guessin
   await assert.rejects(convert('fake.pdf', 'hello'), /not a PDF/);
   const pdf = await extractPdf(objectStreamPdf());
   assert.equal(pdf.blocks[0].type, 'h');
+});
+
+test('PDF embedded images (JPEG, Flate RGB with SMask, Indexed palette and inline) are extracted in reading order', async () => {
+  const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0xff, 0xd9]);
+  const rgbRaw = zlib.deflateSync(Buffer.alloc(20 * 20 * 3, 0x7f));
+  const alphaRaw = zlib.deflateSync(Buffer.alloc(20 * 20, 0xcc));
+  const idxRaw = zlib.deflateSync(Buffer.alloc(16 * 16, 1));
+  const inlineHex = `${'80'.repeat(16 * 16)}>`;
+  const pageContent = [
+    'BT /F1 24 Tf 72 720 Td (Illustrated Report) Tj ET',
+    'q 120 0 0 80 72 600 cm /ImJpg Do Q',
+    'BT /F1 12 Tf 72 540 Td (First paragraph right below the hero photo and above the diagram.) Tj ET',
+    'q 100 0 0 60 72 450 cm /ImJpg Do Q',
+    'q 80 0 0 80 72 340 cm /ImRgba Do Q',
+    'q 64 0 0 64 72 240 cm /ImIdx Do Q',
+    `q 48 0 0 48 72 150 cm BI /W 16 /H 16 /CS /G /BPC 8 /F /AHx ID ${inlineHex} EI Q`,
+    'BT /F1 12 Tf 72 90 Td (Closing paragraph after all embedded figures on the page.) Tj ET',
+  ].join('\n');
+  const parts = [
+    '%PDF-1.4\n',
+    '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n',
+    '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n',
+    '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> /XObject << /ImJpg 6 0 R /ImRgba 7 0 R /ImIdx 9 0 R >> >> /Contents 5 0 R >> endobj\n',
+    '4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >> endobj\n',
+    `5 0 obj << /Length ${pageContent.length} >>\nstream\n${pageContent}\nendstream\nendobj\n`,
+  ];
+  const addStream = (num, dict, buf) => parts.push(Buffer.concat([Buffer.from(`${num} 0 obj << ${dict} /Length ${buf.length} >>\nstream\n`, 'latin1'), buf, Buffer.from('\nendstream\nendobj\n', 'latin1')]));
+  addStream(6, '/Type /XObject /Subtype /Image /Width 32 /Height 24 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode', jpegBytes);
+  addStream(7, '/Type /XObject /Subtype /Image /Width 20 /Height 20 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /SMask 8 0 R', rgbRaw);
+  addStream(8, '/Type /XObject /Subtype /Image /Width 20 /Height 20 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode', alphaRaw);
+  addStream(9, '/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace [/Indexed /DeviceRGB 1 <FF000000FF00>] /BitsPerComponent 8 /Filter /FlateDecode', idxRaw);
+  parts.push('trailer << /Root 1 0 R >>\n%%EOF\n');
+  const pdfBuf = Buffer.concat(parts.map(p => typeof p === 'string' ? Buffer.from(p, 'latin1') : p));
+
+  const extracted = await extractPdf(pdfBuf);
+  assert.equal(extracted.images.length, 4, 'reused XObject is deduplicated and SMask is merged into its parent image');
+  assert.equal(extracted.images[0].mime, 'image/jpeg');
+  assert.deepEqual(Buffer.from(extracted.images[0].bytes), jpegBytes);
+  for (const idx of [1, 2, 3]) {
+    assert.equal(extracted.images[idx].mime, 'image/png');
+    assert.deepEqual(Array.from(extracted.images[idx].bytes.slice(0, 8)), [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  }
+  const png = await encodePng(4, 3, 4, new Uint8Array(4 * 3 * 4));
+  assert.equal(Buffer.from(png.slice(12, 16)).toString('ascii'), 'IHDR');
+
+  const converted = await convert('illustrated.pdf', pdfBuf, 'application/pdf');
+  assert.equal(converted.needsAi, null);
+  assert.equal(converted.images.length, 4);
+  assert.deepEqual(lines(converted.markdown), [
+    '## Illustrated Report',
+    pdfImageToken(0, 'illustrated — image 1'),
+    'First paragraph right below the hero photo and above the diagram.',
+    pdfImageToken(0, 'illustrated — image 1'),
+    pdfImageToken(1, 'illustrated — image 2'),
+    pdfImageToken(2, 'illustrated — image 3'),
+    pdfImageToken(3, 'illustrated — image 4'),
+    'Closing paragraph after all embedded figures on the page.',
+  ]);
+  assert.equal(leadingTitle(`${pdfImageToken(0, 'Figure 1')}\n# Illustrated Report\nBody`), 'Illustrated Report');
+  assert.equal(leadingTitle('![[item_1|Figure 1]]\n# Illustrated Report\nBody'), 'Illustrated Report');
 });
 
 /* ---------------------------------------------------------------- limits and helpers */

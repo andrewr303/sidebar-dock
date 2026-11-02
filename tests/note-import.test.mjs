@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { combineImports, importTitle, fileStatus, saveFileItem } from '../extension/ui/note-import.js';
+import { combineImports, importTitle, fileStatus, saveFileItem, attachImportImages } from '../extension/ui/note-import.js';
 import { parseNoteBlocks } from '../extension/lib/markdown.js';
 
 test('several imports follow one another under file headings unless they open with their own title', () => {
@@ -49,4 +49,41 @@ test('embedded uploads are saved as library items in the note’s collection, an
   assert.equal((await saveFileItem(ctx, new File(['x'], 'clip.mp4', { type: 'video/mp4' }), 'gone')).collectionId, '', 'a missing collection falls back to the Inbox');
   await assert.rejects(saveFileItem(ctx, new File(['%PDF'], 'broken.pdf', { type: 'application/pdf' })), /Quota/);
   assert.deepEqual(calls, [['attach', 'paper.pdf'], ['item', 'file', 'design'], ['attach', 'clip.mp4'], ['item', 'video', ''], ['attach', 'broken.pdf'], ['item', 'file', ''], ['delete', 'file_1']]);
+});
+
+test('extracted PDF images are saved as library image items and embedded in reading order', async () => {
+  const saved = [];
+  const remembered = [];
+  let seq = 0;
+  const ctx = {
+    select: { collection: id => (id === 'research' ? { id } : null) },
+    store: {
+      saveAttachment: async file => ({ attachmentId: `att_${++seq}`, fileName: file.name, mime: file.type, size: file.size }),
+      saveItem: async input => { const item = { id: `img_${seq}`, ...input }; saved.push(item); return item; },
+      deleteAttachment: async () => {},
+    },
+  };
+  const converted = {
+    name: 'architecture.pdf',
+    images: [
+      { bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]), mime: 'image/png', ext: 'png', width: 200, height: 100, page: 1, label: 'Figure 1' },
+      { bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), mime: 'image/jpeg', ext: 'jpg', width: 300, height: 200, page: 2, label: 'Figure 2' },
+    ],
+  };
+  const md = '# Architecture\n![Figure 1](pdf-image://0)\nOverview text.\n![Figure 1](pdf-image://0)\n![Figure 2](pdf-image://1)';
+  const out = await attachImportImages(ctx, converted, md, { collectionId: 'research', rememberItem: item => remembered.push(item.id) });
+  assert.equal(out, '# Architecture\n![[img_1|Figure 1]]\nOverview text.\n![[img_1|Figure 1]]\n![[img_2|Figure 2]]');
+  assert.equal(saved.length, 2, 'reused image token only saves one library item');
+  assert.deepEqual(saved.map(s => [s.type, s.collectionId, s.fileName]), [
+    ['image', 'research', 'architecture-image-1.png'],
+    ['image', 'research', 'architecture-image-2.jpg'],
+  ]);
+  assert.deepEqual(remembered, ['img_1', 'img_2']);
+  assert.deepEqual(parseNoteBlocks(out).map(b => [b.type, b.target, b.label]), [
+    ['h1', undefined, undefined],
+    ['embed', 'img_1', 'Figure 1'],
+    ['paragraph', undefined, undefined],
+    ['embed', 'img_1', 'Figure 1'],
+    ['embed', 'img_2', 'Figure 2'],
+  ]);
 });

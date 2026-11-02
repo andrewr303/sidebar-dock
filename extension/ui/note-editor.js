@@ -579,7 +579,7 @@ function createEditor(host, ctx) {
 
   function openImportDialog(files = []) {
     if (!editor) return;
-    openImport(ctx, { files, noteTitle: inline ? '' : titleValue(els.title?.value ?? item()?.title).trim(), insert: insertImport, embedFile });
+    openImport(ctx, { files, noteTitle: inline ? '' : titleValue(els.title?.value ?? item()?.title).trim(), collectionId: item()?.collectionId || '', rememberItem, insert: insertImport, embedFile });
   }
 
   /** Imported Markdown goes in at the caret. An untitled, empty note also takes the document's title. */
@@ -590,7 +590,7 @@ function createEditor(host, ctx) {
     if (!inline && els.title && !els.title.value.trim() && title.trim()) {
       els.title.value = normalizeTitle(title).slice(0, 300);
       autosizeTitle();
-      if (empty && leadingTitle(body) === title.trim()) body = body.replace(/^\s*# [^\n]*\n?/, '');
+      if (empty && leadingTitle(body) === title.trim()) body = body.replace(/^(\s*(?:!\[\[[^\n]+\]\]\s*\n)*)\s*# [^\n]*\n?/, '$1');
       changed();
     }
     if (body.trim()) editor.insertMarkdown(body, { at: empty ? 'end' : 'cursor' });
@@ -641,7 +641,7 @@ function createEditor(host, ctx) {
       const title = titleText();
       const patch = inline ? { [field]: text } : { title, content: text };
       if (record.type === 'note' && field === 'content') patch.excerpt = noteExcerpt(text);
-      const linked = resolveWikiLinks(text, ctx.library?.items || []).map(link => link.id).filter(Boolean);
+      const linked = resolveWikiLinks(text, [...(ctx.library?.items || []), ...fresh.values()]).map(link => link.id).filter(Boolean);
       const related = mergeRelatedIds(record.relatedIds, linked, id);
       if (related.length !== (record.relatedIds || []).length) patch.relatedIds = related;
       if (!force && text === st.base.text && (inline || title === st.base.title) && !patch.relatedIds) {

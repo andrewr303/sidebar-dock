@@ -9,7 +9,7 @@ import { registerActions } from './runtime.js';
 import { openAdd } from './quick-add.js';
 import { askAi } from './ai-panel.js';
 import { openSettings } from './settings.js';
-import { openCollectionEditor, visibleTree, deleteCollectionFlow, collectionSubset, revealInGrid } from './collections.js';
+import { openCollectionEditor, visibleTree, deleteCollectionFlow, collectionSubset, revealInGrid, setCollectionPinned } from './collections.js';
 import { initDnd } from './dnd.js';
 import { exportBookmarkHtml } from '../lib/portability.js';
 
@@ -43,6 +43,7 @@ const END = [
 const TAG_LIMIT = 10;
 
 let treeFocusId = '';
+let pinFocusId = '';
 let revealedView = '';
 let tabsGranted = null;
 let tabsDeclined = false;
@@ -139,7 +140,7 @@ function treeRow(ctx, row, { counts, selectedId, focusId, surface }) {
     ${renaming
       ? html`<input class="tree-rename" id="tree-rename" value="${row.name}" aria-label="Collection name" maxlength="500" autocomplete="off" spellcheck="false"
           data-keydown="sidebar.rename-key">`
-      : html`<span class="tree-name">${row.name}</span>`}
+      : html`<span class="tree-name">${row.name}</span>${row.pinned ? html`<span class="tree-pin" title="Pinned">${icon('pin', { size: 12 })}<span class="sr-only">Pinned</span></span>` : ''}`}
     <span class="tree-count">${fmt(counts.byCollectionDeep[row.id])}</span>
     <span class="tree-actions" aria-hidden="true">
       <button type="button" class="tree-action" tabindex="-1" data-action="sidebar.add" data-id="${row.id}" data-tooltip="${addLabel}" data-tooltip-pos="end">${icon('plus', { size: 14 })}</button>
@@ -152,9 +153,10 @@ function renderCollections(ctx, counts, surface) {
   revealCurrent(ctx);
   const open = isOpen(ctx, 'collections');
   const rows = visibleTree(ctx.select.tree(), new Set(ctx.prefs.get('expandedCollections', [])));
+  const pinned = renderPinned(ctx, counts, surface, open ? new Set(rows.map(r => r.id)) : new Set());
   const selectedId = surface === 'full' && ctx.state.view.startsWith('collection:') ? ctx.state.view.slice(11) : '';
   const focusId = rows.some(r => r.id === treeFocusId) ? treeFocusId : rows.some(r => r.id === selectedId) ? selectedId : rows[0]?.id;
-  return html`${heading(ctx, 'collections', 'Collections', {
+  return html`${pinned}${heading(ctx, 'collections', 'Collections', {
     attrs: raw('data-drop-root'),
     actions: iconButton({ icon: 'plus', label: 'New collection', action: 'collections.new', size: 'sm', className: 'nav-heading-action' }),
   })}
@@ -163,6 +165,40 @@ function renderCollections(ctx, counts, surface) {
         ? html`<div class="tree" role="tree" aria-label="Collections" data-keydown="sidebar.tree-key">${rows.map(row => treeRow(ctx, row, { counts, selectedId, focusId, surface }))}</div>`
         : html`<p class="nav-empty">Group links and notes into collections.</p>`}
       <button type="button" class="tree-row is-new" data-action="collections.new"><span class="tree-chev is-leaf" aria-hidden="true"></span>${icon('plus', { size: 18, className: 'nav-icon' })}<span class="tree-name">New collection</span></button>
+    </div>`;
+}
+
+/**
+ * The Pinned section above Collections: every pinned collection at any depth as one flat list, so a pinned sub-collection
+ * is one click away without opening its parents. Same row anatomy as the tree (tile, name, count, hover actions), plus the
+ * parent's name when it is nested. Rows are their own one-level tree for keyboard use. Hidden while nothing is pinned.
+ */
+function renderPinned(ctx, counts, surface, visibleIds) {
+  const rows = ctx.select.pinnedCollections();
+  if (!rows.length) return '';
+  const open = isOpen(ctx, 'pinned');
+  const selectedId = surface === 'full' && ctx.state.view.startsWith('collection:') ? ctx.state.view.slice(11) : '';
+  const focusId = rows.some(r => r.id === pinFocusId) ? pinFocusId : rows[0].id;
+  return html`${heading(ctx, 'pinned', 'Pinned', { count: rows.length, attrs: raw('data-drop-pin') })}
+    <div class="nav-section nav-pinned" id="nav-pinned" data-drop-pin ${open ? '' : raw('hidden')}>
+      <div class="tree" role="tree" aria-label="Pinned collections" data-keydown="sidebar.tree-key">
+        ${rows.map((row, index) => {
+          const selected = row.id === selectedId;
+          return html`<div class="${cx('tree-row', 'collection-row', 'pinned-row', selected && 'is-current')}" role="treeitem" id="pin-${row.id}" data-key="pin-${row.id}"
+            data-id="${row.id}" data-pinned-row aria-level="1" aria-setsize="${rows.length}" aria-posinset="${index + 1}" aria-selected="${selected ? 'true' : 'false'}"
+            ${selected && !visibleIds.has(row.id) ? raw('aria-current="page"') : ''} tabindex="${row.id === focusId ? '0' : '-1'}"
+            data-action="sidebar.open" data-drop-collection="${row.id}">
+            <span class="tree-chev is-leaf" aria-hidden="true"></span>
+            ${collectionIcon(row, { size: 22, className: 'tree-tile' })}
+            <span class="tree-name">${row.name}${row.parentName ? html`<span class="tree-parent"><span class="sr-only">, in </span><span aria-hidden="true">in </span>${row.parentName}</span>` : ''}</span>
+            <span class="tree-count">${fmt(counts.byCollectionDeep[row.id])}</span>
+            <span class="tree-actions" aria-hidden="true">
+              <button type="button" class="tree-action" tabindex="-1" data-action="sidebar.unpin" data-id="${row.id}" data-tooltip="Unpin" data-tooltip-pos="end">${icon('pin-off', { size: 14 })}</button>
+              <button type="button" class="tree-action" tabindex="-1" data-action="sidebar.menu" data-id="${row.id}" data-pinned-row data-tooltip="More actions" data-tooltip-pos="end">${icon('ellipsis', { size: 14 })}</button>
+            </span>
+          </div>`;
+        })}
+      </div>
     </div>`;
 }
 
@@ -296,7 +332,7 @@ function exportCollection(ctx, id) {
 function changeLook(ctx, id) {
   const collection = ctx.select.collection(id);
   if (!collection) return;
-  const anchor = document.getElementById(`tree-${id}`);
+  const anchor = document.getElementById(`tree-${id}`) || document.getElementById(`pin-${id}`);
   const toHex = color => (/^#[\da-f]{3,8}$/i.test(String(color)) ? color : COLLECTION_COLORS.find(c => c.name === color)?.hex);
   const onPick = ({ icon: nextIcon, color } = {}) => ctx.run(() => ctx.store.updateCollection(id, {
     ...(nextIcon ? { icon: nextIcon } : {}), ...(toHex(color) ? { color: toHex(color) } : {}),
@@ -310,7 +346,7 @@ function changeLook(ctx, id) {
   }
 }
 
-function collectionMenu(ctx, id) {
+function collectionMenu(ctx, id, { pinnedRow = false } = {}) {
   const collection = ctx.select.collection(id);
   if (!collection) return null;
   const side = ctx.env.isSidepanel;
@@ -320,21 +356,21 @@ function collectionMenu(ctx, id) {
     { label: 'New collection inside', icon: 'folder-plus', run: () => openCollectionEditor(ctx, { parentId: id }) },
     { separator: true },
     { label: 'Edit…', icon: 'pencil', run: () => openCollectionEditor(ctx, { id }) },
-    { label: 'Rename', icon: 'text-cursor-input', shortcut: 'F2', keepFocus: true, run: () => startRename(ctx, id) },
+    // Renaming happens in the tree row, which a pinned sub-collection may not have on screen.
+    !pinnedRow && { label: 'Rename', icon: 'text-cursor-input', shortcut: 'F2', keepFocus: true, run: () => startRename(ctx, id) },
     { label: 'Icon and color…', icon: 'palette', keepFocus: true, run: () => changeLook(ctx, id) },
-    { label: collection.pinned ? 'Unpin' : 'Pin to top', icon: collection.pinned ? 'pin-off' : 'pin',
-      run: () => ctx.store.updateCollection(id, { pinned: !collection.pinned }, { expectedUpdatedAt: collection.updatedAt }) },
+    { label: collection.pinned ? 'Unpin from sidebar' : 'Pin to sidebar', icon: collection.pinned ? 'pin-off' : 'pin', run: () => setCollectionPinned(ctx, id) },
     { separator: true },
     { label: 'Ask AI about this collection', icon: 'sparkles', run: () => askAi(ctx, { scope: 'collection', collectionId: id }) },
     { label: side ? 'Open in full tab' : 'Open in new tab', icon: 'external-link', run: () => openViewInTab(ctx, `collection:${id}`) },
     { label: 'Export as HTML', icon: 'download', run: () => exportCollection(ctx, id) },
     { separator: true },
     { label: 'Delete…', icon: 'trash-2', danger: true, shortcut: 'Del', run: () => deleteCollectionFlow(ctx, id) },
-  ];
+  ].filter(Boolean);
 }
 
-export function openCollectionMenu(ctx, id, anchor, options = {}) {
-  const items = collectionMenu(ctx, id);
+export function openCollectionMenu(ctx, id, anchor, { pinnedRow, ...options } = {}) {
+  const items = collectionMenu(ctx, id, { pinnedRow: !!pinnedRow });
   if (items) ctx.openMenu(anchor, items, { label: `Actions for ${ctx.select.collection(id).name}`, ...options });
 }
 
@@ -383,9 +419,11 @@ async function commitRename(ctx, value, { cancel = false } = {}) {
   await ctx.run(() => ctx.store.updateCollection(id, { name }, { expectedUpdatedAt: collection.updatedAt }));
 }
 
+const rememberFocus = (row, id) => { if (row.matches('[data-pinned-row]')) pinFocusId = id; else treeFocusId = id; };
+
 function focusRow(rows, row) {
   if (!row) return;
-  treeFocusId = row.dataset.id;
+  rememberFocus(row, row.dataset.id);
   for (const other of rows) other.tabIndex = other === row ? 0 : -1;
   row.focus();
   row.scrollIntoView({ block: 'nearest' });
@@ -409,11 +447,13 @@ function treeKey({ ctx, el, event }) {
   const id = row.dataset.id;
   const expanded = row.getAttribute('aria-expanded');
   const level = Number(row.getAttribute('aria-level'));
+  // The pinned list is a flat tree of shortcuts: it has no nesting, manual order or inline rename (those live in the tree below).
+  const pinnedRow = row.matches('[data-pinned-row]');
   // The focused row keeps the tree's tab stop when a key re-renders the tree (expand, collapse, rename, reorder).
-  treeFocusId = id;
+  rememberFocus(row, id);
   const setExpanded = on => { ctx.prefs.toggleInList('expandedCollections', id, on); ctx.render(); };
   let handled = true;
-  if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) reorder(ctx, id, event.key === 'ArrowUp' ? -1 : 1);
+  if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) { if (!pinnedRow) reorder(ctx, id, event.key === 'ArrowUp' ? -1 : 1); }
   else if (event.metaKey || event.ctrlKey || event.altKey) handled = false;
   else switch (event.key) {
     case 'ArrowDown': focusRow(rows, rows[index + 1]); break;
@@ -428,20 +468,22 @@ function treeKey({ ctx, el, event }) {
       else focusRow(rows, rows.slice(0, index).reverse().find(r => Number(r.getAttribute('aria-level')) === level - 1));
       break;
     case 'Enter': case ' ':
-      treeFocusId = id; closeNav(ctx); ctx.navigate(`collection:${id}`);
+      rememberFocus(row, id); closeNav(ctx); ctx.navigate(`collection:${id}`);
       break;
-    case 'F2': startRename(ctx, id); break;
+    case 'F2': if (pinnedRow) handled = false; else startRename(ctx, id); break;
     case 'Delete': case 'Backspace': {
       // After a delete, focus moves to the next row (or the previous one) instead of falling back to the page.
       const neighbor = (rows[index + 1] || rows[index - 1])?.dataset.id;
+      const prefix = pinnedRow ? 'pin' : 'tree';
       ctx.run(async () => {
         if (!(await deleteCollectionFlow(ctx, id)) || !neighbor) return;
-        treeFocusId = neighbor;
-        ctx.nextFrame(() => document.getElementById(`tree-${neighbor}`)?.focus({ preventScroll: true }));
+        if (pinnedRow) pinFocusId = neighbor; else treeFocusId = neighbor;
+        ctx.nextFrame(() => document.getElementById(`${prefix}-${neighbor}`)?.focus({ preventScroll: true }));
       });
       break;
     }
     case '*': {
+      if (pinnedRow) { handled = false; break; }
       const tree = ctx.select.tree();
       const self = tree.find(r => r.id === id);
       const open = tree.filter(r => r.hasChildren && parentKey(r) === parentKey(self)).map(r => r.id);
@@ -468,15 +510,20 @@ registerActions({
     event?.preventDefault();
     goToView(ctx, data.view, { keep: data.keep === true || data.keep === 'true' });
   },
-  'sidebar.open': ({ ctx, data, event }) => {
+  'sidebar.open': ({ ctx, data, event, el }) => {
     if (event?.target?.closest?.('.tree-rename')) return;
-    treeFocusId = data.id;
+    if (el?.matches?.('[data-pinned-row]')) pinFocusId = data.id; else treeFocusId = data.id;
     closeNav(ctx);
     ctx.navigate(`collection:${data.id}`);
   },
   'sidebar.toggle': ({ ctx, data }) => { ctx.prefs.toggleInList('expandedCollections', data.id); ctx.render(); },
   'sidebar.add': ({ ctx, data }) => addToCollection(ctx, data.id),
-  'sidebar.menu': ({ ctx, data, el }) => { treeFocusId = data.id; openCollectionMenu(ctx, data.id, el, { placement: 'bottom-end' }); },
+  'sidebar.menu': ({ ctx, data, el }) => {
+    const pinnedRow = el.hasAttribute('data-pinned-row');
+    if (pinnedRow) pinFocusId = data.id; else treeFocusId = data.id;
+    openCollectionMenu(ctx, data.id, el, { placement: 'bottom-end', pinnedRow });
+  },
+  'sidebar.unpin': ({ ctx, data }) => ctx.run(() => setCollectionPinned(ctx, data.id, false)),
   'sidebar.toggle-section': ({ ctx, data }) => { ctx.prefs.toggleInList('collapsedSections', data.section); ctx.render(); },
   'sidebar.all-tags': ({ ctx }) => { ui(ctx).allTags = !ui(ctx).allTags; ctx.render(); },
   'sidebar.settings': ({ ctx }) => openSettings(ctx, 'general'),
@@ -489,7 +536,7 @@ registerActions({
 });
 
 export function init(ctx) {
-  initDnd(ctx, { openAdd });
+  initDnd(ctx, { openAdd, setPinned: setCollectionPinned });
   const permissions = globalThis.chrome?.permissions;
   if (ctx.env.isExtension) {
     permissions?.contains?.({ permissions: ['tabs'] })?.then?.(granted => { tabsGranted = !!granted; }, () => {});
@@ -510,7 +557,11 @@ export function init(ctx) {
     // The context-menu key reports no pointer position: anchor the menu to the focused row instead.
     const fromKeyboard = event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
     const anchor = fromKeyboard ? el : { x: event.clientX, y: event.clientY };
-    if (row) { treeFocusId = row.dataset.id; openCollectionMenu(ctx, row.dataset.id, anchor, fromKeyboard ? { placement: 'right-start' } : {}); }
+    if (row) {
+      const pinnedRow = row.hasAttribute('data-pinned-row');
+      rememberFocus(row, row.dataset.id);
+      openCollectionMenu(ctx, row.dataset.id, anchor, { ...(fromKeyboard ? { placement: 'right-start' } : {}), pinnedRow });
+    }
     else ctx.openMenu(anchor, tagMenu(ctx, tag.dataset.tag), { label: `Actions for #${tag.dataset.tag}` });
   });
   document.addEventListener('focusout', event => {
@@ -522,7 +573,7 @@ export function init(ctx) {
   document.addEventListener('focusin', event => {
     const row = event.target instanceof Element && event.target.matches('.tree-action') ? event.target.closest('[role="treeitem"]') : null;
     if (!row) return;
-    treeFocusId = row.dataset.id;
+    rememberFocus(row, row.dataset.id);
     row.focus({ preventScroll: true });
   });
 }

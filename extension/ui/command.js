@@ -14,6 +14,7 @@ const DIALOG = 'command.palette';
 const WEB_URL = /^https?:\/\/\S+\.\S+$/i;
 const ext = ctx => ctx.env.isExtension;
 const full = ctx => !ctx.env.isSidepanel;
+const currentCollection = ctx => (ctx.state.view?.startsWith('collection:') ? ctx.select.collection(ctx.state.view.slice(11)) : null);
 
 /**
  * Every command: label (string or ctx => string), icon, keywords, action (+ data) and/or view (a view with an action
@@ -33,6 +34,11 @@ export const COMMANDS = [
   { id: 'save-tabs', label: 'Save all tabs', icon: 'layers', keywords: 'window session collection', action: 'add.save-tabs', when: ctx => ext(ctx) && hasAction('add.save-tabs') },
   { id: 'upload', label: 'Upload files', icon: 'upload', keywords: 'pdf image attach', action: 'add.upload', when: () => hasAction('add.upload') },
   { id: 'new-collection', label: 'New collection', icon: 'folder-plus', keywords: 'folder create group', action: 'collections.new', pinned: true },
+  // Pin or unpin the collection on screen (the collection's own header and sidebar menu do the same).
+  { id: 'pin-collection', label: 'Pin this collection to the sidebar', icon: 'pin', keywords: 'favorite keep top',
+    action: 'collections.pin', when: ctx => !!currentCollection(ctx) && !currentCollection(ctx).pinned, data: ctx => ({ id: currentCollection(ctx).id }) },
+  { id: 'unpin-collection', label: 'Unpin this collection', icon: 'pin-off', keywords: 'remove favorite top',
+    action: 'collections.pin', when: ctx => !!currentCollection(ctx)?.pinned, data: ctx => ({ id: currentCollection(ctx).id }) },
   { id: 'go-dashboard', label: 'Go to Dashboard', icon: 'layout-dashboard', keywords: 'home start page new tab widgets', view: 'dashboard' },
   { id: 'assistant', label: 'Open AI Assistant', icon: 'bot-message-square', keywords: 'full screen chat conversations history', view: 'assistant' },
   { id: 'go-all', label: 'Go to All items', icon: 'book-open-text', keywords: 'everything library', view: 'all' },
@@ -218,7 +224,8 @@ function commandOption(ctx, command) {
     meta: command.shortcut ? kbd(command.shortcut) : '',
     run: ctx => {
       if (!command.action) return goToView(ctx, command.view);
-      const act = () => ctx.dispatch(command.action, { data: { ...(command.data || {}) } });
+      const data = typeof command.data === 'function' ? command.data(ctx) : command.data;
+      const act = () => ctx.dispatch(command.action, { data: { ...(data || {}) } });
       if (!command.view || ctx.state.view === command.view) return act();
       // The action belongs to the view (e.g. Add widget on the dashboard): open the view, then run it once it renders.
       goToView(ctx, command.view);
@@ -242,7 +249,11 @@ function buildSections(ctx) {
   const sections = [];
   if (!query) {
     sections.push({ id: 'recent', label: 'Recent', options: recentItems(ctx).map(item => itemOption(ctx, item)) });
-    sections.push({ id: 'collections', label: 'Collections', options: ctx.select.recentCollections(4).map(c => collectionOption(ctx, c)) });
+    // Pinned collections lead the empty palette, then the recent ones that are not already listed.
+    const pinned = ctx.select.pinnedCollections().slice(0, 6);
+    const listed = new Set(pinned.map(c => c.id));
+    if (pinned.length) sections.push({ id: 'pinned', label: 'Pinned', options: pinned.map(c => collectionOption(ctx, c)) });
+    sections.push({ id: 'collections', label: 'Collections', options: ctx.select.recentCollections(4 + listed.size).filter(c => !listed.has(c.id)).slice(0, 4).map(c => collectionOption(ctx, c)) });
     sections.push({ id: 'commands', label: 'Commands', options: commands.filter(c => c.pinned).map(c => commandOption(ctx, c)) });
     return sections.filter(section => section.options.length);
   }

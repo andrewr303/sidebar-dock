@@ -73,7 +73,7 @@ export function createSelectors(getLibrary, getPrefs = () => ({})) {
   const collectionIndex = () => cached('collectionIndex', lib => new Map(lib.collections.filter(c => !c.deletedAt).map(c => [c.id, c])));
   const live = () => cached('live', lib => lib.items.filter(alive));
 
-  /** Ordered collection tree: [{ ...collection, depth, childIds, hasChildren }], pinned first among siblings, cycle safe. */
+  /** Ordered collection tree: [{ ...collection, depth, childIds, hasChildren }] in the user's manual order, cycle safe. */
   const tree = () => cached('tree', lib => {
     const all = lib.collections.filter(c => !c.deletedAt && c.id);
     const byParent = new Map();
@@ -82,7 +82,6 @@ export function createSelectors(getLibrary, getPrefs = () => ({})) {
       if (!byParent.has(parent)) byParent.set(parent, []);
       byParent.get(parent).push(c);
     }
-    for (const rows of byParent.values()) rows.sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned));
     const out = [];
     const seen = new Set();
     const walk = (parentId, depth) => {
@@ -97,6 +96,13 @@ export function createSelectors(getLibrary, getPrefs = () => ({})) {
     walk('', 0);
     for (const c of all) if (!seen.has(c.id)) out.push({ ...c, depth: 0, childIds: [], hasChildren: false });
     return out;
+  });
+
+  /** Pinned collections at any depth, flat, in tree order; each carries parentName ('' at top level) so a row can say where it lives. */
+  const pinnedCollections = () => cached('pinnedCollections', () => {
+    const rows = tree();
+    const names = new Map(rows.map(row => [row.id, row.name]));
+    return rows.filter(row => row.pinned).map(row => ({ ...row, parentName: row.depth > 0 ? names.get(row.parentId) || '' : '' }));
   });
 
   const descendants = id => cached(`desc:${id}`, () => {
@@ -243,7 +249,7 @@ export function createSelectors(getLibrary, getPrefs = () => ({})) {
 
   return {
     live, byId: id => index().get(id) || null, collection: id => collectionIndex().get(id) || null, tree, path, descendants, counts, tags,
-    duplicates: duplicateGroups, backlinks, related, findByUrl, savedForUrl, notesForUrl, recentCollections, itemsForView,
+    duplicates: duplicateGroups, backlinks, related, findByUrl, savedForUrl, notesForUrl, recentCollections, pinnedCollections, itemsForView,
     pages, parentOf, children, pagePath, pageDescendants, subpageCount: id => children(id).length, trashedWith,
   };
 }

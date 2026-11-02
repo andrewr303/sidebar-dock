@@ -345,6 +345,10 @@ function renderLayoutSwitch(layout, side) {
   return html`<span class="lib-layout" data-keydown="library.seg-key">${segmented({ name: 'layout', value: layout, options: side ? SIDE_LAYOUT_OPTIONS : LAYOUT_OPTIONS, action: 'library.layout', size: 'sm', ariaLabel: 'Layout' })}</span>`;
 }
 
+/** Pin toggle beside a collection's title (full tab); other views have nothing to pin. */
+const pinToggle = collection => collection ? iconButton({ icon: 'pin', label: collection.pinned ? 'Unpin from sidebar' : 'Pin to sidebar',
+  action: 'collections.pin', data: { id: collection.id }, size: 'sm', pressed: !!collection.pinned, className: 'lib-pin' }) : '';
+
 function renderFullHead(ctx, meta, count, layout) {
   const { state } = ctx;
   return html`<header class="lib-head">
@@ -353,6 +357,7 @@ function renderFullHead(ctx, meta, count, layout) {
       ${meta.tile}
       <h1 class="lib-title" id="lib-title" tabindex="-1">${meta.title}</h1>
       <span class="lib-count">${count.toLocaleString()}<span class="sr-only"> ${count === 1 ? 'item' : 'items'}</span></span>
+      ${pinToggle(meta.collection)}
     </div>
     <div class="lib-tools">
       ${state.view === 'trash' && count ? button({ label: 'Empty trash', icon: 'trash-2', variant: 'ghost', size: 'sm', action: 'library.empty-trash', className: 'lib-danger' }) : ''}
@@ -840,6 +845,7 @@ function openViewMenu(ctx, anchor) {
   const entries = [
     { label: 'Ask AI about this view', icon: 'sparkles', run: () => askAboutView(ctx) },
     id && { label: 'Edit collection…', icon: 'pencil', run: () => openCollectionEditor(ctx, { id }) },
+    id && { label: ctx.select.collection(id)?.pinned ? 'Unpin from sidebar' : 'Pin to sidebar', icon: ctx.select.collection(id)?.pinned ? 'pin-off' : 'pin', run: () => ctx.dispatch('collections.pin', { data: { id } }) },
     id && { label: 'New collection inside…', icon: 'folder-plus', run: () => openCollectionEditor(ctx, { parentId: id }) },
     mappable && { label: 'Show on knowledge map', icon: 'waypoints', run: () => { setMapScope(ctx, id || (view === 'inbox' ? 'inbox' : '')); ctx.navigate('map'); } },
     side && { separator: true },
