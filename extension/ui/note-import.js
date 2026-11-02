@@ -61,21 +61,56 @@ export function fileStatus(entry, target) {
   return [entry.label, fileSize(entry.size), entry.needsAi ? 'read by AI' : ''].filter(Boolean).join(' · ');
 }
 
-const words = text => (String(text || '').match(/[\p{L}\p{N}]+/gu) || []).length;
+const PDF_IMAGE_TOKEN = /^!\[([^\n]*)\]\(pdf-image:\/\/(\d+)\)\s*$/gm;
+const words = text => (String(text || '').replace(PDF_IMAGE_TOKEN, '').replace(/^!\[\[[^\n]+\]\]\s*$/gm, '').match(/[\p{L}\p{N}]+/gu) || []).length;
 const isEmbeddable = file => /^(image|video|audio)\//.test(file?.type || '') || file?.type === 'application/pdf' || extensionOf(file?.name) === 'pdf';
+
+/**
+ * Saves extracted PDF images to the library as image items and replaces `![Label](pdf-image://k)` placeholders
+ * in `markdown` with `![[itemId|Label]]` library embeds.
+ */
+export async function attachImportImages(ctx, converted, markdown, { collectionId = '', rememberItem, signal } = {}) {
+  const list = converted?.images;
+  const source = String(markdown ?? '');
+  if (!Array.isArray(list) || !list.length || !source.includes('pdf-image://') || !ctx?.store?.saveAttachment) return source;
+  const savedByIndex = new Map();
+  const needed = new Set();
+  for (const m of source.matchAll(PDF_IMAGE_TOKEN)) needed.add(Number(m[2]));
+  const base = (baseName(converted?.name || '') || 'image').replace(/\s+/g, '-');
+  for (const index of needed) {
+    if (signal?.aborted) break;
+    const img = list[index];
+    const bytes = img?.data || img?.bytes;
+    if (!bytes?.length) continue;
+    try {
+      const mime = img.mime || 'image/png';
+      const name = img.name || `${base}-image-${index + 1}.${img.ext || (mime === 'image/jpeg' ? 'jpg' : 'png')}`;
+      const file = typeof File === 'function' ? new File([bytes], name, { type: mime }) : Object.assign(new Blob([bytes], { type: mime }), { name });
+      const item = await saveFileItem(ctx, file, collectionId);
+      rememberItem?.(item);
+      savedByIndex.set(index, { item, label: img.label || item.title || name });
+    } catch { /* keep the rest of the import if an image cannot be saved */ }
+  }
+  return source.replace(PDF_IMAGE_TOKEN, (_, label, idx) => {
+    const entry = savedByIndex.get(Number(idx));
+    if (!entry) return '';
+    const text = (label || entry.label || entry.item.title || '').replace(/[\[\]|]/g, ' ').replace(/\s+/g, ' ').trim();
+    return text ? `![[${entry.item.id}|${text}]]` : `![[${entry.item.id}]]`;
+  }).replace(/\n{3,}/g, '\n\n').trim();
+}
 
 /* ------------------------------------------------------------------ import dialog */
 
 /**
- * openImport(ctx, { files, noteTitle, insert(markdown, { title }), embedFile(file) })
+ * openImport(ctx, { files, noteTitle, collectionId, rememberItem, insert(markdown, { title }), embedFile(file) })
  * insert receives the combined Markdown and, for a single file, a suggested note title.
  */
-export function openImport(ctx, { files = [], noteTitle = '', insert, embedFile } = {}) {
+export function openImport(ctx, { files = [], noteTitle = '', collectionId = '', rememberItem, insert, embedFile } = {}) {
   if (job?.running) return;
   ensureDropListeners(ctx);
   const saved = storage()?.getItem(MODE_KEY);
   job = { files: [], mode: saved === 'exact' ? 'exact' : 'tidy', modeChosen: saved === 'exact' || saved === 'tidy', target: undefined, running: false, controller: null, dragging: false, notice: '',
-    host: { noteTitle, insert, embedFile } };
+    host: { noteTitle, collectionId, rememberItem, insert, embedFile } };
   addFiles(ctx, files);
   ctx.openDialog('note.import', { size: 'md', onClose: () => { job?.controller?.abort(); job = null; } });
   loadTarget(ctx);
@@ -203,7 +238,8 @@ async function runImport(ctx) {
         : converted.needsAi ? Promise.reject(new Error('Reading this file needs an AI model. Connect one in Settings.')) : Promise.resolve({ markdown: converted.markdown, warnings: [], ai: null });
       const result = await finish;
       if (signal.aborted) break;
-      const markdown = String(result.markdown || '').trim();
+      const markdown = (await attachImportImages(ctx, converted, result.markdown, { collectionId: j.host.collectionId, rememberItem: j.host.rememberItem, signal })).trim();
+      if (signal.aborted) break;
       Object.assign(entry, { result: { markdown, title: converted.title }, warnings: [...converted.warnings, ...(result.warnings || [])], words: words(markdown) });
       if (markdown) entry.status = 'done';
       else Object.assign(entry, { status: 'error', message: entry.warnings[0] || 'No text was found in this file.' });

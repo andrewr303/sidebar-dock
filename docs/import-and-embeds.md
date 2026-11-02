@@ -8,7 +8,7 @@ Choose or drop up to **10 files at a time, 50 MB each**. Each file is converted 
 
 | Format | Converted on this device |
 | --- | --- |
-| PDF | Text with headings (by font size, or short bold lines), paragraphs rejoined across lines and pages, bullets and numbered lists with nesting, tables from column-aligned rows, bold and italic, curly quotes and ligatures. Running headers, footers and page numbers are dropped. |
+| PDF | Text with headings (by font size, or short bold lines), paragraphs rejoined across lines and pages, bullets and numbered lists with nesting, tables from column-aligned rows, bold and italic, curly quotes and ligatures, plus embedded images extracted in reading order, saved to the library (in the note's collection) and embedded in place as `![[item-id\|Figure N]]`. Running headers, footers and page numbers are dropped. |
 | Word (.docx), OpenDocument (.odt) | Headings, nested bullet and numbered lists, links, bold/italic/strikethrough, tables, quotes and code paragraphs. Images, comments, tracked deletions, headers and footers are left out. |
 | PowerPoint (.pptx) | A heading per slide, its bullets and tables, and speaker notes as a quote. |
 | Excel (.xlsx), CSV, TSV | A table per sheet (first 1,000 rows of a sheet, 2,000 rows of a CSV, 50 columns), with dates shown as dates. |
