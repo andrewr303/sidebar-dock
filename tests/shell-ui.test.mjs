@@ -11,8 +11,8 @@ function library() {
   return {
     updatedAt: '1', settings: {},
     collections: [
-      collection('design'), collection('inspiration', 'design'), collection('type', 'design'), collection('fonts', 'type'),
-      collection('dev'), collection('ai', '', { pinned: true }),
+      collection('ai', '', { pinned: true }), collection('design'), collection('inspiration', 'design'), collection('type', 'design'), collection('fonts', 'type'),
+      collection('dev'),
     ],
     items: [
       { id: 'a', type: 'bookmark', title: 'A', url: 'https://a.example/', collectionId: 'inspiration', tags: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
@@ -26,7 +26,7 @@ const treeOf = lib => createSelectors(() => lib).tree();
 
 test('visibleTree hides children of collapsed rows and annotates ARIA set positions', () => {
   const tree = treeOf(library());
-  assert.deepEqual(tree.map(r => r.id), ['ai', 'design', 'inspiration', 'type', 'fonts', 'dev'], 'pinned first, then depth-first order');
+  assert.deepEqual(tree.map(r => r.id), ['ai', 'design', 'inspiration', 'type', 'fonts', 'dev'], 'manual order, depth first');
   const collapsed = visibleTree(tree, new Set());
   assert.deepEqual(collapsed.map(r => r.id), ['ai', 'design', 'dev']);
   assert.deepEqual(collapsed.map(r => [r.posInSet, r.setSize, r.expanded]), [[1, 3, false], [2, 3, false], [3, 3, false]]);
@@ -36,6 +36,19 @@ test('visibleTree hides children of collapsed rows and annotates ARIA set positi
   assert.deepEqual([type.depth, type.posInSet, type.setSize, type.expanded, type.hasChildren], [1, 2, 2, false, true]);
   assert.deepEqual(visibleTree(tree, new Set(['design', 'type'])).map(r => r.id), ['ai', 'design', 'inspiration', 'type', 'fonts', 'dev']);
   assert.deepEqual(visibleTree(tree, new Set(['type'])).map(r => r.id), ['ai', 'design', 'dev'], 'an open child under a closed parent stays hidden');
+});
+
+test('pinned collections keep their manual place in the tree and are listed flat, at any depth, in the Pinned section', () => {
+  const lib = library();
+  Object.assign(lib.collections.find(c => c.id === 'fonts'), { pinned: true });
+  Object.assign(lib.collections.find(c => c.id === 'dev'), { pinned: true });
+  lib.collections.push(collection('gone', '', { pinned: true, deletedAt: '2026-01-02T00:00:00.000Z' }));
+  const select = createSelectors(() => lib);
+  assert.deepEqual(select.tree().map(r => r.id), ['ai', 'design', 'inspiration', 'type', 'fonts', 'dev'], 'pinning does not reorder the tree');
+  const pinned = select.pinnedCollections();
+  assert.deepEqual(pinned.map(r => r.id), ['ai', 'fonts', 'dev'], 'tree order, nested ones included, deleted ones left out');
+  assert.deepEqual(pinned.map(r => r.parentName), ['', 'Type', ''], 'a nested pin names its parent');
+  assert.deepEqual(createSelectors(() => ({ ...lib, collections: lib.collections.map(c => ({ ...c, pinned: false })), updatedAt: '2' })).pinnedCollections(), []);
 });
 
 test('parentChoices excludes the collection and its descendants; descendantIds walks the subtree', () => {

@@ -137,7 +137,7 @@ function renderEditor(ctx, props) {
     ${field({ label: 'Cover image', id: 'collection-cover', error: coverError, hint: 'Optional. An https address of an image.', control: html`<input class="input"
       id="collection-cover" name="cover" type="url" value="${draft.cover}" placeholder="https://" autocomplete="off" spellcheck="false"
       ${coverError ? html`aria-invalid="true" aria-describedby="collection-cover-error"` : html`aria-describedby="collection-cover-hint"`}>` })}
-    ${switchToggle({ name: 'pinned', checked: draft.pinned, label: 'Pin to the top', description: 'Pinned collections are listed first among their siblings.' })}`;
+    ${switchToggle({ name: 'pinned', checked: draft.pinned, label: 'Pin to the sidebar', description: 'Pinned collections get their own Pinned section at the top of the sidebar, wherever they sit in the tree.' })}`;
 
   const footer = html`
     ${id ? button({ label: 'Delete', icon: 'trash-2', variant: 'ghost', action: 'collections.delete', data: { id }, className: 'collection-editor-delete' }) : ''}
@@ -183,7 +183,24 @@ export async function deleteCollectionFlow(ctx, id) {
   return true;
 }
 
+/**
+ * Pins or unpins a collection (pinned ones get the Pinned section at the top of the sidebar). Passing pinned forces the
+ * state, otherwise it flips. The toast says what happened and undoes it.
+ */
+export async function setCollectionPinned(ctx, id, pinned) {
+  const collection = ctx.select.collection(id);
+  if (!collection) return false;
+  const next = pinned ?? !collection.pinned;
+  if (next === !!collection.pinned) return false;
+  await ctx.store.updateCollection(id, { pinned: next }, { expectedUpdatedAt: collection.updatedAt });
+  ctx.toast(next ? `Pinned ${collection.name} to the sidebar` : `Unpinned ${collection.name}`, {
+    action: { label: 'Undo', run: () => ctx.run(() => ctx.store.updateCollection(id, { pinned: !next })) },
+  });
+  return true;
+}
+
 registerActions({
+  'collections.pin': ({ ctx, data }) => ctx.run(() => setCollectionPinned(ctx, data.id)),
   'collections.new': ({ ctx, data }) => openCollectionEditor(ctx, { parentId: data?.parent || '' }),
   'collections.edit': ({ ctx, data }) => openCollectionEditor(ctx, { id: data.id }),
   'collections.draft': ({ ctx, el, event }) => {

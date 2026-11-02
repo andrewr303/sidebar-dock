@@ -58,6 +58,10 @@
   color: var(--fg-default);
 }
 .lib-title:focus:not(:focus-visible), .lib-side-title:focus:not(:focus-visible) { outline: none; }
+.lib-pin { flex: none; }
+.lib-pin[aria-pressed="false"] { color: var(--fg-subtle); }
+.lib-pin[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-soft-fg); }
+.lib-pin[aria-pressed="true"] .icon { fill: currentColor; fill-opacity: .25; }
 .lib-count { flex: none; font-size: var(--text-md); color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
 .lib-tools { display: flex; align-items: center; gap: var(--space-2); flex: none; }
 .lib-tools .btn-ghost { font-weight: var(--weight-regular); }
