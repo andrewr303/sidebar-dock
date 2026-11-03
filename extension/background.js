@@ -85,7 +85,7 @@ import { configureSnapshotWorker, handleSnapshotRequest, isSnapshotKey, SNAPSHOT
 import { LIBRARY_SCHEMA_VERSION, libraryVersion } from './lib/storage/migrations.js';
 import { configureThreadkeeperWorker, handleExternalMessage, handleThreadkeeperRequest, THREADKEEPER_MESSAGE } from './lib/threadkeeper/worker.js';
 import { STATE_KEY as THREADKEEPER_STATE_KEY } from './lib/threadkeeper/state.js';
-import { createChatDataStore } from './lib/chat-data.js';
+import { chatDataStore } from './lib/chat-data.js';
 
 // The worker owns snapshots and the library. Store operations wait for the startup snapshot gate (set below once the
 // extension APIs exist); a failed snapshot is logged and never blocks the library.
@@ -104,9 +104,9 @@ const api = globalThis.chrome;
 const freshLibrary = async () => (api?.storage?.local ? (await api.storage.local.get(STORAGE_KEY))[STORAGE_KEY] : null) || { items: [], collections: [], settings: {} };
 const storeOperation = name => (...args) => handleStoreOperation(name, args);
 const threadkeeper = configureThreadkeeperWorker({
-  store: { upsertChats: storeOperation('upsertChats'), markChatsRemoved: storeOperation('markChatsRemoved'), restoreItem: storeOperation('restoreItem'),
-    permanentlyDeleteItem: storeOperation('permanentlyDeleteItem'), bulkUpdateItems: storeOperation('bulkUpdateItems'), createCollection: storeOperation('createCollection') },
-  chatData: createChatDataStore(),
+  store: Object.fromEntries(['upsertChats', 'markChatsRemoved', 'placeChats', 'setChatFlags', 'deleteChats'].map(name => [name, storeOperation(name)])),
+  // The same chat store this context's chat-data helpers use (one IndexedDB connection; pages open their own).
+  chatData: chatDataStore(),
   readLibrary: freshLibrary,
 });
 const warnThreadkeeper = error => console.warn('Still Threadkeeper:', error?.message || String(error));

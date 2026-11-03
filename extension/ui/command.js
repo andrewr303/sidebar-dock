@@ -47,7 +47,7 @@ export const COMMANDS = [
   { id: 'go-notes', label: 'Go to Notes', icon: 'sticky-note', keywords: 'writing', view: 'notes' },
   { id: 'go-chats', label: 'Go to Chats', icon: 'messages-square', keywords: 'ai threads conversations threadkeeper chatgpt claude gemini coding agent sessions transcripts', view: 'chats' },
   { id: 'add-chats', label: 'Add AI chats from Threadkeeper', icon: 'messages-square', keywords: 'import threads conversations chatgpt claude gemini codex coding agent sessions pull collection',
-    action: 'chats.add', when: () => hasAction('chats.add') },
+    action: 'threadkeeper.picker-open', when: () => hasAction('threadkeeper.picker-open') },
   { id: 'go-stickies', label: 'Go to Sticky notes', icon: 'sticker', keywords: 'post-it memo board', view: 'stickies' },
   { id: 'new-sticky', label: 'New sticky note', icon: 'sticker', keywords: 'post-it memo quick jot', action: 'stickies.new', when: () => hasAction('stickies.new') },
   { id: 'add-widget', label: 'Add widget', icon: 'layout-grid', keywords: 'dashboard gallery clock weather github linear kanban', view: 'dashboard', action: 'dashboard.add-widget',

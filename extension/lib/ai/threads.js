@@ -127,7 +127,7 @@ export function createThreadSources({ client = realClient, chatData = realChatDa
             const row = chatRow(item);
             if (!matchesFilters(row, filters)) continue;
             rows.push({ ...row, score: Number.isFinite(hit.score) ? hit.score : 0, snippet: clean(hit.snippet ?? hit.text, 220).trim(),
-              ...(Number.isInteger(hit.messageIndex) ? { messageIndex: hit.messageIndex } : {}) });
+              ...(Number.isInteger(hit.passage?.messageIndex ?? hit.messageIndex) ? { messageIndex: hit.passage?.messageIndex ?? hit.messageIndex } : {}) });
           }
           if (rows.length) return rows.slice(0, limit);
         } catch {}
@@ -158,7 +158,8 @@ export function createThreadSources({ client = realClient, chatData = realChatDa
       if (!list.length) return 0;
       if (typeof client.undoThreadkeeperImport !== 'function') return null;
       const result = await client.undoThreadkeeperImport(list);
-      return Number.isFinite(result?.removed) ? result.removed : Number.isFinite(result) ? result : list.length;
+      // The worker answers { deleted } (lib/threadkeeper/worker.js undoImport).
+      return Number.isFinite(result?.deleted) ? result.deleted : Number.isFinite(result?.removed) ? result.removed : Number.isFinite(result) ? result : list.length;
     },
   };
 

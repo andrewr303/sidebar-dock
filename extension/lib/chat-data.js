@@ -517,6 +517,8 @@ let shared = null;
 const store = () => (shared ||= createChatDataStore());
 /** Replaces this context's chat store (tests, or a worker with its own IndexedDB handle). Returns the previous one. */
 export function setChatDataStore(next) { const previous = shared; shared = next || null; return previous; }
+/** This context's chat store (the service worker hands it to the Threadkeeper link). */
+export const chatDataStore = () => store();
 export const putChatData = (id, data) => store().put(id, data);
 export const getChatRecord = id => store().get(id);
 export const getChatTranscript = (id, window) => store().getTranscript(id, window);

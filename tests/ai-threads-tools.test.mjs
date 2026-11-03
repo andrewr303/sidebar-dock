@@ -12,8 +12,8 @@ import { WRITE_TOOLS, changeIcon, appliedLines, renderSourceRows, changeLabel, c
 import { dispatch } from '../extension/ui/runtime.js';
 import { hasIcon } from '../extension/ui/icons.js';
 
-// The `chat` item type comes with the data layer (sd-data workstream); until it lands in this branch the tests register it.
-if (!ITEM_TYPES.includes('chat')) ITEM_TYPES.push('chat');
+// The real data layer knows the `chat` item type.
+assert.ok(ITEM_TYPES.includes('chat'));
 
 const KEY_A = 'chatgpt:acct_chatgpt_primary:ws_personal:abc:main';
 const KEY_B = 'claude_code:acct_claude_code_primary:ws_personal:5f0c-ü/x y:main';

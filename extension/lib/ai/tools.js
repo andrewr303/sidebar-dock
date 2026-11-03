@@ -8,7 +8,7 @@
 // build on ids an applied one created; after a discard the turn proposes nothing more. Tool results tell the model exactly
 // what happened.
 import { getDescendantCollectionIds } from '../library-views.js';
-import { canonicalUrl, safeUrl, STICKY_COLORS } from '../store.js';
+import { canonicalUrl, safeUrl, STICKY_COLORS, ITEM_TYPES } from '../store.js';
 import { plainText } from './search.js';
 import { allowedCategories, autoApproves, normalizePermissions, toolAutoApplies, MAX_AUTO_ITEMS } from './permissions.js';
 import { pageIndex, descendantIds } from '../pages.js';
@@ -18,7 +18,8 @@ import {
   hiddenChat,
 } from './thread-context.js';
 
-export const ITEM_TYPES = ['bookmark', 'article', 'image', 'video', 'file', 'note', 'chat'];
+// One list of item types (lib/store.js), re-exported for the tool schemas.
+export { ITEM_TYPES };
 export const MAX_ITEMS_PER_CHANGE = 500;
 export const MAX_PROPOSALS_PER_TURN = 4;
 // Proposals applied without review (they never wait on the user) have their own, larger cap: it still ends a runaway

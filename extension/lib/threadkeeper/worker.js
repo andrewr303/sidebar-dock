@@ -3,9 +3,10 @@
  * dependency is injected so tests can fake them:
  *
  *   configureThreadkeeperWorker({
- *     store: { upsertChats, markChatsRemoved, permanentlyDeleteItem, restoreItem, bulkUpdateItems, createCollection },
+ *     store: { upsertChats, markChatsRemoved, placeChats, setChatFlags, deleteChats },   // lib/store.js operations
  *     readLibrary: async () => library,            // the worker's cached library read (never seeds an empty store)
- *     chatData: { put, get, getTranscript, delete, ids, dismiss?, dismissed?, undismiss? },   // lib/chat-data.js
+ *     chatData: createChatDataStore(),             // lib/chat-data.js (put, get, getTranscript, mergeTranscriptWindow,
+ *                                                  // delete, deleteTranscripts, ids, sweep, dismiss, dismissed, undismiss)
  *     state: createThreadkeeperStateStore(),       // still.threadkeeper.v1
  *     transport: (extensionId, message, timeoutMs) => Promise<response>,   // chrome.runtime.sendMessage to Threadkeeper
  *     alarms: chrome.alarms, selfId, version: () => manifest version, now: () => Date.now(),
@@ -25,7 +26,7 @@
  *
  * Page proxy (handleThreadkeeperRequest(op, args) → { ok: true, data } | { ok: false, error: { code, message } }), for
  * worker message type 'still:threadkeeper': state, ping, connect, cancel, disconnect, setPrefs, startSync, syncNow, request,
- * importThreads, refreshChat, loadTranscriptWindow, undoImport, impact, replaceChats, removeTranscripts.
+ * pauseSync, importThreads, refreshChat, loadTranscriptWindow, undoImport, impact, replaceChats, removeTranscripts.
  *
  * Hooks for background.js: onCommit(change) (chat data cleanup + "deleted forever" dismissals), handleAlarm(alarm),
  * init() on every worker start, startup() on onStartup/onInstalled (orphan sweep + hello), onDataRestored() after a snapshot
@@ -35,10 +36,11 @@ import {
   APP_NAME, LIMITS, MAX_MESSAGE_CHARS, MESSAGE_TYPES_IN, PROTO, READ_TYPES, REMOVE_REASONS, UNPAIRED_TYPES, UPSERT_ORIGINS,
   ThreadkeeperError, chatItemId, clampInt, envelope, errorFromResponse, errorResponse, errorText, hashOfChatId, isChatItemId,
   isContiguous, isExtensionId, isThreadKey, isTrustedSender, jsonSize, newRequestId, okResponse, oneLine, sanitizeRequestFields,
-  sanitizeResponse, sanitizeThreadPayload, syncedHash, timeoutFor,
+  sanitizeResponse, sanitizeThreadPayload, timeoutFor,
 } from './protocol.js';
+import { CHAT_SYSTEM_DELETES, isChatTouched } from '../store.js';
 import { createThreadkeeperStateStore, expirePending, newEpoch, patchPrefs, pendingExpired, publicState, syncPrefsChanged, syncPrefsOf } from './state.js';
-import { PARENT_MEMORY, planPlacement, resolveTarget } from './placement.js';
+import { PARENT_MEMORY, planPlacement } from './placement.js';
 
 export const THREADKEEPER_MESSAGE = 'still:threadkeeper';
 export const RETRY_ALARM = 'still:threadkeeper:retry';
@@ -52,6 +54,7 @@ const READS_PER_MINUTE = 30;
 const READS_IN_FLIGHT = 2;
 const PAIRING_TYPES = new Set(['hello', 'pair.request', 'pair.revoke']);
 const PLACEMENT_PREFS = ['placement', 'parentName', 'singleCollectionId', 'matchExisting'];
+const PAUSED_RETRY_MS = 5 * 60 * 1000;
 
 const isObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
 const items = library => (Array.isArray(library?.items) ? library.items : []).filter(isObject);
@@ -62,19 +65,9 @@ const toError = result => new ThreadkeeperError(result.error.code, result.error.
 /**
  * True when the user made a chat their own: notes, live subpages, tags of their own, favorite, a rename (title no longer
  * what sync wrote) or a move (collection no longer where sync placed it). Touched chats are never deleted or trashed by
- * sync and keep the user's work when a thread turns local-only.
+ * sync and keep the user's work when a thread turns local-only. The one rule is lib/store.js isChatTouched.
  */
-export function isUserTouched(item, library) {
-  if (!isObject(item)) return false;
-  const chat = isObject(item.chat) ? item.chat : {};
-  if (typeof item.content === 'string' && item.content.trim()) return true;
-  if (item.favorite === true) return true;
-  const synced = new Set((Array.isArray(chat.syncedTags) ? chat.syncedTags : []).map(tag => String(tag).toLowerCase()));
-  if ((Array.isArray(item.tags) ? item.tags : []).some(tag => !synced.has(String(tag).toLowerCase()))) return true;
-  if (typeof chat.syncedTitleHash === 'string' && chat.syncedTitleHash && syncedHash(item.title) !== chat.syncedTitleHash) return true;
-  if (typeof chat.autoCollectionId === 'string' && (item.collectionId || '') !== chat.autoCollectionId) return true;
-  return items(library).some(other => other.parentId === item.id && !other.deletedAt);
-}
+export const isUserTouched = (item, library) => isChatTouched(item, items(library));
 
 /** True when a thread (payload or chat metadata) falls inside Still's own sync scope. */
 export function inSyncScope(thread, prefs = {}) {
@@ -84,21 +77,6 @@ export function inSyncScope(thread, prefs = {}) {
     if (!wanted.has(String(thread.project || '').trim().toLowerCase())) return false;
   }
   return !(prefs.providers || []).length || prefs.providers.includes(thread.provider);
-}
-
-/**
- * Merges a transcript window into a stored transcript of the same revision (by message index; incoming wins). A window of
- * another revision replaces the stored copy. `truncated` is cleared once the indexes are contiguous. Pure.
- */
-export function mergeTranscript(stored, incoming) {
-  const base = stored && stored.revision === incoming.revision ? stored.messages || [] : [];
-  const byIndex = new Map(base.map(message => [message.index, message]));
-  for (const message of incoming.messages || []) byIndex.set(message.index, message);
-  const messages = [...byIndex.values()].sort((a, b) => a.index - b.index).slice(-LIMITS.messages);
-  const totalMessages = Math.max(incoming.totalMessages || 0, stored?.revision === incoming.revision ? stored.totalMessages || 0 : 0,
-    messages.length ? messages[messages.length - 1].index + 1 : 0);
-  return { threadKey: incoming.threadKey || stored?.threadKey || '', revision: incoming.revision, totalMessages,
-    truncated: !isContiguous(messages, totalMessages), messages };
 }
 
 /** Collections as Threadkeeper's Send to Still picker lists them: live, with their full path. */
@@ -202,7 +180,8 @@ export function createThreadkeeperWorker(deps = {}) {
         const entries = batch.flatMap(job => job.entries);
         const ensure = new Map();
         for (const job of batch) for (const entry of job.ensureCollections) if (!ensure.has(entry.key)) ensure.set(entry.key, entry);
-        const options = ensure.size ? { ensureCollections: [...ensure.values()] } : {};
+        const dismissedIds = [...new Set(batch.flatMap(job => job.dismissedIds))];
+        const options = { ...(ensure.size ? { ensureCollections: [...ensure.values()] } : {}), ...(dismissedIds.length ? { dismissedIds } : {}) };
         const result = await store.upsertChats(entries, options);
         const results = Array.isArray(result?.results) ? result.results : [];
         const collections = Array.isArray(result?.collections) ? result.collections : [];
@@ -222,30 +201,15 @@ export function createThreadkeeperWorker(deps = {}) {
       scheduleFlush();
     }
   }
-  const submit = (entries, ensureCollections) => new Promise((resolve, reject) => {
-    buffer.push({ entries, ensureCollections, resolve, reject });
+  const submit = (entries, ensureCollections, dismissedIds = []) => new Promise((resolve, reject) => {
+    buffer.push({ entries, ensureCollections, dismissedIds, resolve, reject });
     scheduleFlush();
   });
 
-  // ---- dismissed chats (deleted forever by the user) ----------------------------------------------------------------
-  // lib/chat-data.js keeps them in its 'dismissed' store; without it the library tombstone is the fallback signal.
-  async function dismissedIds(ids, library) {
+  // ---- dismissed chats (deleted forever by the user; lib/chat-data.js keeps them in its 'dismissed' store) ----------------
+  async function dismissedIds(ids) {
     if (!ids.length) return new Set();
-    if (typeof chatData.dismissed === 'function') {
-      try { return new Set(await chatData.dismissed(ids)); } catch (error) { log(error?.message); }
-    }
-    const graves = new Set((Array.isArray(library?.tombstones) ? library.tombstones : []).filter(t => t?.kind === 'item').map(t => t.id));
-    return new Set(ids.filter(id => graves.has(id)));
-  }
-  const selfDeleting = new Set();
-  async function deleteChatsForever(ids) {
-    let deleted = 0;
-    for (const id of ids) {
-      selfDeleting.add(id);
-      try { await store.permanentlyDeleteItem(id); deleted++; } catch (error) { log(error?.message); } finally { selfDeleting.delete(id); }
-    }
-    await chatData.delete(ids).catch(error => log(error?.message));
-    return deleted;
+    return new Set(await chatData.dismissed(ids));
   }
 
   // ---- outbound -----------------------------------------------------------------------------------------------------
@@ -366,10 +330,7 @@ export function createThreadkeeperWorker(deps = {}) {
         accepted.push({ payload, index });
       });
       const ids = accepted.map(({ payload }) => chatItemId(payload.threadKey));
-      const dismissed = await dismissedIds(ids.filter(id => !byId.has(id)), library);
-      // Library tombstones are not the dismissal signal (deleting a local-only chat or undoing an import leaves one too): a chat
-      // the worker decided to take again clears its tombstone.
-      const graves = new Set((Array.isArray(library?.tombstones) ? library.tombstones : []).filter(t => t?.kind === 'item').map(t => t.id));
+      const dismissed = await dismissedIds(ids.filter(id => !byId.has(id)));
       const decided = [];
       for (const { payload, index } of accepted) {
         const id = chatItemId(payload.threadKey);
@@ -385,7 +346,7 @@ export function createThreadkeeperWorker(deps = {}) {
         }
         let record = null;
         try { record = await chatData.get(id); } catch (error) { log(error?.message); }
-        const heldSeq = Math.max(Number(existing?.chat?.seq) || 0, Number(record?.thread?.seq) || 0);
+        const heldSeq = Math.max(Number(existing?.chat?.seq) || 0, Number(record?.seq) || 0);
         if (payload.seq && heldSeq && payload.seq < heldSeq) { results[index] = skipped(payload.threadKey, 'stale', existing); continue; }
         decided.push({ payload, index, id, existing, record });
       }
@@ -394,74 +355,67 @@ export function createThreadkeeperWorker(deps = {}) {
       try {
         for (const entry of decided) {
           const { payload, id, existing, record } = entry;
-          const incoming = transcriptsOn && payload.transcript.included ? payload.transcript : null;
-          const before = record?.thread?.transcript;
-          let transcript = null, meta;
-          if (incoming) {
-            let stored = null;
-            if (!isContiguous(incoming.messages, incoming.totalMessages) && before?.stored && before.revision === incoming.revision) {
-              try { stored = await chatData.getTranscript(id); } catch { stored = null; }
-            }
-            transcript = mergeTranscript(stored, { ...incoming, threadKey: payload.threadKey });
-            meta = { revision: transcript.revision, truncated: transcript.truncated, totalMessages: transcript.totalMessages, stored: true };
-          } else {
-            const kept = !!before?.stored && before.revision === payload.revision;
-            meta = { revision: payload.revision, truncated: kept ? before.truncated : false, totalMessages: payload.transcript.totalMessages || payload.messageCount, stored: kept };
-          }
+          const incoming = transcriptsOn && payload.transcript.included ? { ...payload.transcript, threadKey: payload.threadKey } : null;
+          // The transcript meta lives on the chat-data record (lib/chat-data.js): { revision, totalMessages, stored, truncated }.
+          let meta = record?.transcript || null;
+          const held = !!meta && meta.revision === payload.revision;
           const { transcript: _omit, ...thread } = payload;
-          thread.transcript = meta;
-          const unchangedRecord = record?.thread && record.thread.fingerprint === payload.fingerprint && record.thread.seq === payload.seq
-            && !transcript && JSON.stringify(record.thread.transcript) === JSON.stringify(meta);
+          const unchangedRecord = !!record?.thread && record.thread.fingerprint === payload.fingerprint && record.thread.seq === payload.seq && !incoming;
           if (!unchangedRecord) {
-            // Transcript first, then the record (chat-data writes both in one transaction).
-            await chatData.put(id, { thread, transcript });
+            // A window of the revision Still already holds is merged into the stored copy; anything else replaces it. The
+            // record and its transcript are written in one transaction (chat-data); a window merges right after.
+            const window = incoming && held && !isContiguous(incoming.messages, incoming.totalMessages) ? incoming : null;
+            const put = await chatData.put(id, { thread, transcript: window ? null : incoming });
+            meta = put?.transcript ?? null;
+            if (window) meta = (await chatData.mergeTranscriptWindow(id, window))?.transcript ?? meta;
             if (!existing) written.push(id);
           }
-          entry.needsTranscript = transcriptsOn && !meta.stored;
+          const has = !!meta && meta.revision === payload.revision && meta.stored > 0;
+          entry.needsTranscript = transcriptsOn && !has;
           const chatOrigin = origin === 'refresh' ? existing?.chat?.origin || 'sync' : origin;
           const topics = (payload.analysis?.topics || []).map(topic => oneLine(topic, 40)).filter(Boolean).slice(0, 8);
-          const revive = (origin === 'manual' && (!existing ? dismissed.has(id) : !!existing.deletedAt)) || (!existing && graves.has(id));
-          if (revive && existing?.deletedAt) await store.restoreItem(id);
+          // Only a manual send or import brings back a chat the user deleted forever or put in Trash.
+          const revive = origin === 'manual' && (!existing ? dismissed.has(id) : !!existing.deletedAt);
+          const place = placement.byThreadKey[payload.threadKey] || { collectionId: '' };
           entries.push({
             id, threadKey: payload.threadKey, fingerprint: payload.fingerprint, seq: payload.seq, origin: chatOrigin, revive,
-            createdAt: payload.createdAt || payload.updatedAt || undefined,
-            item: { title: payload.title, excerpt: payload.analysis?.gist || payload.gist, sourceUrl: payload.url, siteName: payload.providerLabel },
+            item: { title: payload.title, excerpt: payload.analysis?.gist || payload.gist, sourceUrl: payload.url, siteName: payload.providerLabel,
+              createdAt: payload.createdAt || payload.updatedAt || '' },
             chat: {
-              v: 1, source: 'threadkeeper', threadKey: payload.threadKey, provider: payload.provider, providerLabel: payload.providerLabel,
-              category: payload.category, kind: payload.kind, project: payload.project, model: payload.model, workflowState: payload.workflowState,
-              messageCount: payload.messageCount, lastActivityAt: payload.updatedAt || '', topics,
+              provider: payload.provider, providerLabel: payload.providerLabel, category: payload.category, kind: payload.kind, project: payload.project,
+              model: payload.model, workflowState: payload.workflowState, messageCount: payload.messageCount, lastActivityAt: payload.updatedAt || '', topics,
               analysis: payload.analysis ? { source: payload.analysis.source, generatedAt: payload.analysis.generatedAt } : { source: '', generatedAt: '' },
-              fingerprint: payload.fingerprint, revision: payload.revision, seq: payload.seq, analysisVersion: payload.analysisVersion,
-              hasTranscript: meta.stored, transcriptTruncated: meta.stored && meta.truncated, origin: chatOrigin, syncedAt: isoNow(),
+              revision: payload.revision, analysisVersion: payload.analysisVersion, hasTranscript: has, transcriptTruncated: has && meta.truncated === true,
             },
-            placement: placement.byThreadKey[payload.threadKey] || { collectionId: '' },
+            // A manual send with a target moves the chat there even when the user had moved it (they asked for it now).
+            placement: origin === 'manual' && target ? { ...place, force: true } : place,
             ...(!existing && prefs.topicsAsTags && topics.length ? { tags: topics } : {}),
           });
-          if (revive && !existing && typeof chatData.undismiss === 'function') await chatData.undismiss([id]).catch(error => log(error?.message));
         }
       } catch (error) {
         // Nothing reaches the library: chat data already written for new chats goes again, and Threadkeeper retries.
         await chatData.delete(written).catch(() => {});
         throw error;
       }
-      return { entries, written, decided, placement, prefs };
+      return { entries, written, decided, placement, dismissed: [...dismissed] };
     });
 
     if (plan.entries.length) {
       let outcome;
-      try { outcome = await submit(plan.entries, plan.placement.ensureCollections); }
+      try { outcome = await submit(plan.entries, plan.placement.ensureCollections, plan.dismissed); }
       catch (error) {
         // The library refused the batch: chat data written for chats it never took goes again.
         await chatData.delete(plan.written).catch(() => {});
         throw error;
       }
       const byId = new Map(outcome.results.map(row => [row.id, row]));
-      const orphaned = [];
+      const orphaned = [], revived = [];
       const counts = { created: 0, updated: 0 };
       for (const entry of plan.decided) {
         const row = byId.get(entry.id) || { status: 'skipped', reason: 'invalid' };
         if (row.status === 'created') counts.created++;
         if (row.status === 'updated') counts.updated++;
+        if (row.status === 'created' && plan.dismissed.includes(entry.id)) revived.push(entry.id);
         if (row.status === 'skipped' && !entry.existing && plan.written.includes(entry.id)) orphaned.push(entry.id);
         const held = row.status === 'skipped' ? entry.existing : null;
         results[entry.index] = {
@@ -473,8 +427,8 @@ export function createThreadkeeperWorker(deps = {}) {
         };
       }
       if (orphaned.length) await chatData.delete(orphaned).catch(() => {});
+      if (revived.length) await chatData.undismiss(revived).catch(error => log(error?.message));
       await remember(plan.placement, outcome.collections);
-      if (origin === 'manual' && target) await moveToTarget(plan, outcome.collections, target);
       bookkeeping({ counts });
     }
     return results.map((row, index) => row || skipped(isThreadKey(rawThreads[index]?.threadKey) ? rawThreads[index].threadKey : '', 'invalid'));
@@ -488,20 +442,6 @@ export function createThreadkeeperWorker(deps = {}) {
     await updateState(draft => { Object.assign(draft.collections, patch); }).catch(error => log(error?.message));
   }
 
-  /** A manual send with an explicit target moves chats that already existed elsewhere (one write). */
-  async function moveToTarget(plan, collections, target) {
-    await exclusive(async () => {
-      const library = await readLibrary();
-      const resolved = resolveTarget(target, library);
-      const targetId = resolved?.ensure ? collections.find(entry => entry.key === resolved.ensure.key)?.id : resolved?.collectionId;
-      if (typeof targetId !== 'string') return;
-      const byId = new Map(items(library).map(item => [item.id, item]));
-      const changes = plan.entries.map(entry => byId.get(entry.id)).filter(item => item && !item.deletedAt && (item.collectionId || '') !== targetId)
-        .map(item => ({ id: item.id, patch: { collectionId: targetId, chat: { autoCollectionId: targetId } } }));
-      if (changes.length) await store.bulkUpdateItems(changes);
-    });
-  }
-
   /** threads.remove: reason local_only deletes chat data (and untouched chats); others follow prefs.onRemoved. */
   async function removeThreads(threadKeys, reason) {
     return exclusive(async () => {
@@ -509,14 +449,15 @@ export function createThreadkeeperWorker(deps = {}) {
       const library = await readLibrary();
       const byId = new Map(items(library).map(item => [item.id, item]));
       const results = [];
-      const forever = [], strip = [], trash = [], keep = [];
+      const local = [], trash = [], keep = [];
       for (const threadKey of threadKeys) {
         const id = chatItemId(threadKey);
         const item = byId.get(id);
         if (!item || !isTkChat(item) || item.chat.threadKey !== threadKey) { results.push({ threadKey, status: 'missing' }); continue; }
         const touched = isUserTouched(item, library);
         if (reason === 'local_only') {
-          (touched ? strip : forever).push(id);
+          // The store deletes an untouched chat outright and strips a touched one to the user's own notes and subpages.
+          local.push(id);
           results.push({ threadKey, status: 'removed' });
         } else if (prefs.onRemoved === 'trash' && !touched && !item.deletedAt) {
           trash.push(id); results.push({ threadKey, status: 'removed' });
@@ -524,14 +465,13 @@ export function createThreadkeeperWorker(deps = {}) {
           keep.push(id); results.push({ threadKey, status: 'kept' });
         }
       }
-      if (reason === 'local_only' && (forever.length || strip.length)) {
-        await chatData.delete([...forever, ...strip]).catch(error => log(error?.message));
-        if (strip.length) await store.markChatsRemoved(strip.map(id => ({ id, reason })));
-        if (forever.length) await deleteChatsForever(forever);
+      if (local.length) {
+        await chatData.delete(local).catch(error => log(error?.message));
+        await store.markChatsRemoved(local.map(id => ({ id, reason })));
       }
       if (trash.length) await store.markChatsRemoved(trash.map(id => ({ id, reason })), { trash: true });
       if (keep.length) await store.markChatsRemoved(keep.map(id => ({ id, reason })));
-      bookkeeping({ counts: { removed: forever.length + strip.length + trash.length } });
+      bookkeeping({ counts: { removed: local.length + trash.length } });
       return results;
     });
   }
@@ -563,8 +503,7 @@ export function createThreadkeeperWorker(deps = {}) {
     exclusive(async () => {
       const library = await readLibrary();
       const back = items(library).filter(item => isTkChat(item) && item.deletedAt && item.chat.removed === 'disconnected');
-      for (const item of back) await store.restoreItem(item.id);
-      if (back.length) await store.bulkUpdateItems(back.map(item => ({ id: item.id, patch: { chat: { removed: '' } } })));
+      if (back.length) await store.setChatFlags(back.map(item => ({ id: item.id, restore: true, chat: { removed: '' } })));
     }).catch(error => log(error?.message));
     return next;
   }
@@ -655,6 +594,8 @@ export function createThreadkeeperWorker(deps = {}) {
           else if (typeof collectionName === 'string' && oneLine(collectionName, 80)) target = { collectionName: oneLine(collectionName, 80) };
           else if (collectionId !== undefined || collectionName !== undefined) return errorResponse('bad_request', 'The target must be a collection.');
         }
+        // The user paused the first sync in Settings: sync pushes wait (busy is not a failure for Threadkeeper).
+        if (message.origin === 'sync' && current.backfill?.paused) return errorResponse('busy', 'The first sync is paused in Still.', PAUSED_RETRY_MS);
         const results = await applyThreads(threads, { origin: message.origin, target: message.origin === 'manual' ? target : null });
         return okResponse({ results });
       }
@@ -848,25 +789,28 @@ export function createThreadkeeperWorker(deps = {}) {
       const windowOut = { revision: payload.transcript.revision, totalMessages: payload.transcript.totalMessages, messages: payload.transcript.messages };
       if (!current.prefs.transcripts) return { ...windowOut, stored: false, stale: false, truncated: true };
       return exclusive(async () => {
-        const record = await chatData.get(id).catch(() => null);
-        if (!record?.thread || record.thread.revision !== payload.transcript.revision) return { ...windowOut, stored: false, stale: true, truncated: true };
-        const stored = record.thread.transcript?.stored ? await chatData.getTranscript(id).catch(() => null) : null;
-        const merged = mergeTranscript(stored, { ...payload.transcript, threadKey: payload.threadKey });
-        const meta = { revision: merged.revision, truncated: merged.truncated, totalMessages: merged.totalMessages, stored: true };
-        await chatData.put(id, { thread: { ...record.thread, transcript: meta }, transcript: merged });
-        if (item.chat.hasTranscript !== true || item.chat.transcriptTruncated !== merged.truncated) {
-          await store.bulkUpdateItems([{ id, patch: { chat: { hasTranscript: true, transcriptTruncated: merged.truncated } } }]);
+        // Merged into the stored transcript of the same revision by lib/chat-data.js; another revision is stale.
+        const merged = await chatData.mergeTranscriptWindow(id, { ...payload.transcript, threadKey: payload.threadKey });
+        if (!merged?.merged) return { ...windowOut, stored: false, stale: true, truncated: true };
+        const truncated = merged.transcript?.truncated === true;
+        if (item.chat.hasTranscript !== true || item.chat.transcriptTruncated !== truncated) {
+          await store.setChatFlags([{ id, chat: { hasTranscript: true, transcriptTruncated: truncated } }]);
         }
-        return { ...windowOut, stored: true, stale: false, truncated: merged.truncated };
+        return { ...windowOut, stored: true, stale: false, truncated };
       });
     },
 
+    /** Undoes an assistant import: deletes those chats without dismissing them (Threadkeeper may offer them again). */
     async undoImport({ ids = [] } = {}) {
       const wanted = [...new Set((Array.isArray(ids) ? ids : []).filter(isChatItemId))].slice(0, LIMITS.importKeys);
       return exclusive(async () => {
         const library = await readLibrary();
         const present = new Set(items(library).filter(isTkChat).map(item => item.id));
-        return { deleted: await deleteChatsForever(wanted.filter(id => present.has(id))) };
+        const gone = wanted.filter(id => present.has(id));
+        if (!gone.length) return { deleted: 0 };
+        const result = await store.deleteChats(gone);
+        await chatData.delete(gone).catch(error => log(error?.message));
+        return { deleted: Array.isArray(result?.ids) ? result.ids.length : gone.length };
       });
     },
 
@@ -885,27 +829,24 @@ export function createThreadkeeperWorker(deps = {}) {
       return out;
     },
 
+    /** Re-places untouched chats after the placement preference changed (one placeChats write). */
     async replaceChats() {
       const current = await getState();
       return exclusive(async () => {
         const library = await readLibrary();
         const untouched = items(library).filter(item => isTkChat(item) && !item.deletedAt && item.chat.removed !== 'local_only' && !isUserTouched(item, library));
+        if (!untouched.length) return { moved: 0 };
         const plan = planPlacement(untouched.map(item => ({ threadKey: item.chat.threadKey, project: item.chat.project })), current.prefs, library, current.collections);
-        const ids = new Map();
-        for (const entry of plan.ensureCollections) {
-          const parentId = entry.parentId || (entry.parentKey ? ids.get(entry.parentKey) || '' : '');
-          const created = await store.createCollection({ name: entry.name, parentId });
-          ids.set(entry.key, created.id);
+        const entries = untouched.map(item => ({ id: item.id, ...(plan.byThreadKey[item.chat.threadKey] || { collectionId: '' }) }));
+        let moved = 0;
+        const collections = [];
+        for (let start = 0; start < entries.length; start += 500) {
+          const result = await store.placeChats(entries.slice(start, start + 500), plan.ensureCollections.length ? { ensureCollections: plan.ensureCollections } : {});
+          moved += (result?.results || []).filter(row => row.status === 'moved').length;
+          collections.push(...(result?.collections || []));
         }
-        const changes = [];
-        for (const item of untouched) {
-          const place = plan.byThreadKey[item.chat.threadKey];
-          const collectionId = place?.collectionKey ? ids.get(place.collectionKey) : place?.collectionId;
-          if (typeof collectionId === 'string' && collectionId !== (item.collectionId || '')) changes.push({ id: item.id, patch: { collectionId, chat: { autoCollectionId: collectionId } } });
-        }
-        for (let start = 0; start < changes.length; start += 500) await store.bulkUpdateItems(changes.slice(start, start + 500));
-        await remember(plan, [...ids].map(([key, id]) => ({ key, id })));
-        return { moved: changes.length };
+        await remember(plan, collections);
+        return { moved };
       });
     },
 
@@ -913,16 +854,22 @@ export function createThreadkeeperWorker(deps = {}) {
       return exclusive(async () => {
         const library = await readLibrary();
         const chats = items(library).filter(item => isTkChat(item) && item.chat.hasTranscript === true);
-        for (const item of chats) {
-          const record = await chatData.get(item.id).catch(() => null);
-          await chatData.delete([item.id]);
-          if (record?.thread) await chatData.put(item.id, { thread: { ...record.thread, transcript: { ...(record.thread.transcript || {}), stored: false, truncated: false } }, transcript: null });
-        }
-        for (let start = 0; start < chats.length; start += 500) {
-          await store.bulkUpdateItems(chats.slice(start, start + 500).map(item => ({ id: item.id, patch: { chat: { hasTranscript: false, transcriptTruncated: false } } })));
+        const ids = chats.map(item => item.id);
+        await chatData.deleteTranscripts(ids);
+        for (let start = 0; start < ids.length; start += 500) {
+          await store.setChatFlags(ids.slice(start, start + 500).map(id => ({ id, chat: { hasTranscript: false, transcriptTruncated: false } })));
         }
         return { removed: chats.length };
       });
+    },
+
+    /** Pauses or resumes the first sync: while paused Threadkeeper's sync pushes are answered busy (it retries later). */
+    async pauseSync({ paused = true } = {}) {
+      await requirePaired();
+      const next = await updateState(draft => { draft.backfill.paused = paused === true; });
+      // Resuming: an inbound hello from the paired peer resets Threadkeeper's retry backoff, so pushes resume now.
+      if (!next.backfill.paused) await hello().catch(error => log(error?.message));
+      return publicState(await getState(), { now: now() });
     },
   };
 
@@ -938,38 +885,36 @@ export function createThreadkeeperWorker(deps = {}) {
   }
 
   // ---- hooks --------------------------------------------------------------------------------------------------------
-  /** Store onCommit: chats deleted forever lose their chat data; the user's own deletions become dismissals. */
+  /**
+   * Store onCommit: chats deleted forever lose their chat data. A deletion by the user (any operation except Still's own
+   * chat bookkeeping, CHAT_SYSTEM_DELETES) becomes a dismissal, and Threadkeeper stops tracking those threads.
+   */
   function onCommit(change) {
     const deleted = (Array.isArray(change?.deleted?.items) ? change.deleted.items : []).filter(isChatItemId);
     if (!deleted.length) return Promise.resolve();
-    const byUser = deleted.filter(id => !selfDeleting.has(id));
+    const byUser = CHAT_SYSTEM_DELETES.includes(change?.operation) ? [] : deleted;
     return (async () => {
       await chatData.delete(deleted).catch(error => log(error?.message));
       if (!byUser.length) return;
-      if (typeof chatData.dismiss === 'function') await chatData.dismiss(byUser).catch(error => log(error?.message));
+      await chatData.dismiss(byUser).catch(error => log(error?.message));
       const current = await getState();
       if (current.status === 'paired') await send('threads.untrack', { hashes: byUser.map(hashOfChatId) });
     })().catch(error => log(error?.message));
   }
 
+  /** Orphan sweep (lib/chat-data.js sweep), inside the apply mutex: data of ids that are not library items any more. */
   async function sweep() {
     return exclusive(async () => {
       const library = await readLibrary();
-      const present = new Set(items(library).map(item => item.id));
       let stored = [];
       try { stored = await chatData.ids(); } catch (error) { log(error?.message); return { deleted: 0 }; }
-      const orphans = [];
-      for (const id of stored) {
-        if (present.has(id)) continue;
-        const record = await chatData.get(id).catch(() => null);
-        const age = now() - (Date.parse(record?.storedAt) || 0);
-        if (age > ORPHAN_AGE_MS) orphans.push(id);
-      }
-      if (orphans.length) await chatData.delete(orphans).catch(error => log(error?.message));
+      let swept = { records: 0, transcripts: 0 };
+      try { swept = await chatData.sweep(items(library), { minAgeMs: ORPHAN_AGE_MS }); } catch (error) { log(error?.message); }
       // The chat store went missing (cleared site data, a new profile copy): Threadkeeper must re-offer everything.
       const chats = items(library).filter(item => isTkChat(item) && !item.deletedAt && item.chat.removed !== 'local_only');
-      if (chats.length && !stored.length) await updateState(draft => { draft.epoch = newEpoch(); });
-      return { deleted: orphans.length, lost: chats.length > 0 && !stored.length };
+      const lost = chats.length > 0 && !stored.length;
+      if (lost) await updateState(draft => { draft.epoch = newEpoch(); });
+      return { deleted: swept.records, lost };
     });
   }
 

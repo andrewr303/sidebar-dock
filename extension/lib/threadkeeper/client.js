@@ -17,6 +17,7 @@
  *   disconnectThreadkeeper({ removeChats }) → { removed, kept }
  *   setThreadkeeperPrefs(patch)            → state
  *   startThreadkeeperSync(patch?)          → { queued, total, retrying }   ("Start syncing": configured, sync.configure)
+ *   pauseThreadkeeperSync(paused)          → state           (pause/resume the first sync: sync pushes wait meanwhile)
  *   syncThreadkeeperNow()                  → { queued }
  *   threadkeeperRequest(type, fields, { timeoutMs, signal }) → response data (reads, thread.open, threads.analyze)
  *   importThreadkeeperThreads(threadKeys, { target, origin = 'manual', citeIds }) → { results, created, updated, unchanged, skipped }
@@ -102,6 +103,7 @@ export const pingThreadkeeper = () => call('ping');
 export const disconnectThreadkeeper = ({ removeChats = false } = {}) => call('disconnect', { removeChats: removeChats === true });
 export const setThreadkeeperPrefs = patch => call('setPrefs', { patch });
 export const startThreadkeeperSync = patch => call('startSync', patch === undefined ? {} : { patch });
+export const pauseThreadkeeperSync = (paused = true) => call('pauseSync', { paused: paused === true });
 export const syncThreadkeeperNow = () => call('syncNow');
 export const threadkeeperRequest = (type, fields = {}, { timeoutMs, signal } = {}) => call('request', { type, fields, timeoutMs }, { signal });
 export const importThreadkeeperThreads = (threadKeys, { target = null, origin = 'manual', citeIds = [] } = {}) =>

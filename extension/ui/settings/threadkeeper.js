@@ -12,6 +12,7 @@ import { registerActions } from '../runtime.js';
 import { registerDialog } from '../overlay.js';
 import { renderCollectionPickerTrigger } from '../pickers.js';
 import { chatDataStats } from '../../lib/chat-data.js';
+import { isChatTouched } from '../../lib/store.js';
 import { isExtensionId } from '../../lib/threadkeeper/protocol.js';
 import { threadkeeperClient, openThreadkeeperPicker, pickerFacets, CATEGORY_LABELS } from '../threadkeeper-picker.js';
 import { group, card, row, switchRow, blockRow, callout, progressBar, disclosure, disclosed, note, providerMark, isSearching, isBusy, withBusy, searchable } from './parts.js';
@@ -137,16 +138,11 @@ const liveChats = items => (items || []).filter(item => isChat(item) && !item.de
 
 /**
  * True when the person has made a chat their own (review R.6): notes, live subpages, tags beyond what sync added,
- * favorite, or moved away from where sync put it. Renames are detected by the worker (title hash); this is the
- * conservative count for confirms.
+ * favorite, a rename or a move away from where sync put it. The same rule as the store and the worker (lib/store.js
+ * isChatTouched, title hashes from lib/threadkeeper/protocol.js syncedHash).
  */
 export function isUserTouchedChat(item, items = []) {
-  if (!isChat(item)) return false;
-  if (String(item.content || '').trim() || item.favorite) return true;
-  const synced = new Set((item.chat.syncedTags || []).map(tag => String(tag).toLowerCase()));
-  if ((item.tags || []).some(tag => !synced.has(String(tag).toLowerCase()))) return true;
-  if ((item.collectionId || '') !== (item.chat.autoCollectionId || '')) return true;
-  return items.some(other => other.parentId === item.id && !other.deletedAt);
+  return isChat(item) && isChatTouched(item, items);
 }
 
 /** Whether a synced thread falls inside prefs (scope, projects, providers). */
@@ -632,10 +628,15 @@ async function savePrefs(ctx, patch) {
     options.removeTranscripts = await ctx.confirm({ title: `Remove ${plural(tk.stats.transcripts, 'stored transcript')}?`,
       body: 'Summaries and your notes stay. Turn transcripts back on to bring them in again.', confirmLabel: 'Remove transcripts', cancelLabel: 'Keep them', tone: 'danger' });
   }
-  const next = await api().setThreadkeeperPrefs(patch, options);
+  const next = await api().setThreadkeeperPrefs(patch);
   if (next && typeof next === 'object' && next.prefs) tk.state = next;
   else await loadState(ctx);
-  if (options.removeTranscripts) loadStats(ctx);
+  // Follow-ups the person confirmed, each its own worker operation: re-place untouched chats, drop stored transcripts.
+  if (options.replace) {
+    const moved = await api().replaceThreadkeeperChats();
+    if (moved?.moved) ctx.toast(`Moved ${plural(moved.moved, 'chat')} to the new place.`, { tone: 'success' });
+  }
+  if (options.removeTranscripts) { await api().removeThreadkeeperTranscripts(); loadStats(ctx); }
   ctx.render();
 }
 
@@ -694,8 +695,8 @@ registerActions({
   'settings.threadkeeper-start': ({ ctx }) => withBusy(ctx, 'tk-start', async () => {
     const prefs = readPrefs(tk.draft || tk.state?.prefs);
     if (prefs.scope === 'projects' && !prefs.projects.length) throw new Error('Choose at least one project, or pick another option.');
-    const next = await api().setThreadkeeperPrefs(prefs, { start: true });
-    if (next && typeof next === 'object' && next.prefs) tk.state = next; else await loadState(ctx);
+    await api().startThreadkeeperSync(prefs);
+    await loadState(ctx);
     tk.draft = null;
     ctx.toast(prefs.scope === 'manual' ? 'Threadkeeper is connected. Add chats whenever you like.' : 'Syncing started. Chats appear as Threadkeeper sends them.', { tone: 'success' });
   }),
@@ -752,7 +753,7 @@ registerActions({
   }),
   'settings.threadkeeper-pause': async ({ ctx, data }) => {
     const paused = data.paused === 'true';
-    const next = await api().setThreadkeeperPrefs({}, { pause: paused });
+    const next = await api().pauseThreadkeeperSync(paused);
     if (next && typeof next === 'object' && next.prefs) tk.state = next; else await loadState(ctx);
     ctx.render();
   },

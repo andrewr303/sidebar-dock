@@ -396,7 +396,7 @@ test('cards, palette, map, routes and labels know the chat type', () => {
   assert.equal(viewTitle(ctx, 'chats'), 'Chats');
   assert.equal(viewTitle(ctx, 'type:chat'), 'Chats');
   assert.ok(COMMANDS.some(c => c.id === 'go-chats' && c.view === 'chats'));
-  assert.ok(COMMANDS.some(c => c.id === 'add-chats' && c.action === 'chats.add'));
+  assert.ok(COMMANDS.some(c => c.id === 'add-chats' && c.action === 'threadkeeper.picker-open'));
   const option = itemOption(ctx, items[0]);
   assert.equal(option.hint, 'Claude Code · Billing · AI chats / Billing');
   assert.match(String(option.leading), /command-glyph/);

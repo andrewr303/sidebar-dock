@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createThreadkeeperWorker, isUserTouched, inSyncScope, mergeTranscript, listCollections, RETRY_ALARM, SWEEP_ALARM,
+  createThreadkeeperWorker, isUserTouched, inSyncScope, listCollections, RETRY_ALARM, SWEEP_ALARM,
 } from '../extension/lib/threadkeeper/worker.js';
+import { createLibraryStore } from '../extension/lib/store.js';
+import { createChatDataStore } from '../extension/lib/chat-data.js';
 import { createThreadkeeperStateStore, normalizeThreadkeeperState, STATE_KEY } from '../extension/lib/threadkeeper/state.js';
 import { memoryArea } from '../extension/lib/storage/area.js';
 import { PROTO, chatItemId, syncedHash, threadHash } from '../extension/lib/threadkeeper/protocol.js';
@@ -24,95 +26,30 @@ const payload = (n, extra = {}) => ({
   ...extra.fields,
 });
 
-// A library store that follows the upsertChats / markChatsRemoved contract closely enough for the worker.
+// The real library store (lib/store.js) over a memory value the tests can poke at: store.library is the live stored
+// document (tests edit it directly to stand in for the user), store.calls logs the operations the worker used.
 function fakeStore() {
-  const library = { items: [], collections: [], tombstones: [] };
+  const memory = { value: null };
   const calls = [];
-  let n = 0;
   const commits = [];
-  const find = id => library.items.find(item => item.id === id);
+  const real = createLibraryStore({ read: async () => memory.value, write: async state => { memory.value = state; },
+    onCommit: change => Promise.all(commits.map(hook => hook(change))) });
+  const op = name => async (...args) => { calls.push([name, ...args.map(arg => (Array.isArray(arg) ? arg.map(entry => entry?.id ?? entry) : arg))]); return real.dispatch(name, args); };
   const store = {
-    library, calls, commits,
-    async upsertChats(entries, { ensureCollections = [] } = {}) {
-      calls.push(['upsertChats', entries.map(entry => entry.id), ensureCollections.map(entry => entry.key)]);
-      const keys = new Map();
-      const collections = [];
-      for (const entry of ensureCollections) {
-        const parentId = entry.parentId || (entry.parentKey ? keys.get(entry.parentKey) : '') || '';
-        let found = library.collections.find(c => !c.deletedAt && (c.parentId || '') === parentId && c.name.toLowerCase() === entry.name.toLowerCase());
-        const created = !found;
-        if (!found) { found = { id: `col${++n}`, name: entry.name, parentId }; library.collections.push(found); }
-        keys.set(entry.key, found.id);
-        collections.push({ key: entry.key, id: found.id, created });
-      }
-      const place = placement => (placement.collectionKey ? keys.get(placement.collectionKey) : library.collections.some(c => c.id === placement.collectionId) ? placement.collectionId : '');
-      const results = entries.map(entry => {
-        const existing = find(entry.id);
-        if (!existing) {
-          const grave = library.tombstones.find(t => t.id === entry.id);
-          if (grave && !entry.revive) return { threadKey: entry.threadKey, id: entry.id, status: 'skipped', reason: 'dismissed' };
-          if (grave) library.tombstones = library.tombstones.filter(t => t !== grave);
-          const collectionId = place(entry.placement);
-          library.items.push({ id: entry.id, type: 'chat', title: entry.item.title, excerpt: entry.item.excerpt, content: '', tags: entry.tags || [],
-            collectionId, favorite: false, deletedAt: null, chat: { ...entry.chat, autoCollectionId: collectionId, syncedTitleHash: syncedHash(entry.item.title), syncedTags: entry.tags || [], removed: '' } });
-          return { threadKey: entry.threadKey, id: entry.id, status: 'created' };
-        }
-        if (existing.deletedAt) { existing.chat = { ...existing.chat, ...entry.chat }; return { threadKey: entry.threadKey, id: entry.id, status: 'skipped', reason: 'trashed' }; }
-        if (existing.chat.fingerprint === entry.fingerprint && existing.chat.removed === '') return { threadKey: entry.threadKey, id: entry.id, status: 'unchanged' };
-        if (existing.title && syncedHash(existing.title) === existing.chat.syncedTitleHash) { existing.title = entry.item.title; }
-        if (existing.collectionId === existing.chat.autoCollectionId && entry.placement) { existing.collectionId = place(entry.placement); }
-        existing.chat = { ...existing.chat, ...entry.chat, autoCollectionId: existing.collectionId, syncedTitleHash: syncedHash(existing.title), removed: '' };
-        return { threadKey: entry.threadKey, id: entry.id, status: 'updated' };
-      });
-      return { results, collections };
-    },
-    async markChatsRemoved(entries, { trash = false } = {}) {
-      calls.push(['markChatsRemoved', entries.map(entry => `${entry.id}:${entry.reason}`), trash]);
-      return { results: entries.map(({ id, reason }) => {
-        const item = find(id);
-        if (!item) return { id, status: 'missing' };
-        item.chat.removed = reason;
-        if (trash) item.deletedAt = '2026-10-02T00:00:00Z';
-        return { id, status: 'removed' };
-      }) };
-    },
-    async permanentlyDeleteItem(id) {
-      calls.push(['permanentlyDeleteItem', id]);
-      library.items = library.items.filter(item => item.id !== id);
-      library.tombstones.push({ kind: 'item', id });
-      for (const hook of commits) hook({ operation: 'permanentlyDeleteItem', deleted: { items: [id], collections: [] } });
-      return { id, ids: [id] };
-    },
-    async restoreItem(id) { calls.push(['restoreItem', id]); find(id).deletedAt = null; return find(id); },
-    async bulkUpdateItems(changes) {
-      calls.push(['bulkUpdateItems', changes.map(change => change.id)]);
-      for (const { id, patch } of changes) { const item = find(id); const { chat, ...rest } = patch; Object.assign(item, rest); if (chat) item.chat = { ...item.chat, ...chat }; }
-      return changes.map(change => find(change.id));
-    },
-    async createCollection({ name, parentId = '' }) { const collection = { id: `col${++n}`, name, parentId }; library.collections.push(collection); calls.push(['createCollection', name]); return collection; },
+    calls, commits,
+    get library() { return memory.value || (memory.value = { schemaVersion: 1, settings: {}, updatedAt: '2026-01-01T00:00:00.000Z', items: [], collections: [], tombstones: [] }); },
+    item: id => store.library.items.find(item => item.id === id),
+    dispatch: (name, ...args) => real.dispatch(name, args),
   };
+  for (const name of ['upsertChats', 'markChatsRemoved', 'placeChats', 'setChatFlags', 'deleteChats', 'createCollection', 'permanentlyDeleteItem', 'emptyTrash']) store[name] = op(name);
   return store;
 }
 
+// The real chat data store (lib/chat-data.js, memory backend) on a test clock.
 function fakeChatData() {
-  const records = new Map(), transcripts = new Map(), dismissedSet = new Set();
   let clock = Date.parse('2026-10-01T00:00:00Z');
-  return {
-    records, transcripts, dismissedSet,
-    age(ms) { clock -= ms; },
-    async put(id, { thread, transcript = null }) {
-      if (transcript) transcripts.set(id, { id, ...structuredClone(transcript) });
-      else if (transcripts.get(id)?.revision !== thread.revision) transcripts.delete(id);
-      records.set(id, { id, threadKey: thread.threadKey, fingerprint: thread.fingerprint, revision: thread.revision, storedAt: new Date(clock).toISOString(), thread: structuredClone(thread) });
-    },
-    async get(id) { return structuredClone(records.get(id) || null); },
-    async getTranscript(id) { return structuredClone(transcripts.get(id) || null); },
-    async delete(ids) { let count = 0; for (const id of [].concat(ids)) { if (records.delete(id)) count++; transcripts.delete(id); } return count; },
-    async ids() { return [...records.keys()]; },
-    async dismiss(ids) { for (const id of ids) dismissedSet.add(id); },
-    async dismissed(ids) { return ids.filter(id => dismissedSet.has(id)); },
-    async undismiss(ids) { for (const id of ids) dismissedSet.delete(id); },
-  };
+  const real = createChatDataStore({ indexedDB: null, now: () => clock });
+  return Object.assign(real, { tick(ms) { clock += ms; }, async has(id) { return !!(await real.get(id)); } });
 }
 
 // Threadkeeper on the other end: answers by type, records what Still sent.
@@ -165,7 +102,7 @@ test('spoofed and unpaired senders are refused before anything is written', asyn
     assert.equal(response.error.code, code, JSON.stringify(who));
   }
   assert.equal(store.calls.length, 0);
-  assert.equal(chatData.records.size, 0);
+  assert.equal((await chatData.ids()).length, 0);
   assert.equal((await worker.handleExternalMessage({ ...upsert, proto: 'still-threadkeeper/2' }, sender())).error.code, 'version_mismatch');
   assert.equal((await worker.handleExternalMessage('hello', sender())).error.code, 'bad_request');
   assert.equal((await worker.handleExternalMessage(msg('threads.explode'), sender())).error.code, 'unsupported');
@@ -276,20 +213,21 @@ test('pushes: chat data first, mirror placement, one coalesced library write, id
   assert.equal(items[KEY(1)].chat.hasTranscript, true);
   assert.equal(items[KEY(1)].chat.origin, 'sync');
   assert.deepEqual(items[KEY(1)].tags, [], 'topics become tags only when asked');
-  const record = chatData.records.get(chatItemId(KEY(1)));
-  assert.equal(record.thread.transcript.stored, true);
-  assert.equal('messages' in record.thread.transcript, false, 'the record never carries the messages');
-  assert.equal(chatData.transcripts.get(chatItemId(KEY(1))).messages.length, 2);
+  const record = await chatData.get(chatItemId(KEY(1)));
+  assert.deepEqual([record.transcript.revision, record.transcript.stored, record.transcript.truncated], [1, 2, false]);
+  assert.equal(record.thread.transcript, undefined, 'the record never carries the messages');
+  assert.equal((await chatData.getTranscript(chatItemId(KEY(1)))).messages.length, 2);
   const memory = (await read()).collections;
   assert.equal(memory.__parent, parent.id);
   assert.equal(memory.still, still.id);
   // The same payload again: unchanged, and no chat-data write.
   const writesBefore = store.calls.length;
   const stored = record.storedAt;
-  chatData.age(1000);
+  chatData.tick(1000);
   const again = await worker.handleExternalMessage(msg('threads.upsert', { threads: [{ ...payload(1), transcript: { included: false, revision: 1, totalMessages: 2 } }], origin: 'sync' }), sender());
   assert.equal(again.results[0].status, 'unchanged');
-  assert.equal(chatData.records.get(chatItemId(KEY(1))).storedAt, stored);
+  assert.equal(again.results[0].needsTranscript, undefined, 'Still holds the transcript of this revision');
+  assert.equal((await chatData.get(chatItemId(KEY(1)))).storedAt, stored);
   assert.equal(store.calls.length, writesBefore + 1);
   // An older seq is stale; Still answers with what it holds.
   const stale = await worker.handleExternalMessage(msg('threads.upsert', { threads: [payload(1, { seq: 5, fingerprint: 'old' })], origin: 'sync' }), sender());
@@ -308,14 +246,14 @@ test('a metadata-only push for a new revision asks for the transcript; Still’s
   assert.equal(meta.results[0].needsTranscript, true);
   const outside = await worker.handleExternalMessage(msg('threads.upsert', { threads: [payload(2, { project: 'Elsewhere' })], origin: 'sync' }), sender());
   assert.equal(outside.results[0].reason, 'out_of_scope');
-  assert.equal(chatData.records.has(chatItemId(KEY(2))), false);
+  assert.equal(await chatData.has(chatItemId(KEY(2))), false);
   const manual = await worker.handleExternalMessage(msg('threads.upsert', { threads: [payload(2, { project: 'Elsewhere' })], origin: 'manual' }), sender());
   assert.equal(manual.results[0].status, 'created', 'Send to Still ignores the scope');
   const off = await harness({ state: { ...PAIRED, prefs: { transcripts: false } } });
   const noTranscript = await off.worker.handleExternalMessage(msg('threads.upsert', { threads: [payload(1)], origin: 'sync' }), sender());
   assert.equal(noTranscript.results[0].status, 'created');
   assert.equal(noTranscript.results[0].needsTranscript, undefined);
-  assert.equal(off.chatData.transcripts.size, 0, 'transcripts off: none stored');
+  assert.equal(await off.chatData.getTranscript(chatItemId(KEY(1))), null, 'transcripts off: none stored');
 });
 
 test('a third concurrent push is told to come back later', async () => {
@@ -340,42 +278,45 @@ test('dismissed and trashed chats: sync skips them, a manual send brings them ba
   const { worker, store, chatData, remote } = await harness({ state: PAIRED });
   await worker.handleExternalMessage(msg('threads.upsert', { threads: [payload(1), payload(2)], origin: 'sync' }), sender());
   // The user deletes chat 1 forever: chat data goes, the id is dismissed, Threadkeeper stops tracking it.
-  store.library.items = store.library.items.filter(item => item.id !== chatItemId(KEY(1)));
-  await worker.onCommit({ operation: 'emptyTrash', deleted: { items: [chatItemId(KEY(1)), 'note_1'], collections: [] } });
-  assert.equal(chatData.records.has(chatItemId(KEY(1))), false);
-  assert.ok(chatData.dismissedSet.has(chatItemId(KEY(1))));
+  await store.permanentlyDeleteItem(chatItemId(KEY(1)));
+  await settle(5);
+  assert.equal(await chatData.has(chatItemId(KEY(1))), false);
+  assert.deepEqual(await chatData.dismissed([chatItemId(KEY(1))]), [chatItemId(KEY(1))]);
   const untrack = remote.sent.find(entry => entry.message.type === 'threads.untrack');
   assert.deepEqual(untrack.message.hashes, [threadHash(KEY(1))]);
   const skipped = await worker.handleExternalMessage(msg('threads.upsert', { threads: [payload(1, { seq: 11 })], origin: 'sync' }), sender());
   assert.equal(skipped.results[0].reason, 'dismissed');
-  assert.equal(chatData.records.has(chatItemId(KEY(1))), false, 'no chat data for a dismissed chat');
+  assert.equal(await chatData.has(chatItemId(KEY(1))), false, 'no chat data for a dismissed chat');
   const revived = await worker.handleExternalMessage(msg('threads.upsert', { threads: [payload(1, { seq: 12 })], origin: 'manual' }), sender());
   assert.equal(revived.results[0].status, 'created');
-  assert.equal(chatData.dismissedSet.has(chatItemId(KEY(1))), false);
+  assert.deepEqual(await chatData.dismissed([chatItemId(KEY(1))]), []);
   // Chat 2 in Trash: sync leaves it there; a manual send restores it and moves it to the chosen collection.
-  const two = store.library.items.find(item => item.id === chatItemId(KEY(2)));
-  two.deletedAt = '2026-10-02T00:00:00Z';
+  store.item(chatItemId(KEY(2))).deletedAt = '2026-10-02T00:00:00Z';
   const trashed = await worker.handleExternalMessage(msg('threads.upsert', { threads: [payload(2, { seq: 11 })], origin: 'sync' }), sender());
   assert.equal(trashed.results[0].reason, 'trashed');
   const restored = await worker.handleExternalMessage(msg('threads.upsert', { threads: [payload(2, { seq: 13 })], origin: 'manual', target: { collectionName: 'Keep' } }), sender());
   assert.equal(restored.results[0].status, 'updated');
+  const two = store.item(chatItemId(KEY(2)));
   assert.equal(two.deletedAt, null);
   const keep = store.library.collections.find(c => c.name === 'Keep');
   assert.equal(two.collectionId, keep.id);
-  assert.ok(store.calls.some(call => call[0] === 'restoreItem'));
+  assert.equal(two.chat.autoCollectionId, keep.id, 'a move Still made is not the user’s move');
 });
 
 test('threads.remove: local_only deletes untouched chats without dismissing and strips touched ones; others follow onRemoved', async () => {
   const { worker, store, chatData } = await harness({ state: { ...PAIRED, prefs: { onRemoved: 'trash' } } });
   await worker.handleExternalMessage(msg('threads.upsert', { threads: [1, 2, 3, 4].map(n => payload(n)), origin: 'sync' }), sender());
-  const item = n => store.library.items.find(entry => entry.id === chatItemId(KEY(n)));
+  const item = n => store.item(chatItemId(KEY(n)));
   item(2).content = 'My notes';
   item(4).title = 'Renamed by me';
   const local = await worker.handleExternalMessage(msg('threads.remove', { threadKeys: [KEY(1), KEY(2), 'unknown:key'], reason: 'local_only' }), sender());
   assert.deepEqual(local.results.map(row => row.status), ['removed', 'removed', 'missing']);
   assert.equal(item(1), undefined, 'untouched: deleted forever');
-  assert.equal(chatData.dismissedSet.has(chatItemId(KEY(1))), false, 'not a user dismissal');
-  assert.equal(chatData.records.has(chatItemId(KEY(2))), false, 'thread data gone');
+  await settle(5);
+  assert.deepEqual(await chatData.dismissed([chatItemId(KEY(1))]), [], 'not a user dismissal');
+  assert.equal(await chatData.has(chatItemId(KEY(2))), false, 'thread data gone');
+  assert.equal(item(2).title, 'Private thread');
+  assert.equal(item(2).content, 'My notes');
   assert.equal(item(2).chat.removed, 'local_only');
   assert.equal(item(2).deletedAt, null);
   const gone = await worker.handleExternalMessage(msg('threads.remove', { threadKeys: [KEY(3), KEY(4)], reason: 'deleted' }), sender());
@@ -518,28 +459,28 @@ test('refresh and transcript windows merge into the stored copy of the same revi
   const window = await worker.handleRequest('loadTranscriptWindow', { id, from: 5, count: 20 });
   assert.equal(window.ok, true);
   assert.deepEqual([window.data.stored, window.data.stale, window.data.truncated, window.data.messages.length], [true, false, false, 20]);
-  assert.equal(chatData.transcripts.get(id).messages.length, 30);
-  assert.equal(chatData.transcripts.get(id).truncated, false);
+  assert.equal((await chatData.getTranscript(id)).messages.length, 30);
+  assert.equal((await chatData.getTranscript(id)).truncated, false);
   assert.equal(store.library.items[0].chat.transcriptTruncated, false);
   const refreshed = await worker.handleRequest('refreshChat', { id });
   assert.equal(refreshed.data.status, 'updated');
-  assert.equal(chatData.transcripts.get(id).messages.length, 30, 'a truncated refresh of the same revision keeps the merged copy');
+  assert.equal((await chatData.getTranscript(id)).messages.length, 30, 'a truncated refresh of the same revision keeps the merged copy');
   assert.equal((await worker.handleRequest('refreshChat', { id: 'chat_tk_missing' })).error.code, 'not_found');
 });
 
 test('sweep deletes old orphans only; a missing chat store starts a new epoch', async () => {
   const { worker, chatData, store, read } = await harness({ state: PAIRED });
   await worker.handleExternalMessage(msg('threads.upsert', { threads: [payload(1)], origin: 'sync' }), sender());
-  await chatData.put('chat_tk_orphan_old', { thread: { threadKey: 'x', revision: 1 } });
-  chatData.records.get('chat_tk_orphan_old').storedAt = '2020-01-01T00:00:00.000Z';
-  await chatData.put('chat_tk_orphan_new', { thread: { threadKey: 'y', revision: 1 } });
-  chatData.records.get('chat_tk_orphan_new').storedAt = new Date().toISOString();
+  await chatData.put(chatItemId('x'), { thread: { threadKey: 'x', revision: 1 } });
+  chatData.tick(11 * 60 * 1000);
+  await chatData.put(chatItemId('y'), { thread: { threadKey: 'y', revision: 1 } });
   const swept = await worker.sweep();
   assert.equal(swept.deleted, 1);
-  assert.ok(chatData.records.has('chat_tk_orphan_new'), 'a write in flight is not an orphan yet');
-  assert.ok(chatData.records.has(chatItemId(KEY(1))));
+  assert.ok(await chatData.has(chatItemId('y')), 'a write in flight is not an orphan yet');
+  assert.equal(await chatData.has(chatItemId('x')), false);
+  assert.ok(await chatData.has(chatItemId(KEY(1))), 'library chats keep their data however old');
   const epoch = (await read()).epoch;
-  chatData.records.clear();
+  await chatData.clear();
   assert.equal((await worker.sweep()).lost, true);
   assert.notEqual((await read()).epoch, epoch);
   assert.equal(store.library.items.length, 1);
@@ -575,12 +516,13 @@ test('impact, re-placing untouched chats and removing stored transcripts', async
   assert.notEqual(store.library.items[1].collectionId, target.id, 'touched chats stay where the user has them');
   const removed = await worker.handleRequest('removeTranscripts');
   assert.equal(removed.data.removed, 2);
-  assert.equal(chatData.transcripts.size, 0);
-  assert.ok(chatData.records.size === 2 && [...chatData.records.values()].every(record => record.thread.transcript.stored === false));
+  const records = await chatData.list();
+  assert.ok(records.length === 2 && records.every(record => record.transcript === null));
+  assert.equal(await chatData.getTranscript(chatItemId(KEY(1))), null);
   assert.ok(store.library.items.every(item => item.chat.hasTranscript === false));
 });
 
-test('pure helpers: touched chats, scope, transcript merge, collection paths', () => {
+test('pure helpers: touched chats, scope, collection paths', () => {
   const chat = { id: 'c', type: 'chat', title: 'T', content: '', tags: ['alpha'], collectionId: 'x', favorite: false,
     chat: { threadKey: 'k', syncedTitleHash: syncedHash('T'), syncedTags: ['alpha'], autoCollectionId: 'x' } };
   const library = { items: [chat] };
@@ -595,10 +537,6 @@ test('pure helpers: touched chats, scope, transcript merge, collection paths', (
   assert.equal(inSyncScope({ project: 'A', provider: 'codex' }, { scope: 'all', providers: ['chatgpt'] }), false);
   assert.equal(inSyncScope({ project: 'a ', provider: 'codex' }, { scope: 'projects', projects: ['A'], providers: [] }), true);
   assert.equal(inSyncScope({ project: 'A' }, { scope: 'manual' }), false);
-  const merged = mergeTranscript({ revision: 1, totalMessages: 4, messages: [{ index: 0 }, { index: 3 }] }, { revision: 1, totalMessages: 4, messages: [{ index: 1 }, { index: 2 }] });
-  assert.deepEqual([merged.messages.map(m => m.index), merged.truncated], [[0, 1, 2, 3], false]);
-  const replaced = mergeTranscript({ revision: 1, totalMessages: 4, messages: [{ index: 0 }] }, { revision: 2, totalMessages: 2, messages: [{ index: 1 }] });
-  assert.deepEqual([replaced.messages.map(m => m.index), replaced.truncated], [[1], true]);
   assert.deepEqual(listCollections({ collections: [{ id: 'a', name: 'A', parentId: 'b' }, { id: 'b', name: 'B', parentId: 'a' }] }).map(c => c.path), ['B / A', 'A / B'], 'cycles end');
 });
 

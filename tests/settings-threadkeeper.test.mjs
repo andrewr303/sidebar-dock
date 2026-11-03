@@ -10,7 +10,7 @@ import {
   renderThreadkeeper, attachThreadkeeper, detachThreadkeeper, resetThreadkeeperSettings, threadkeeperSettingsState, renderDisconnectDialog,
 } from '../extension/ui/settings/threadkeeper.js';
 import { useThreadkeeperClient } from '../extension/ui/threadkeeper-picker.js';
-import { ThreadkeeperError } from '../extension/lib/threadkeeper/protocol.js';
+import { ThreadkeeperError, syncedHash } from '../extension/lib/threadkeeper/protocol.js';
 
 const { renderSettingsPage } = await import('../extension/ui/settings.js');
 const { dispatch } = await import('../extension/ui/runtime.js');
@@ -54,12 +54,23 @@ function fakeClient(initial = baseState(), { discovered = [], facets = FACETS, f
       return { status: 'pending' };
     },
     async disconnectThreadkeeper(options) { calls.push(['disconnect', options]); state = { ...state, status: 'off', extensionId: '', pending: null }; return { status: 'off' }; },
-    async setThreadkeeperPrefs(patch, options) {
-      calls.push(['setPrefs', structuredClone(patch), options ? structuredClone(options) : undefined]);
-      state = { ...state, prefs: { ...state.prefs, ...patch }, configured: options?.start ? true : state.configured,
-        backfill: options?.pause !== undefined && state.backfill ? { ...state.backfill, paused: options.pause } : state.backfill };
+    async setThreadkeeperPrefs(patch) {
+      calls.push(['setPrefs', structuredClone(patch)]);
+      state = { ...state, prefs: { ...state.prefs, ...patch } };
       return structuredClone(state);
     },
+    async startThreadkeeperSync(patch) {
+      calls.push(['start', structuredClone(patch)]);
+      state = { ...state, prefs: { ...state.prefs, ...patch }, configured: true };
+      return { queued: 0, total: 0, retrying: false };
+    },
+    async pauseThreadkeeperSync(paused) {
+      calls.push(['pause', paused]);
+      state = { ...state, backfill: state.backfill ? { ...state.backfill, paused } : state.backfill };
+      return structuredClone(state);
+    },
+    async replaceThreadkeeperChats() { calls.push(['replace']); return { moved: 1 }; },
+    async removeThreadkeeperTranscripts() { calls.push(['removeTranscripts']); return { removed: 2 }; },
     async syncThreadkeeperNow() { calls.push(['sync']); return { queued: 3 }; },
     async threadkeeperRequest(type, fields, options) {
       calls.push(['request', type, fields, options]);
@@ -101,7 +112,8 @@ async function mount(client, options) {
 const card = ctx => { resetIds(); return flat(renderThreadkeeper(ctx)); };
 
 const chat = (id, chatPatch = {}, patch = {}) => ({ id, type: 'chat', title: id, collectionId: 'c_auto', tags: [], content: '', favorite: false, createdAt: iso(), updatedAt: iso(),
-  chat: { v: 1, source: 'threadkeeper', threadKey: `k:${id}`, provider: 'chatgpt', project: 'Website', origin: 'sync', removed: '', autoCollectionId: 'c_auto', syncedTags: [], ...chatPatch }, ...patch });
+  chat: { v: 1, source: 'threadkeeper', threadKey: `k:${id}`, provider: 'chatgpt', project: 'Website', origin: 'sync', removed: '', autoCollectionId: 'c_auto', syncedTags: [],
+    syncedTitleHash: syncedHash(id), ...chatPatch }, ...patch });
 
 test.afterEach(() => { detachThreadkeeper(); useThreadkeeperClient(null); delete globalThis.chrome; });
 
@@ -372,10 +384,9 @@ test('after pairing nothing syncs until Start syncing; the step shows totals and
   out = card(ctx);
   assert.match(out, /40 threads in 1 project/);
   assert.match(out, /Only summaries are kept/);
-  assert.ok(!client.calls.some(call => call[0] === 'setPrefs'));
+  assert.ok(!client.calls.some(call => call[0] === 'setPrefs' || call[0] === 'start'));
   await dispatch('settings.threadkeeper-start', { ctx, el: {}, data: {} });
-  const [, patch, options] = client.calls.find(call => call[0] === 'setPrefs');
-  assert.deepEqual(options, { start: true });
+  const [, patch] = client.calls.find(call => call[0] === 'start');
   assert.equal(patch.scope, 'projects');
   assert.deepEqual(patch.projects, ['Research']);
   assert.equal(patch.transcripts, false);
@@ -481,15 +492,18 @@ test('a placement change asks whether to move the chats sync placed; transcripts
   const ctx = await mount(client, { items, confirm: async () => answers.shift() ?? true });
   await dispatch('settings.threadkeeper-pref', { ctx, el: {}, data: { name: 'placement', value: 'inbox' } });
   assert.match(ctx.confirms[0].title, /Move 1 chat to the new place\?/);
-  assert.deepEqual(client.calls.filter(call => call[0] === 'setPrefs').at(-1).slice(1), [{ placement: 'inbox' }, { replace: false }]);
+  assert.deepEqual(client.calls.filter(call => call[0] === 'setPrefs').at(-1).slice(1), [{ placement: 'inbox' }]);
+  assert.ok(!client.calls.some(call => call[0] === 'replace'), 'the person chose to leave them');
   await dispatch('settings.threadkeeper-parent', { ctx, el: { value: 'AI chats' }, data: {} });
   assert.equal(client.calls.filter(call => call[0] === 'setPrefs').length, 1, 'an unchanged name saves nothing');
   await dispatch('settings.threadkeeper-parent', { ctx, el: { value: 'Conversations' }, data: {} });
-  assert.deepEqual(client.calls.filter(call => call[0] === 'setPrefs').at(-1).slice(1), [{ parentName: 'Conversations' }, { replace: true }]);
+  assert.deepEqual(client.calls.filter(call => call[0] === 'setPrefs').at(-1).slice(1), [{ parentName: 'Conversations' }]);
+  assert.equal(client.calls.at(-1)[0], 'replace');
   threadkeeperSettingsState().stats = { chats: 2, transcripts: 2, bytes: 1000 };
   await dispatch('settings.threadkeeper-pref', { ctx, el: { checked: false }, data: { name: 'transcripts' } });
   assert.match(ctx.confirms.at(-1).title, /Remove 2 stored transcripts\?/);
-  assert.deepEqual(client.calls.filter(call => call[0] === 'setPrefs').at(-1).slice(1), [{ transcripts: false }, { removeTranscripts: true }]);
+  assert.deepEqual(client.calls.filter(call => call[0] === 'setPrefs').at(-1).slice(1), [{ transcripts: false }]);
+  assert.equal(client.calls.at(-1)[0], 'removeTranscripts');
 });
 
 test('Sync now, Pause and Add chats', async () => {
@@ -499,7 +513,7 @@ test('Sync now, Pause and Add chats', async () => {
   assert.ok(client.calls.some(call => call[0] === 'sync'));
   assert.match(card(ctx), /Threadkeeper is sending 3 threads/);
   await dispatch('settings.threadkeeper-pause', { ctx, el: {}, data: { paused: 'true' } });
-  assert.deepEqual(client.calls.filter(call => call[0] === 'setPrefs').at(-1).slice(1), [{}, { pause: true }]);
+  assert.deepEqual(client.calls.filter(call => call[0] === 'pause').at(-1), ['pause', true]);
   assert.match(card(ctx), /First sync paused/);
   await dispatch('settings.threadkeeper-add', { ctx, el: {}, data: {} });
   await settle();

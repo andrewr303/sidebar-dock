@@ -2,7 +2,7 @@ import {
   LIBRARY_SCHEMA_VERSION, LIBRARY_MIGRATIONS, assertLibraryVersion, migrateLibrary,
 } from './storage/migrations.js';
 import { MAX_PAGE_DEPTH, pageIndex, childrenOf, wouldCycle, pageDepth, pageHeight } from './pages.js';
-import { chatItemId } from './threadkeeper/protocol.js';
+import { chatItemId, syncedHash } from './threadkeeper/protocol.js';
 
 export const STORAGE_KEY = 'still.library.v1';
 export const ITEM_TYPES = ['bookmark', 'article', 'image', 'video', 'file', 'note', 'chat'];
@@ -168,12 +168,11 @@ const capList = (value, max, each) => {
   return out;
 };
 const chatHashPattern = /^[0-9a-f]{8}$/;
-/** 8 hex chars (FNV-1a 32 over UTF-8) of a title or excerpt as the item stores it: sync's "did the user change it" check. */
-export function chatTextHash(value) {
-  let hash = 0x811c9dc5;
-  for (const byte of new TextEncoder().encode(text(value))) { hash ^= byte; hash = Math.imul(hash, 0x01000193) >>> 0; }
-  return hash.toString(16).padStart(8, '0');
-}
+/**
+ * 8 hex chars of a title or excerpt (normalized to one trimmed line): sync's "did the user change it" check. The one
+ * implementation is syncedHash() in lib/threadkeeper/protocol.js, shared with the Threadkeeper worker and Settings.
+ */
+export const chatTextHash = syncedHash;
 const chatThreadKey = value => { const key = text(value).trim(); return key.length <= CHAT_LIMITS.threadKey ? key : ''; };
 
 /**
@@ -1043,6 +1042,31 @@ export function createLibraryStore({ read, write, withLock = task => task(), rea
         result = { results, collections: planner.report() };
         changed = changes.length > 0 || planner.created > 0; break;
       }
+      case 'setChatFlags': {
+        /*
+         * Still's own bookkeeping on chats, in one write: setChatFlags([{ id, restore?, chat: { removed?, hasTranscript?,
+         * transcriptTruncated? } }]). Only those flags change (the user's fields and everything sync wrote stay); restore: true
+         * brings a trashed chat back (with the subpages trashed with it). Returns { results: [{ id, status: 'updated' |
+         * 'unchanged' | 'missing' }] }.
+         */
+        if (!Array.isArray(input)) throw new Error('Send a list of chats.');
+        const FLAGS = ['removed', 'hasTranscript', 'transcriptTruncated'];
+        const byId = new Map(state.items.map(item => [item.id, item]));
+        const changes = [], results = [], seen = new Set();
+        for (const entry of input) {
+          const id = isObject(entry) ? text(entry.id) : '';
+          const item = byId.get(id);
+          if (!item || item.type !== 'chat' || seen.has(id)) { results.push({ id, status: 'missing' }); continue; }
+          seen.add(id);
+          const flags = isObject(entry.chat) ? Object.fromEntries(FLAGS.filter(key => Object.hasOwn(entry.chat, key)).map(key => [key, entry.chat[key]])) : {};
+          const next = normalizeItem({ chat: { ...item.chat, ...flags }, ...(entry.restore === true && item.deletedAt ? { deletedAt: null } : {}) }, item, { syncChat: true });
+          if (JSON.stringify(next.chat) === JSON.stringify(item.chat) && !!next.deletedAt === !!item.deletedAt) { results.push({ id, status: 'unchanged' }); continue; }
+          changes.push([item, next]); results.push({ id, status: 'updated' });
+        }
+        if (changes.length) commitItems(changes);
+        result = { results };
+        changed = changes.length > 0; break;
+      }
       case 'deleteChats': {
         // Deletes chats forever without a tombstone (an assistant import being undone): deleteChats(ids) → { ids }.
         // Their subpages move to the top level. Other item types are ignored.
@@ -1139,6 +1163,8 @@ export const upsertChats = (entries, options = {}) => operation('upsertChats', [
 export const markChatsRemoved = (entries, options = {}) => operation('markChatsRemoved', [entries, options]);
 /** Moves chats still where sync put them: ([{ id, collectionId | collectionKey }], { ensureCollections }) → { results, collections }. */
 export const placeChats = (entries, options = {}) => operation('placeChats', [entries, options]);
+/** Still's own chat flags (removed, hasTranscript, transcriptTruncated; restore from Trash): ([{ id, restore?, chat }]) → { results }. */
+export const setChatFlags = entries => operation('setChatFlags', [entries]);
 /** Deletes chats forever without a tombstone or dismissal (undoing an import): (ids) → { ids }. */
 export const deleteChats = ids => operation('deleteChats', [ids]);
 export const exportLibrary = async () => {
