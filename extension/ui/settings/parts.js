@@ -167,6 +167,7 @@ const MARKS = {
   'chatgpt-oauth': { icon: 'message-circle', color: 'green' }, raindrop: { icon: 'cloud', color: 'blue' }, cursor: { text: 'Cu', color: 'gray' },
   vscode: { icon: 'code-xml', color: 'blue' }, chrome: { icon: 'globe', color: 'blue' }, opencode: { text: 'OC', color: 'gray' }, gemini: { text: 'G', color: 'blue' }, 'claude-desktop': { text: 'A', color: 'orange' },
   github: { icon: 'github', color: 'gray' }, linear: { text: 'L', color: 'indigo' }, producthunt: { text: 'P', color: 'orange' },
+  threadkeeper: { icon: 'messages-square', color: 'violet' },
 };
 
 /** Provider tile; pass { icon } or { text } with a palette color for providers that are not in the table. */

@@ -73,6 +73,7 @@ export const COMMANDS = [
   { id: 'assistant-permissions', label: 'Assistant permissions', icon: 'shield-check', keywords: 'settings ai trust level ask cautious standard trusted approval', action: 'shell.settings', data: { section: 'assistant' } },
   { id: 'research-settings', label: 'Research agent settings', icon: 'telescope', keywords: 'settings ai claude managed agents depth subpages budget spending cap github', action: 'shell.settings', data: { section: 'research' } },
   { id: 'semantic', label: 'Semantic search settings', icon: 'brain', keywords: 'embeddings index voyage', action: 'shell.settings', data: { section: 'search' } },
+  { id: 'threadkeeper', label: 'AI chat threads (Threadkeeper)', icon: 'messages-square', keywords: 'threadkeeper threads chats transcripts sync connect chatgpt claude gemini coding agents', action: 'shell.settings', data: { section: 'integrations', anchor: 'settings-threadkeeper' } },
   { id: 'agents', label: 'Connect Claude Code or Codex', icon: 'terminal', keywords: 'mcp agents bridge desktop', action: 'shell.settings', data: { section: 'agents' } },
   { id: 'backup', label: 'Back up or bring in bookmarks', icon: 'folder-input', keywords: 'import export backup raindrop chrome html csv', action: 'shell.settings', data: { section: 'library' } },
   { id: 'shortcuts', label: 'Keyboard shortcuts', icon: 'keyboard', keywords: 'keys hotkeys', shortcut: '?', action: 'shell.settings', data: { section: 'shortcuts' } },

@@ -63,6 +63,33 @@ The server listens only on `127.0.0.1`. It validates Host, Origin and a bearer t
 
 Advanced clients can use authenticated Streamable HTTP at `http://127.0.0.1:43123/mcp`; POST returns a JSON MCP response. GET returns 405 because no SSE stream is maintained. The stdio entry above works with both clients without putting the token into their settings. The bridge supports MCP initialization, ping and tools; it does not implement resources, prompts, elicitation or subscriptions.
 
+## AI chat threads from Threadkeeper
+
+Settings → Integrations → **AI chat threads** connects Still to the Threadkeeper extension, which keeps your
+conversations from ChatGPT, Claude, Gemini, coding agents and other AI apps. The protocol is in
+[threadkeeper-integration.md](threadkeeper-integration.md).
+
+1. **Find Threadkeeper** asks Chrome, from the click, for the optional `management` permission, lists the enabled
+   extensions named like Threadkeeper (name, version, ID, install type) and drops the permission again. Still never
+   connects on its own: pick one and press **Connect**, or paste the ID from Threadkeeper → Settings → Sidebar Dock.
+2. While Threadkeeper asks for consent, the card shows a six-digit code. Type it in Threadkeeper's window and choose
+   Allow. **Send again** re-sends the request; **Cancel** forgets it. Requests expire after 10 minutes.
+3. **Choose what to sync**: every thread, threads from chosen projects, or only threads you add; optionally only
+   some apps; where chats go (mirror Threadkeeper's projects inside “AI chats”, one collection, or the Inbox); and
+   whether to keep full transcripts. A preview gives the thread count and the collections it would create or reuse.
+   Nothing syncs until **Start syncing**.
+4. Once syncing, the card shows the chats in Still, the first-sync progress (with Pause), the last update and any
+   error, and keeps every preference one click away. Narrowing what syncs, moving chats to a new place and turning
+   transcripts off each ask first and say how many chats are affected; chats you added notes to, tagged or moved
+   are never trashed. **Disconnect** keeps your chats unless you tick “Also move the synced chats to Trash”.
+5. **Add chats…** (also in Quick add's menu) opens a picker that searches Threadkeeper,
+   filters by kind of app, app, project and kind, marks threads already in Still or in Trash, and copies the
+   selected ones into a collection of your choice or wherever synced chats go.
+
+The assistant switches on the same card decide whether the assistant may search your AI threads, when it adds
+thread context to a question (Smart, Always, Off) and whether a fast model makes that decision. The pairing and
+these choices are stored only on this device (`still.threadkeeper.v1`) and never go into backups.
+
 ## Raindrop.io library import and selected-item export
 
 Create an application in [Raindrop's App Management Console](https://app.raindrop.io/settings/integrations) and copy its Test token for your own account. In Still → Integrations, paste the token and connect. Chrome asks for optional access to `https://api.raindrop.io/`. The token is stored separately in `chrome.storage.local` on this device, never in the portable library backup or bridge snapshot.
