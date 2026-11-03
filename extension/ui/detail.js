@@ -15,6 +15,7 @@ import { createNote } from './notes.js';
 import { askAi } from './ai-panel.js';
 import { renderMarkdown } from '../lib/markdown.js';
 import { canonicalUrl } from '../lib/store.js';
+import { paperclipMenuItem } from './widgets/paperclip/create.js';
 
 const TABS = [
   { value: 'details', label: 'Details' },
@@ -793,6 +794,7 @@ registerActions({
       item.type !== 'note' && { label: item.cover ? 'Change cover…' : 'Add cover…', icon: 'image', run: () => ctx.run(() => ctx.dispatch('detail.cover', { data: { id: item.id } })) },
       { label: 'Ask AI about this', icon: 'sparkles', run: () => askAi(ctx, { scope: 'item', ids }) },
       researchMenuItem(item, ctx),
+      paperclipMenuItem(ctx, item),
       { label: 'New subpage', icon: 'file-plus', run: () => ctx.run(() => addSubpage(ctx, item.id)) },
       { separator: true },
       { label: item.archived ? 'Unarchive' : 'Archive', icon: item.archived ? 'archive-restore' : 'archive', run: () => ctx.run(() => setArchived(ctx, ids, !item.archived)) },

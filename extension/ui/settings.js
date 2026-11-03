@@ -24,6 +24,7 @@ import { renderNewTab, attachNewTab, detachNewTab } from './settings/newtab.js';
 import { renderAccounts, attachAccounts, detachAccounts } from './settings/accounts.js';
 import { renderAssistantPermissions, renderResearch, researchPatch } from './settings/assistant.js';
 import { PERMISSION_CATEGORIES, PERMISSION_LEVELS, PERMISSION_PRESETS } from '../lib/ai/permissions.js';
+import { MCP_TOOLS, MCP_SCOPES } from '../lib/mcp-tools.js';
 
 export { SETTINGS_SECTIONS, normalizeSection, ACCENTS };
 
@@ -37,7 +38,9 @@ const HANDOFF_CHOICES = ['claude', 'chatgpt', 'grok'];
 
 export const MCP_CLIENTS = Object.freeze([
   { id: 'claude', name: 'Claude Code', mark: 'agent:claude-code', blurb: 'Anthropic’s coding agent for the terminal and IDEs.', docs: 'https://code.claude.com/docs/en/mcp',
-    manual: setup => [{ label: 'Run once in a terminal', code: setup.claudeCommand }] },
+    manual: setup => [{ label: 'Run once in a terminal', code: setup.claudeCommand },
+      { label: 'Or connect over HTTP while the bridge runs. Claude Code then keeps the token in ~/.claude.json', code: setup.claudeHttpCommand },
+      { label: 'Or keep the token out of ~/.claude.json: this entry asks bridge/auth-header.mjs for it at connect time', code: setup.claudeHeadersHelper }] },
   { id: 'codex', name: 'Codex', mark: 'agent:codex', blurb: 'OpenAI’s coding agent for the terminal and IDEs.', docs: 'https://developers.openai.com/codex/mcp/',
     manual: setup => [{ label: 'Run once in a terminal', code: setup.codexCommand }, { label: 'Or add this to ~/.codex/config.toml', code: setup.codex }] },
   { id: 'claude-desktop', name: 'Claude Desktop', mark: 'claude-desktop', blurb: 'The Claude app for macOS and Windows.', docs: 'https://modelcontextprotocol.io/docs/develop/connect-local-servers',
@@ -47,43 +50,28 @@ export const MCP_CLIENTS = Object.freeze([
     manual: setup => [{ label: 'Add this to ~/.cursor/mcp.json', code: setup.cursor }] },
   { id: 'vscode', name: 'VS Code', mark: 'vscode', blurb: 'Agent mode in Visual Studio Code.', bridge: false, docs: 'https://code.visualstudio.com/docs/copilot/customization/mcp-servers',
     manual: setup => [{ label: 'Run “MCP: Open User Configuration” from the Command Palette and add', code: setup.vscode }] },
+  { id: 'copilot', name: 'GitHub Copilot CLI', mark: 'copilot', blurb: 'GitHub’s coding agent for the terminal.', docs: 'https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers',
+    manual: setup => [{ label: 'Add this to ~/.copilot/mcp-config.json', code: setup.copilot }] },
+  { id: 'kiro', name: 'Kiro', mark: 'kiro', blurb: 'The spec-driven agentic IDE.', docs: 'https://kiro.dev/docs/mcp/configuration/',
+    manual: setup => [{ label: 'Add this to ~/.kiro/settings/mcp.json', code: setup.kiro }] },
+  { id: 'factory', name: 'Factory Droid', mark: 'factory', blurb: 'Factory’s Droid coding agent.', docs: 'https://docs.factory.com/cli/configuration/mcp',
+    manual: setup => [{ label: 'Add this to ~/.factory/mcp.json', code: setup.factory }] },
+  { id: 'windsurf', name: 'Windsurf', mark: 'windsurf', blurb: 'The Windsurf editor and its Cascade agent.', docs: 'https://docs.windsurf.com/windsurf/cascade/mcp',
+    manual: setup => [{ label: 'Add this to ~/.codeium/windsurf/mcp_config.json', code: setup.windsurf }] },
+  { id: 'zed', name: 'Zed', mark: 'zed', blurb: 'The Zed editor’s agent panel.', bridge: false, docs: 'https://zed.dev/docs/ai/mcp',
+    manual: setup => [{ label: 'Add this under context_servers in Zed’s settings.json, or use Settings → AI → MCP Servers', code: setup.zed }] },
+  { id: 'goose', name: 'Goose', mark: 'goose', blurb: 'Block’s open-source agent.', bridge: false, docs: 'https://block.github.io/goose/docs/getting-started/using-extensions',
+    manual: setup => [{ label: 'Merge this into the extensions block of Goose’s config.yaml, or run goose configure', code: setup.goose }] },
 ]);
 
-// The bridge's MCP tools (bridge/protocol.mjs TOOLS; tests keep the two lists in step).
-export const MCP_TOOLS = Object.freeze([
-  { name: 'bridge_status', write: false, text: 'Check that Still is open and in sync' },
-  { name: 'library_capabilities', write: false, text: 'Describe what agents can read and change' },
-  { name: 'search_library', write: false, text: 'Search by keyword' },
-  { name: 'semantic_search', write: false, text: 'Search by meaning (needs Semantic search)' },
-  { name: 'list_items', write: false, text: 'List items, including archived and trashed ones' },
-  { name: 'get_item', write: false, text: 'Read an item with its notes and highlights' },
-  { name: 'get_related_items', write: false, text: 'Read links and backlinks' },
-  { name: 'list_collections', write: false, text: 'List collections' },
-  { name: 'get_collection', write: false, text: 'Read one collection' },
-  { name: 'list_tags', write: false, text: 'List tags with counts' },
-  { name: 'export_item', write: false, text: 'Export one item as JSON or Markdown' },
-  { name: 'export_library', write: false, text: 'Export the library page by page' },
-  { name: 'read_file', write: false, text: 'Read an attached file in chunks' },
-  { name: 'get_operation', write: false, text: 'Check whether a change was saved' },
-  { name: 'create_item', write: true, text: 'Save a page into a collection or write a note' },
-  { name: 'update_item', write: true, text: 'Edit titles, notes, tags and other details' },
-  { name: 'update_article_content', write: true, text: 'Replace saved article text' },
-  { name: 'create_collection', write: true, text: 'Create a collection' },
-  { name: 'update_collection', write: true, text: 'Rename, recolor or move a collection' },
-  { name: 'delete_collection', write: true, text: 'Delete a collection (its items move to Inbox)' },
-  { name: 'trash_item', write: true, text: 'Move an item to Trash' },
-  { name: 'restore_item', write: true, text: 'Restore an item from Trash' },
-  { name: 'permanently_delete_item', write: true, text: 'Delete a trashed item forever, after confirming' },
-  { name: 'add_highlight', write: true, text: 'Add a highlight' },
-  { name: 'update_highlight', write: true, text: 'Edit a highlight or its note' },
-  { name: 'remove_highlight', write: true, text: 'Remove a highlight' },
-  { name: 'link_items', write: true, text: 'Link one item to another' },
-  { name: 'unlink_items', write: true, text: 'Remove a link between items' },
-  { name: 'set_item_tags', write: true, text: 'Set an item’s tags' },
-  { name: 'bulk_update_items', write: true, text: 'Move, tag or favorite up to 100 items at once' },
-  { name: 'rename_tag', write: true, text: 'Rename a tag everywhere' },
-  { name: 'remove_tag', write: true, text: 'Remove a tag everywhere' },
-]);
+// Copy for clients the bridge reports that the list above does not describe (its own blurb is only the config path).
+export const MCP_CLIENT_BLURBS = Object.freeze({
+  opencode: 'The open-source coding agent for the terminal.', gemini: 'Google’s Gemini CLI agent.', devin: 'Devin’s local agent.',
+  qwen: 'Qwen Code, the terminal agent.', amp: 'Sourcegraph’s Amp coding agent.', crush: 'Charm’s terminal coding agent.', 'lm-studio': 'Local models with tools in LM Studio.',
+});
+
+// The bridge's MCP tools live in lib/mcp-tools.js (tests/mcp-tools-sync.test.mjs keeps them in step with bridge/protocol.mjs).
+export { MCP_TOOLS };
 
 // Chrome's own keys (manifest "commands"); chrome.commands.getAll() replaces these with the person's current keys.
 export const CHROME_COMMANDS = Object.freeze([
@@ -294,6 +282,9 @@ const data = {
   integration: null, storage: null, commands: null,
   connections: null, aiSettings: null, bridge: null, aiError: '', index: null,
   clients: null, clientsError: '',
+  // Paperclip → Still: the scope picked here and the bridge's setup result (holds the client token; memory only, never stored).
+  // scopeChosen: the scope is sent only after the user picks one, so Connect never changes an existing token's access.
+  paperclip: { scope: 'write', scopeChosen: false, result: null, error: '' },
   importJob: null, raindrop: null, login: null,
   // snapshots: { list, error } once loaded; backupJob: { warnings } after a backup that left something out.
   snapshots: null, backupJob: null,
@@ -1003,7 +994,7 @@ function pairForm(info, where) {
     <div class="settings-pair-fields">
       ${field({ label: 'Address', id: id('url'), control: input({ id: id('url'), name: 'url', type: 'url', value: drafts.bridgeUrl ?? info.bridgeUrl ?? integrations.DEFAULT_BRIDGE_URL,
         action: 'settings.bridge-field', attrs: { 'data-field': 'bridgeUrl' } }) })}
-      ${field({ label: 'Pairing token', id: id('token'), hint: 'Also saved in bridge/.local/config.json.', control: input({ id: id('token'), name: 'token', type: 'password',
+      ${field({ label: 'Pairing token', id: id('token'), hint: 'Also saved in ~/.still/bridge.json (npm run connect -- status shows the path).', control: input({ id: id('token'), name: 'token', type: 'password',
         value: drafts.bridgeToken, placeholder: 'Paste the token', action: 'settings.bridge-field', describedBy: `${id('token')}-hint`, attrs: { 'data-field': 'bridgeToken' } }) })}
       <div class="settings-pair-submit">${button({ label: 'Pair bridge', icon: 'plug', type: 'submit', variant: 'primary', size: 'sm', loading: isBusy('pair') })}</div>
     </div>
@@ -1130,7 +1121,7 @@ function indexRow(ctx, status, summary) {
 function mcpSetup(ctx) {
   const runtime = data.bridge?.runtime;
   const root = runtime?.projectRoot || ctx.prefs.get('settings.mcpRoot', '');
-  return { setup: integrations.getMcpSetup(root, { nodePath: runtime?.nodePath || '' }), runtime, root };
+  return { setup: integrations.getMcpSetup(root, { nodePath: runtime?.nodePath || '', bridgeUrl: data.integration?.bridgeUrl || '' }), runtime, root };
 }
 
 function renderAgents(ctx) {
@@ -1139,10 +1130,12 @@ function renderAgents(ctx) {
   const paired = !!info?.bridgeConfigured;
   const clients = data.clients;
   const byId = new Map((clients || []).map(client => [client.clientId || client.id, client]));
-  const extra = (clients || []).filter(client => !MCP_CLIENTS.some(entry => entry.id === (client.clientId || client.id)));
-  const listed = [...MCP_CLIENTS, ...extra.map(client => ({ id: client.clientId || client.id, name: client.name, mark: client.clientId || client.id, blurb: client.configPath || '', docs: client.docs,
+  // Paperclip has its own group below (it connects over HTTP with its own token).
+  const extra = (clients || []).filter(client => (client.clientId || client.id) !== 'paperclip' && !MCP_CLIENTS.some(entry => entry.id === (client.clientId || client.id)));
+  const listed = [...MCP_CLIENTS, ...extra.map(client => ({ id: client.clientId || client.id, name: client.name, mark: client.clientId || client.id,
+    blurb: MCP_CLIENT_BLURBS[client.clientId || client.id] || client.configPath || '', docs: client.docs,
     manual: () => client.configSnippet ? [{ label: `Add this to ${client.configPath}`, code: client.configSnippet }] : [] }))];
-  const configured = (clients || []).filter(client => clientStatus(client)?.tone === 'success').length;
+  const configured = (clients || []).filter(client => (client.clientId || client.id) !== 'paperclip' && clientStatus(client)?.tone === 'success').length;
   const searching = isSearching();
   const tools = searching ? MCP_TOOLS.filter(tool => matches(tool.name, tool.text, tool.write ? 'change write' : 'read')) : MCP_TOOLS;
   return html`
@@ -1152,11 +1145,14 @@ function renderAgents(ctx) {
       description: 'Pairing the bridge fills this in. Until then, type the folder that contains bridge/ so the commands below are ready to paste.',
       control: input({ id: 'settings-mcp-root', value: root, placeholder: '/path/to/sidebar-dock', action: 'settings.mcp-root', label: 'Still folder' }) })]) })}
     ${group({ title: 'Connect an agent', keywords: 'mcp client', description: paired ? 'Connect adds Still to the agent’s own configuration, with a backup of the file it changes.' : 'Pair the bridge for one-click Connect. Until then, use the setup steps for each agent.',
-      actions: clients ? html`<span class="settings-pill">${configured} of ${plural(clients.length, 'agent')} connected</span>` : '',
+      actions: clients ? html`<span class="settings-pill">${configured} of ${plural(clients.filter(c => (c.clientId || c.id) !== 'paperclip').length, 'agent')} connected</span>` : '',
       body: () => card(listed.map(entry => searchable([entry.name, entry.blurb, 'mcp agent client'], clientRow(ctx, entry, byId.get(entry.id), setup, paired)))) })}
     ${group({ title: 'Set up from a terminal', keywords: 'command line npm', body: () => card([blockRow({ label: 'One command per agent', keywords: 'npm run connect',
       description: 'From the Still folder, this connects an agent and prints the bridge address and pairing token. Use codex, desktop or cursor in place of claude.',
       body: html`${codeBlock('npm run connect -- claude', { label: 'Copy command' })}<span class="settings-row-desc">Then start the bridge and leave it running:</span>${codeBlock('npm run bridge', { label: 'Copy command' })}` })]) })}
+    ${group({ title: 'Paperclip', keywords: 'paperclip ai company agents http token scope access read-only everyday full rotate revoke',
+      description: 'Let the agents in your Paperclip company search, read and save to Still over the bridge’s HTTP endpoint, with their own token and access level.',
+      body: () => paperclipBlock(ctx, setup, paired) })}
     ${group({ title: 'Tools agents can use', keywords: 'mcp tools', description: `${MCP_TOOLS.length} tools. Changes go through Still, so they appear here right away and respect Trash and Undo where they apply.`,
       body: () => {
         if (searching) return tools.length ? toolList(tools) : '';
@@ -1166,11 +1162,66 @@ function renderAgents(ctx) {
 }
 
 const toolList = tools => html`<div class="mcp-tools" id="settings-more-tools">
-  ${[['Read', false], ['Change', true]].map(([label, write]) => {
-    const list = tools.filter(tool => tool.write === write);
+  ${[['Read', 'read'], ['Change', 'write'], ['Change in bulk or for good (Full access only)', 'destructive']].map(([label, access]) => {
+    const list = tools.filter(tool => tool.access === access);
     return list.length ? html`<div class="mcp-tools-group"><h4 class="mcp-tools-title">${label}</h4><ul class="mcp-tools-list" role="list">
       ${list.map(tool => html`<li><code>${tool.name}</code><span>${tool.text}</span></li>`)}</ul></div>` : '';
   })}</div>`;
+
+const paperclipError = error => /HTTP 404|not found/i.test(error?.message || '') ? 'This bridge does not offer Paperclip setup yet. Update Still, restart the bridge and try again.'
+  : error?.message || 'The bridge could not set up Paperclip. Try again.';
+
+async function paperclipSetup(ctx, { rotate = false } = {}) {
+  try {
+    const body = data.paperclip.scopeChosen ? { scope: data.paperclip.scope, rotate } : { rotate };
+    const result = await integrations.requestBridge('/connections/paperclip/setup', { method: 'POST', body });
+    if (!result || typeof result.pasteConfig !== 'string') throw new Error('The bridge answered without a Paperclip config. Update Still and restart the bridge.');
+    data.paperclip.result = result;
+    data.paperclip.error = '';
+    if (MCP_SCOPES.some(entry => entry.value === result.scope)) { data.paperclip.scope = result.scope; data.paperclip.scopeChosen = false; }
+    const changed = result.scopeChanged ? ` Access changed from ${MCP_SCOPES.find(entry => entry.value === result.previousScope)?.label || result.previousScope} to ${MCP_SCOPES.find(entry => entry.value === result.scope)?.label || result.scope}.` : '';
+    ctx.toast(rotate ? `New Paperclip token ready. Paste the new config into Paperclip.${changed}` : `Paperclip config ready to paste.${changed}`, { tone: 'success' });
+  } catch (error) { data.paperclip.error = paperclipError(error); }
+}
+
+/** Settings → Agents & MCP → Paperclip: a scoped token for Paperclip agents, and the config and instructions to paste. */
+function paperclipBlock(ctx, setup, paired) {
+  const state = data.paperclip;
+  const result = state.result;
+  const scope = MCP_SCOPES.find(entry => entry.value === (result?.scope || state.scope)) || MCP_SCOPES[1];
+  const searching = isSearching();
+  const head = row({ lead: providerMark('paperclip', 32), keywords: 'paperclip connect token scope',
+    label: html`Paperclip agents ${result ? badge({ label: `${scope.label} token ready`, tone: 'success' }) : ''}`,
+    description: paired ? html`${scope.description} Paperclip gets its own token, so you can rotate or revoke it without touching other agents.`
+      : 'Pair the local bridge first, or run the command below in the Still folder.',
+    control: paired ? html`<div class="paperclip-setup-scope">${select({ id: 'settings-paperclip-scope', name: 'scope', value: state.scope, action: 'settings.paperclip-scope', size: 'sm', label: 'Access for Paperclip agents',
+        options: MCP_SCOPES.map(entry => ({ value: entry.value, label: entry.label })) })}
+      ${button({ label: result ? 'Update access' : 'Connect Paperclip', icon: 'paperclip', size: 'sm', variant: result ? 'secondary' : 'primary', action: 'settings.paperclip-setup', loading: isBusy('paperclip') })}</div>` : '' });
+  const rows = [head];
+  if (state.error && !searching) rows.push(html`<div class="settings-row is-stacked">${callout({ tone: 'danger', live: true, title: 'Paperclip is not set up', body: state.error })}</div>`);
+  if (paired && result) {
+    rows.push(blockRow({ label: 'Paste config', keywords: 'json mcpServers http',
+      description: 'In Paperclip, add an MCP server and choose Advanced → Paste a config. It contains the token, so treat it like a password.',
+      body: codeBlock(result.pasteConfig || '', { label: 'Copy config', done: 'Config copied' }) }));
+    if (result.authorizationHeader) rows.push(blockRow({ label: 'Authorization value', keywords: 'bearer header secret',
+      description: 'Paperclip drops the pasted header value and asks for it again. Paste exactly this, including “Bearer ”, into its Authorization field.',
+      body: codeBlock(result.authorizationHeader, { label: 'Copy value', done: 'Value copied' }) }));
+    if (result.agentInstructions) rows.push(blockRow({ label: 'Agent instructions', keywords: 'prompt', description: 'Paste into the connection’s agent instructions so agents know how to use Still.',
+      body: codeBlock(result.agentInstructions, { label: 'Copy instructions', done: 'Instructions copied' }) }));
+    if (result.steps?.length) rows.push(blockRow({ label: 'Steps', body: html`<ol class="paperclip-setup-steps">${result.steps.map(step => html`<li>${step}</li>`)}</ol>` }));
+    if (result.notes?.length && !searching) rows.push(html`<div class="settings-row is-stacked">${result.notes.map(text => note('info', text))}</div>`);
+    rows.push(row({ label: 'Token', keywords: 'rotate revoke', description: `Named “${result.tokenName || 'paperclip'}” in the bridge config. Rotate it if it leaked; revoke it to stop Paperclip reaching Still.`,
+      control: html`${button({ label: 'Rotate token', icon: 'rotate-cw', size: 'sm', variant: 'secondary', action: 'settings.paperclip-rotate', loading: isBusy('paperclip-rotate') })}
+        ${button({ label: 'Revoke', size: 'sm', variant: 'ghost', action: 'settings.paperclip-revoke', loading: isBusy('paperclip-revoke') })}` }));
+  } else if (paired) {
+    rows.push(row({ label: 'Already connected Paperclip?', keywords: 'revoke', description: 'Revoke removes Paperclip’s token from the bridge. Connecting again shows the config with the same token and keeps its access unless you pick a different one first.',
+      control: button({ label: 'Revoke', size: 'sm', variant: 'ghost', action: 'settings.paperclip-revoke', loading: isBusy('paperclip-revoke') }) }));
+  } else {
+    rows.push(blockRow({ label: 'From a terminal', keywords: 'npm run connect', description: 'In the Still folder, this creates Paperclip’s token and prints the config, agent instructions and steps.',
+      body: html`${codeBlock(setup.paperclipCommand || 'npm run connect -- paperclip', { label: 'Copy command' })}<span class="settings-row-desc">The config looks like this, with the printed token in place of the placeholder:</span>${codeBlock(setup.paperclip || '')}` }));
+  }
+  return html`${card(rows)}${searching ? '' : note('info', html`This lets Paperclip read Still. To see Paperclip tasks on your dashboard and send saved items to Paperclip, connect it in ${button({ label: 'Connected accounts', size: 'sm', variant: 'ghost', action: 'settings.section', data: { section: 'accounts' } })}.`)}`;
+}
 
 function clientRow(ctx, entry, client, setup, paired) {
   const status = client ? clientStatus(client) : null;
@@ -1950,6 +2001,26 @@ registerActions({
         await integrations.requestBridge(`/connections/${encodeURIComponent(payload.id)}/disconnect`, { method: 'POST', body: { previewHash: client?.previewHash ?? client?.configHash ?? null } });
         ctx.toast(`Still removed from ${payload.name}`);
       } finally { await loadClients(ctx); }
+    });
+  },
+  'settings.paperclip-scope': ({ ctx, el }) => { data.paperclip.scope = MCP_SCOPES.some(entry => entry.value === el.value) ? el.value : 'write'; data.paperclip.scopeChosen = true; ctx.render(); },
+  'settings.paperclip-setup': ({ ctx }) => withBusy(ctx, 'paperclip', () => paperclipSetup(ctx)),
+  'settings.paperclip-rotate': async ({ ctx }) => {
+    const ok = await ctx.confirm({ title: 'Rotate the Paperclip token?', confirmLabel: 'Rotate token',
+      body: 'The current token stops working at once. Paperclip agents cannot reach Still until you paste the new config into Paperclip.' });
+    if (ok) await withBusy(ctx, 'paperclip-rotate', () => paperclipSetup(ctx, { rotate: true }));
+  },
+  'settings.paperclip-revoke': async ({ ctx }) => {
+    const ok = await ctx.confirm({ title: 'Revoke Paperclip’s access?', confirmLabel: 'Revoke', tone: 'danger',
+      body: 'Still removes Paperclip’s token from the bridge. Paperclip agents can no longer reach your library. Your library and other agents are not affected.' });
+    if (!ok) return;
+    await withBusy(ctx, 'paperclip-revoke', async () => {
+      try {
+        const receipt = await integrations.requestBridge('/connections/paperclip/revoke', { method: 'POST', body: {} });
+        data.paperclip.result = null;
+        data.paperclip.error = '';
+        ctx.toast(receipt?.removed === false ? 'Paperclip had no token to revoke.' : 'Paperclip’s token is revoked.');
+      } catch (error) { data.paperclip.error = paperclipError(error); }
     });
   },
   'settings.client-skill': ({ ctx, data: payload }) => withBusy(ctx, `skill:${payload.id}`, async () => {

@@ -133,7 +133,7 @@ export function createIntegrationClient({ storage = defaultStorage, fetch: fetch
     return { ok: true, id: data.item?._id, item: data.item };
   }
   async function configureBridge({ url = DEFAULT_BRIDGE_URL, token, enabled = true }) {
-    if (typeof token !== 'string' || token.trim().length < 24 || /[\r\n]/.test(token)) throw new Error('Paste the bridge token from bridge/.local/config.json.');
+    if (typeof token !== 'string' || token.trim().length < 24 || /[\r\n]/.test(token)) throw new Error('Paste the bridge token from ~/.still/bridge.json (npm run connect -- status shows the path).');
     return update({ bridgeUrl: bridgeUrl(url), bridgeToken: token.trim(), bridgeEnabled: !!enabled, lastBridgeSyncAt: null });
   }
   async function applyCommand(command) {
@@ -260,7 +260,11 @@ export async function requestBridge(path, { method = 'GET', body, signal, onEven
 }
 // Pass GET /ai/providers runtime.projectRoot and runtime.nodePath so these snippets match the entries the bridge
 // writes itself (absolute node, OS path separators); otherwise a placeholder root and `node` from PATH are shown.
-export function getMcpSetup(root = '', { nodePath = '' } = {}) {
+// HTTP snippets use `bridgeUrl` and never contain a token: they show a placeholder the person replaces, or a headers helper
+// (bridge/auth-header.mjs) that reads the token from the bridge config when the client connects.
+export const TOKEN_PLACEHOLDER = '<pairing token>';
+export const PAPERCLIP_TOKEN_PLACEHOLDER = '<run npm run connect -- paperclip>';
+export function getMcpSetup(root = '', { nodePath = '', bridgeUrl: bridge = '' } = {}) {
   const known = typeof root === 'string' && !!root.trim();
   const base = known ? root.trim().replace(/[\\/]+$/, '') : '/path/to/sidebar-dock';
   const sep = /\\/.test(base) && !base.includes('/') ? '\\' : '/';
@@ -268,6 +272,7 @@ export function getMcpSetup(root = '', { nodePath = '' } = {}) {
   const entry = file('bridge', 'mcp.mjs');
   const node = typeof nodePath === 'string' && nodePath.trim() ? nodePath.trim() : 'node';
   const nodeArg = node === 'node' ? 'node' : `"${node}"`;
+  const mcpUrl = `${(typeof bridge === 'string' && /^https?:\/\/[^\s]+$/.test(bridge.trim()) ? bridge.trim() : DEFAULT_BRIDGE_URL).replace(/\/+$/, '')}/mcp`;
   return {
     rootKnown: known,
     entry, node,
@@ -281,6 +286,19 @@ export function getMcpSetup(root = '', { nodePath = '' } = {}) {
     // VS Code's mcp.json uses a top-level `servers` key rather than `mcpServers`.
     vscode: JSON.stringify({ servers: { still: { type: 'stdio', command: node, args: [entry] } } }, null, 2),
     codex: `[mcp_servers.still]\ncommand = ${JSON.stringify(node)}\nargs = [${JSON.stringify(entry)}]\n`,
+    // Agents that only speak HTTP, or that run elsewhere (Paperclip): the bridge's /mcp endpoint with a bearer token.
+    httpUrl: mcpUrl,
+    claudeHttpCommand: `claude mcp add --transport http --scope user still ${mcpUrl} --header "Authorization: Bearer ${TOKEN_PLACEHOLDER}"`,
+    claudeHttpNote: 'Claude Code then keeps the token in ~/.claude.json. The headers helper below reads it from the bridge config each time instead.',
+    claudeHeadersHelper: JSON.stringify({ mcpServers: { still: { type: 'http', url: mcpUrl, headersHelper: `${nodeArg} "${file('bridge', 'auth-header.mjs')}"` } } }, null, 2),
+    copilot: JSON.stringify({ mcpServers: { still: { type: 'local', command: node, args: [entry], tools: ['*'] } } }, null, 2),
+    kiro: JSON.stringify({ mcpServers: { still: { command: node, args: [entry] } } }, null, 2),
+    factory: JSON.stringify({ mcpServers: { still: { type: 'stdio', command: node, args: [entry] } } }, null, 2),
+    windsurf: JSON.stringify({ mcpServers: { still: { command: node, args: [entry] } } }, null, 2),
+    zed: JSON.stringify({ context_servers: { still: { command: node, args: [entry], env: {} } } }, null, 2),
+    goose: `extensions:\n  still:\n    name: still\n    type: stdio\n    cmd: ${JSON.stringify(node)}\n    args:\n      - ${JSON.stringify(entry)}\n    enabled: true\n    envs: {}\n    timeout: 300\n`,
+    paperclip: JSON.stringify({ mcpServers: { still: { type: 'http', url: mcpUrl, headers: { Authorization: `Bearer ${PAPERCLIP_TOKEN_PLACEHOLDER}` } } } }, null, 2),
+    paperclipCommand: 'npm run connect -- paperclip',
     connectCommand: 'npm run connect -- claude',
     raindropMcp: RAINDROP_MCP_URL,
   };

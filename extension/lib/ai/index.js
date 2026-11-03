@@ -11,6 +11,7 @@ import { createVectorStore } from './vector-store.js';
 import { createIndexer } from './indexer.js';
 import { createSearch } from './search.js';
 import { createAssistant } from './assistant.js';
+import { createPaperclipToolProvider } from './paperclip-tools.js';
 import { undoChanges } from './tools.js';
 import { createTransforms } from './transforms.js';
 import { createConversationStore } from './conversations.js';
@@ -25,7 +26,9 @@ export { listConnections, saveConnection, deleteConnection, testConnection, list
 export { streamChat } from './chat.js';
 export { handoffUrl, buildHandoffPrompt, handoffPlan, HANDOFF_TARGETS } from './handoff.js';
 
-const runtime = { store: libraryStore, getLibrary: null, snapshot: null, requestBridge, dispose: null, dashboard: null };
+// external: the assistant's read-only external tool providers; undefined means the default (Paperclip), built on first use.
+const runtime = { store: libraryStore, getLibrary: null, snapshot: null, requestBridge, dispose: null, dashboard: null, external: undefined };
+const externalProviders = () => runtime.external === undefined ? (runtime.external = [createPaperclipToolProvider()]) : runtime.external;
 let services = null;
 
 async function currentLibrary() {
@@ -58,7 +61,8 @@ function engine() {
   const indexer = createIndexer({ vectorStore, embedder, getLibrary: currentLibrary, getSettings: aiSettings });
   const search = createSearch({ getLibrary: currentLibrary, vectorStore, isSemanticReady: () => indexer.isReady(), embedQuery: (query, options) => indexer.embedQuery(query, options) });
   const assistant = createAssistant({ streamChat: chatStream, resolveConnection: connections.resolveConnection, modelInfo: connections.modelInfo, getAiSettings: aiSettings,
-    getLibrary: currentLibrary, store, searchLibrary: search.searchLibrary, conversations, dashboard: () => runtime.dashboard });
+    getLibrary: currentLibrary, store, searchLibrary: search.searchLibrary, conversations, dashboard: () => runtime.dashboard,
+    external: externalProviders });
   const transforms = createTransforms({ streamChat: chatStream, resolveConnection: connections.resolveConnection, resolveChatTarget: connections.resolveChatTarget,
     getAiSettings: aiSettings, getLibrary: currentLibrary });
   const imports = createImports({ streamChat: chatStream, resolveChatTarget: connections.resolveChatTarget, resolveConnection: connections.resolveConnection, getProvider: catalogProvider });
@@ -145,9 +149,12 @@ export async function semanticSearchAvailable() {
  * onLibraryChange(listener) -> unsubscribe defaults to store.subscribe. Indexing starts shortly after boot when enabled.
  * dashboard (optional): { describe(), addCollectionWidget({ collectionId, boardId }), removeWidget(widgetId) }; it lets the
  * assistant see the dashboard and show a collection on it. Without it those tools are not offered.
+ * external (optional): the assistant's read-only external tool providers (see tools.js createToolSession); the default is
+ * Paperclip (paperclip-tools.js), offered only while Paperclip is connected. Pass [] or null to offer none.
  */
-export function init({ store: appStore, getLibrary, integrations, onLibraryChange, dashboard } = {}) {
+export function init({ store: appStore, getLibrary, integrations, onLibraryChange, dashboard, external } = {}) {
   runtime.dispose?.();
+  if (external !== undefined) runtime.external = Array.isArray(external) ? external.filter(Boolean) : [];
   if (appStore) runtime.store = appStore;
   if (dashboard !== undefined) runtime.dashboard = dashboardAdapter(dashboard);
   if (typeof getLibrary === 'function') runtime.getLibrary = getLibrary;
