@@ -31,7 +31,7 @@ export const PAGE_SNAPSHOT_REASONS = Object.freeze(['manual', 'before-import']);
 export const SNAPSHOT_RETENTION = Object.freeze({ keep: 30, updates: 5, restores: 3 });
 // Rebuildable caches and device bookkeeping are neither copied nor removed by a restore.
 export const SNAPSHOT_EXCLUDED_KEYS = Object.freeze(['still.widget-cache.v1', 'still.ui.recent.v1', META_KEY,
-  'still.link-icons.v1', 'still.appearance.v1', 'still.embed.hints.v1']);
+  'still.link-icons.v1', 'still.appearance.v1', 'still.embed.hints.v1', 'still.threadkeeper.v1']);
 // Stores that write their own keys from pages; a restore waits for (and holds) their locks so it never interleaves.
 // API keys (secrets.js) come last: their lock is taken inside 'still.ai.v2' work, never the other way round.
 const RESTORE_LOCKS = ['still.dashboard.v1', 'still.ai.v2', 'still.ai.conversations', 'still.ai.secrets.v1'];

@@ -72,8 +72,9 @@ for (const permission of expectedPermissions) if (!actualPermissions.has(permiss
 for (const permission of actualPermissions) if (!expectedPermissions.has(permission)) fail(`Review unexpected required permission: ${permission}`);
 if ((manifest.host_permissions || []).length) fail('Host permissions must remain optional.');
 // Optional grants requested at the moment of use: bookmarks import, the active tab's address for "This page",
-// most visited sites for the dashboard, and per-origin host access for reading saved pages and calling services the user connects.
-const allowedOptionalPermissions = new Set(['bookmarks', 'tabs', 'topSites']);
+// most visited sites for the dashboard, finding an installed Threadkeeper (management, removed again right after the
+// lookup), and per-origin host access for reading saved pages and calling services the user connects.
+const allowedOptionalPermissions = new Set(['bookmarks', 'tabs', 'topSites', 'management']);
 if ((manifest.optional_permissions || []).some(permission => !allowedOptionalPermissions.has(permission))) fail('Unexpected optional permission.');
 const allowedHosts = new Set(['http://127.0.0.1/*', 'http://localhost/*', 'https://api.raindrop.io/*', 'https://*/*', 'http://*/*']);
 for (const host of manifest.optional_host_permissions || []) if (!allowedHosts.has(host)) fail(`Review unexpected optional host: ${host}`);

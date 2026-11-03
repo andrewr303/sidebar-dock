@@ -171,6 +171,10 @@ test('the new tab page mirrors index.html and the manifest overrides only the ne
   for (const permission of ['favicon', 'search', 'declarativeNetRequestWithHostAccess']) assert.ok(manifest.permissions.includes(permission), permission);
   assert.ok(manifest.optional_permissions.includes('topSites'));
   assert.equal(manifest.permissions.includes('topSites'), false, 'most visited sites stay an optional grant');
+  // Finding an installed Threadkeeper lists extensions once, from a click; the grant is removed again right after.
+  assert.ok(manifest.optional_permissions.includes('management'));
+  assert.equal(manifest.permissions.includes('management'), false, 'extension discovery stays an optional grant');
+  assert.equal(manifest.externally_connectable, undefined, 'no web page may message Still; extensions are checked in code');
   const assets = page => [...page.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)\s*=\s*"([^"]+\.(?:js|css))"/g)].map(match => match[1]);
   const index = await readFile(new URL('index.html', root), 'utf8');
   const newtab = await readFile(new URL('newtab.html', root), 'utf8');

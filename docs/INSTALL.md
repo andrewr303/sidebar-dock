@@ -49,6 +49,12 @@ Still declares no content scripts. It injects its page scripts (`lib/vendor/read
 
 All of these are optional host permissions in the manifest; Chrome lists the ones you granted on Still's details page, where you can remove them.
 
+- **Find Threadkeeper** (Settings → Integrations → AI chat threads) asks for the optional `management` permission ("Read
+  the list of your apps, extensions, and themes"), reads the list once to find an installed Threadkeeper, and removes the
+  permission again straight away. Pasting Threadkeeper's ID instead needs no permission at all. Talking to Threadkeeper
+  needs none either: extensions can message each other by ID, and Still only answers the Threadkeeper you connected (web
+  pages can never message Still).
+
 The sidebar screenshot control opens two choices. The page and extension-action context menus also expose screenshot actions:
 
 | Choice | Saved result |
