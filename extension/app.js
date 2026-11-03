@@ -371,7 +371,8 @@ async function boot() {
   try {
     const ai = await import('./lib/ai/index.js');
     // dashboard: lets the assistant see the boards and show a collection on them (it loads the dashboard on first use).
-    ai.init?.({ store, getLibrary: () => library, integrations, onLibraryChange: fn => store.subscribe(fn), dashboard: dashboard.assistantDashboard?.() });
+    ai.init?.({ store, getLibrary: () => library, integrations, onLibraryChange: fn => store.subscribe(fn), dashboard: dashboard.assistantDashboard?.(),
+      threads: await import('./lib/ai/threads.js').then(mod => mod.threadSources({ getLibrary: () => library }), () => null) });
     ctx.ai = ai;
   } catch (error) { console.warn('[still] AI engine unavailable', error); }
 

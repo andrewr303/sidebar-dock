@@ -24,8 +24,8 @@ test('the total text budget includes history and the draft, and archive is admit
  const prompt=assemblePrompt({query:'Keep this exact request',context,history:Array(16).fill({role:'assistant',content:'history'.repeat(1500)})});
  assert.ok(prompt.system.length+prompt.messages.reduce((n,m)=>n+m.content.length,0)<=12000);const payload=JSON.parse(prompt.messages.at(-1).content.split('\n').slice(1).join('\n'));assert.equal(payload.request,'Keep this exact request');assert.equal(payload.contextTruncated,true);
 });
-test('the library assistant prompt (3.0) teaches real links, verbatim URLs, dashboard widgets, fixes, citations and the proposal rules',()=>{
- assert.equal(ASSISTANT_PROMPT_VERSION,'still-assistant-3.0');
+test('the library assistant prompt (3.1) teaches real links, verbatim URLs, dashboard widgets, fixes, citations and the proposal rules',()=>{
+ assert.equal(ASSISTANT_PROMPT_VERSION,'still-assistant-3.1');
  const system=assistantSystemPrompt({tools:true,today:'2026-10-31'});
  for(const rule of [
   /save_links saves real links \(bookmarks\), which show in the collection’s links widget/,/Never store links as notes unless the user asks for notes/,

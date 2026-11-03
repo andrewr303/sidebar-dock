@@ -396,3 +396,26 @@ test('pause and clear are shared through the index, so other views and reloads h
   assert.equal((await b.rebuildIndex()).indexed, 2);
   assert.equal(await vectorStore.isHeld(), false);
 });
+
+test('chats are embedded with the digest the extraText hook gives (failures count as no digest); other items never ask for one', async () => {
+  const library = { items: [
+    { id: 'chat_tk_1', type: 'chat', title: 'Billing refactor', excerpt: 'Moved refunds to a ledger', updatedAt: '1',
+      chat: { category: 'coding_agent', providerLabel: 'Claude Code', project: 'Billing', kind: 'coding', fingerprint: 'fp', revision: 1 } },
+    { id: 'chat_tk_2', type: 'chat', title: 'Broken digest', updatedAt: '1', chat: { fingerprint: 'fp2' } },
+    { id: 'note', type: 'note', title: 'A note', content: 'Plain text.', updatedAt: '1' },
+  ] };
+  const asked = [];
+  const embedder = fakeEmbedder();
+  const indexer = createIndexer({ vectorStore: createVectorStore({ indexedDB: null }), embedder, getLibrary: async () => library, locks: fakeLocks(), ...manualTimers(),
+    getSettings: async () => ({ embeddings: { enabled: true, connectionId: 'c1', model: 'fake-embed' } }),
+    extraText: async item => { asked.push(item.id); if (item.id === 'chat_tk_2') throw new Error('no record'); return `Decisions: use a ledger table. ${'x'.repeat(9000)}`; } });
+  const done = await indexer.startIndexing();
+  assert.equal(done.indexed, 3);
+  assert.deepEqual(asked.sort(), ['chat_tk_1', 'chat_tk_2']);
+  const inputs = embedder.calls.flatMap(call => call.inputs);
+  const chat = inputs.filter(input => input.startsWith('Billing refactor'));
+  assert.ok(chat.length > 1 && chat.every(input => input.includes('Coding agent session with Claude Code\nProject: Billing\nKind: coding')), 'every chunk carries the chat header');
+  assert.ok(chat.some(input => input.includes('Decisions: use a ledger table.')));
+  assert.ok(chat.join('').split('x').length - 1 <= 4000 + 150 * chat.length, 'the digest is capped at 4,000 characters (chunks overlap by 150)');
+  assert.ok(inputs.some(input => input.startsWith('Broken digest')), 'a failing digest still indexes the chat');
+});

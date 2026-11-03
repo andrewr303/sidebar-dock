@@ -66,25 +66,38 @@ export function chunkText(input, { size = CHUNK_SIZE, overlap = CHUNK_OVERLAP, m
   return chunks;
 }
 
-/** The text that represents an item in the index: a header (title, tags, source) and a body (description, note, article, highlights). */
-export function itemIndexText(item = {}) {
+// The header line of an AI chat (lib/ai/threads.js): provider, project and kind of work go into every chunk, so a query
+// such as "coding agent sessions about refactoring" matches each part of the chat.
+const CHAT_CATEGORIES = { coding_agent: 'Coding agent session', agent: 'Agent run', builder: 'App builder session', search: 'AI search', companion: 'Companion chat' };
+function chatHeader(item) {
+  const chat = item.chat && typeof item.chat === 'object' ? item.chat : {};
+  const kind = text(chat.kindLabel) || text(chat.kind);
+  return [`${CHAT_CATEGORIES[chat.category] || 'AI chat'}${text(chat.providerLabel) ? ` with ${text(chat.providerLabel)}` : ''}${text(chat.agentLabel) ? ` (${text(chat.agentLabel)})` : ''}`,
+    text(chat.project) ? `Project: ${text(chat.project)}` : '', kind ? `Kind: ${kind}` : ''].filter(Boolean).join('\n');
+}
+
+/**
+ * The text that represents an item in the index: a header (title, tags, source) and a body (description, note, article,
+ * highlights). extra: more body text for this item (a chat's summary digest, from the indexer's extraText hook).
+ */
+export function itemIndexText(item = {}, { extra = '' } = {}) {
   const tags = (Array.isArray(item.tags) ? item.tags : []).filter(tag => typeof tag === 'string' && tag);
   const domain = domainOf(text(item.url) || text(item.sourceUrl));
-  const header = [text(item.title).trim(), tags.length ? `Tags: ${tags.join(', ')}` : '', domain ? `Source: ${domain}` : ''].filter(Boolean).join('\n');
+  const header = [text(item.title).trim(), item.type === 'chat' ? chatHeader(item) : '', tags.length ? `Tags: ${tags.join(', ')}` : '', domain ? `Source: ${domain}` : ''].filter(Boolean).join('\n');
   const excerpt = text(item.excerpt).trim();
   const content = text(item.content).trim();
   // A note's excerpt is a preview of its own content; indexing both would double-count it.
   const duplicateExcerpt = excerpt && content && content.replace(/\s+/g, ' ').includes(excerpt.replace(/[….\s]+$/, '').replace(/\s+/g, ' ').slice(0, 80));
   const highlights = (Array.isArray(item.highlights) ? item.highlights : [])
     .filter(h => h && text(h.text).trim()).map(h => `> ${text(h.text).trim()}${text(h.note).trim() ? `\n${text(h.note).trim()}` : ''}`);
-  const body = [duplicateExcerpt ? '' : excerpt, content, text(item.articleContent).trim(), highlights.length ? `Highlights:\n${highlights.join('\n\n')}` : '']
+  const body = [duplicateExcerpt ? '' : excerpt, text(extra).trim().slice(0, 4000), content, text(item.articleContent).trim(), highlights.length ? `Highlights:\n${highlights.join('\n\n')}` : '']
     .filter(Boolean).join('\n\n');
   return { header, body };
 }
 
 /** [{ n, text, input }] where `text` is the stored snippet source and `input` is what gets embedded (header + chunk). */
-export function itemChunks(item, { size = CHUNK_SIZE, overlap = CHUNK_OVERLAP, maxChunks = MAX_CHUNKS_PER_ITEM } = {}) {
-  const { header, body } = itemIndexText(item);
+export function itemChunks(item, { size = CHUNK_SIZE, overlap = CHUNK_OVERLAP, maxChunks = MAX_CHUNKS_PER_ITEM, extra = '' } = {}) {
+  const { header, body } = itemIndexText(item, { extra });
   const pieces = chunkText(body, { size, overlap, maxChunks });
   if (!pieces.length) return header ? [{ n: 0, text: header, input: header }] : [];
   return pieces.map((piece, n) => ({ n, text: piece, input: header ? `${header}\n\n${piece}` : piece }));
@@ -92,7 +105,9 @@ export function itemChunks(item, { size = CHUNK_SIZE, overlap = CHUNK_OVERLAP, m
 
 export function itemHash(item) {
   const { header, body } = itemIndexText(item);
-  return contentHash(`${CHUNKING_VERSION}:${CHUNK_SIZE}:${CHUNK_OVERLAP}\u0000${header}\u0000${body}`);
+  // A chat's digest comes from its stored record, which changes with the chat's fingerprint: that is hashed instead.
+  const chat = item?.type === 'chat' && item.chat && typeof item.chat === 'object' ? `\u0000chat:${text(item.chat.fingerprint)}:${Number(item.chat.revision) || 0}` : '';
+  return contentHash(`${CHUNKING_VERSION}:${CHUNK_SIZE}:${CHUNK_OVERLAP}\u0000${header}\u0000${body}${chat}`);
 }
 
 /**
@@ -122,10 +137,11 @@ const MAX_REJECTIONS_BEFORE_SUCCESS = 5;
 const configKey = value => value ? [value.connectionId, value.providerId, value.model, value.requestedDims || ''].join('\u0000') : '';
 
 /**
- * createIndexer({ vectorStore, embedder, getLibrary, getSettings, locks }) -> {
+ * createIndexer({ vectorStore, embedder, getLibrary, getSettings, locks, extraText }) -> {
+ *   extraText(item) (optional, async): more text to embed for a chat item (lib/ai/threads.js chats.digest); failures count as ''.
  *   getIndexStatus, subscribeIndex, startIndexing, rebuildIndex, clearIndex, pauseIndexing, refresh, onLibraryChange, embedQuery, isReady, dispose }
  */
-export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, locks = globalThis.navigator?.locks, batchSize = 48, concurrency = 2,
+export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, locks = globalThis.navigator?.locks, extraText = null, batchSize = 48, concurrency = 2,
   debounceMs = 1500, retryMs = 30000, schedule = globalThis.setTimeout?.bind(globalThis), cancel = globalThis.clearTimeout?.bind(globalThis) } = {}) {
   const status = { enabled: false, provider: '', providerId: '', connectionId: '', model: '', dims: null, total: 0, indexed: 0, pending: 0, failed: 0,
     pendingTokens: 0, running: false, paused: false, waiting: false, error: '', lastRunAt: '' };
@@ -188,7 +204,11 @@ export function createIndexer({ vectorStore, embedder, getLibrary, getSettings, 
 
   async function embedItems(work, signal, runConfig) {
     // Flatten every pending item into chunk inputs, then group them into requests of at most `batchSize` inputs.
-    const entries = work.map(({ item, hash }) => ({ item, hash, chunks: itemChunks(item), vectors: [], remaining: 0 }));
+    const extraFor = async item => {
+      if (item?.type !== 'chat' || typeof extraText !== 'function') return '';
+      try { return text(await extraText(item)).slice(0, 4000); } catch { return ''; }
+    };
+    const entries = await Promise.all(work.map(async ({ item, hash }) => ({ item, hash, chunks: itemChunks(item, { extra: await extraFor(item) }), vectors: [], remaining: 0 })));
     const batches = [];
     let current = [];
     for (const entry of entries) {
