@@ -2205,6 +2205,16 @@ registerActions({
       if (isWebUrl(url)) ctx.dispatch('app.open-url', { el, data: { url } });
       return;
     }
+    // External sources (such as paperclip:PAP-12 from the assistant's Paperclip tools) are not library items: open
+    // the URL their tool reported instead.
+    if (/^[a-z][a-z0-9-]*:/.test(data.id || '')) {
+      const messages = st(ctx).conversation?.messages || [];
+      const source = messages.flatMap(message => message.citations || []).find(citation => citation?.id === data.id);
+      const url = data.url || source?.url;
+      if (isWebUrl(url)) ctx.dispatch('app.open-url', { el, data: { url } });
+      else ctx.toast('This source is outside your library.');
+      return;
+    }
     ctx.openItem(data.id);
   },
   'ai.copy': async ({ ctx, data }) => {
