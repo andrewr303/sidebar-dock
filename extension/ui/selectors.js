@@ -10,14 +10,24 @@
 import { canonicalUrl } from '../lib/store.js';
 import { pageIndex, parentIdOf, childrenOf, ancestorsOf, descendantIds } from '../lib/pages.js';
 
-const ITEM_VIEW_TYPES = ['bookmark', 'article', 'image', 'video', 'file', 'note'];
+const ITEM_VIEW_TYPES = ['bookmark', 'article', 'image', 'video', 'file', 'note', 'chat'];
 const alive = item => !item.deletedAt && !item.archived;
 const safeCanonical = url => { try { return url ? canonicalUrl(url) : ''; } catch { return ''; } };
 const lower = value => String(value ?? '').toLowerCase();
 export const domainOf = url => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; } };
 const TASK_LINE = /^\s*(?:[-*+]|\d+[.)])\s+\[( |x|X)\]\s+/;
 /** Views that list items by place (where they live): they hide subpages, which show under their parent instead. */
-export const isBrowseView = view => view === 'all' || view === 'inbox' || view === 'notes' || /^(?:type|collection):/.test(String(view || ''));
+export const isBrowseView = view => view === 'all' || view === 'inbox' || view === 'notes' || view === 'chats' || /^(?:type|collection):/.test(String(view || ''));
+
+/**
+ * AI chats (type "chat", synced from Threadkeeper) can number in the thousands. One still where sync placed it (its
+ * collection is the one sync chose, chat.autoCollectionId) stays out of All items and the Inbox unless the view asks
+ * for chats (showChats, the "+N AI chats" chip); a chat the user moved, searches, the Chats view, type:chat and its
+ * collections always list it.
+ */
+export const isAutoPlacedChat = item => item?.type === 'chat' && String(item.collectionId || '') === String(item.chat?.autoCollectionId || '');
+const HIDES_CHATS = new Set(['all', 'inbox']);
+export const hidesChats = view => HIDES_CHATS.has(view);
 
 /** The live item an item sits inside (a note's page parent), or null. byId: Map of every item. */
 export function liveParentOf(byId, item) {
@@ -205,14 +215,19 @@ export function createSelectors(getLibrary, getPrefs = () => ({})) {
   const recentCollections = (limit = 8) => cached(`recent:${limit}`, lib => {
     const recents = (getPrefs().recentCollections || []).filter(id => collectionIndex().has(id));
     const pinned = tree().filter(c => c.pinned).map(c => c.id);
-    const byActivity = [...lib.items].filter(i => i.collectionId && !i.deletedAt)
+    // Synced AI chats are updated by Threadkeeper, not by the user, so they do not make a collection "recent".
+    const byActivity = [...lib.items].filter(i => i.collectionId && !i.deletedAt && i.type !== 'chat')
       .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).map(i => i.collectionId);
     return [...new Set([...recents, ...pinned, ...byActivity])].filter(id => collectionIndex().has(id)).slice(0, limit).map(id => collectionIndex().get(id));
   });
 
-  /** Items for a main view, filtered by query/type/tag and sorted. state: { view, query, typeFilter, tagFilter, sort }. */
-  function itemsForView({ view = 'all', query = '', typeFilter = 'all', tagFilter = '', sort = 'newest' } = {}) {
-    return cached(`view:${view}|${query}|${typeFilter}|${tagFilter}|${sort}`, lib => {
+  /**
+   * Items for a main view, filtered by query/type/tag and sorted. state: { view, query, typeFilter, tagFilter, sort,
+   * showChats }. Without a search, All items and the Inbox leave out chats still where sync placed them unless showChats.
+   */
+  function itemsForView({ view = 'all', query = '', typeFilter = 'all', tagFilter = '', sort = 'newest', showChats = false } = {}) {
+    const chats = showChats === true || typeFilter === 'chat' || !hidesChats(view) || !!String(query).trim();
+    return cached(`view:${view}|${query}|${typeFilter}|${tagFilter}|${sort}|${chats}`, lib => {
       let rows;
       if (view === 'trash') rows = lib.items.filter(i => i.deletedAt);
       else if (view === 'archive') rows = lib.items.filter(i => i.archived && !i.deletedAt);
@@ -221,6 +236,7 @@ export function createSelectors(getLibrary, getPrefs = () => ({})) {
         if (view === 'inbox') rows = rows.filter(i => !i.collectionId);
         else if (view === 'favorites') rows = rows.filter(i => i.favorite);
         else if (view === 'notes') rows = rows.filter(i => i.type === 'note');
+        else if (view === 'chats') rows = rows.filter(i => i.type === 'chat');
         else if (view === 'highlights') rows = rows.filter(i => i.highlights?.length);
         else if (view === 'untagged') rows = rows.filter(i => !i.tags?.length);
         else if (view === 'reminders') rows = rows.filter(i => i.reminderAt && !i.reminderNotifiedAt);
@@ -229,6 +245,7 @@ export function createSelectors(getLibrary, getPrefs = () => ({})) {
         else if (view.startsWith('collection:')) { const ids = new Set(descendants(view.slice(11))); rows = rows.filter(i => ids.has(i.collectionId)); }
         else if (view.startsWith('tag:')) { const tag = lower(view.slice(4)); rows = rows.filter(i => i.tags?.some(t => lower(t) === tag)); }
       }
+      if (!chats) rows = rows.filter(i => !isAutoPlacedChat(i));
       // Without a search, browse views list top-level items only, and Trash lists what was trashed on its own.
       if (!query.trim()) {
         if (view === 'trash') rows = rows.filter(i => !trashedWithParent(index(), i));
@@ -247,8 +264,11 @@ export function createSelectors(getLibrary, getPrefs = () => ({})) {
     });
   }
 
+  /** How many chats a view leaves out (the "+N AI chats" chip): chats still where sync placed them, live, at the top level. */
+  const hiddenChats = view => (hidesChats(view) ? cached(`hiddenChats:${view}`, () => live().filter(i => isAutoPlacedChat(i) && (view !== 'inbox' || !i.collectionId)).length) : 0);
+
   return {
-    live, byId: id => index().get(id) || null, collection: id => collectionIndex().get(id) || null, tree, path, descendants, counts, tags,
+    live, byId: id => index().get(id) || null, hiddenChats, collection: id => collectionIndex().get(id) || null, tree, path, descendants, counts, tags,
     duplicates: duplicateGroups, backlinks, related, findByUrl, savedForUrl, notesForUrl, recentCollections, pinnedCollections, itemsForView,
     pages, parentOf, children, pagePath, pageDescendants, subpageCount: id => children(id).length, trashedWith,
   };
@@ -297,8 +317,10 @@ export function searchRows(rows, query, collections = new Map()) {
     if (types.length && !types.includes(item.type) && !(types.includes('link') && ['bookmark', 'article'].includes(item.type))) return false;
     if (sites.length && !sites.some(site => domainOf(item.url).endsWith(site))) return false;
     if (!tokens.length) return true;
+    const chat = item.type === 'chat' && item.chat && typeof item.chat === 'object' ? item.chat : null;
     const haystack = [item.title, item.url, item.excerpt, item.content, item.articleContent, item.fileName, collections.get(item.collectionId)?.name,
-      ...(item.tags || []), ...(item.highlights || []).flatMap(h => [h.text, h.note])].join('\n').toLowerCase();
+      ...(item.tags || []), ...(item.highlights || []).flatMap(h => [h.text, h.note]),
+      ...(chat ? [chat.providerLabel, chat.project, chat.agentLabel, chat.kindLabel, ...(Array.isArray(chat.topics) ? chat.topics : [])] : [])].join('\n').toLowerCase();
     return tokens.every(token => haystack.includes(token));
   });
 }

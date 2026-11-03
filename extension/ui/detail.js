@@ -13,6 +13,7 @@ import { renderInlineEditor, addSubpage, displayTitle, openNote } from './note-e
 import { renderTagInput } from './pickers.js';
 import { createNote } from './notes.js';
 import { askAi } from './ai-panel.js';
+import { renderChatDetail } from './chats.js';
 import { renderMarkdown } from '../lib/markdown.js';
 import { canonicalUrl } from '../lib/store.js';
 
@@ -279,7 +280,8 @@ function renderConnections(ctx, item, notes) {
   const explicit = new Set(item.relatedIds || []);
   const similar = similarFor(ctx, item);
   const shown = new Set([item.id, ...noteIds, ...related.map(other => other.id)]);
-  const similarItems = (similar?.items || []).map(entry => ctx.select.byId(entry.id)).filter(other => other && !other.deletedAt && !shown.has(other.id)).slice(0, 5);
+  // AI chats stay out of Similar (they would crowd it); explicit links to them still show under Related.
+  const similarItems = (similar?.items || []).map(entry => ctx.select.byId(entry.id)).filter(other => other && !other.deletedAt && other.type !== 'chat' && !shown.has(other.id)).slice(0, 5);
   const unlink = other => iconButton({ icon: 'unlink', label: `Remove link to ${other.title}`, action: 'detail.unlink', data: { id: item.id, other: other.id, way: explicit.has(other.id) ? 'out' : 'in' }, size: 'sm', className: 'item-link-act' });
   const newNote = item.type === 'note' ? '' : button({ label: item.url ? 'New note on this page' : 'New note', icon: 'plus', variant: 'ghost', size: 'sm', action: 'detail.new-note', data: { id: item.id }, className: 'detail-section-action' });
   return html`
@@ -406,6 +408,8 @@ export function renderDetail(ctx, id, { surface = 'full' } = {}) {
       <header class="detail-head">${iconButton({ icon: side ? 'arrow-left' : 'x', label: side ? 'Back' : 'Close details', action: 'app.close-panel', size: 'sm' })}</header>
       <div class="lib-empty">${emptyState({ icon: 'circle-help', title: 'This item is gone', body: 'It was deleted or moved out of your library.' })}</div></div>`;
   }
+  // A chat (an AI thread from Threadkeeper) has its own page: Summary and Transcript instead of these tabs.
+  if (item.type === 'chat') return renderChatDetail(ctx, item, { surface });
   const requested = ctx.state.panel?.tab || 'details';
   const tab = ['details', 'reader', 'notes'].includes(requested) ? requested : 'details';
   const notes = linkedNotes(ctx, item);

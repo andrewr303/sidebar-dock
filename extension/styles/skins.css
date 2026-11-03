@@ -1048,8 +1048,8 @@ html[data-skin="glass"] { background: var(--glass-base); }
 }
 
 /* Views that fill a pane let the glass show; sticky bars frost what scrolls under them. */
-:root[data-skin="glass"] :is(.lib-view, .map-view, .notes-ws, .notes-list-pane, .notes-rail, .side-note, .tasks-view, .detail, .ai-panel, .settings-page) { background: transparent; }
-:root[data-skin="glass"] :is(.lib-top, .lib-group-head, .ne-side .ne-toolbar, .ne-side .ne-foot, .side-notes-top, .side-note-head, .tasks-head, .detail-foot) {
+:root[data-skin="glass"] :is(.lib-view, .map-view, .notes-ws, .notes-list-pane, .notes-rail, .side-note, .tasks-view, .detail, .ai-panel, .settings-page, .chats-ws, .chat-host) { background: transparent; }
+:root[data-skin="glass"] :is(.lib-top, .lib-group-head, .ne-side .ne-toolbar, .ne-side .ne-foot, .side-notes-top, .side-note-head, .tasks-head, .detail-foot, .chat-page .ne-toolbar, .chat-page .ne-foot, .chat-find) {
   background: var(--glass-bar);
   -webkit-backdrop-filter: blur(24px) saturate(160%);
   backdrop-filter: blur(24px) saturate(160%);

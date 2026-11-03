@@ -12,6 +12,7 @@ import { openSettings } from './settings.js';
 import { openCollectionEditor, visibleTree, deleteCollectionFlow, collectionSubset, revealInGrid, setCollectionPinned } from './collections.js';
 import { initDnd } from './dnd.js';
 import { exportBookmarkHtml } from '../lib/portability.js';
+import { threadkeeperSnapshot, isPaired } from './chats.js';
 
 const TOP = [
   { view: 'dashboard', label: 'Dashboard', icon: 'layout-dashboard', opensTab: true },
@@ -23,6 +24,8 @@ const TOP = [
 // Optional filters only appear when they have something to show.
 const FILTERS = [
   { view: 'notes', label: 'Notes', icon: 'sticky-note', count: c => c.notes, always: true },
+  // AI chats from Threadkeeper: shown while there are any, and while Threadkeeper is connected (so the empty view is reachable).
+  { view: 'chats', label: 'Chats', icon: 'messages-square', count: c => c.byType.chat, show: c => c.threadkeeperPaired },
   { view: 'stickies', label: 'Sticky notes', icon: 'sticker', count: c => c.stickies || null, always: true, opensTab: true },
   // Tasks is a full-tab screen (notes.js renderTasks); the side panel's Library drill-down only lists items.
   { view: 'tasks', label: 'Tasks', icon: 'list-checks', count: c => c.tasksOpen, fullOnly: true },
@@ -69,7 +72,7 @@ function navCounts(ctx) {
   if (stickyMemo.library !== ctx.library) {
     stickyMemo = { library: ctx.library, count: ctx.select.live().reduce((n, item) => n + (item.type === 'note' && item.sticky ? 1 : 0), 0) };
   }
-  return { ...ctx.select.counts(), stickies: stickyMemo.count };
+  return { ...ctx.select.counts(), stickies: stickyMemo.count, threadkeeperPaired: isPaired(threadkeeperSnapshot()) };
 }
 
 /**
@@ -203,7 +206,7 @@ function renderPinned(ctx, counts, surface, visibleIds) {
 }
 
 function renderFilters(ctx, counts, surface) {
-  const rows = FILTERS.filter(f => !(f.fullOnly && surface === 'side') && (f.always || (f.count(counts) || 0) > 0));
+  const rows = FILTERS.filter(f => !(f.fullOnly && surface === 'side') && (f.always || f.show?.(counts) || (f.count(counts) || 0) > 0));
   return html`${heading(ctx, 'filters', 'Filters')}
     <div class="nav-section" id="nav-filters" ${isOpen(ctx, 'filters') ? '' : raw('hidden')}>${rows.map(row => navRow(ctx, row, counts, surface))}</div>`;
 }

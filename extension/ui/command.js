@@ -3,7 +3,7 @@
 import { html, cx } from './html.js';
 import { icon } from './icons.js';
 import { collectionIcon, favicon, kbd, domainOf, TYPE_ICONS, TYPE_LABELS } from './components.js';
-import { pathOfItem } from './cards.js';
+import { pathOfItem, itemSource, chatGlyph } from './cards.js';
 import { registerDialog } from './overlay.js';
 import { registerActions, hasAction } from './runtime.js';
 
@@ -45,6 +45,9 @@ export const COMMANDS = [
   { id: 'go-inbox', label: 'Go to Inbox', icon: 'inbox', keywords: 'unsorted', view: 'inbox' },
   { id: 'go-favorites', label: 'Go to Favorites', icon: 'star', keywords: 'starred', view: 'favorites' },
   { id: 'go-notes', label: 'Go to Notes', icon: 'sticky-note', keywords: 'writing', view: 'notes' },
+  { id: 'go-chats', label: 'Go to Chats', icon: 'messages-square', keywords: 'ai threads conversations threadkeeper chatgpt claude gemini coding agent sessions transcripts', view: 'chats' },
+  { id: 'add-chats', label: 'Add AI chats from Threadkeeper', icon: 'messages-square', keywords: 'import threads conversations chatgpt claude gemini codex coding agent sessions pull collection',
+    action: 'chats.add', when: () => hasAction('chats.add') },
   { id: 'go-stickies', label: 'Go to Sticky notes', icon: 'sticker', keywords: 'post-it memo board', view: 'stickies' },
   { id: 'new-sticky', label: 'New sticky note', icon: 'sticker', keywords: 'post-it memo quick jot', action: 'stickies.new', when: () => hasAction('stickies.new') },
   { id: 'add-widget', label: 'Add widget', icon: 'layout-grid', keywords: 'dashboard gallery clock weather github linear kanban', view: 'dashboard', action: 'dashboard.add-widget',
@@ -189,10 +192,13 @@ function recentItems(ctx) {
 export function itemOption(ctx, item, extra = {}) {
   const path = item.collectionId ? ctx.select.path(item.collectionId).map(c => c.name).join(' / ') : 'Inbox';
   const pagePath = pathOfItem(ctx, item);
-  const where = item.type === 'note' ? ['Note', pagePath, path].filter(Boolean).join(' · ') : [domainOf(item.url), pagePath, path].filter(Boolean).join(' · ');
+  const where = item.type === 'note' ? ['Note', pagePath, path].filter(Boolean).join(' · ')
+    : item.type === 'chat' ? [itemSource(item), item.chat?.project, path].filter(Boolean).join(' · ')
+    : [domainOf(item.url), pagePath, path].filter(Boolean).join(' · ');
   return {
     kind: 'item', key: `item:${item.id}`, label: item.title || domainOf(item.url) || 'Untitled', hint: extra.snippet ? [pagePath, extra.snippet].filter(Boolean).join(' · ') : where,
-    leading: item.type === 'note' || !item.url ? html`<span class="command-glyph">${icon(TYPE_ICONS[item.type] || 'file', { size: 16 })}</span>` : favicon(item.url, { size: 18 }),
+    leading: item.type === 'chat' ? html`<span class="command-glyph">${icon(chatGlyph(item), { size: 16 })}</span>`
+      : item.type === 'note' || !item.url ? html`<span class="command-glyph">${icon(TYPE_ICONS[item.type] || 'file', { size: 16 })}</span>` : favicon(item.url, { size: 18 }),
     meta: extra.semantic ? html`<span class="command-meta-semantic" title="Related by meaning">${icon('sparkles', { size: 12 })}</span>${TYPE_LABELS[item.type] || ''}` : TYPE_LABELS[item.type] || '',
     altLabel: item.url ? 'Open link' : null,
     run: (ctx, { alt }) => {
