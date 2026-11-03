@@ -342,12 +342,16 @@ export function standaloneImage(text){
 }
 // The image loads from its site without sending which page asked for it; sizing lives in the stylesheet (max 100%).
 const renderImage=image=>`<p class="markdown-image"><img src="${escapeHtml(image.src)}" alt="${escapeHtml(image.alt)}"${image.title?` title="${escapeHtml(image.title)}"`:''} loading="lazy" decoding="async" referrerpolicy="no-referrer"></p>`;
+// images:false (untrusted text: AI chat transcripts, thread summaries, answers that used them) shows the image as a link
+// instead, so opening a page never makes the browser fetch an address someone else chose.
+const renderImageLink=image=>`<p><a class="markdown-media-link" href="${escapeHtml(image.src)}" target="_blank" rel="noopener noreferrer"${image.title?` title="${escapeHtml(image.title)}"`:''}><span>Image · </span>${escapeHtml(image.alt||image.src)}</a></p>`;
 export function renderCallout(kind,body){const entry=CALLOUT_KINDS[kind]||CALLOUT_KINDS.note;return `<div class="markdown-callout" data-kind="${CALLOUT_KINDS[kind]?kind:'note'}" role="note"><p class="markdown-callout-title">${svg(entry.icon,'markdown-callout-icon')}<span>${entry.label}</span></p><div class="markdown-callout-body">${body}</div></div>`;}
-// options: interactiveTasks, compact (cards: first 12 blocks, closed toggles, 3 table rows), citations (AI answers),
+// options: interactiveTasks, compact (cards: first 12 blocks, closed toggles, 3 table rows), images (false: standalone
+// images render as links), citations (AI answers),
 // resolveLink(title) -> { id, title, type } | null and linkClass (string or (link) => string) for [[wiki links]] and
 // page blocks (pass resolveLink wherever a note can hold subpages, or page rows cannot show live titles).
 // Wrap the output in an element with class "markdown-body" to get the shared reading styles.
-export function renderMarkdown(markdown,{interactiveTasks=false,compact=false,citations,resolveLink,linkClass}={}){
+export function renderMarkdown(markdown,{interactiveTasks=false,compact=false,citations,resolveLink,linkClass,images=true}={}){
  const options={citations,resolveLink,linkClass},o=inlineOptions(options),render=value=>inline(String(value??''),0,o);
  const source=String(markdown??''),taskIndices=taskLineIndices(source);
  const task=(b,offset)=>{const index=taskIndices[offset+b._lineStart],label=escapeHtml(inlineText(b.text)||'To-do');return `<div class="task-line${b.checked?' done':''}">${interactiveTasks&&index!==null&&index!==undefined?`<input type="checkbox" data-task-index="${index}"${b.checked?' checked':''} aria-label="${label}">`:`<span class="task-check${b.checked?' checked':''}" aria-hidden="true">${b.checked?checkIcon:''}</span>`}<span>${render(b.text)}</span></div>`;};
@@ -375,7 +379,7 @@ export function renderMarkdown(markdown,{interactiveTasks=false,compact=false,ci
    if(b.type==='page'){out+=renderPage(b,o);continue;}
    if(b.type==='quote'){out+='<blockquote>'+render(b.text)+'</blockquote>';continue;}
    if(b.type==='callout'){out+=renderCallout(b.kind,render(b.text));continue;}
-   const image=b.type==='paragraph'&&standaloneImage(b.text);if(image){out+=renderImage(image);continue;}
+   const image=b.type==='paragraph'&&standaloneImage(b.text);if(image){out+=images===false?renderImageLink(image):renderImage(image);continue;}
    out+=b.text.trim()?'<p>'+render(b.text)+'</p>':'<div class="paragraph-space"></div>';
   }return out;
  };
