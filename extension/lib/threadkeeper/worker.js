@@ -227,7 +227,7 @@ export function createThreadkeeperWorker(deps = {}) {
   const releaseRead = () => { readsInFlight--; readWaiters.shift()?.(); };
 
   /** Sends one message to Threadkeeper → { ok: true, data } | { ok: false, error }. Never throws. */
-  async function send(type, fields = {}, { to = '', timeoutMs } = {}) {
+  async function send(type, fields = {}, { to = '', timeoutMs, requestId } = {}) {
     const current = await getState();
     const target = to || (current.status === 'paired' ? current.extensionId : '');
     if (!isExtensionId(target)) return failure('not_paired');
@@ -237,7 +237,7 @@ export function createThreadkeeperWorker(deps = {}) {
       if (waitMs > 0) return failure('busy', 'Still asked Threadkeeper too often. Try again in a moment.', waitMs);
     }
     let raw;
-    try { raw = await transport(target, envelope(type, fields), timeoutMs ?? timeoutFor(type, fields)); }
+    try { raw = await transport(target, envelope(type, fields, requestId), timeoutMs ?? timeoutFor(type, fields)); }
     catch { return failure('unreachable'); }
     finally { if (limited) releaseRead(); }
     if (!isObject(raw) || raw.proto !== PROTO) return failure(raw === undefined ? 'unreachable' : 'internal', raw === undefined ? undefined : 'Threadkeeper sent a reply Still could not read.');
@@ -663,7 +663,9 @@ export function createThreadkeeperWorker(deps = {}) {
         draft.pending = reuse ? draft.pending : { requestId: newRequestId(), extensionId, at: isoNow(), code: randomCode() };
         draft.configured = false; draft.configDirty = false; draft.lastError = ''; draft.lastErrorAt = '';
       });
-      const result = await send('pair.request', { appName: APP_NAME, appVersion: version(), code: current.pending.code, epoch: current.epoch }, { to: extensionId });
+      // The envelope's requestId is the pending request's: Threadkeeper answers pair.granted / pair.denied with it.
+      const result = await send('pair.request', { appName: APP_NAME, appVersion: version(), code: current.pending.code, epoch: current.epoch },
+        { to: extensionId, requestId: current.pending.requestId });
       if (result.ok) {
         if (result.data.status === 'paired') { await markPaired(extensionId, result.data.tk); return { status: 'paired' }; }
         return { status: 'pending', code: current.pending.code };

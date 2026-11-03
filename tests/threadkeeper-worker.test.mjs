@@ -134,6 +134,7 @@ test('pairing: hello probe, pending code, only the matching pair.granted pairs, 
   const state = await read();
   assert.equal(state.status, 'pending');
   assert.equal(state.epoch, request.epoch);
+  assert.equal(request.requestId, state.pending.requestId, 'Threadkeeper answers pair.granted with the request id it received');
   // Unpaired: an upsert from the pending id waits for approval; a grant with another requestId or from another id is refused.
   assert.equal((await worker.handleExternalMessage(msg('threads.upsert', { threads: [payload(1)], origin: 'manual' }), sender())).error.code, 'pending_approval');
   assert.equal((await worker.handleExternalMessage(msg('pair.granted', { requestId: 'wrong', tk: {} }), sender())).error.code, 'not_paired');

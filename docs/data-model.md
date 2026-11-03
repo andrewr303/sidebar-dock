@@ -157,7 +157,8 @@ small (about 1 KB); the analysis and the transcript live in IndexedDB `still.cha
     hasTranscript, transcriptTruncated,
     origin,                    // 'sync' | 'manual' | 'assistant' | 'import': how the chat was first created
     syncedAt,                  // last time sync changed the item
-    syncedTitleHash, syncedExcerptHash,  // chatTextHash() (8 hex) of the title / excerpt sync last wrote
+    syncedTitleHash, syncedExcerptHash,  // syncedHash() (lib/threadkeeper/protocol.js; 8 hex of the one-line text) of the
+                                         // title / excerpt sync last wrote; store.js exports it as chatTextHash
     syncedTags,                // tags sync added on create
     autoCollectionId,          // the collection sync last chose ('' = Inbox)
     removed }                  // '' | 'deleted' | 'out_of_scope' | 'local_only' | 'disconnected'
@@ -196,6 +197,9 @@ small (about 1 KB); the analysis and the transcript live in IndexedDB `still.cha
     `disconnected`: `chat.removed` is set; with `trash` untouched chats go to Trash, touched ones are `kept`.
   - `placeChats([{ id, collectionId | collectionKey }], { ensureCollections })` re-places chats after the placement
     preference changed; a chat the user moved is `kept`.
+  - `setChatFlags([{ id, restore?, chat: { removed?, hasTranscript?, transcriptTruncated? } }])` changes only Still's
+    own bookkeeping flags (an ordinary `bulkUpdateItems` never touches `chat`); `restore` brings a chat back from Trash
+    (used after a stored transcript changes and when a new pairing restores chats a disconnect trashed).
   - `deleteChats(ids)` deletes chats forever without a tombstone (undoing an assistant import).
   - `CHAT_SYSTEM_DELETES` (`markChatsRemoved`, `deleteChats`) names the operations whose deletes are bookkeeping; for
     any other operation the worker's `onCommit` treats a deleted `chat_tk_` id as "deleted forever by the user" and
