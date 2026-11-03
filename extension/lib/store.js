@@ -2,9 +2,10 @@ import {
   LIBRARY_SCHEMA_VERSION, LIBRARY_MIGRATIONS, assertLibraryVersion, migrateLibrary,
 } from './storage/migrations.js';
 import { MAX_PAGE_DEPTH, pageIndex, childrenOf, wouldCycle, pageDepth, pageHeight } from './pages.js';
+import { chatItemId } from './threadkeeper/protocol.js';
 
 export const STORAGE_KEY = 'still.library.v1';
-export const ITEM_TYPES = ['bookmark', 'article', 'image', 'video', 'file', 'note'];
+export const ITEM_TYPES = ['bookmark', 'article', 'image', 'video', 'file', 'note', 'chat'];
 // Hard deletes leave { kind, id, deletedAt } so an import (and later a sync engine) never resurrects them.
 export const TOMBSTONE_LIMIT = 10000;
 const STORE_MESSAGE = 'still:store';
@@ -21,7 +22,7 @@ const isObject = value => !!value && typeof value === 'object' && !Array.isArray
 // are dropped. Prototype keys are never copied.
 const ITEM_FIELDS = new Set(['id', 'type', 'title', 'url', 'excerpt', 'content', 'articleContent', 'tags', 'collectionId', 'favorite',
   'archived', 'deletedAt', 'createdAt', 'updatedAt', 'cover', 'art', 'sourceUrl', 'highlights', 'relatedIds', 'reminderAt',
-  'reminderNotifiedAt', 'attachmentId', 'fileName', 'mime', 'size', 'pinned', 'read', 'sticky',
+  'reminderNotifiedAt', 'attachmentId', 'fileName', 'mime', 'size', 'pinned', 'read', 'sticky', 'chat',
   'parentId', 'siteName', 'author', 'publishedAt', 'icon', 'lang']);
 const COLLECTION_FIELDS = new Set(['id', 'name', 'color', 'icon', 'parentId', 'description', 'cover', 'pinned', 'layout', 'sidebarLayout',
   'createdAt', 'updatedAt', 'deletedAt']);
@@ -133,11 +134,103 @@ export function normalizeSticky(value, type = 'note', stored = null) {
   }, stored, STICKY_FIELDS);
 }
 
+/*
+ * AI chats from Threadkeeper (item type 'chat'). The library keeps only this compact `chat` object; the analysis and the
+ * transcript live in IndexedDB (lib/chat-data.js). Chats are created only by upsertChats and by imports or restores, are
+ * never converted to or from another type, have no `url` (the original thread link is `sourceUrl`), and their id is
+ * always chatItemId(threadKey). Title, excerpt and collection are written by sync only while the user has not changed
+ * them: syncedTitleHash / syncedExcerptHash hold chatTextHash() of what sync last wrote and autoCollectionId the
+ * collection it last chose. `content`, tags the user added and subpages are the user's own and are never written by sync.
+ */
+export const CHAT_CATEGORIES = Object.freeze(['chat', 'coding_agent', 'agent', 'builder', 'search', 'companion']);
+export const CHAT_WORKFLOW_STATES = Object.freeze(['active', 'needs_review', 'waiting', 'paused', 'done', 'archived']);
+export const CHAT_ORIGINS = Object.freeze(['sync', 'manual', 'assistant', 'import']);
+// '' = live; deleted / out_of_scope / local_only came from Threadkeeper; disconnected = trashed by "Disconnect and remove".
+export const CHAT_REMOVED_REASONS = Object.freeze(['deleted', 'out_of_scope', 'local_only', 'disconnected']);
+export const CHAT_LIMITS = Object.freeze({ batch: 100, threadKey: 600, title: 300, excerpt: 300, topics: 8, topic: 40, tags: 20, tag: 60 });
+// Operations whose hard deletes are Still's own bookkeeping, not "the user deleted this chat forever" (the worker's
+// onCommit hook dismisses chats deleted by any other operation).
+export const CHAT_SYSTEM_DELETES = Object.freeze(['markChatsRemoved', 'deleteChats']);
+const CHAT_FIELDS = new Set(['v', 'source', 'threadKey', 'provider', 'providerLabel', 'category', 'kind', 'project', 'model', 'workflowState',
+  'messageCount', 'lastActivityAt', 'topics', 'analysis', 'analysisVersion', 'fingerprint', 'revision', 'seq', 'hasTranscript',
+  'transcriptTruncated', 'origin', 'syncedAt', 'syncedTitleHash', 'syncedExcerptHash', 'syncedTags', 'autoCollectionId', 'removed']);
+const CHAT_ANALYSIS_FIELDS = new Set(['source', 'generatedAt']);
+const count = (value, max = Number.MAX_SAFE_INTEGER) => { const n = Number(value); return Number.isSafeInteger(n) && n >= 0 ? Math.min(n, max) : 0; };
+const oneOf = (value, allowed, fallback = '') => (allowed.includes(value) ? value : fallback);
+const capList = (value, max, each) => {
+  const seen = new Set(), out = [];
+  for (const entry of list(value)) {
+    const clean = oneLine(entry, each), key = clean.toLowerCase();
+    if (!clean || seen.has(key)) continue;
+    seen.add(key); out.push(clean);
+    if (out.length >= max) break;
+  }
+  return out;
+};
+const chatHashPattern = /^[0-9a-f]{8}$/;
+/** 8 hex chars (FNV-1a 32 over UTF-8) of a title or excerpt as the item stores it: sync's "did the user change it" check. */
+export function chatTextHash(value) {
+  let hash = 0x811c9dc5;
+  for (const byte of new TextEncoder().encode(text(value))) { hash ^= byte; hash = Math.imul(hash, 0x01000193) >>> 0; }
+  return hash.toString(16).padStart(8, '0');
+}
+const chatThreadKey = value => { const key = text(value).trim(); return key.length <= CHAT_LIMITS.threadKey ? key : ''; };
+
+/**
+ * The stored `chat` object for an item type ('chat' only), or null. Every field is coerced and capped; `stored` is the
+ * saved object (keys this build does not know are kept from it).
+ */
+export function normalizeChat(value, type = 'chat', stored = null) {
+  if (type !== 'chat' || !isObject(value)) return null;
+  const analysis = isObject(value.analysis) ? value.analysis : {};
+  return keepUnknown({
+    v: 1, source: 'threadkeeper',
+    threadKey: chatThreadKey(value.threadKey),
+    provider: /^[a-z0-9_]{1,40}$/.test(text(value.provider)) ? value.provider : '',
+    providerLabel: oneLine(value.providerLabel, 80),
+    category: oneOf(value.category, CHAT_CATEGORIES, 'chat'),
+    kind: oneLine(value.kind, 40), project: oneLine(value.project, 200), model: oneLine(value.model, 120),
+    workflowState: oneOf(value.workflowState, CHAT_WORKFLOW_STATES),
+    messageCount: count(value.messageCount, 10000000),
+    lastActivityAt: isoDate(value.lastActivityAt),
+    topics: capList(value.topics, CHAT_LIMITS.topics, CHAT_LIMITS.topic),
+    analysis: keepUnknown({ source: oneOf(analysis.source, ['ai', 'local']), generatedAt: isoDate(analysis.generatedAt) },
+      isObject(stored?.analysis) ? stored.analysis : null, CHAT_ANALYSIS_FIELDS),
+    analysisVersion: count(value.analysisVersion, 1000),
+    fingerprint: oneLine(value.fingerprint, 128), revision: count(value.revision), seq: count(value.seq),
+    hasTranscript: value.hasTranscript === true, transcriptTruncated: value.transcriptTruncated === true,
+    origin: oneOf(value.origin, CHAT_ORIGINS, 'sync'),
+    syncedAt: isoDate(value.syncedAt),
+    syncedTitleHash: chatHashPattern.test(text(value.syncedTitleHash)) ? value.syncedTitleHash : '',
+    syncedExcerptHash: chatHashPattern.test(text(value.syncedExcerptHash)) ? value.syncedExcerptHash : '',
+    syncedTags: capList(value.syncedTags, CHAT_LIMITS.tags, CHAT_LIMITS.tag),
+    autoCollectionId: oneLine(value.autoCollectionId, MAX_PARENT_ID),
+    removed: oneOf(value.removed, CHAT_REMOVED_REASONS),
+  }, stored, CHAT_FIELDS);
+}
+
+/**
+ * Whether the user made a chat their own: notes, live subpages, tags they added, favorite, a rename or a move. Sync
+ * never trashes or deletes such a chat. `items` is the library's item list (for subpages).
+ */
+export function isChatTouched(item, items = []) {
+  if (!isObject(item) || item.type !== 'chat') return false;
+  const chat = isObject(item.chat) ? item.chat : {};
+  const synced = new Set((chat.syncedTags || []).map(tag => String(tag).toLowerCase()));
+  if (text(item.content).trim() || item.favorite === true) return true;
+  if ((item.tags || []).some(tag => !synced.has(String(tag).toLowerCase()))) return true;
+  if (chatTextHash(item.title) !== chat.syncedTitleHash) return true;
+  if (text(item.collectionId) !== text(chat.autoCollectionId)) return true;
+  return (Array.isArray(items) ? items : []).some(other => isObject(other) && other.parentId === item.id && !other.deletedAt);
+}
+
 /**
  * Validates and fills an item. `existing` is the stored record being edited: its unknown keys survive. With
  * { stored: true } the input itself is stored data (seed, import, backup): its unknown keys and a valid updatedAt are kept.
+ * A chat's `chat` object is taken from the input only for stored data and for the store's own chat operations
+ * (`syncChat`); every other edit keeps the stored one.
  */
-export function normalizeItem(input, existing = {}, { stored = false } = {}) {
+export function normalizeItem(input, existing = {}, { stored = false, syncChat = false } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Item must be an object.');
   const merged = { ...existing, ...input };
   // A partial sticky patch ({ sticky: { x, y } }) updates the stored placement; null turns the sticky back into a plain note.
@@ -145,7 +238,15 @@ export function normalizeItem(input, existing = {}, { stored = false } = {}) {
   if (stickyPatch) merged.sticky = { ...existing.sticky, ...input.sticky };
   const type = merged.type || 'bookmark';
   if (!ITEM_TYPES.includes(type)) throw new Error('Unknown item type.');
-  const url = safeUrl(merged.url);
+  if (existing.type && existing.type !== type && (existing.type === 'chat' || type === 'chat')) throw new Error('Chats cannot be converted.');
+  let chat = null;
+  if (type === 'chat') {
+    const source = stored || syncChat || !existing.type ? merged.chat : existing.chat;
+    chat = normalizeChat(source, type, stored ? merged.chat : existing.chat);
+    const id = text(existing.id) || text(input.id);
+    if (!chat?.threadKey || id !== chatItemId(chat.threadKey)) throw new Error('A chat needs its Threadkeeper thread.');
+  }
+  const url = type === 'chat' ? '' : safeUrl(merged.url);
   if (['bookmark', 'image', 'video'].includes(type) && !url && !merged.attachmentId && !merged.cover) {
     throw new Error('This item needs a URL or attached file.');
   }
@@ -155,7 +256,7 @@ export function normalizeItem(input, existing = {}, { stored = false } = {}) {
   const id = text(existing.id) || text(input.id) || uid('item');
   const item = {
     id, type,
-    title: text(merged.title).trim() || (url ? new URL(url).hostname : type === 'note' ? 'Untitled note' : 'Untitled item'),
+    title: text(merged.title).trim() || (url ? new URL(url).hostname : type === 'note' ? 'Untitled note' : type === 'chat' ? 'Untitled chat' : 'Untitled item'),
     url, excerpt: text(merged.excerpt), content: text(merged.content), articleContent: text(merged.articleContent).slice(0, 250000), tags: list(merged.tags),
     collectionId: text(merged.collectionId), favorite: merged.favorite === true,
     archived: merged.archived === true, deletedAt: merged.deletedAt ? text(merged.deletedAt) : null,
@@ -171,6 +272,7 @@ export function normalizeItem(input, existing = {}, { stored = false } = {}) {
     size: Number.isFinite(merged.size) && merged.size >= 0 ? merged.size : 0,
     pinned: merged.pinned === true, read: merged.read === true,
     sticky: normalizeSticky(merged.sticky, type, stored ? merged.sticky : existing.sticky),
+    ...(chat ? { chat } : {}),
     parentId: pageParent(merged.parentId, type, id),
     siteName: oneLine(merged.siteName, 200), author: oneLine(merged.author, 300), publishedAt: isoDate(merged.publishedAt),
     icon: iconUrl(merged.icon), lang: langTag(merged.lang),
@@ -501,9 +603,62 @@ export function createLibraryStore({ read, write, withLock = task => task(), rea
       const stillUsed = new Set(state.items.map(item => item.attachmentId).filter(Boolean));
       return { ids: gone.map(item => item.id), attachmentIds: [...new Set(gone.map(item => item.attachmentId).filter(id => id && !stillUsed.has(id)))] };
     };
+    /*
+     * Collections a chat operation may need: [{ key, name, parentKey?, parentId?, icon?, color? }]. A key is resolved on
+     * first use only (so a batch that changes nothing creates nothing): a live collection with the same name (trimmed, any
+     * case) under the same parent is reused, else one is created. parentKey refers to another spec, parentId to an
+     * existing collection (gone or in Trash → top level). place({ collectionKey } | { collectionId }) → collection id or
+     * '' (Inbox): an id that no longer exists falls back to the Inbox.
+     */
+    const collectionPlanner = specs => {
+      const byKey = new Map(), resolved = new Map(), busy = new Set();
+      let created = 0;
+      for (const spec of Array.isArray(specs) ? specs : []) {
+        const key = isObject(spec) ? text(spec.key) : '';
+        if (key && oneLine(spec.name, 200) && !byKey.has(key)) byKey.set(key, spec);
+      }
+      const live = id => !!id && state.collections.some(c => c.id === id && !c.deletedAt);
+      const ensure = key => {
+        if (resolved.has(key)) return resolved.get(key).id;
+        const spec = byKey.get(key);
+        if (!spec || busy.has(key)) return '';
+        busy.add(key);
+        const parentId = text(spec.parentKey) ? ensure(text(spec.parentKey)) : live(text(spec.parentId)) ? text(spec.parentId) : '';
+        busy.delete(key);
+        const name = oneLine(spec.name, 200), lower = name.toLowerCase();
+        const match = state.collections.find(c => !c.deletedAt && (c.parentId || '') === parentId && text(c.name).trim().toLowerCase() === lower);
+        if (match) { resolved.set(key, { id: match.id, created: false }); return match.id; }
+        const collection = normalizeCollection({ name, parentId, ...(text(spec.icon) ? { icon: oneLine(spec.icon, 100) } : {}), ...(text(spec.color) ? { color: spec.color } : {}) });
+        state.collections.push(collection);
+        unbury(state, 'collection', [collection.id]);
+        resolved.set(key, { id: collection.id, created: true }); created++;
+        return collection.id;
+      };
+      return {
+        // undefined when the entry asks for no placement.
+        target: placement => {
+          if (!isObject(placement)) return undefined;
+          if (text(placement.collectionKey)) return { key: text(placement.collectionKey), force: placement.force === true };
+          if (typeof placement.collectionId === 'string') return { id: placement.collectionId.trim(), force: placement.force === true };
+          return undefined;
+        },
+        place: target => (target.key !== undefined ? ensure(target.key) : live(target.id) ? target.id : ''),
+        get created() { return created; },
+        report: () => [...resolved].map(([key, { id, created: made }]) => ({ key, id, created: made })),
+      };
+    };
+    // The chat fields a Threadkeeper sync writes; origin, removed and the synced* bookkeeping belong to the store.
+    const SYNC_CHAT_FIELDS = ['provider', 'providerLabel', 'category', 'kind', 'project', 'model', 'workflowState', 'messageCount',
+      'lastActivityAt', 'topics', 'analysis', 'analysisVersion', 'revision', 'hasTranscript', 'transcriptTruncated'];
+    const syncFields = chat => Object.fromEntries(SYNC_CHAT_FIELDS.filter(key => Object.hasOwn(chat, key)).map(key => [key, chat[key]]));
+    // What a chat sync can change, for the "unchanged" check. syncedAt and updatedAt are clocks; a newer seq alone (the
+    // same thread offered again, e.g. after an epoch change) is not worth a library write either.
+    const chatView = item => JSON.stringify([item.title, item.excerpt, item.sourceUrl, item.siteName, item.collectionId, item.deletedAt || null,
+      item.tags, { ...item.chat, syncedAt: '', seq: 0 }]);
     switch (operation) {
       case 'loadLibrary': case 'exportLibrary': result = state; break;
       case 'saveItem': {
+        if (input?.type === 'chat') throw new Error('Chats come from Threadkeeper.');
         const valid = normalizeItem(input);
         const existing = input.id ? state.items.find(i => i.id === input.id) : valid.url && valid.type !== 'note'
           ? state.items.find(i => !i.deletedAt && i.type !== 'note' && canonicalUrl(i.url) === canonicalUrl(valid.url)) : null;
@@ -733,6 +888,170 @@ export function createLibraryStore({ read, write, withLock = task => task(), rea
         }
         result = state; extra = { importSummary: summary }; changed = true; break;
       }
+      case 'upsertChats': {
+        /*
+         * Threadkeeper threads into chat items, in one write: upsertChats(entries, { revive, ensureCollections, dismissedIds }).
+         * entry: { threadKey, id? (must be chatItemId(threadKey)), fingerprint, seq, origin, revive?, tags?,
+         *   item: { title, excerpt, sourceUrl, siteName, createdAt }, chat: { provider, …, revision, hasTranscript, … },
+         *   placement?: { collectionId } | { collectionKey } (+ force: true to move a chat the user moved, for manual sends) }.
+         * Rules (against the stored record, inside the queue): an id that is not a chat of this thread → skipped/invalid; an
+         * older seq → skipped/stale; a new id listed in dismissedIds (deleted forever by the user) → skipped/dismissed
+         * unless revive; a chat in Trash only refreshes its chat metadata (skipped/trashed) unless revive, which restores
+         * it (with the subpages trashed with it) and applies the placement. Title, excerpt and collection change only
+         * while the user has not changed them; notes, tags, favorite, archive, links and subpages are never touched.
+         * Nothing is written when every entry is unchanged or skipped.
+         * Returns { results: [{ threadKey, id, status, reason?, fingerprint?, seq? }], collections: [{ key, id, created }] }.
+         */
+        if (!Array.isArray(input)) throw new Error('Send a list of chats.');
+        if (input.length > CHAT_LIMITS.batch) throw new Error(`Send at most ${CHAT_LIMITS.batch} chats at once.`);
+        const opts = isObject(patch) ? patch : {};
+        const dismissed = new Set(list(opts.dismissedIds));
+        const planner = collectionPlanner(opts.ensureCollections);
+        const byId = new Map(state.items.map(item => [item.id, item]));
+        const stamp = now(), changes = [], created = [], results = [], seen = new Set();
+        for (const entry of input) {
+          const threadKey = isObject(entry) ? chatThreadKey(entry.threadKey) : '';
+          const id = threadKey ? chatItemId(threadKey) : '';
+          const done = (status, extra = {}) => results.push({ threadKey: threadKey || (isObject(entry) ? text(entry.threadKey).slice(0, CHAT_LIMITS.threadKey) : ''), id, status, ...extra });
+          if (!threadKey || !isObject(entry.chat) || (entry.id !== undefined && entry.id !== id) || seen.has(id)) { done('skipped', { reason: 'invalid' }); continue; }
+          seen.add(id);
+          const existing = byId.get(id);
+          if (existing && (existing.type !== 'chat' || existing.chat?.threadKey !== threadKey)) { done('skipped', { reason: 'invalid' }); continue; }
+          const revive = opts.revive === true || entry.revive === true;
+          const info = isObject(entry.item) ? entry.item : {};
+          const incoming = { ...syncFields(entry.chat), threadKey, fingerprint: oneLine(entry.fingerprint ?? entry.chat.fingerprint, 128), seq: count(entry.seq ?? entry.chat.seq) };
+          let sourceUrl = '';
+          try { sourceUrl = safeUrl(text(info.sourceUrl).trim()); } catch { sourceUrl = ''; }
+          const fields = { title: oneLine(info.title, CHAT_LIMITS.title) || 'Untitled chat', excerpt: oneLine(info.excerpt, CHAT_LIMITS.excerpt),
+            sourceUrl, siteName: oneLine(info.siteName || entry.chat.providerLabel, 200) };
+          const target = planner.target(entry.placement);
+          try {
+            if (!existing) {
+              if (dismissed.has(id) && !revive) { done('skipped', { reason: 'dismissed' }); continue; }
+              const collectionId = target ? planner.place(target) : '';
+              const tags = capList(entry.tags, CHAT_LIMITS.tags, CHAT_LIMITS.tag);
+              const createdAt = storedStamp(info.createdAt);
+              const next = normalizeItem({ id, type: 'chat', ...fields, tags, collectionId, ...(createdAt ? { createdAt } : {}),
+                chat: { ...incoming, origin: oneOf(entry.origin ?? entry.chat.origin, CHAT_ORIGINS, 'sync'), removed: '', autoCollectionId: collectionId,
+                  syncedTags: tags, syncedAt: stamp } }, {}, { syncChat: true });
+              next.chat.syncedTitleHash = chatTextHash(next.title);
+              next.chat.syncedExcerptHash = chatTextHash(next.excerpt);
+              changes.push([null, next]); created.push(id);
+              done('created', { fingerprint: next.chat.fingerprint, seq: next.chat.seq });
+              continue;
+            }
+            const old = existing.chat;
+            if (incoming.seq && old.seq && incoming.seq < old.seq) { done('skipped', { reason: 'stale', fingerprint: old.fingerprint, seq: old.seq }); continue; }
+            const trashed = !!existing.deletedAt, restore = trashed && revive;
+            const chat = { ...old, ...incoming, removed: trashed && !restore ? old.removed : '' };
+            const change = { chat };
+            if (!trashed || restore) {
+              const own = { title: chatTextHash(existing.title) === old.syncedTitleHash, excerpt: chatTextHash(existing.excerpt) === old.syncedExcerptHash };
+              if (own.title) change.title = fields.title;
+              if (own.excerpt) change.excerpt = fields.excerpt;
+              change.sourceUrl = fields.sourceUrl; change.siteName = fields.siteName;
+              if (target && (restore || target.force || text(existing.collectionId) === text(old.autoCollectionId))) {
+                change.collectionId = planner.place(target);
+                chat.autoCollectionId = change.collectionId;
+              }
+              if (restore) change.deletedAt = null;
+            }
+            const next = normalizeItem(change, existing, { syncChat: true });
+            if ('title' in change) next.chat.syncedTitleHash = chatTextHash(next.title);
+            if ('excerpt' in change) next.chat.syncedExcerptHash = chatTextHash(next.excerpt);
+            const status = trashed && !restore ? ['skipped', { reason: 'trashed' }] : ['updated', {}];
+            if (chatView(next) === chatView(existing)) {
+              done(status[0] === 'updated' ? 'unchanged' : status[0], { ...status[1], fingerprint: old.fingerprint, seq: old.seq });
+              continue;
+            }
+            next.chat.syncedAt = stamp;
+            changes.push([existing, next]);
+            done(status[0], { ...status[1], fingerprint: next.chat.fingerprint, seq: next.chat.seq });
+          } catch { done('skipped', { reason: 'invalid' }); }
+        }
+        if (changes.length) commitItems(changes);
+        unbury(state, 'item', created);
+        result = { results, collections: planner.report() };
+        changed = changes.length > 0 || planner.created > 0; break;
+      }
+      case 'markChatsRemoved': {
+        /*
+         * A thread left Threadkeeper or may no longer be shared: markChatsRemoved([{ id, reason }], { trash }).
+         * local_only: an untouched chat (see isChatTouched) is deleted forever; a touched one keeps the user's notes, tags and
+         *   subpages but loses everything that came from the thread (title "Private thread" unless renamed). The caller
+         *   deletes the chat's IndexedDB data.
+         * deleted / out_of_scope / disconnected: chat.removed is set; with { trash: true } an untouched chat goes to Trash.
+         *   A touched chat is always kept.
+         * Returns { results: [{ id, status: 'removed' | 'kept' | 'missing' }] }.
+         */
+        if (!Array.isArray(input)) throw new Error('Send a list of chats.');
+        const trash = isObject(patch) && patch.trash === true;
+        const byId = new Map(state.items.map(item => [item.id, item]));
+        const changes = [], removed = new Set(), results = [], seen = new Set();
+        for (const entry of input) {
+          const id = isObject(entry) ? text(entry.id) : '';
+          const reason = isObject(entry) ? oneOf(entry.reason, CHAT_REMOVED_REASONS) : '';
+          const item = byId.get(id);
+          if (!item || item.type !== 'chat' || !reason || seen.has(id)) { results.push({ id, status: 'missing' }); continue; }
+          seen.add(id);
+          const touched = isChatTouched(item, state.items);
+          if (reason === 'local_only') {
+            if (!touched) { removed.add(id); results.push({ id, status: 'removed' }); continue; }
+            const renamed = chatTextHash(item.title) !== item.chat.syncedTitleHash;
+            const title = renamed ? item.title : 'Private thread';
+            const synced = new Set((item.chat.syncedTags || []).map(tag => tag.toLowerCase()));
+            const next = normalizeItem({ title, excerpt: chatTextHash(item.excerpt) === item.chat.syncedExcerptHash ? '' : item.excerpt,
+              tags: item.tags.filter(tag => !synced.has(tag.toLowerCase())), sourceUrl: '', siteName: '' }, item);
+            next.chat = normalizeChat({ threadKey: item.chat.threadKey, origin: item.chat.origin, removed: 'local_only',
+              syncedTitleHash: renamed ? item.chat.syncedTitleHash : chatTextHash(title), autoCollectionId: item.chat.autoCollectionId });
+            changes.push([item, next]); results.push({ id, status: 'removed' });
+            continue;
+          }
+          const toTrash = trash && !touched;
+          if (item.chat.removed !== reason || (toTrash && !item.deletedAt)) {
+            changes.push([item, normalizeItem({ chat: { ...item.chat, removed: reason }, ...(toTrash && !item.deletedAt ? { deletedAt: now() } : {}) }, item, { syncChat: true })]);
+          }
+          results.push({ id, status: toTrash ? 'removed' : 'kept' });
+        }
+        if (changes.length) commitItems(changes);
+        if (removed.size) removeItems(removed);
+        result = { results };
+        changed = changes.length > 0 || removed.size > 0; break;
+      }
+      case 'placeChats': {
+        /*
+         * Re-places chats after the placement preference changed: placeChats([{ id, collectionId } | { id, collectionKey }],
+         * { ensureCollections }). Only live chats still where sync put them move; one the user moved is 'kept'.
+         * Returns { results: [{ id, status: 'moved' | 'unchanged' | 'kept' | 'missing', collectionId? }], collections }.
+         */
+        if (!Array.isArray(input)) throw new Error('Send a list of chats.');
+        const planner = collectionPlanner(isObject(patch) ? patch.ensureCollections : []);
+        const byId = new Map(state.items.map(item => [item.id, item]));
+        const changes = [], results = [], seen = new Set();
+        for (const entry of input) {
+          const id = isObject(entry) ? text(entry.id) : '';
+          const item = byId.get(id), target = planner.target(entry);
+          if (!item || item.type !== 'chat' || item.deletedAt || !target || seen.has(id)) { results.push({ id, status: 'missing' }); continue; }
+          seen.add(id);
+          if (text(item.collectionId) !== text(item.chat.autoCollectionId)) { results.push({ id, status: 'kept' }); continue; }
+          const collectionId = planner.place(target);
+          if (collectionId === text(item.collectionId)) { results.push({ id, status: 'unchanged', collectionId }); continue; }
+          changes.push([item, normalizeItem({ collectionId, chat: { ...item.chat, autoCollectionId: collectionId } }, item, { syncChat: true })]);
+          results.push({ id, status: 'moved', collectionId });
+        }
+        if (changes.length) commitItems(changes);
+        result = { results, collections: planner.report() };
+        changed = changes.length > 0 || planner.created > 0; break;
+      }
+      case 'deleteChats': {
+        // Deletes chats forever without a tombstone (an assistant import being undone): deleteChats(ids) → { ids }.
+        // Their subpages move to the top level. Other item types are ignored.
+        const ids = new Set(list(input).filter(id => state.items.some(item => item.id === id && item.type === 'chat')));
+        if (!ids.size) { result = { ids: [] }; break; }
+        result = { ids: removeItems(ids).ids };
+        unbury(state, 'item', result.ids);
+        changed = true; break;
+      }
       default: throw new Error('Unknown library operation.');
     }
     if (changed) {
@@ -814,6 +1133,14 @@ export const movePage = (id, placement = {}) => operation('movePage', [id, place
 export const upsertContentSection = (id, section = {}) => operation('upsertContentSection', [id, section]);
 export const updateSettings = patch => operation('updateSettings', [patch]);
 export const importLibrary = (data, options = {}) => operation('importLibrary', [data, options]);
+/** Threadkeeper threads into chat items (one write): (entries, { revive, ensureCollections, dismissedIds }) → { results, collections }. */
+export const upsertChats = (entries, options = {}) => operation('upsertChats', [entries, options]);
+/** Threads that left Threadkeeper: ([{ id, reason }], { trash }) → { results: [{ id, status }] }. */
+export const markChatsRemoved = (entries, options = {}) => operation('markChatsRemoved', [entries, options]);
+/** Moves chats still where sync put them: ([{ id, collectionId | collectionKey }], { ensureCollections }) → { results, collections }. */
+export const placeChats = (entries, options = {}) => operation('placeChats', [entries, options]);
+/** Deletes chats forever without a tombstone or dismissal (undoing an import): (ids) → { ids }. */
+export const deleteChats = ids => operation('deleteChats', [ids]);
 export const exportLibrary = async () => {
   const state = await operation('exportLibrary', []);
   // Integration tokens are device-only and never included in portable backups.
@@ -844,7 +1171,8 @@ export function queryItems(state, filters = {}) {
     const tags = item.tags.map(tag => tag.toLowerCase());
     if (filters.tag && !tags.includes(filters.tag.toLowerCase())) return false;
     if (tokenTags.some(tag => !tags.includes(tag))) return false;
-    const haystack = [item.title, item.url, item.excerpt, item.content, item.articleContent, ...item.tags, ...item.highlights.map(h => h.text)].join(' ').toLowerCase();
+    const chat = item.type === 'chat' && isObject(item.chat) ? [item.chat.providerLabel, item.chat.project, ...(item.chat.topics || [])] : [];
+    const haystack = [item.title, item.url, item.excerpt, item.content, item.articleContent, ...item.tags, ...item.highlights.map(h => h.text), ...chat].join(' ').toLowerCase();
     return terms.every(term => haystack.includes(term));
   });
   const sort = filters.sort || 'newest';
