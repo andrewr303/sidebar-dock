@@ -39,8 +39,9 @@ export const SETTINGS_SECTIONS = Object.freeze([
   { id: 'accounts', group: 'connections', label: 'Connected accounts', icon: 'key-round', summary: 'GitHub, Linear and other services',
     description: 'Accounts that dashboard widgets use to show your pull requests, issues and more. Credentials stay on this device.',
     keywords: 'accounts sign in login oauth token api key github linear product hunt credentials' },
-  { id: 'integrations', group: 'connections', label: 'Integrations', icon: 'plug', summary: 'Raindrop.io and other apps',
-    description: 'Move links between Still and the apps you already use.', keywords: 'integrations raindrop notion readwise zapier make n8n rss drive dropbox' },
+  { id: 'integrations', group: 'connections', label: 'Integrations', icon: 'plug', summary: 'AI chat threads, Raindrop.io and other apps',
+    description: 'Bring in your AI chats from Threadkeeper, and move links between Still and the apps you already use.',
+    keywords: 'integrations raindrop notion readwise zapier make n8n rss drive dropbox threadkeeper threads chats transcripts chatgpt claude gemini coding agent sessions paperclip' },
   { id: 'shortcuts', group: 'help', label: 'Keyboard shortcuts', icon: 'keyboard', summary: 'Keys in Still and in Chrome',
     description: 'Keys that work inside Still, and the Chrome keys that work on any page.', keywords: 'keyboard shortcuts keys hotkeys commands' },
   { id: 'about', group: 'help', label: 'About', icon: 'info', summary: 'Version and where your data lives',
@@ -52,7 +53,7 @@ export const SETTINGS_SECTIONS = Object.freeze([
 const SECTION_IDS = new Set(SETTINGS_SECTIONS.map(section => section.id));
 // Section ids from earlier versions and natural aliases, so old deep links keep working.
 const ALIASES = { theme: 'appearance', themes: 'appearance', 'new-tab': 'newtab', dashboard: 'newtab', wallpaper: 'newtab', backup: 'library',
-  models: 'ai', providers: 'ai', mcp: 'agents', account: 'accounts', keys: 'shortcuts', permissions: 'assistant', approvals: 'assistant' };
+  models: 'ai', providers: 'ai', mcp: 'agents', account: 'accounts', keys: 'shortcuts', permissions: 'assistant', approvals: 'assistant', threadkeeper: 'integrations' };
 
 export const isSection = id => SECTION_IDS.has(id);
 export const sectionById = id => SETTINGS_SECTIONS.find(section => section.id === id) || null;

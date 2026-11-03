@@ -333,7 +333,7 @@ registerActions({
   'shell.new-note': ({ ctx }) => newNote(ctx),
   'shell.today-note': ({ ctx }) => todayNote(ctx),
   'shell.save-page': ({ ctx }) => saveCurrentTab(ctx, {}),
-  'shell.settings': ({ ctx, data, event }) => openSettings(ctx, payload(event, data).section || 'general'),
+  'shell.settings': ({ ctx, data, event }) => openSettings(ctx, payload(event, data).section || 'general', { anchor: payload(event, data).anchor || '' }),
   'shell.shortcuts': ({ ctx }) => openSettings(ctx, 'shortcuts'),
   'shell.toggle-theme': ({ ctx }) => ctx.store.updateSettings({ theme: nextTheme() }),
   'shell.command': ({ ctx, el }) => {
