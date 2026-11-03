@@ -2,7 +2,8 @@
  * Automatic device-local snapshots of everything Still keeps in storage, so an update, a migration, a restore or an
  * import can always be undone. Snapshots live in IndexedDB 'still.snapshots.v1' on this device only: they include
  * device secrets (API keys, account tokens) and are never exported or synced. Item attachment blobs are not copied; they
- * are only removed by an explicit delete forever / empty trash.
+ * are only removed by an explicit delete forever / empty trash. AI chat summaries and transcripts (IndexedDB
+ * 'still.chats.v1') are not copied either: a restored chat whose data is gone shows that and can refresh from Threadkeeper.
  *
  * Record (logical): { id, reason, createdAt, extensionVersion, previousVersion?, counts: { items, collections, notes,
  *   boards, conversations }, bytes, data }. Stored as a summary (store 'summaries') plus its data (store 'payloads') so
@@ -29,9 +30,12 @@ export const SNAPSHOT_MESSAGE = 'still:snapshots';
 export const SNAPSHOT_REASONS = Object.freeze(['update', 'daily', 'manual', 'before-restore', 'before-import', 'before-migration']);
 export const PAGE_SNAPSHOT_REASONS = Object.freeze(['manual', 'before-import']);
 export const SNAPSHOT_RETENTION = Object.freeze({ keep: 30, updates: 5, restores: 3 });
-// Rebuildable caches and device bookkeeping are neither copied nor removed by a restore.
+// Rebuildable caches and device bookkeeping are neither copied nor removed by a restore. The Threadkeeper pairing state
+// is device bookkeeping too: restoring an older snapshot must never unpair Still or bring back a revoked pairing (the
+// worker starts a new sync epoch after a restore instead, so Threadkeeper re-offers what the restored library lacks).
+export const THREADKEEPER_STATE_KEY = 'still.threadkeeper.v1';
 export const SNAPSHOT_EXCLUDED_KEYS = Object.freeze(['still.widget-cache.v1', 'still.ui.recent.v1', META_KEY,
-  'still.link-icons.v1', 'still.appearance.v1', 'still.embed.hints.v1']);
+  'still.link-icons.v1', 'still.appearance.v1', 'still.embed.hints.v1', THREADKEEPER_STATE_KEY]);
 // Stores that write their own keys from pages; a restore waits for (and holds) their locks so it never interleaves.
 // API keys (secrets.js) come last: their lock is taken inside 'still.ai.v2' work, never the other way round.
 const RESTORE_LOCKS = ['still.dashboard.v1', 'still.ai.v2', 'still.ai.conversations', 'still.ai.secrets.v1'];

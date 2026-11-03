@@ -299,3 +299,17 @@ test('extension pages send snapshot requests to the service worker', async () =>
     await assert.rejects(deleteSnapshot('x'), /Snapshot storage failed/);
   } finally { delete globalThis.chrome; }
 });
+
+test('the Threadkeeper pairing state is device bookkeeping: never snapshotted, never removed by a restore', async () => {
+  const { THREADKEEPER_STATE_KEY, SNAPSHOT_EXCLUDED_KEYS } = await import('../extension/lib/storage/snapshots.js');
+  assert.equal(THREADKEEPER_STATE_KEY, 'still.threadkeeper.v1');
+  assert.ok(SNAPSHOT_EXCLUDED_KEYS.includes(THREADKEEPER_STATE_KEY));
+  assert.equal(isSnapshotKey('still.threadkeeper.v1'), false);
+  const area = memoryArea({ 'still.library.v1': { schemaVersion: 1, items: [], collections: [], settings: {} }, 'still.threadkeeper.v1': { version: 1, status: 'paired' } });
+  let tick = Date.parse('2026-01-01T00:00:00Z');
+  const service = createSnapshotService({ area, backend: memorySnapshotBackend(), locks: null, clock: () => tick++, version: () => '1.0.0', exclusive: task => task() });
+  const snapshot = await service.create('manual');
+  await area.write('still.threadkeeper.v1', { version: 1, status: 'revoked' });
+  await service.restore(snapshot.id);
+  assert.deepEqual(await area.read('still.threadkeeper.v1'), { version: 1, status: 'revoked' });
+});
