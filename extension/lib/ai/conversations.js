@@ -108,7 +108,9 @@ export function normalizeMessage(input = {}, now = new Date().toISOString()) {
     text: text(input.text, CONVERSATION_LIMITS.messageChars),
     thinking: text(input.thinking, 50000),
     citations: (Array.isArray(input.citations) ? input.citations : []).filter(c => c && typeof c.id === 'string')
-      .slice(0, 100).map((c, index) => ({ n: Number.isSafeInteger(c.n) ? c.n : index + 1, id: c.id, title: text(c.title, 500), url: text(c.url, 8192) })),
+      .slice(0, 100).map((c, index) => ({ n: Number.isSafeInteger(c.n) ? c.n : index + 1, id: c.id, title: text(c.title, 500), url: text(c.url, 8192),
+        // An AI thread keeps its Threadkeeper key, so the citation can still be opened or imported after a reload.
+        ...(c.kind === 'ai_thread' && typeof c.threadKey === 'string' && c.threadKey && c.threadKey.length <= 600 ? { kind: 'ai_thread', threadKey: c.threadKey } : {}) })),
     tools: (Array.isArray(input.tools) ? input.tools : []).filter(t => t && typeof t.name === 'string').slice(0, 50)
       .map(t => ({ name: t.name, summary: text(t.summary, 300), ...(t.isError ? { isError: true } : {}) })),
     proposals: (plain(Array.isArray(input.proposals) ? input.proposals : []) || []).slice(0, 10),

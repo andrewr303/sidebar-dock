@@ -347,7 +347,8 @@ export function renderCallout(kind,body){const entry=CALLOUT_KINDS[kind]||CALLOU
 // resolveLink(title) -> { id, title, type } | null and linkClass (string or (link) => string) for [[wiki links]] and
 // page blocks (pass resolveLink wherever a note can hold subpages, or page rows cannot show live titles).
 // Wrap the output in an element with class "markdown-body" to get the shared reading styles.
-export function renderMarkdown(markdown,{interactiveTasks=false,compact=false,citations,resolveLink,linkClass}={}){
+// images:false renders a standalone image as a link instead (untrusted text, such as AI thread transcripts).
+export function renderMarkdown(markdown,{interactiveTasks=false,compact=false,citations,resolveLink,linkClass,images=true}={}){
  const options={citations,resolveLink,linkClass},o=inlineOptions(options),render=value=>inline(String(value??''),0,o);
  const source=String(markdown??''),taskIndices=taskLineIndices(source);
  const task=(b,offset)=>{const index=taskIndices[offset+b._lineStart],label=escapeHtml(inlineText(b.text)||'To-do');return `<div class="task-line${b.checked?' done':''}">${interactiveTasks&&index!==null&&index!==undefined?`<input type="checkbox" data-task-index="${index}"${b.checked?' checked':''} aria-label="${label}">`:`<span class="task-check${b.checked?' checked':''}" aria-hidden="true">${b.checked?checkIcon:''}</span>`}<span>${render(b.text)}</span></div>`;};
@@ -375,7 +376,7 @@ export function renderMarkdown(markdown,{interactiveTasks=false,compact=false,ci
    if(b.type==='page'){out+=renderPage(b,o);continue;}
    if(b.type==='quote'){out+='<blockquote>'+render(b.text)+'</blockquote>';continue;}
    if(b.type==='callout'){out+=renderCallout(b.kind,render(b.text));continue;}
-   const image=b.type==='paragraph'&&standaloneImage(b.text);if(image){out+=renderImage(image);continue;}
+   const image=images!==false&&b.type==='paragraph'&&standaloneImage(b.text);if(image){out+=renderImage(image);continue;}
    out+=b.text.trim()?'<p>'+render(b.text)+'</p>':'<div class="paragraph-space"></div>';
   }return out;
  };

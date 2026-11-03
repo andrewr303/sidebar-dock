@@ -105,7 +105,12 @@ function fieldTexts(item) {
   let url = '';
   try { const parsed = new URL(text(item.url) || text(item.sourceUrl)); url = `${parsed.hostname} ${parsed.pathname}`; } catch {}
   const highlights = (Array.isArray(item.highlights) ? item.highlights : []).map(h => `${text(h?.text)} ${text(h?.note)}`).join('\n');
-  return { title: text(item.title), tags: (Array.isArray(item.tags) ? item.tags : []).join(' '), url, excerpt: text(item.excerpt),
+  // An AI chat is found by its provider, project, kind of work and topics too ("claude code sessions about billing").
+  const chat = item.type === 'chat' && item.chat && typeof item.chat === 'object' ? item.chat : null;
+  if (chat) url = [url, text(chat.providerLabel), text(chat.provider).replace(/_/g, ' '), text(chat.project), text(chat.kindLabel) || text(chat.kind), text(chat.agentLabel),
+    chat.category === 'coding_agent' ? 'coding agent session' : ''].filter(Boolean).join(' ');
+  const topics = chat && Array.isArray(chat.topics) ? chat.topics.filter(topic => typeof topic === 'string') : [];
+  return { title: text(item.title), tags: [...(Array.isArray(item.tags) ? item.tags : []), ...topics].join(' '), url, excerpt: text(item.excerpt),
     highlights, content: text(item.content), article: text(item.articleContent), fileName: text(item.fileName) };
 }
 
