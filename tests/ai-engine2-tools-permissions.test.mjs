@@ -349,7 +349,7 @@ test('the system prompt says which kinds apply without review, and keeps the rev
   assert.match(plain, /Write tools only propose changes\. The user reviews each proposal/);
   const trusted = assistantSystemPrompt({ tools: true, today: '2026-11-01', permissions: PERMISSION_PRESETS.trusted });
   assert.doesNotMatch(trusted, /Write tools only propose changes/);
-  assert.match(trusted, /apply without review: Create \(new notes, saved links and collections\); Organize \(.+\); Edit \(.+\); Dashboard \(add widgets to your boards\)\./);
+  assert.match(trusted, /apply without review: Create \(new notes, saved links, imported chats and collections\); Organize \(.+\); Edit \(.+\); Dashboard \(add widgets to your boards\)\./);
   assert.doesNotMatch(trusted, /Delete \(/, 'Delete still asks under Trusted');
   assert.match(trusted, /appliedWithoutReview; mention briefly that the user can undo it/);
   assert.match(trusted, new RegExp(`A step whose changes are all of those kinds and that changes at most ${MAX_AUTO_ITEMS} items is applied at once`), 'the size limit is stated too');
@@ -383,7 +383,7 @@ test('the assistant reads assistantPermissions once per turn and passes it to th
   const events = [];
   const { message } = await assistant.runAssistant({ input: 'Write a summary note', onEvent: event => events.push(event), onProposal: async () => { throw new Error('must not ask'); } });
   assert.equal(reads, 1);
-  assert.match(requests[0].system, /apply without review: Create \(new notes, saved links and collections\)\./);
+  assert.match(requests[0].system, /apply without review: Create \(new notes, saved links, imported chats and collections\)\./);
   assert.match(requests[0].tools.find(tool => tool.name === 'create_note').description, /apply without review/);
   assert.match(requests[0].tools.find(tool => tool.name === 'trash_items').description, /only after the user approves/);
   assert.equal(message.proposals.length, 1);

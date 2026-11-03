@@ -13,9 +13,9 @@ test('the facade exposes the SPEC 7.2 API (plus pauseIndexing and the semanticSe
   // The research agent's run API (build contracts §6) is part of the facade too.
   assert.deepEqual(Object.keys(ai).filter(name => !SPEC_EXPORTS.includes(name)).sort(), ['ANTHROPIC_EFFORTS', 'DEFAULT_AI_SETTINGS', 'EFFORT_LABELS', 'EFFORT_LEVELS',
     'HANDOFF_TARGETS', 'cancelChatGptSignIn', 'chatGptSignInStatus', 'chatProviders', 'cliSignInStatus', 'continueResearch', 'embeddingProviders', 'ensureHostPermission', 'getBridgeStatus',
-    'getProvider', 'handoffPlan', 'hostPermissionOrigins', 'importDocument', 'importTarget', 'onConnectionsChanged', 'pairBridge', 'pauseIndexing', 'raiseResearchBudget',
-    'researchAvailability', 'resetResearchProvisioning', 'resolveChatTarget', 'resumeResearch', 'semanticSearch', 'semanticSearchAvailable', 'startChatGptSignIn', 'startResearch',
-    'stopResearch', 'subscribeResearch', 'undoProposal', 'undoResearch']);
+    'getProvider', 'handoffPlan', 'hostPermissionOrigins', 'importDocument', 'importTarget', 'importThreadCitation', 'onConnectionsChanged', 'openThreadInThreadkeeper', 'pairBridge',
+    'pauseIndexing', 'raiseResearchBudget', 'researchAvailability', 'resetResearchProvisioning', 'resolveChatTarget', 'resolveThreadCitation', 'resumeResearch', 'semanticSearch',
+    'semanticSearchAvailable', 'startChatGptSignIn', 'startResearch', 'stopResearch', 'subscribeResearch', 'threadStatus', 'undoProposal', 'undoResearch', 'warmThreads']);
   for (const name of ['researchAvailability', 'startResearch', 'continueResearch', 'resumeResearch', 'stopResearch', 'raiseResearchBudget', 'undoResearch', 'subscribeResearch', 'resetResearchProvisioning']) {
     assert.equal(typeof ai[name], 'function', name);
   }
