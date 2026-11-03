@@ -1,7 +1,7 @@
 // Pure routing rules for app.js: which views exist, which one a page opens on and what its tab is called.
 import { settingsGroup } from '../lib/settings-schema.js';
 
-export const MAIN_VIEWS = /^(dashboard|assistant|stickies|settings(?::[a-z-]+)?|all|inbox|favorites|notes|tasks|highlights|map|archive|trash|duplicates|untagged|reminders|type:[a-z]+|collection:.+|tag:.+)$/;
+export const MAIN_VIEWS = /^(dashboard|assistant|stickies|settings(?::[a-z-]+)?|all|inbox|favorites|notes|chats|tasks|highlights|map|archive|trash|duplicates|untagged|reminders|type:[a-z]+|collection:.+|tag:.+)$/;
 export const isMainView = view => typeof view === 'string' && MAIN_VIEWS.test(view);
 export const isSettingsView = view => typeof view === 'string' && /^settings(?::|$)/.test(view);
 /** Views that draw their own page header, so the shell leaves out the top bar (search, Ask, Add). */

@@ -11,6 +11,7 @@ import { renderDetail } from './detail.js';
 import { renderMap } from './map.js';
 import { renderPageTab } from './page.js';
 import { renderNotesWorkspace, renderTasks, renderSideNotes, createNote } from './notes.js';
+import { renderChatsWorkspace } from './chats.js';
 import { renderAiPanel, askAi } from './ai-panel.js';
 import { openCommandPalette } from './command.js';
 import { openAdd } from './quick-add.js';
@@ -31,15 +32,15 @@ const SIDE_TABS = [
 ];
 const TYPE_FILTERS = [
   { value: 'all', label: 'All types' }, { value: 'link', label: 'Links' }, { value: 'article', label: 'Articles' }, { value: 'note', label: 'Notes' },
-  { value: 'image', label: 'Images' }, { value: 'video', label: 'Videos' }, { value: 'file', label: 'Files' },
+  { value: 'image', label: 'Images' }, { value: 'video', label: 'Videos' }, { value: 'file', label: 'Files' }, { value: 'chat', label: 'AI chats' },
 ];
 const SEARCH_TOKENS = [
   { token: 'tag:', label: 'tag:name or #name', hint: 'Tag' },
-  { token: 'type:', label: 'type:note, type:link', hint: 'Type' },
+  { token: 'type:', label: 'type:note, type:link, type:chat', hint: 'Type' },
   { token: 'site:', label: 'site:example.com', hint: 'Website' },
   { token: '"', label: '"exact phrase"', hint: 'Phrase' },
 ];
-const NON_ITEM_VIEWS = ['notes', 'tasks', 'map', 'dashboard', 'assistant', 'stickies'];
+const NON_ITEM_VIEWS = ['notes', 'chats', 'tasks', 'map', 'dashboard', 'assistant', 'stickies'];
 // Panels the full tab shows beside the main view (settings are a view there; the side panel shows them as a covering panel).
 const FULL_PANELS = ['item', 'ai'];
 const PANEL = { min: 340, max: 640, fallback: 400, step: 16 };
@@ -66,9 +67,9 @@ export function viewTitle(ctx, view = ctx.state.view) {
   if (isSettingsView(view)) return 'Settings';
   if (view.startsWith('collection:')) return ctx.select.collection(view.slice(11))?.name || 'Collection';
   if (view.startsWith('tag:')) return `#${view.slice(4)}`;
-  if (view.startsWith('type:')) return { bookmark: 'Links', article: 'Articles', image: 'Images', video: 'Videos', file: 'Files' }[view.slice(5)] || 'Items';
+  if (view.startsWith('type:')) return { bookmark: 'Links', article: 'Articles', image: 'Images', video: 'Videos', file: 'Files', note: 'Notes', chat: 'Chats' }[view.slice(5)] || 'Items';
   return { dashboard: 'Dashboard', assistant: 'AI Assistant', stickies: 'Sticky notes',
-    all: 'All items', inbox: 'Inbox', favorites: 'Favorites', notes: 'Notes', tasks: 'Tasks', highlights: 'Highlights', map: 'Knowledge map',
+    all: 'All items', inbox: 'Inbox', favorites: 'Favorites', notes: 'Notes', chats: 'Chats', tasks: 'Tasks', highlights: 'Highlights', map: 'Knowledge map',
     archive: 'Archive', trash: 'Trash', duplicates: 'Duplicates', untagged: 'Untagged', reminders: 'Reminders' }[view] || 'All items';
 }
 
@@ -119,6 +120,7 @@ function renderMain(ctx) {
   if (view === 'assistant') return renderAssistantPage(ctx);
   if (view === 'stickies') return renderStickiesView(ctx);
   if (view === 'notes') return renderNotesWorkspace(ctx);
+  if (view === 'chats') return renderChatsWorkspace(ctx);
   if (view === 'tasks') return renderTasks(ctx);
   if (view === 'map') return renderMap(ctx);
   return renderItemsView(ctx, { surface: 'full' });

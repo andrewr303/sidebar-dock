@@ -13,15 +13,16 @@ import { parentIdOf } from '../lib/pages.js';
 export const MAP_WIDTH = 920;
 export const MAP_HEIGHT = 580;
 const LIMIT = 60;
+// "All" leaves out AI chats (synced from Threadkeeper, often thousands); the Chats filter shows them.
 const TYPE_FILTERS = [
-  { value: 'all', label: 'All' }, { value: 'note', label: 'Notes' }, { value: 'link', label: 'Links' }, { value: 'media', label: 'Media' },
+  { value: 'all', label: 'All' }, { value: 'note', label: 'Notes' }, { value: 'link', label: 'Links' }, { value: 'media', label: 'Media' }, { value: 'chat', label: 'Chats' },
 ];
-const KIND = { note: 'note', bookmark: 'link', article: 'link', image: 'media', video: 'media', file: 'file' };
+const KIND = { note: 'note', bookmark: 'link', article: 'link', image: 'media', video: 'media', file: 'file', chat: 'chat' };
 
 // ---------------------------------------------------------------------------------------------------------------
 // Pure helpers (exported for tests)
 
-const typeMatches = (item, type) => type === 'all' || !type ? true
+const typeMatches = (item, type) => type === 'all' || !type ? item.type !== 'chat'
   : type === 'link' ? ['bookmark', 'article'].includes(item.type)
   : type === 'media' ? ['image', 'video', 'file'].includes(item.type)
   : item.type === type;
@@ -251,10 +252,10 @@ function scopeButton(ctx, scope) {
     ${glyph}<span class="btn-label">${name}</span>${icon('chevron-down', { size: 14, className: 'btn-icon-right' })}</button>`;
 }
 
-function legend(similarOn) {
+function legend(similarOn, chats = false) {
   const key = (cls, text) => html`<span class="map-key"><span class="${cls}" aria-hidden="true"></span>${text}</span>`;
   return html`<div class="map-legend" role="note" aria-label="Legend">
-    ${key('map-key-dot is-note', 'Notes')}${key('map-key-dot is-link', 'Links and articles')}${key('map-key-dot is-media', 'Images and video')}${key('map-key-dot is-file', 'Files')}
+    ${key('map-key-dot is-note', 'Notes')}${key('map-key-dot is-link', 'Links and articles')}${key('map-key-dot is-media', 'Images and video')}${key('map-key-dot is-file', 'Files')}${chats ? key('map-key-dot is-chat', 'AI chats') : ''}
     ${key('map-key-ring', 'Ring shows the collection')}
     <span class="map-legend-sep" aria-hidden="true"></span>
     ${key('map-key-line', 'Linked')}${key('map-key-line is-both', 'Linked both ways')}${similarOn ? key('map-key-line is-similar', 'Similar') : ''}
@@ -309,7 +310,7 @@ export function renderMap(ctx, { surface = 'full' } = {}) {
         ${graph.truncated ? html`<p class="map-notice">${icon('info', { size: 14 })}<span>Showing ${graph.nodes.length} of ${graph.totalItems.toLocaleString()} items. Linked items come first; pick a collection or filter to focus.</span></p>` : ''}
         ${similarOn && m.similarStatus === 'loading' ? html`<p class="map-notice">${icon('loader-circle', { size: 14, className: 'map-spin' })}<span>Finding similar items…</span></p>` : ''}
         <div class="map-canvas" data-mount="map.canvas" data-morph="skip" data-key="map:${key}" data-layout-key="${key}"></div>
-        ${legend(similarOn)}`
+        ${legend(similarOn, m.type === 'chat')}`
         : html`<div class="lib-empty">${renderEmptyMap(ctx, entry, canSimilar, m)}</div>`}
     </div>
   </section>`;
