@@ -91,7 +91,7 @@ test('a version 2 backup carries the library, files, wallpaper, settings, dashbo
   assert.equal(backup.schemaVersion, 1);
   assert.deepEqual(Object.keys(backup).slice(0, 4), ['backupVersion', 'schemaVersion', 'exportedAt', 'manifest']);
   assert.deepEqual(backup.manifest, { app: 'still', extensionVersion: '0.5.0', deviceId: 'device-1', warnings: [],
-    counts: { items: 3, collections: 1, notes: 1, attachments: 2, boards: 1, conversations: 1, aiConnections: 1 } });
+    counts: { items: 3, collections: 1, notes: 1, attachments: 2, boards: 1, conversations: 1, aiConnections: 1, chats: 0 } });
   assert.deepEqual(backup.attachments.map(entry => [entry.id, entry.ref]), [['file_wall', 'wallpaper'], ['file_doc', undefined]]);
   assert.equal(backup.conversations.version, 2);
   assert.equal(backup.conversations.conversations[0].messages[1].proposals[0].undo.createdItems[0], 'a', 'the export keeps the chat as saved');

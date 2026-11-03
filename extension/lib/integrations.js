@@ -41,8 +41,8 @@ function bridgeUrl(value = DEFAULT_BRIDGE_URL) {
 
 function publicSnapshot(state) {
   // Only the library is shared. Device credentials, preferences and file bytes stay local; inline images (data: covers
-  // and page icons) stay out of the snapshot too.
-  return { schemaVersion: 1, items: state.items.map(({ attachmentId, ...item }) => ({ ...item, cover: /^data:/i.test(item.cover || '') ? '' : item.cover,
+  // and page icons) stay out of the snapshot too, and so do chats whose thread became private in Threadkeeper.
+  return { schemaVersion: 1, items: state.items.filter(item => !(item.type === 'chat' && item.chat?.removed === 'local_only')).map(({ attachmentId, ...item }) => ({ ...item, cover: /^data:/i.test(item.cover || '') ? '' : item.cover,
     ...(/^data:/i.test(item.icon || '') ? { icon: '' } : {}) })), collections: state.collections, updatedAt: state.updatedAt };
 }
 
