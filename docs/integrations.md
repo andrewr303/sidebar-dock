@@ -85,6 +85,31 @@ GitHub widget: personal access token, OAuth device flow with your own OAuth app,
 
 Linear widget: a personal API key from Linear's security settings, checked against Linear's viewer query before it is saved. Disconnect removes the key and cached issues from this device; revoke the key in Linear to stop it working everywhere.
 
+## Threadkeeper: AI chat threads
+
+[Threadkeeper](threadkeeper-integration.md) is a separate extension that captures and analyzes your AI conversations
+(ChatGPT, Claude, Gemini, coding agents such as Claude Code and Codex, and more). Still connects to it in **Settings →
+Integrations → AI chat threads**: find it (or paste its ID), press **Connect**, type the six-digit code Still shows into
+Threadkeeper's own window, then choose what to sync and press **Start syncing**. Nothing is synced before that.
+
+- **Two separate extensions.** They talk only with `chrome.runtime.sendMessage` between extension IDs. Still accepts
+  messages only from the connected Threadkeeper's own pages (its ID and its `chrome-extension://` origin, never one of its
+  content scripts on a web page) and answers only the protocol messages in the contract; nothing reaches Still's other
+  operations.
+- **Still keeps its own copy.** Each synced thread becomes a library item of type `chat` (compact metadata), with its
+  summary and transcript in IndexedDB (`still.chats.v1`). Chats keep working, open, search and back up when Threadkeeper
+  is turned off, updating or uninstalled.
+- **You stay in charge.** Chats you rename, move, tag, favorite, write notes in or add subpages to are never deleted or
+  trashed by sync. Deleting a chat forever stops Threadkeeper from sending it again until you send it yourself. Threads
+  Threadkeeper may not share (local-only) are never sent, and leave Still when they become local-only: untouched chats
+  are deleted, chats you worked on keep only your notes.
+- **Device only.** The connection (`still.threadkeeper.v1`) is not in backups or snapshots; restoring either tells
+  Threadkeeper to re-offer what Still may be missing.
+- Disconnect from the same card at any time; "Also remove the synced chats" moves untouched chats to Trash (they come
+  back if you connect again).
+
+The message contract, limits and privacy rules are in [threadkeeper-integration.md](threadkeeper-integration.md).
+
 ## Other services
 
 The integration directory links to official Raindrop guides for Notion, Readwise, Zapier, Make, n8n and RSS. These open the relevant setup documentation; they are not native Still connections and are not marked connected. Drive and Dropbox are manual backup destinations: export a Still JSON backup, then store that file using your own account. No background cloud upload runs.
