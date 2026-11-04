@@ -1,7 +1,7 @@
 // GitHub sign-in for the dashboard widget and Settings > Connected accounts: personal access token, OAuth device flow with
 // the user's own OAuth app, or the token the GitHub CLI already has on this computer (through the paired local bridge).
 // The token lives only in lib/accounts.js; this module keeps display info (login, avatar, scopes) and the sign-in UI state.
-import { html, cx } from '../../html.js';
+import { html, cx, safeSrc } from '../../html.js';
 import { icon } from '../../icons.js';
 import { registerActions } from '../../runtime.js';
 import { registerDialog } from '../../overlay.js';
@@ -197,8 +197,8 @@ export function openConnect(ctx, method) {
 
 // ------------------------------------------------------------------ account card
 
-const avatar = (url, size = 40, label = '') => url
-  ? html`<img class="w-github-avatar" src="${url}" alt="${label}" width="${size}" height="${size}" style="--size:${size}px" loading="lazy" decoding="async" referrerpolicy="no-referrer">`
+const avatar = (url, size = 40, label = '') => safeSrc(url)
+  ? html`<img class="w-github-avatar" src="${safeSrc(url)}" alt="${label}" width="${size}" height="${size}" style="--size:${size}px" loading="lazy" decoding="async" referrerpolicy="no-referrer">`
   : html`<span class="w-github-avatar is-empty" style="--size:${size}px" aria-hidden="true">${icon('github', { size: Math.round(size * 0.55) })}</span>`;
 export { avatar as githubAvatar };
 

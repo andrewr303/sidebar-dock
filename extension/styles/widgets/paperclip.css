@@ -82,6 +82,8 @@
   border-radius: var(--radius-sm); background: var(--warning-soft); color: var(--fg-default); font-size: var(--text-xs);
 }
 .w-paperclip-notice > .icon { flex: none; color: var(--warning); }
+.w-paperclip-notice > span { flex: 1 1 auto; min-inline-size: 0; }
+.w-paperclip-notice-action { flex: none; }
 .w-paperclip-foot {
   display: flex; flex: none; justify-content: space-between; gap: var(--space-4); min-inline-size: 0;
   color: var(--fg-muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; white-space: nowrap;

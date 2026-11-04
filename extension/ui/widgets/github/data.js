@@ -64,6 +64,8 @@ export function refresh(entry, config) {
   entry.promise = (async () => {
     try {
       const snapshot = await fetchSnapshot(getClient(), normalizeConfig(config), { onProgress: ({ stage, owner }) => { entry.stage = owner ? `Loading ${owner}` : stage; } });
+      // GitHub was disconnected while this ran: never write the (possibly private) list back into the cleared cache.
+      if (entries.get(entry.key) !== entry) return;
       entry.snapshot = snapshot;
       entry.fetchedAt = snapshot.fetchedAt;
       entry.error = null;

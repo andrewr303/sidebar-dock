@@ -5,6 +5,8 @@ import {
   parseForecast, upcomingHours, today, formatTemp, formatWind, updatedLabel, fetchForecast, searchPlaces, reversePlace, geolocationMessage,
   upcomingDays, currentConditions, withTimeout, WEATHER_ORIGINS, LOCATE_ORIGINS,
 } from '../extension/lib/weather.js';
+import { dispatch } from '../extension/ui/runtime.js';
+import { renderPlacePicker } from '../extension/ui/widgets/weather/location.js';
 
 const aurora = { name: 'Aurora', admin: 'Colorado', country: 'United States', lat: 39.7294, lon: -104.8319 };
 const NOW = Date.UTC(2026, 9, 30, 18, 20); // 12:20 in Denver
@@ -215,4 +217,16 @@ test('stalled requests time out with a calm message; cancelled ones stay cancell
   const limit = withTimeout(undefined, 0);
   assert.equal(limit.signal, undefined);
   assert.equal(limit.timedOut(), false);
+});
+
+test('"Use my location" failures are shown even when the small setup card hides the picker', async () => {
+  // No geolocation and no document here: the picker is not on screen, so the failure must surface as a toast.
+  const toasts = [];
+  const ctx = { render() {}, toast: (message, options) => toasts.push({ message, tone: options?.tone }) };
+  await dispatch('w.weather.locate', { ctx, data: { scope: 'w:wx-test', widget: 'wx-test' } });
+  assert.deepEqual(toasts, [{ message: geolocationMessage(2), tone: 'warning' }]);
+  // The picker keeps the message too and is no longer busy.
+  const picker = String(renderPlacePicker('w:wx-test', { widgetId: 'wx-test' }));
+  assert.match(picker, /Your location is not available right now/);
+  assert.doesNotMatch(picker, /Locating…/);
 });

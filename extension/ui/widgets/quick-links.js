@@ -33,6 +33,31 @@ function anchorFor(widgetId) {
 
 /* ------------------------------------------------------------------ writes */
 
+const sameLinks = (a, b) => JSON.stringify(normalizeQuickLinks(a)) === JSON.stringify(normalizeQuickLinks(b));
+
+/**
+ * The links after undoing an add: the list from before it while nothing else changed since, else the current list
+ * without the added links (so links added, edited or moved after it are kept).
+ */
+export function undoAddLinks(current, { previous, saved, addedIds }) {
+  if (sameLinks(current, saved)) return previous;
+  const added = new Set(addedIds);
+  return current.filter(link => !added.has(link.id));
+}
+
+/**
+ * The links after undoing a removal: the list from before it while nothing else changed since, else the current list
+ * with the link put back before the link that followed it (at the end when that one is gone too). A link already back
+ * (same id or address) is not added twice.
+ */
+export function undoRemoveLink(current, { previous, saved, link, beforeId = '' }) {
+  if (sameLinks(current, saved)) return previous;
+  if (current.some(entry => entry.id === link.id || linkKey(entry.url) === linkKey(link.url))) return current;
+  const all = [...current, link];
+  const byId = new Map(all.map(entry => [entry.id, entry]));
+  return placeBefore(all.map(entry => entry.id), [link.id], current.some(entry => entry.id === beforeId) ? beforeId : '').map(id => byId.get(id));
+}
+
 /** Adds links at beforeId ('' = end); links already in the widget move there instead of doubling up. */
 async function addLinks(ctx, widgetId, links, beforeId = '') {
   const config = configOf(widgetId);
@@ -51,18 +76,29 @@ async function addLinks(ctx, widgetId, links, beforeId = '') {
   const ids = placeBefore(all.map(link => link.id), [...moving, ...added.map(link => link.id)], beforeId);
   const byId = new Map(all.map(link => [link.id, link]));
   const previous = config.links;
-  await saveLinks(widgetId, ids.map(id => byId.get(id)));
+  const saved = ids.map(id => byId.get(id));
+  await saveLinks(widgetId, saved);
   if (!added.length) { if (!moving.length || links.length === 1) ctx.toast(links.length > 1 ? 'Those links are already here' : 'That link is already here'); return; }
+  const addedIds = added.map(link => link.id);
   ctx.toast(added.length > 1 ? `Added ${plural(added.length, 'quick link')}` : `Added “${linkLabel(added[0])}”`,
-    { tone: 'success', action: { label: 'Undo', run: () => saveLinks(widgetId, previous) } });
+    { tone: 'success', action: { label: 'Undo', run: () => {
+      const now = configOf(widgetId);
+      return now && saveLinks(widgetId, undoAddLinks(now.links, { previous, saved, addedIds }));
+    } } });
 }
 
 async function removeLink(ctx, widgetId, id) {
   const config = configOf(widgetId);
   const link = config?.links.find(entry => entry.id === id);
   if (!link) return;
-  await saveLinks(widgetId, config.links.filter(entry => entry.id !== id));
-  ctx.toast(`Removed “${linkLabel(link)}”`, { action: { label: 'Undo', run: () => saveLinks(widgetId, config.links) } });
+  const at = config.links.indexOf(link);
+  const beforeId = config.links[at + 1]?.id || '';
+  const saved = config.links.filter(entry => entry.id !== id);
+  await saveLinks(widgetId, saved);
+  ctx.toast(`Removed “${linkLabel(link)}”`, { action: { label: 'Undo', run: () => {
+    const now = configOf(widgetId);
+    return now && saveLinks(widgetId, undoRemoveLink(now.links, { previous: config.links, saved, link, beforeId }));
+  } } });
 }
 
 async function reorder(ctx, widgetId, ids) {

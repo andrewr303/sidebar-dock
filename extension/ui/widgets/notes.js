@@ -204,7 +204,7 @@ function renderCapture(ctx, widget, config, env) {
 function headerActions(ctx, widget) {
   const config = configOf(widget);
   if (config.mode === 'recent') return iconButton({ icon: 'plus', label: 'New note', action: 'w.notes.new', data: { widget: widget.id }, size: 'sm', tooltipPlacement: 'bottom end' });
-  if (config.mode === 'note' && config.noteId && ctx.select.byId(config.noteId)) {
+  if (config.mode === 'note' && shownNote(ctx, config.noteId)) {
     return iconButton({ icon: 'square-pen', label: 'Edit note', action: 'w.notes.open', data: { widget: widget.id, id: config.noteId }, size: 'sm', tooltipPlacement: 'bottom end' });
   }
   return '';
@@ -218,7 +218,7 @@ function menu(ctx, widget) {
   })), { separator: true }];
   if (config.mode === 'note') {
     items.push({ label: config.noteId ? 'Choose another note…' : 'Choose a note…', icon: 'search', run: () => chooseNote(ctx, widget.id) });
-    if (config.noteId && ctx.select.byId(config.noteId)) items.push({ label: 'Edit note', icon: 'square-pen', run: () => openNoteFromWidget(ctx, config.noteId) });
+    if (shownNote(ctx, config.noteId)) items.push({ label: 'Edit note', icon: 'square-pen', run: () => openNoteFromWidget(ctx, config.noteId) });
   } else if (config.mode === 'recent') {
     items.push({ label: 'New note', icon: 'plus', run: () => ctx.run(() => newNote(ctx, widget.id)) });
   }
@@ -303,11 +303,19 @@ async function capture(ctx, widgetId, field) {
   const draft = captureDraft(text);
   if (!draft) { field?.focus(); ctx.toast('Write something first.'); return; }
   const config = configById(widgetId);
-  const item = await createWidgetNote(ctx, { ...draft, collectionId: config.collectionId });
-  drafts.set(widgetId, '');
+  // The pad empties before the write, so a second Mod+Enter cannot save the same note twice and anything typed while
+  // the note saves stays in the pad (and in the stored draft). A failed write puts the text back if the pad is still empty.
   clearTimeout(draftTimers.get(widgetId));
+  draftTimers.delete(widgetId);
+  drafts.set(widgetId, '');
   if (field) field.value = '';
-  await saveConfig(widgetId, { draft: '', captures: [item.id, ...(config.captures || []).filter(id => id !== item.id)].slice(0, 8) });
+  let item;
+  try { item = await createWidgetNote(ctx, { ...draft, collectionId: config.collectionId }); } catch (error) {
+    if (!drafts.get(widgetId) && (!field || !field.value)) { drafts.set(widgetId, text); if (field) field.value = text; }
+    throw error;
+  }
+  const latest = configById(widgetId);
+  await saveConfig(widgetId, { draft: drafts.get(widgetId) || '', captures: [item.id, ...(latest.captures || []).filter(id => id !== item.id)].slice(0, 8) });
   const where = item.collectionId ? ctx.select.collection(item.collectionId)?.name || 'your library' : 'Inbox';
   ctx.toast(`Saved to ${where}`, { tone: 'success', action: { label: 'Open', run: () => openNoteFromWidget(ctx, item.id) } });
 }
@@ -359,8 +367,11 @@ registerActions({
     const text = input?.value.trim();
     if (!text) { input?.focus(); return; }
     input.value = '';
-    const result = await editNoteContent(ctx, data.id, content => quickAppend(content, text));
-    if (!result && input && !input.value) input.value = text;
+    let result = null;
+    // A line that did not make it into the note (no change, a conflict or a failed write) goes back in the field.
+    try { result = await editNoteContent(ctx, data.id, content => quickAppend(content, text)); } finally {
+      if (!result && input && !input.value) input.value = text;
+    }
   },
   'w.notes.draft': ({ el, data }) => { drafts.set(data.widget, el.value); saveDraftSoon(data.widget); },
   'w.notes.capture-key': ({ ctx, el, data, event }) => {

@@ -294,16 +294,19 @@ function renderAlerts(widget, config) {
   if (!failing.length) return '';
   const { feed, state } = failing[0];
   const access = state.kind === 'access';
+  // The address is kept on the device that added the feed (never in backups): trying again cannot bring it back.
+  const missing = state.kind === 'missing';
   const others = failing.length > 1 ? ` (and ${plural(failing.length - 1, 'other')})` : '';
-  const what = `${feed.name} ${access ? 'needs access' : 'could not be loaded'}${others}`;
-  const label = access ? `Allow access to ${feed.host || 'the calendar'}` : 'Try again';
-  const action = access ? 'w.calendar.allow' : 'w.calendar.refresh';
+  const problem = access ? 'needs access' : missing ? 'needs its address on this device' : 'could not be loaded';
+  const what = `${feed.name} ${problem}${others}`;
+  const label = access ? `Allow access to ${feed.host || 'the calendar'}` : missing ? 'Add it again' : 'Try again';
+  const action = access ? 'w.calendar.allow' : missing ? 'dashboard.widget-settings' : 'w.calendar.refresh';
   const data = { widget: widget.id, feed: feed.id };
   // Small cards keep only a corner button (its label carries the message); larger ones show the full line.
   return html`<div class="w-calendar-alert" role="status">
     ${icon(access ? 'lock' : 'triangle-alert', { size: 14 })}
-    <span class="w-calendar-alert-text" title="${state.error}"><strong>${feed.name}</strong> ${access ? 'needs access' : 'could not be loaded'}${others}</span>
-    ${button({ label, icon: access ? 'lock-open' : 'refresh-cw', size: 'sm', variant: access ? 'secondary' : 'ghost', action, data })}
+    <span class="w-calendar-alert-text" title="${state.error}"><strong>${feed.name}</strong> ${problem}${others}</span>
+    ${button({ label, icon: access ? 'lock-open' : missing ? 'settings-2' : 'refresh-cw', size: 'sm', variant: access || missing ? 'secondary' : 'ghost', action, data })}
   </div>
   <button type="button" class="w-calendar-alert-mini" data-action="${action}" data-widget="${widget.id}" data-feed="${feed.id}"
     aria-label="${what}. ${label}" data-tooltip="${what}. ${label}" data-tooltip-pos="top end">${icon(access ? 'lock' : 'triangle-alert', { size: 14 })}</button>`;

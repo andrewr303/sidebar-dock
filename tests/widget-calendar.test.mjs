@@ -5,7 +5,9 @@ import {
   resolveZone, meetingLink, normalizeFeedUrl,
 } from '../extension/lib/ics.js';
 import { dayKey, fromKey, addDays, addMonths, weekStartFor, monthGrid, isoWeek, weekdayNames, bucketByDay, keyDelta } from '../extension/ui/widgets/calendar/month.js';
-import { fetchFeed } from '../extension/ui/widgets/calendar/feeds.js';
+import { fetchFeed, refreshFeed, feedState } from '../extension/ui/widgets/calendar/feeds.js';
+import { getWidget } from '../extension/ui/dashboard/registry.js';
+import '../extension/ui/widgets/calendar.js';
 
 const ics = body => `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nX-WR-CALNAME:Team\r\n${body.trim().split('\n').map(l => l.trim()).join('\r\n')}\r\nEND:VCALENDAR\r\n`;
 const iso = ms => new Date(ms).toISOString();
@@ -273,4 +275,16 @@ test('entries land on every local day they cover', () => {
   assert.deepEqual(map.get('2026-11-01').map(e => e.title), ['Offsite']);
   assert.equal(map.has('2026-11-02'), false); // ends at midnight
   assert.equal(map.has('2026-10-01'), false);
+});
+
+test('a feed whose address is not on this device offers the settings, not a retry that cannot work', async () => {
+  const feed = { id: 'f-not-here', name: 'Team', color: 'blue', host: 'cal.example.com' };
+  await refreshFeed(feed);
+  assert.equal(feedState(feed.id).kind, 'missing');
+  const ctx = { library: { updatedAt: 1, settings: {} }, select: { live: () => [] } };
+  const out = String(getWidget('calendar').render(ctx, { id: 'cal-missing', w: 3, h: 4, config: { feeds: [feed] } }, { size: 'm' }));
+  const alert = out.slice(out.indexOf('w-calendar-alert'));
+  assert.match(alert, /needs its address on this device/);
+  assert.match(alert, /data-action="dashboard.widget-settings" data-widget="cal-missing"/);
+  assert.doesNotMatch(alert, /w\.calendar\.refresh/);
 });

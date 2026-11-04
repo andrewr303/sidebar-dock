@@ -35,6 +35,7 @@ export const session = {
 };
 export const mounted = new Map(); // widget id -> latest config
 const inflight = new Map();
+let epoch = 0;   // bumped by resetSession so requests still in flight for the old account never refill the cache
 let listsRun = null;
 let lastCtx = null;
 let loading = null;
@@ -97,6 +98,7 @@ export function errorInfo(error, fallback = 'Unable to load Paperclip right now.
 }
 
 export function resetSession() {
+  epoch++;
   session.status.clear();
   inflight.clear();
   session.authFailed = false;
@@ -161,9 +163,11 @@ export async function syncFeed(rawConfig, { force = false } = {}) {
   }
   session.status.set(key, { loading: true, error: last?.error || null, errorAt: last?.errorAt || 0 });
   rerender();
+  const started = epoch;
   const run = (async () => {
     try {
       const issues = await (await client()).issues(company().id, queryFor(config));
+      if (started !== epoch) return;
       writeCache(key, { issues: sortByUpdated(issues) });
       session.status.set(key, { loading: false, error: null });
       session.authFailed = false;

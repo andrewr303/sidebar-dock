@@ -79,15 +79,48 @@ export function withPending(note) {
   return content;
 }
 
+// The newest click per task: an earlier write that finishes later must not clear the optimistic state of a newer one
+// (tick, untick quickly: the box would flip back to ticked until the second write lands).
+const latestToggle = new Map();
+
 /** Sets one task's checkbox (toggleTask semantics) with optimistic state; done tasks linger in filtered lists. */
 export async function setTaskDone(ctx, noteId, index, done) {
   const key = taskKey(noteId, index);
+  const token = {};
+  latestToggle.set(key, token);
   pending.set(key, done);
   if (done) {
     lingering.set(key, Date.now() + LINGER_MS);
-    setTimeout(() => { if ((lingering.get(key) || 0) <= Date.now()) { lingering.delete(key); ctx.render(); } }, LINGER_MS + 50);
+    setTimeout(() => { if ((lingering.get(key) || 0) <= Date.now()) { lingering.delete(key); renderKeepingFocus(ctx); } }, LINGER_MS + 50);
   } else lingering.delete(key);
-  try { await editNoteContent(ctx, noteId, content => toggleTask(content, index, done)); } finally { pending.delete(key); ctx.render(); }
+  try { await editNoteContent(ctx, noteId, content => toggleTask(content, index, done)); } finally {
+    if (latestToggle.get(key) === token) { latestToggle.delete(key); pending.delete(key); }
+    ctx.render();
+  }
+}
+
+/**
+ * Re-renders after a completed task's linger ends. When the focused checkbox's row leaves the list (a list that hides
+ * completed items), focus moves to the next item's checkbox (else the previous one, else the add field) instead of
+ * dropping to the page.
+ */
+function renderKeepingFocus(ctx) {
+  const active = globalThis.document?.activeElement;
+  const root = active?.closest?.('.w-checklist[data-widget]');
+  if (root && active.matches?.('.w-checklist-box')) {
+    const boxes = [...root.querySelectorAll('.w-checklist-box')];
+    const at = boxes.indexOf(active);
+    const order = [...boxes.slice(at + 1), ...boxes.slice(0, at).reverse()].map(box => box.id);
+    const widgetId = root.dataset.widget;
+    ctx.nextFrame(() => {
+      if (active.isConnected) return;
+      const scope = document.querySelector(`.w-checklist[data-widget="${CSS.escape(widgetId)}"]`);
+      const next = order.map(id => document.getElementById(id)).find(Boolean)
+        || scope?.querySelector('.w-checklist-add-input, .w-checklist-box, button');
+      next?.focus({ preventScroll: true });
+    });
+  }
+  ctx.render();
 }
 
 /* ------------------------------------------------------------------ notes */

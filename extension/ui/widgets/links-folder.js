@@ -1,12 +1,17 @@
-// Links folder widget: a collection's web links as app-style tiles, the dashboard's home-screen folder. At 2×2 it is a
-// folder icon (three peeking site icons, name and count) that opens an anchored popup; larger it is a frosted panel
-// of white icon tiles. The links are the library's own items, so adding, renaming, moving or deleting one here changes
-// the collection everywhere in Still. The widget keeps only references in its config (collection id, manual order).
+// Collection widget (type 'links-folder', kept for stored dashboards): a collection's web links as app-style tiles. At
+// 2×2 it is a folder icon (three peeking site icons, name and count) that opens an anchored popup; larger it is a
+// frosted panel of white icon tiles. The widget is a live view of one sidebar collection: the links are the library's
+// own items, so adding, renaming, moving or deleting one here changes the collection everywhere in Still. The widget
+// keeps only references in its config (collection id, manual order).
+//
+// Settings pick an existing collection to show, or name a new one. A new collection goes inside the chosen collection,
+// or inside the default "Links folders" collection (created at the bottom of the sidebar on first use) when none was
+// chosen. That parent is an ordinary collection, so moving or deleting it never changes which collection a widget shows.
 import { html, cx, plural, safeHref } from '../html.js';
 import { icon } from '../icons.js';
 import { registerActions, registerMount } from '../runtime.js';
 import { registerPopover } from '../overlay.js';
-import { button, select, segmented, switchToggle, field, input, emptyState } from '../components.js';
+import { button, iconButton, select, segmented, switchToggle, field, input, emptyState } from '../components.js';
 import { renderCollectionPickerTrigger, openCollectionPicker, colorForName } from '../pickers.js';
 import { moveItems, trashItems } from '../library.js';
 import { defineWidget } from '../dashboard/registry.js';
@@ -15,6 +20,7 @@ import * as dashboardView from '../dashboard/index.js';
 import * as dashboardStore from '../../lib/dashboard-store.js';
 import {
   folderConfig, folderLinks, orderLinks, placeBefore, shiftId, planLinkChanges, validateLinkRows, hasErrors, linkLabel, hostOf, isLinkItem, popoverArrow,
+  DEFAULT_PARENT_NAME, NAME_REQUIRED, findDefaultParent, planWidgetCollection,
 } from './links/model.js';
 import {
   OPEN_IN_OPTIONS, openAll, anchorTarget, copyLink, openMenuItems, tidyMenu, stableAnchor, openLinkForm, toRows, rowKey, renderLinkRows, focusFirstError,
@@ -25,6 +31,8 @@ import { tileIcon } from './links/favicons.js';
 const TYPE = 'links-folder';
 const POPUP = 'w.links-folder.popup';
 const EDIT = '_linksEditor';   // settings editor state kept on the settings draft (removed before saving)
+const PARENT_PREF = 'linksFoldersCollectionId';   // dashboard prefs: the default parent for new widget collections
+const NEW = '\u0000new';         // editor target while the settings create a new collection
 const SORT_OPTIONS = [
   { value: 'manual', label: 'Manual (drag to arrange)', short: 'Manual' },
   { value: 'title', label: 'Title A to Z', short: 'Title A to Z' },
@@ -51,7 +59,7 @@ function folderState(ctx, widget) {
   const config = folderConfig(widget.config);
   const collection = config.collectionId ? ctx.select.collection(config.collectionId) : null;
   const collectionIds = collection ? (config.includeSubcollections ? ctx.select.descendants(collection.id) : [collection.id]) : [];
-  return { config, collection, collectionIds, links: collection ? linksOf(ctx, collectionIds, config) : [], title: widget.title || collection?.name || 'Links folder' };
+  return { config, collection, collectionIds, links: collection ? linksOf(ctx, collectionIds, config) : [], title: widget.title || collection?.name || 'Collection' };
 }
 
 const stateFor = (ctx, widgetId) => {
@@ -96,7 +104,7 @@ async function saveOrder(ctx, widgetId, order) {
 /** Adds links (from the add form or a drop) at beforeId ('' = end), with one summary toast that can undo it. */
 async function addLinks(ctx, widgetId, links, beforeId = '') {
   const s = stateFor(ctx, widgetId);
-  if (!s?.collection) throw new Error('Choose a collection for this folder first.');
+  if (!s?.collection) throw new Error('Choose a collection for this widget first.');
   const ids = [];
   const results = [];
   for (const link of links) {
@@ -129,7 +137,7 @@ async function moveIntoFolder(ctx, widgetId, itemIds, beforeId = '') {
   if (!s?.collection) return;
   const items = itemIds.map(id => ctx.select.byId(id)).filter(item => item && !item.deletedAt);
   const linkItems = items.filter(isLinkItem);
-  if (!linkItems.length) { if (items.length) ctx.toast('Only links can go in a links folder. Notes and files stay where they are.'); return; }
+  if (!linkItems.length) { if (items.length) ctx.toast('Only links show in a collection widget. Notes and files stay where they are.'); return; }
   const moving = linkItems.filter(item => !s.collectionIds.includes(item.collectionId));
   if (moving.length) await ctx.store.bulkUpdateItems(moving.map(item => ({ id: item.id, patch: { collectionId: s.collection.id, archived: false } })));
   await saveOrder(ctx, widgetId, placeBefore(displayedIds(ctx, widgetId), linkItems.map(item => item.id), beforeId));
@@ -145,18 +153,63 @@ async function removeFromFolder(ctx, item) {
   ctx.toast(`Moved “${linkLabel(item)}” to Inbox`, { action: { label: 'Undo', run: () => ctx.store.updateItem(item.id, { collectionId: previous }) } });
 }
 
+// One lookup-or-create at a time, so two widgets set up together never make two default parents.
+let parentPending = null;
+
+/** The default parent's id, remembered in the dashboard prefs ('' when it does not exist yet). */
+const rememberedParentId = () => {
+  const id = dashboardStore.getDashboard()?.prefs?.[PARENT_PREF];
+  return typeof id === 'string' ? id : '';
+};
+
+/** The existing default parent collection, or null. */
+const existingParent = ctx => findDefaultParent(ctx.select.tree(), rememberedParentId());
+
+/** The default parent collection, created at the bottom of the sidebar when it does not exist (or was deleted). */
+function defaultParent(ctx) {
+  parentPending ||= (async () => {
+    let parent = existingParent(ctx);
+    if (!parent) parent = await ctx.store.createCollection({ name: DEFAULT_PARENT_NAME, color: colorForName(DEFAULT_PARENT_NAME), icon: 'layout-dashboard' });
+    if (parent.id !== rememberedParentId()) {
+      try { await dashboardStore.setDashboardPrefs({ [PARENT_PREF]: parent.id }); } catch (error) { console.error(error); }
+    }
+    return parent;
+  })().finally(() => { parentPending = null; });
+  return parentPending;
+}
+
+/**
+ * Carries out planWidgetCollection's 'create': makes the collection inside its parent (the default parent when none was
+ * chosen), opens that parent in the sidebar, and returns { collection, parent }.
+ */
+async function createWidgetCollection(ctx, { name, parentId }) {
+  const parent = parentId ? ctx.select.collection(parentId) : await defaultParent(ctx);
+  if (!parent) throw new Error('That collection no longer exists. Choose another one.');
+  const collection = await ctx.store.createCollection({ name, parentId: parent.id, color: colorForName(name), icon: 'folder' });
+  ctx.prefs.toggleInList?.('expandedCollections', parent.id, true);
+  return { collection, parent };
+}
+
 async function createCollectionFor(ctx, widgetId) {
-  const name = (await ctx.prompt({ title: 'Create a collection', label: 'Collection name', placeholder: 'For example, Dev tools', confirmLabel: 'Create collection' }))?.trim();
+  const name = (await ctx.prompt({ title: 'New collection', label: `Collection name (it goes inside ${existingParent(ctx)?.name || DEFAULT_PARENT_NAME})`,
+    placeholder: 'For example, Dev tools', confirmLabel: 'Create collection' }))?.trim();
   if (!name) return;
-  const collection = await ctx.store.createCollection({ name, color: colorForName(name), icon: 'folder' });
+  const plan = planWidgetCollection({ name }, ctx.select.tree(), existingParent(ctx)?.id || '');
+  if (plan.kind === 'exists') {
+    await setConfig(widgetId, { collectionId: plan.collectionId, order: [] });
+    ctx.toast(`Showing your existing collection “${plan.name}”.`);
+    return;
+  }
+  if (plan.kind !== 'create') return;
+  const { collection, parent } = await createWidgetCollection(ctx, plan);
   await setConfig(widgetId, { collectionId: collection.id, order: [] });
-  ctx.toast(`Created ${name}. Add links with +, or drop them on the folder.`, { tone: 'success' });
+  ctx.toast(`Created “${collection.name}” inside ${parent.name}. Add links with +, or drop them on the widget.`, { tone: 'success' });
 }
 
 function chooseCollection(ctx, widgetId, anchor) {
   const s = stateFor(ctx, widgetId);
   openCollectionPicker(ctx, anchor, {
-    value: s?.collection?.id || '', allowInbox: false, title: 'Show links from',
+    value: s?.collection?.id || '', allowInbox: false, title: 'Show a collection',
     onPick: id => ctx.run(async () => { if (id) await setConfig(widgetId, { collectionId: id, order: [] }); }),
   });
 }
@@ -195,18 +248,18 @@ function openEditForm(ctx, item, anchor) {
 
 function folderMenuItems(ctx, widget, { withSettings = false } = {}) {
   const s = folderState(ctx, widget);
-  const settings = withSettings && { label: 'Edit folder…', icon: 'settings-2', run: () => openSettings(ctx, widget.id) };
+  const settings = withSettings && { label: 'Widget settings…', icon: 'settings-2', run: () => openSettings(ctx, widget.id) };
   if (!s.collection) {
     return tidyMenu([
       { label: 'Choose a collection…', icon: 'folder', run: () => chooseCollection(ctx, widget.id, anchorFor(widget.id)) },
-      { label: 'Create a collection…', icon: 'folder-plus', run: () => createCollectionFor(ctx, widget.id) },
+      { label: 'New collection…', icon: 'folder-plus', run: () => createCollectionFor(ctx, widget.id) },
       settings && { separator: true }, settings,
     ]);
   }
   return tidyMenu([
     { label: 'Add link…', icon: 'plus', run: () => openAddForm(ctx, widget.id) },
     s.links.length > 1 && { label: 'Open all in new tabs', icon: 'external-link', hint: s.links.length.toLocaleString(), run: () => openAll(ctx, s.links.map(item => item.url), { label: s.title }) },
-    { label: 'Open collection in Still', icon: 'folder-open', run: () => ctx.navigate(`collection:${s.collection.id}`) },
+    { label: 'Open collection in the library', icon: 'folder-open', run: () => ctx.navigate(`collection:${s.collection.id}`) },
     { separator: true },
     { heading: 'Sort' },
     ...SORT_OPTIONS.map(option => ({ label: option.short, checked: s.config.sort === option.value, run: () => setConfig(widget.id, { sort: option.value }) })),
@@ -220,7 +273,7 @@ function folderMenuItems(ctx, widget, { withSettings = false } = {}) {
 function openFolderMenu(ctx, widgetId, anchor) {
   const found = dashboardStore.findWidget(widgetId);
   if (!found) return;
-  ctx.openMenu(anchor, folderMenuItems(ctx, found.widget, { withSettings: true }), { label: 'Folder options', placement: 'bottom-end' });
+  ctx.openMenu(anchor, folderMenuItems(ctx, found.widget, { withSettings: true }), { label: 'Collection options', placement: 'bottom-end' });
 }
 
 function openTileMenu(ctx, widgetId, id, anchor, gridKey) {
@@ -234,7 +287,7 @@ function openTileMenu(ctx, widgetId, id, anchor, gridKey) {
     { separator: true },
     { label: 'Edit title and URL…', icon: 'pencil', run: () => openEditForm(ctx, item, tile()) },
     { label: 'Move to collection…', icon: 'folder-input', run: () => moveItems(ctx, [id], tile()) },
-    item.collectionId && { label: 'Remove from folder', icon: 'inbox', hint: 'To Inbox', run: () => removeFromFolder(ctx, item) },
+    item.collectionId && { label: 'Remove from collection', icon: 'inbox', hint: 'To Inbox', run: () => removeFromFolder(ctx, item) },
     { label: 'Copy link', icon: 'copy', run: () => copyLink(ctx, item.url) },
     { label: 'Open in Still', icon: 'panel-right-open', run: () => ctx.openItem(id) },
     { separator: true },
@@ -306,9 +359,10 @@ function renderSetup(widget, s, env) {
   return html`<div class="${cx('w-links-folder', 'is-setup', `is-${env.size}`)}" data-key="lf-setup-${widget.id}" data-lf="${widget.id}">
     ${emptyState({ icon: missing ? 'folder' : 'folder-plus', compact: true, className: 'w-links-folder-empty',
       title: missing ? 'This collection is gone' : 'Choose a collection',
-      body: compact ? '' : missing ? 'It was deleted or merged. Pick another collection to show its links here.' : 'Show the links from one of your collections as a folder of tiles.',
+      body: compact ? '' : missing ? 'It was deleted or merged. Pick another collection to show its links here.'
+        : 'Show one of your sidebar collections as link tiles. Links you add here are saved to that collection.',
       actions: html`${button({ label: missing ? 'Choose another' : 'Choose a collection', icon: 'folder', size: 'sm', action: 'w.links-folder.choose', data: { widget: widget.id } })}
-        ${compact ? '' : button({ label: 'Create a collection', icon: 'plus', variant: 'ghost', size: 'sm', action: 'w.links-folder.create', data: { widget: widget.id } })}` })}
+        ${compact ? '' : button({ label: 'New collection', icon: 'plus', variant: 'ghost', size: 'sm', action: 'w.links-folder.create', data: { widget: widget.id } })}` })}
   </div>`;
 }
 
@@ -341,21 +395,37 @@ function ownLinks(ctx, draft) {
   return config.collectionId ? orderLinks(folderLinks(ctx.select.live(), [config.collectionId]), config) : [];
 }
 
-/** The links editor's state for this draft; reloaded when the chosen collection changes (typed new rows are kept). */
+/**
+ * The links editor's state for this draft. Its rows belong to the editor's target: the chosen collection, or a new
+ * collection while a name is typed. Rows reload when the target changes (typed new rows are kept).
+ */
 function editState(ctx, widget, draft) {
   const collectionId = typeof draft.collectionId === 'string' ? draft.collectionId : '';
   let edit = draft[EDIT];
-  if (!edit || edit.collectionId !== collectionId) {
-    const collection = collectionId ? ctx.select.collection(collectionId) : null;
+  const name = edit?.name || '';
+  const target = name.trim() ? NEW : collectionId;
+  if (!edit || edit.target !== target) {
     const pending = (edit?.rows || []).filter(row => !row.id && (row.url.trim() || row.title.trim()));
-    const rows = [...toRows(ownLinks(ctx, draft)), ...pending];
-    // A new folder starts with one empty row to fill in, like the add form.
-    if (!collectionId && !rows.length) rows.push({ key: rowKey(), id: '', url: '', title: '' });
-    edit = { collectionId, name: collection?.name || edit?.name || '', nameError: '', rows, errors: {} };
+    const rows = [...(target === NEW ? [] : toRows(ownLinks(ctx, draft))), ...pending];
+    // A new collection starts with one empty row to fill in, like the add form.
+    if ((target === NEW || !collectionId) && !rows.length) rows.push({ key: rowKey(), id: '', url: '', title: '' });
+    edit = { target, name, nameError: edit?.nameError || '', rows, errors: {} };
     draft[EDIT] = edit;
   }
   session = { widgetId: widget.id, draft };
   return edit;
+}
+
+/** Plain-language result of saving, shown under the two collection fields. */
+function saveSummary(ctx, collection, name) {
+  const parent = existingParent(ctx);
+  if (name && collection) return html`Saving creates <strong>“${name}”</strong> inside <strong>${collection.name}</strong> and shows it in this widget.`;
+  if (name) {
+    return parent ? html`Saving creates <strong>“${name}”</strong> inside <strong>${parent.name}</strong> in your sidebar and shows it in this widget. You can move it anywhere later.`
+      : html`Saving creates <strong>“${name}”</strong> inside a new <strong>${DEFAULT_PARENT_NAME}</strong> collection at the bottom of your sidebar and shows it in this widget. You can move it anywhere later.`;
+  }
+  if (collection) return html`This widget shows <strong>${collection.name}</strong> from your sidebar. Links you add, edit or delete here change that collection everywhere in Still.`;
+  return html`Choose a collection to show, or name a new one. It is the same collection you see in the sidebar.`;
 }
 
 function renderSettings(ctx, widget, draft) {
@@ -363,17 +433,22 @@ function renderSettings(ctx, widget, draft) {
   const config = folderConfig(draft);
   const collection = config.collectionId ? ctx.select.collection(config.collectionId) : null;
   const id = `lf-${widget.id}`;
-  const nameChanged = collection && edit.name.trim() && edit.name.trim() !== collection.name;
+  const name = edit.name.trim();
+  const creating = !!name;
   return html`<div class="w-links-settings" data-key="lf-settings-${widget.id}">
     <div class="w-links-settings-fields is-pair">
-      ${field({ label: 'Folder name', id: `${id}-name`, error: edit.nameError,
-        hint: collection ? (nameChanged ? `Renames the collection “${collection.name}” everywhere in Still.` : 'Renaming the folder renames its collection everywhere in Still.') : 'Saving creates a collection with this name.',
-        control: input({ id: `${id}-name`, value: edit.name, placeholder: collection?.name || 'For example, Dev tools', action: 'w.links-folder.settings-name',
+      ${field({ label: 'Collection', id: `${id}-collection`,
+        hint: creating ? (collection ? 'The new collection goes inside this one.' : `Optional. Without one, the new collection goes inside ${existingParent(ctx)?.name || DEFAULT_PARENT_NAME}.`)
+          : 'The collection this widget shows.',
+        control: html`<span class="w-links-settings-choice">${renderCollectionPickerTrigger({ ctx, value: config.collectionId, action: 'w.links-folder.settings-collection', id: `${id}-collection`,
+          allowInbox: false, placeholder: 'None chosen', label: 'Collection', className: 'w-links-settings-picker' })}
+          ${collection ? iconButton({ icon: 'x', label: 'Clear the chosen collection', size: 'sm', action: 'w.links-folder.settings-collection', data: { value: '' } }) : ''}</span>` })}
+      ${field({ label: 'New collection', id: `${id}-name`, error: edit.nameError,
+        hint: collection ? `Optional. Leave empty to show ${collection.name} itself.` : 'Name a collection to create for this widget.',
+        control: input({ id: `${id}-name`, value: edit.name, placeholder: 'For example, Dev tools', action: 'w.links-folder.settings-name',
           invalid: !!edit.nameError, describedBy: edit.nameError ? `${id}-name-error` : `${id}-name-hint` }) })}
-      ${field({ label: 'Collection', hint: collection ? 'The folder shows the links saved in this collection.' : 'Or show an existing collection instead.', id: `${id}-collection`,
-        control: renderCollectionPickerTrigger({ ctx, value: config.collectionId, action: 'w.links-folder.settings-collection', id: `${id}-collection`,
-          allowInbox: false, placeholder: 'New collection', label: 'Collection', className: 'w-links-settings-picker' }) })}
     </div>
+    <p class="w-links-settings-summary" aria-live="polite">${icon(creating ? 'folder-plus' : 'link', { size: 14 })}<span>${saveSummary(ctx, collection, name)}</span></p>
     <div class="w-links-settings-fields">
       ${field({ label: 'Open links in', id: `${id}-open`, control: select({ name: 'openIn', id: `${id}-open`, value: config.openIn, options: OPEN_IN_OPTIONS, action: 'w.links-folder.settings-field', className: 'is-block' }) })}
       ${field({ label: 'Sort', id: `${id}-sort`, control: select({ name: 'sort', id: `${id}-sort`, value: config.sort, options: SORT_OPTIONS, action: 'w.links-folder.settings-field', className: 'is-block' }) })}
@@ -383,11 +458,11 @@ function renderSettings(ctx, widget, draft) {
     <div class="w-links-settings-switches">
       ${switchToggle({ label: 'Show labels under icons', name: 'showLabels', checked: config.showLabels, action: 'w.links-folder.settings-field' })}
       ${switchToggle({ label: 'Include links from subcollections', name: 'includeSubcollections', checked: config.includeSubcollections, action: 'w.links-folder.settings-field',
-        description: 'Links saved in nested collections appear in this folder too.' })}
+        description: 'Links saved in nested collections appear in this widget too.' })}
     </div>
-    ${renderLinkRows(ctx, { key: id, state: edit, legend: 'Links', addLabel: 'Add link',
-      emptyText: collection ? 'This collection has no links yet. Add some below, or drop links on the folder.' : 'Add the links this folder should hold.',
-      hint: config.includeSubcollections ? 'Links saved in subcollections show in the folder but are edited in their own collection.' : '' })}
+    ${renderLinkRows(ctx, { key: id, state: edit, legend: creating ? `Links for “${name}”` : 'Links', addLabel: 'Add link',
+      emptyText: !creating && collection ? 'This collection has no links yet. Add some below, or drop links on the widget.' : 'Add the links this collection should hold.',
+      hint: !creating && config.includeSubcollections ? 'Links saved in subcollections show in the widget but are edited in their own collection.' : '' })}
   </div>`;
 }
 
@@ -396,7 +471,7 @@ function validateSettings(draft) {
   const edit = draft?.[EDIT];
   if (!edit) return {};
   edit.errors = validateLinkRows(edit.rows).errors;
-  edit.nameError = !draft.collectionId && !edit.name.trim() ? 'Name the folder, or choose a collection to show.' : '';
+  edit.nameError = !draft.collectionId && !edit.name.trim() ? NAME_REQUIRED : '';
   const errors = Object.fromEntries(Object.entries(edit.errors).map(([index, message]) => [`links.${index}`, message]));
   if (edit.nameError) errors.name = edit.nameError;
   return errors;
@@ -406,20 +481,24 @@ async function onSettingsSave(ctx, widget, draft) {
   const config = folderConfig(draft);
   const edit = draft[EDIT];
   if (!edit) return config;
-  const collection = config.collectionId ? ctx.select.collection(config.collectionId) : null;
-  const name = edit.name.trim();
-  const plan = planLinkChanges(collection ? folderLinks(ctx.select.live(), [collection.id]) : [], edit.rows);
+  const target = planWidgetCollection({ collectionId: config.collectionId, name: edit.name }, ctx.select.tree(), existingParent(ctx)?.id || '');
+  const chosen = config.collectionId ? ctx.select.collection(config.collectionId) : null;
+  const plan = planLinkChanges(target.kind === 'show' ? folderLinks(ctx.select.live(), [target.collectionId]) : [], edit.rows);
   edit.errors = plan.errors;
-  edit.nameError = !collection && !name ? 'Name the folder, or choose a collection to show.' : '';
+  edit.nameError = target.kind === 'invalid' ? target.error
+    : target.kind === 'exists' ? `${chosen?.name || existingParent(ctx)?.name || DEFAULT_PARENT_NAME} already has a collection named “${target.name}”. Choose it above, or use another name.` : '';
   if (edit.nameError || hasErrors(plan)) {
     ctx.render();
     if (edit.nameError) ctx.nextFrame(() => document.getElementById(`lf-${widget.id}-name`)?.focus());
     else focusFirstError(ctx, `lf-${widget.id}`);
-    throw new Error(edit.nameError ? 'Name the folder or choose a collection, then save again.' : 'Fix the highlighted links, then save again.');
+    throw new Error(edit.nameError ? 'Fix the collection name, then save again.' : 'Fix the highlighted links, then save again.');
   }
-  let collectionId = collection?.id;
-  if (!collection) collectionId = (await ctx.store.createCollection({ name, color: colorForName(name), icon: 'folder' })).id;
-  else if (name && name !== collection.name) await ctx.store.updateCollection(collection.id, { name });
+  let collectionId = target.collectionId;
+  if (target.kind === 'create') {
+    const { collection, parent } = await createWidgetCollection(ctx, target);
+    collectionId = collection.id;
+    ctx.toast(`Created “${collection.name}” inside ${parent.name}`, { tone: 'success' });
+  }
   const at = new Date().toISOString();
   const trashed = new Set(plan.trash);
   const changes = [...plan.update, ...plan.trash.map(id => ({ id, patch: { deletedAt: at } }))];
@@ -428,7 +507,9 @@ async function onSettingsSave(ctx, widget, draft) {
   for (const entry of plan.create) created.push((await saveLink(ctx, entry, collectionId, { skip: trashed })).id);
   const sequence = plan.sequence.map(step => step.id || created[step.create]).filter(Boolean);
   const listed = new Set(sequence);
-  const order = [...sequence, ...config.order.filter(id => !listed.has(id) && !trashed.has(id))];
+  // A new collection starts its own order; the old collection's manual order means nothing there.
+  const kept = target.kind === 'create' ? [] : config.order.filter(id => !listed.has(id) && !trashed.has(id));
+  const order = [...sequence, ...kept];
   delete draft[EDIT];
   if (session?.draft === draft) session = null;
   if (plan.trash.length) {
@@ -500,15 +581,15 @@ registerActions({
 
 defineWidget({
   type: TYPE,
-  title: 'Links folder',
-  description: 'A collection’s links as app-style tiles. At its smallest it is a folder that opens on click.',
+  title: 'Collection',
+  description: 'One of your sidebar collections as app-style link tiles. Links added here or in the sidebar show up in both.',
   icon: 'folder',
   category: 'library',
   keywords: ['links', 'bookmarks', 'folder', 'collection', 'shortcuts', 'speed dial', 'apps', 'tiles', 'group'],
   size: { w: 4, h: 3, minW: 2, minH: 2, maxW: 12, maxH: 10 },
   presets: { S: { w: 2, h: 2 }, M: { w: 3, h: 3 }, L: { w: 4, h: 3 }, XL: { w: 6, h: 4 } },
   frame: 'bare',
-  preview: 'Folder of link tiles',
+  preview: 'Collection of link tiles',
   defaults: () => folderConfig({}),
   needsSetup: config => !folderConfig(config).collectionId,
   // The frame menu, settings and announcements name an untitled folder after its collection.

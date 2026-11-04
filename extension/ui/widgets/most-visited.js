@@ -3,7 +3,7 @@
 // The list is kept in lib/widget-cache.js so a new tab paints at once, and is read again whenever the page regains
 // focus. Sites can be hidden from one widget (their ⋯ or context menu) and brought back from the widget menu or its
 // settings. Tiles share the links widgets' keyboard model (arrow keys, Shift+F10 / Menu key for options) and can be
-// dragged into a links folder or quick links.
+// dragged into a collection widget or quick links.
 import { html, cx, plural, safeHref } from '../html.js';
 import { icon } from '../icons.js';
 import { registerActions } from '../runtime.js';
@@ -284,7 +284,7 @@ const onSettingsSave = (_ctx, _widget, draft) => mostVisitedConfig({ ...draft, c
 registerLinkGrid('most-visited', {
   menu: (ctx, grid, key, anchor) => siteMenu(ctx, grid.dataset.widget, key, anchor),
   // Chrome keeps this list from your browsing, so a dropped link has nowhere to go: say where it can.
-  dropLinks: ctx => ctx.toast('Chrome fills this list from your browsing. Drop links on a links folder or a bookmarks widget instead.'),
+  dropLinks: ctx => ctx.toast('Chrome fills this list from your browsing. Drop links on a collection or bookmarks widget instead.'),
 });
 
 registerActions({

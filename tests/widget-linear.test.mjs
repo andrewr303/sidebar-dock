@@ -300,3 +300,43 @@ test('links, cache keys and layouts', () => {
   assert.equal(layoutFor({ size: 'l', w: 6, h: 6 }), 'grouped');
   assert.equal(layoutFor({ size: 'xl', w: 9, h: 8 }), 'grouped');
 });
+
+test('a refresh still running when Linear is disconnected never refills the cache', async () => {
+  if (!globalThis.localStorage) {
+    const store = new Map();
+    globalThis.localStorage = { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) };
+  }
+  const { session, syncFeed, feedFor, resetSession } = await import('../extension/ui/widgets/linear/session.js');
+  const { saveAccount } = await import('../extension/lib/accounts.js');
+  session.loaded = false;
+  await saveAccount('linear', { token: KEY, method: 'token', meta: { viewerId: 'me' } });
+  Object.assign(session, { loaded: true, info: { connected: true, meta: { viewerId: 'me' } }, access: true, authFailed: false });
+  const realFetch = globalThis.fetch;
+  const pending = [];
+  globalThis.fetch = async (url, init) => {
+    if (!JSON.parse(init.body).query.includes('notifications')) return new Response('{}', { status: 500 });   // teams
+    return new Promise(resolve => pending.push(resolve));
+  };
+  const reply = () => new Response(JSON.stringify({ data: { notifications: { nodes: [] } } }), { status: 200 });
+  const until = async () => { while (!pending.length) await new Promise(resolve => setImmediate(resolve)); return pending.shift(); };
+  try {
+    const config = { view: 'inbox' };
+    const kept = syncFeed(config, { force: true });
+    (await until())(reply());
+    await kept;
+    assert.equal(feedFor(config).value.kind, 'inbox', 'a normal refresh is cached');
+    resetSession();
+    const dropped = syncFeed(config, { force: true });
+    const answer = await until();
+    resetSession();   // disconnect while the request runs
+    session.info = null;
+    answer(reply());
+    await dropped;
+    session.info = { connected: true, meta: { viewerId: 'me' } };
+    assert.equal(feedFor(config).value, null);
+  } finally {
+    globalThis.fetch = realFetch;
+    resetSession();
+    Object.assign(session, { info: null, access: null });
+  }
+});

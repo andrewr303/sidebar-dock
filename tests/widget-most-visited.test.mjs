@@ -11,9 +11,20 @@ test('site keys ignore www, fragments and trailing slashes', () => {
 
 test('config is filled and clamped; hidden entries are normalized and unique', () => {
   assert.deepEqual(mostVisitedConfig(), mostVisitedDefaults());
-  const c = mostVisitedConfig({ view: 'grid', count: 99, hidden: ['https://a.com/', 'https://www.a.com', 'bad', 3], openIn: 'tab' });
+  const c = mostVisitedConfig({ view: 'grid', count: 99, hidden: ['https://a.com/', 'https://www.a.com', 'not a site', 3], openIn: 'tab' });
   assert.deepEqual(c, { view: 'tiles', count: 20, hidden: ['a.com'], openIn: 'current' });
   assert.equal(mostVisitedConfig({ count: 'x' }).count, 8);
+});
+
+test('hidden sites stay hidden: the keys the widget stores survive normalization', () => {
+  const stored = [siteKey('https://www.a.com/x/'), siteKey('http://b.com:8080/?q=1'), 'c.com'];
+  assert.deepEqual(stored, ['a.com/x', 'b.com:8080?q=1', 'c.com']);
+  const config = mostVisitedConfig({ hidden: stored });
+  assert.deepEqual(config.hidden, stored);
+  // Normalizing again (every read and save does) keeps them.
+  assert.deepEqual(mostVisitedConfig(config).hidden, stored);
+  const list = [{ url: 'https://a.com/x', title: 'A' }, { url: 'http://b.com:8080/?q=1', title: 'B' }, { url: 'https://c.com/', title: 'C' }, { url: 'https://d.com', title: 'D' }];
+  assert.deepEqual(visibleSites(list, config), { sites: [{ url: 'https://d.com', title: 'D' }], hiddenCount: 3 });
 });
 
 test('labels fall back to the host when Chrome stored the address as the title', () => {

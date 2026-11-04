@@ -16,13 +16,20 @@ export function siteKey(url) {
   } catch { return ''; }
 }
 
+/** A stored hidden entry: a site key as hideSite() stores it ("a.com/path"), or a full address. '' when unusable. */
+function hiddenKey(value) {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  const text = value.trim();
+  return siteKey(/^[a-z][a-z\d+.-]*:\/\//i.test(text) ? text : `https://${text}`);
+}
+
 export function mostVisitedConfig(config = {}) {
   const c = { ...mostVisitedDefaults(), ...(config && typeof config === 'object' ? config : {}) };
   const count = Math.round(Number(c.count));
   return {
     view: MOST_VISITED_VIEWS.includes(c.view) ? c.view : 'tiles',
     count: Number.isFinite(count) ? Math.min(20, Math.max(1, count)) : 8,
-    hidden: [...new Set((Array.isArray(c.hidden) ? c.hidden : []).map(siteKey).filter(Boolean))].slice(0, 200),
+    hidden: [...new Set((Array.isArray(c.hidden) ? c.hidden : []).map(hiddenKey).filter(Boolean))].slice(0, 200),
     openIn: OPEN_IN.includes(c.openIn) ? c.openIn : 'current',
   };
 }

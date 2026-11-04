@@ -164,7 +164,7 @@ function renderColumn(ctx, widget, board, column, { visible, labels, drag, rovin
     <div class="w-kanban-col-foot" data-key="foot">
       ${composing ? composerForm(widget, column)
         : html`<button type="button" class="w-kanban-add" id="${ids.addCard(widget.id, column.id)}" data-action="w.kanban.composer-open" data-widget="${widget.id}" data-column="${column.id}"
-          ${all.length >= M.LIMITS.cards ? html`disabled` : ''}>${icon('plus', { size: 14 })}<span>Add card</span><span class="sr-only"> to ${column.title}</span></button>`}
+          ${board.cards.length >= M.LIMITS.cards ? html`disabled` : ''}>${icon('plus', { size: 14 })}<span>Add card</span><span class="sr-only"> to ${column.title}</span></button>`}
     </div>
   </li>`;
 }
@@ -413,7 +413,8 @@ function persistQuery(ctx, widgetId) {
   clearTimeout(queryTimers.get(widgetId));
   queryTimers.set(widgetId, setTimeout(() => {
     queryTimers.delete(widgetId);
-    if (!ui.query.has(widgetId)) return;
+    // The widget may have been removed while the search was typed: nothing to save then (and no error to show).
+    if (!ui.query.has(widgetId) || !findWidget(widgetId)) { ui.query.delete(widgetId); return; }
     const query = ui.query.get(widgetId);
     ctx.run(async () => {
       await save(ctx, widgetId, b => M.setFilter(b, { query }));

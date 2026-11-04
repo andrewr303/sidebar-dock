@@ -1,4 +1,4 @@
-/* Links folder widget (.w-links-folder-*): a panel of white rounded icon tiles with labels, or at 2×2 a folder whose
+/* Collection widget (type links-folder, classes .w-links-folder-*): a panel of white rounded icon tiles with labels, or at 2×2 a folder whose
    three site icons peek out of its pocket and which opens a popup grid. The tile grid (.w-links-grid, .w-links-cell,
    .w-links-link, .w-links-tile, .w-links-label, .w-links-more), the link form popover (.w-links-form-*) and the
    URL + title rows editor (.w-links-rows-*, .w-links-row-*) are shared with the quick links widget. */
@@ -379,6 +379,23 @@
 .w-links-settings-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: var(--space-7); align-items: start; }
 .w-links-settings-fields.is-pair { grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
 .w-links-settings-picker, .w-links-settings-picker > .pick-trigger { display: flex; inline-size: 100%; }
+.w-links-settings-choice { display: flex; align-items: center; gap: var(--space-3); min-inline-size: 0; }
+.w-links-settings-choice > .w-links-settings-picker { flex: 1; min-inline-size: 0; }
+.w-links-settings-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin: calc(var(--space-4) * -1) 0 0;
+  padding: var(--space-5) var(--space-6);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+  text-wrap: pretty;
+}
+.w-links-settings-summary > svg { flex: none; margin-block-start: 3px; color: var(--fg-subtle); }
+.w-links-settings-summary strong { color: var(--fg-default); font-weight: var(--weight-semibold); }
 .w-links-settings-switches { display: grid; gap: var(--space-6); }
 
 .w-links-rows { display: grid; gap: var(--space-4); min-inline-size: 0; margin: 0; padding: 0; border: 0; container: links-rows / inline-size; }
