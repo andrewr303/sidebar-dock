@@ -41,7 +41,7 @@ import {
   sanitizeResponse, sanitizeThreadPayload, timeoutFor,
 } from './protocol.js';
 import { CHAT_SYSTEM_DELETES, isChatTouched } from '../store.js';
-import { createThreadkeeperStateStore, expirePending, newEpoch, patchPrefs, pendingExpired, publicState, syncPrefsChanged, syncPrefsOf } from './state.js';
+import { MAX_PENDING_UNTRACK, createThreadkeeperStateStore, expirePending, newEpoch, patchPrefs, pendingExpired, publicState, syncPrefsChanged, syncPrefsOf } from './state.js';
 import { PARENT_MEMORY, planPlacement } from './placement.js';
 
 export const THREADKEEPER_MESSAGE = 'still:threadkeeper';
@@ -55,6 +55,8 @@ const IMPORT_BATCH = 20;
 const READS_PER_MINUTE = 30;
 const READS_IN_FLIGHT = 2;
 const PAIRING_TYPES = new Set(['hello', 'pair.request', 'pair.revoke']);
+// Not reads: pairing and bookkeeping messages skip the read rate limit.
+const UNLIMITED_TYPES = new Set([...PAIRING_TYPES, 'threads.untrack']);
 const PLACEMENT_PREFS = ['placement', 'parentName', 'singleCollectionId', 'matchExisting'];
 const PAUSED_RETRY_MS = 5 * 60 * 1000;
 
@@ -252,7 +254,7 @@ export function createThreadkeeperWorker(deps = {}) {
     const current = await getState();
     const target = to || (current.status === 'paired' ? current.extensionId : '');
     if (!isExtensionId(target)) return failure('not_paired');
-    const limited = !PAIRING_TYPES.has(type);
+    const limited = !UNLIMITED_TYPES.has(type);
     if (limited) {
       const waitMs = await acquireRead();
       if (waitMs > 0) return failure('busy', 'Still asked Threadkeeper too often. Try again in a moment.', waitMs);
@@ -947,9 +949,34 @@ export function createThreadkeeperWorker(deps = {}) {
       await chatData.delete(deleted).catch(error => log(error?.message));
       if (!byUser.length) return;
       await chatData.dismiss(byUser).catch(error => log(error?.message));
-      const current = await getState();
-      if (current.status === 'paired') await send('threads.untrack', { hashes: byUser.map(hashOfChatId) });
+      const hashes = byUser.map(hashOfChatId).filter(Boolean);
+      // Kept in the state until Threadkeeper confirms them, so a failure (busy, unreachable, not paired) is retried.
+      await updateState(draft => { draft.untrack = [...new Set([...draft.untrack, ...hashes])].slice(-MAX_PENDING_UNTRACK); });
+      await flushUntrack();
     })().catch(error => log(error?.message));
+  }
+
+  /**
+   * Sends the pending threads.untrack hashes in batches of LIMITS.untrackHashes, dropping each batch from the state once
+   * Threadkeeper confirms it. Stops at the first failure; liveness (startup, the daily sweep) and the next delete retry.
+   */
+  let untrackQueue = Promise.resolve();
+  function flushUntrack() {
+    const run = async () => {
+      for (;;) {
+        const current = await getState();
+        if (current.status !== 'paired' || !current.untrack.length) return;
+        const { hashes } = sanitizeRequestFields('threads.untrack', { hashes: current.untrack.slice(0, LIMITS.untrackHashes) });
+        if (!hashes.length) { await updateState(draft => { draft.untrack = []; }); return; }
+        const result = await send('threads.untrack', { hashes });
+        if (!result.ok) { log(result.error?.message); return; }
+        const done = new Set(hashes);
+        await updateState(draft => { draft.untrack = draft.untrack.filter(hash => !done.has(hash)); });
+      }
+    };
+    const next = untrackQueue.then(run, run);
+    untrackQueue = next.catch(error => log(error?.message));
+    return untrackQueue;
   }
 
   /** Orphan sweep (lib/chat-data.js sweep), inside the apply mutex: data of ids that are not library items any more. */
@@ -978,6 +1005,7 @@ export function createThreadkeeperWorker(deps = {}) {
   async function liveness() {
     const result = await hello();
     if (result?.ok && (await getState()).configDirty) await configure();
+    if (result?.ok) await flushUntrack();
     return result;
   }
 

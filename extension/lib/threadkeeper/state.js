@@ -14,13 +14,15 @@
  *            topicsAsTags, onRemoved, defaultView, assistant: { search, context, decision } },
  *   collections: { [projectNameLower]: collectionId, __parent: collectionId },   // mirror placement memory
  *   retry: { attempts, at },                                                     // sync.configure backoff
+ *   untrack: [hash],            // threads.untrack hashes not yet confirmed by Threadkeeper (retried; ≤ 20000)
  * }
  */
 import { defaultArea, isPlainObject } from '../storage/area.js';
-import { CAPABILITIES, PENDING_TTL_MS, clampInt, isExtensionId, isoOrNull, oneLine, stringList } from './protocol.js';
+import { CAPABILITIES, PENDING_TTL_MS, clampInt, isExtensionId, isThreadHash, isoOrNull, oneLine, stringList } from './protocol.js';
 
 export const STATE_KEY = 'still.threadkeeper.v1';
 export const STATE_LOCK = 'still.threadkeeper.v1';
+export const MAX_PENDING_UNTRACK = 20000;
 export const STATUSES = Object.freeze(['off', 'pending', 'paired', 'denied', 'revoked']);
 export const SYNC_PREF_KEYS = Object.freeze(['scope', 'projects', 'providers', 'transcripts', 'autoUpdate']);
 export const DEFAULT_PREFS = Object.freeze({
@@ -100,6 +102,7 @@ export function normalizeThreadkeeperState(raw) {
     prefs: normalizePrefs(state.prefs),
     collections,
     retry: { attempts: clampInt(retry.attempts, 0, 100, 0), at: iso(retry.at) },
+    untrack: [...new Set((Array.isArray(state.untrack) ? state.untrack : []).filter(isThreadHash))].slice(-MAX_PENDING_UNTRACK),
   };
 }
 
@@ -111,10 +114,10 @@ export function expirePending(state, now = Date.now()) {
   return { ...state, status: 'off', pending: null };
 }
 
-/** What pages see: a copy without the placement memory and retry bookkeeping. */
+/** What pages see: a copy without the placement memory, retry bookkeeping and pending untracks. */
 export function publicState(state, { available = true, now = Date.now() } = {}) {
   const current = expirePending(normalizeThreadkeeperState(state), now);
-  const { collections, retry, ...rest } = structuredClone(current);
+  const { collections, retry, untrack, ...rest } = structuredClone(current);
   return { ...rest, available };
 }
 

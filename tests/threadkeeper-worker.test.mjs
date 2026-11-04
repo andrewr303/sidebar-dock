@@ -594,3 +594,29 @@ test('a local_only removal that lands between a plan and its coalesced write is 
   assert.equal(store.item(chatItemId(KEY(1))), undefined, 'the private thread stays out of the library');
   assert.equal(await chatData.has(chatItemId(KEY(1))), false);
 });
+
+test('threads.untrack goes in batches of 500, outside the read limit, and a failed batch is retried later', async () => {
+  let fail = true;
+  const { worker, store, remote, read } = await harness({ state: PAIRED, tk: {
+    'threads.untrack': message => (fail ? { ok: false, error: { code: 'busy', message: 'later' } } : { untracked: message.hashes.length }),
+  } });
+  const keys = Array.from({ length: 520 }, (_, n) => KEY(1000 + n));
+  for (let start = 0; start < keys.length; start += 50) {
+    await worker.applyThreads(keys.slice(start, start + 50).map(key => ({ ...payload(1), threadKey: key, fingerprint: `fp-${key}` })), { origin: 'manual' });
+  }
+  for (const item of store.library.items) item.deletedAt = '2026-10-02T00:00:00.000Z';
+  // Many reads in the last minute must not hold the untrack back.
+  for (let n = 0; n < 30; n++) await worker.send('facets', {});
+  await store.emptyTrash();
+  await settle(20);
+  const first = remote.sent.filter(entry => entry.message.type === 'threads.untrack');
+  assert.equal(first.length, 1, 'stops at the failed batch');
+  assert.equal(first[0].message.hashes.length, 500);
+  assert.equal((await read()).untrack.length, 520, 'kept until Threadkeeper confirms them');
+  fail = false;
+  await worker.startup();
+  const sent = remote.sent.filter(entry => entry.message.type === 'threads.untrack').slice(1);
+  assert.deepEqual(sent.map(entry => entry.message.hashes.length), [500, 20]);
+  assert.equal(new Set(sent.flatMap(entry => entry.message.hashes)).size, 520);
+  assert.deepEqual((await read()).untrack, []);
+});
