@@ -735,9 +735,28 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       out.matching = query;
     } else if (from !== null) {
       const rest = messages.filter(message => message.index >= from);
+      // Messages a truncated copy does not hold are named, never skipped silently (m-numbers stay honest).
+      const held = new Set(all.map(message => message.index));
+      const gaps = [];
+      // Runs of indexes in [start, end) this copy does not hold (tool messages left out on purpose are held, not a gap).
+      const gapsIn = (start, end) => {
+        for (let k = start; k < end && gaps.length < 20; k++) {
+          if (held.has(k)) continue;
+          const first = k;
+          while (k < end && !held.has(k)) k++;
+          gaps.push(first + 1 === k ? `m${k} is not available` : `m${first + 1} to m${k} are not available`);
+        }
+      };
+      let expected = from;
       let i = 0;
-      for (; i < rest.length; i++) if (!push(rest[i], rest[i].content.slice(0, 12000))) break;
+      for (; i < rest.length; i++) {
+        gapsIn(expected, rest[i].index);
+        if (!push(rest[i], rest[i].content.slice(0, 12000))) break;
+        expected = rest[i].index + 1;
+      }
       if (i < rest.length) out.nextOffset = rest[i].index + 1;
+      else if (expected < total) gapsIn(expected, total);
+      if (gaps.length) out.missing = gaps;
     } else {
       // The opening request, then the newest messages back from the end while they fit.
       const head = messages.slice(0, 2);
@@ -982,7 +1001,16 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
         if (entry.record) entry.source = 'still';
       }
       const window = withTranscript && from !== null && !query ? { from, count: 500 } : null;
-      const needed = entries.filter(entry => !entry.record || (withTranscript && !entry.transcript));
+      // A truncated stored copy (gaps kept, chat-data.js) that lacks part of the window read: Threadkeeper sends that window.
+      const lacksWindow = entry => {
+        if (!window || !entry.transcript?.truncated) return false;
+        const total = Number.isFinite(entry.transcript.totalMessages) ? entry.transcript.totalMessages : 0;
+        const held = new Set(entry.transcript.messages.map(message => message.index));
+        for (let index = window.from; index < Math.min(total, window.from + window.count); index++) if (!held.has(index)) return true;
+        return false;
+      };
+      for (const entry of entries) entry.window = lacksWindow(entry);
+      const needed = entries.filter(entry => !entry.record || (withTranscript && !entry.transcript) || entry.window);
       let unavailable = '';
       if (needed.length && tk) {
         try {
@@ -996,6 +1024,16 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
             entry.threadKey ||= thread.threadKey;
             if (!entry.record) entry.record = { thread };
             if (withTranscript && !entry.transcript && thread.transcript?.messages?.length) entry.transcript = thread.transcript;
+            else if (entry.window && thread.transcript?.messages?.length) {
+              // The window joins the stored copy of the same revision; a newer revision replaces it.
+              const own = entry.transcript;
+              if (thread.transcript.revision !== undefined && own.revision !== undefined && thread.transcript.revision !== own.revision) entry.transcript = thread.transcript;
+              else {
+                const byIndex = new Map(own.messages.map(message => [message.index, message]));
+                for (const message of thread.transcript.messages) byIndex.set(message.index, message);
+                entry.transcript = { ...own, messages: [...byIndex.values()].sort((a, b) => a.index - b.index) };
+              }
+            }
             entry.source = entry.source ? 'still and threadkeeper' : 'threadkeeper';
           }
         } catch (error) {

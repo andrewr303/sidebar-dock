@@ -414,3 +414,30 @@ test('clicking a cited thread opens the saved chat, or offers Import and Open in
   assert.deepEqual(imported, [{ id: ids(KEY_B).citeId, threadKey: KEY_B }]);
   assert.equal(calls.toasts.at(-1)[0], 'Chat imported');
 });
+
+test('get_ai_threads asks Threadkeeper for the window a truncated saved transcript lacks, and names gaps it cannot fill', async () => {
+  const saved = ids(KEY_A).chatId;
+  // Still kept the first 5 and the newest 5 of 30 messages (chat-data.js keeps gaps when over budget).
+  const full = transcript(30);
+  const stored = { ...full, truncated: true, messages: full.messages.filter(message => message.index < 5 || message.index >= 25) };
+  const records = { [saved]: { record: { thread: payload(KEY_A) }, transcript: stored } };
+  const { tools, threads } = await session({ chats: records });
+  const [paged] = await tools.execute([call('get_ai_threads', { ids: [saved], detail: 'transcript', offset: 11 })]);
+  const get = threads.log.find(entry => entry[0] === 'get');
+  assert.ok(get, 'Threadkeeper was asked');
+  assert.deepEqual([get[1].transcript, get[1].window], ['window', { from: 10, count: 500 }]);
+  const read = parse(paged).threads[0];
+  assert.deepEqual(read.transcript.messages.slice(0, 2).map(message => message.m), ['m11', 'm12'], 'the asked-for messages, not the stored tail');
+  assert.equal(read.readFrom, 'still and threadkeeper');
+  assert.equal(read.transcript.missing, undefined);
+  // Threadkeeper down: the stored tail is shown, with the skipped range named.
+  const offline = await session({ chats: records, threads: { fail: true } });
+  const [alone] = await offline.tools.execute([call('get_ai_threads', { ids: [saved], detail: 'transcript', offset: 11 })]);
+  const fallback = parse(alone).threads[0].transcript;
+  assert.equal(fallback.messages[0].m, 'm26');
+  assert.deepEqual(fallback.missing, ['m11 to m25 are not available']);
+  // A complete stored copy is read from Still alone.
+  const whole = await session({ chats: { [saved]: { record: { thread: payload(KEY_A) }, transcript: full } } });
+  await whole.tools.execute([call('get_ai_threads', { ids: [saved], detail: 'transcript', offset: 11 })]);
+  assert.equal(whole.threads.log.some(entry => entry[0] === 'get'), false);
+});
