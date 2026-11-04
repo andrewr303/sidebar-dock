@@ -50,12 +50,21 @@ function render(ctx, widget, env) {
     return wrap(html`${sync}<div aria-busy="true">${skeleton({ rows: 5, variant: 'text' })}</div>`);
   }
   const issues = feed.value.issues || [];
-  const problem = feed.error && !feed.loading ? feed.error.message : '';
+  const problem = noticeFor(feed, host);
   const when = feed.at ? relativeDate(new Date(feed.at).toISOString()) : '';
   return wrap(html`${sync}
-    ${problem ? html`<p class="w-paperclip-notice" role="alert">${icon('triangle-alert', { size: 14 })}<span>${problem}</span></p>` : ''}
+    ${problem ? html`<p class="w-paperclip-notice" role="alert">${icon('triangle-alert', { size: 14 })}<span>${problem.text}</span>
+      ${button({ label: problem.label, size: 'sm', variant: 'ghost', action: problem.action, data: { widget: widget.id }, className: 'w-paperclip-notice-action' })}</p>` : ''}
     <div class="w-paperclip-scroll">${issues.length ? html`<ul class="w-paperclip-list" role="list">${issues.map(issue => row(widget, issue, env))}</ul>` : emptyIssues(config)}</div>
     <footer class="w-paperclip-foot"><span>${issues.length ? plural(issues.length, 'task') : ''}</span><span>${feed.loading ? 'Refreshing…' : when ? `Updated ${when === 'Just now' ? 'just now' : when}` : ''}</span></footer>`);
+}
+
+/** What keeps cached tasks from refreshing, with the action that fixes it (background refreshes stop until then). */
+function noticeFor(feed, host) {
+  if (session.authFailed) return { text: 'Paperclip no longer accepts the saved key.', label: 'Reconnect', action: 'w.paperclip.open-connect' };
+  if (session.access === false) return { text: `Still can’t refresh these tasks without access to ${host}.`, label: 'Allow access', action: 'w.paperclip.allow-access' };
+  if (feed.error && !feed.loading) return { text: feed.error.message, label: 'Try again', action: 'w.paperclip.refresh' };
+  return null;
 }
 
 function emptyIssues(config) {
@@ -117,7 +126,7 @@ registerActions({
   'w.paperclip.save': ({ ctx, data }) => saveToStill(ctx, data.issue),
   'w.paperclip.view-menu': ({ ctx, el, data }) => {
     const config = normalizeConfig(widgetOf(data.widget)?.config);
-    ctx.openMenu(el, VIEWS.map(view => ({ label: view.label, icon: config.view === view.id ? 'check' : 'blank', run: () => updateWidgetConfig(data.widget, { view: view.id }) })), { label: 'Show' });
+    ctx.openMenu(el, VIEWS.map(view => ({ label: view.label, checked: config.view === view.id, run: () => updateWidgetConfig(data.widget, { view: view.id }) })), { label: 'Show' });
   },
   'w.paperclip.new': ({ ctx, data }) => openCreateTask(ctx, { projectId: normalizeConfig(widgetOf(data.widget)?.config).projectId }),
 });

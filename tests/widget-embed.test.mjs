@@ -74,6 +74,8 @@ test('Google Docs, Sheets, Slides, Forms, Drive, Calendar and Maps links become 
   assert.equal(resolveEmbed('https://calendar.google.com/calendar/u/0/r').provider, 'web');
   assert.equal(resolveEmbed('https://www.google.com/maps/place/Eiffel+Tower/@48.85,2.29,17z').embedUrl, 'https://maps.google.com/maps?q=Eiffel+Tower&z=17&output=embed');
   assert.equal(resolveEmbed('https://www.google.com/maps/@40.7,-74.0,12z').embedUrl, 'https://maps.google.com/maps?ll=40.7%2C-74.0&z=12&output=embed');
+  // A stray "%" in a place name must not throw (that would break the widget, its settings and the framing rules).
+  assert.equal(resolveEmbed('https://www.google.com/maps/place/50%off+Store').embedUrl, 'https://maps.google.com/maps?q=50%25off+Store&output=embed');
 });
 
 test('other pages embed as they are; http is upgraded except on this computer', () => {

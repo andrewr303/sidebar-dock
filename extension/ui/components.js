@@ -86,6 +86,21 @@ export function segmented({ name, value, options, action, size = 'md', ariaLabel
   </div>`;
 }
 
+/**
+ * Picker for widget materials: a radiogroup of small previews painted by the same [data-frame] styles as widgets
+ * (styles/dashboard.css). Same data attributes as segmented(), so the same actions handle it.
+ */
+export function materialPicker({ name, value, options, action, ariaLabel, className } = {}) {
+  return html`<div class="${cx('material-picker', className)}" role="radiogroup" aria-label="${ariaLabel || name}">
+    ${options.map(option => html`<button type="button" role="radio" class="material-option" aria-checked="${option.value === value ? 'true' : 'false'}"
+      tabindex="${option.value === value ? '0' : '-1'}" data-action="${action}" data-value="${option.value}" ${name ? html`data-name="${name}"` : ''}
+      ${option.description ? html`title="${option.description}"` : ''}>
+      <span class="material-swatch" data-frame="${option.value}" aria-hidden="true"><span class="material-swatch-line"></span><span class="material-swatch-line is-short"></span></span>
+      <span class="material-label">${option.label}</span>
+    </button>`)}
+  </div>`;
+}
+
 /** Tab list. options: [{ value, label, icon, count }]; panels are the caller's job (aria-controls via `controls`). */
 export function tabs({ value, options, action, ariaLabel, className, controls } = {}) {
   return html`<div class="${cx('tabs', className)}" role="tablist" aria-label="${ariaLabel}">

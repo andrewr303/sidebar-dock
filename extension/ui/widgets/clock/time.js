@@ -178,7 +178,7 @@ export function searchZones(query, { date = new Date(), limit = 30, zones = allZ
     return ['America/Los_Angeles', 'America/New_York', 'Europe/London', 'Europe/Paris', 'Asia/Kolkata', 'Asia/Singapore', 'Asia/Tokyo', 'Australia/Sydney', 'UTC']
       .filter(isZone).slice(0, limit).map(tz => make(tz));
   }
-  const offset = /^(?:gmt|utc)?\s*([+-−])\s*(\d{1,2})(?::?(\d{2}))?$/.exec(q.replace('−', '-'));
+  const offset = /^(?:gmt|utc)?\s*([+-])\s*(\d{1,2})(?::?(\d{2}))?$/.exec(q.replace('−', '-'));
   const results = [];
   const seen = new Set();
   const push = (score, tz, alias) => {

@@ -375,6 +375,14 @@
 .note-head { display: flex; align-items: center; gap: var(--space-3); min-width: 0; padding-inline-end: var(--space-1); }
 .note-head .item-title { -webkit-line-clamp: 1; line-clamp: 1; flex: 1; font-size: var(--text-sm); line-height: var(--lh-sm); font-weight: var(--weight-semibold); }
 .note-dot { flex: none; width: var(--space-4); height: var(--space-4); border-radius: var(--radius-full); background: var(--dot); }
+/* A note card with an uploaded cover: the image runs edge to edge above the title. */
+.item-notecard.has-cover { overflow: hidden; padding-block-start: 0; }
+.note-cover { position: relative; display: block; aspect-ratio: 16 / 7; margin: 0 calc(var(--space-6) * -1) var(--space-2); overflow: hidden; background: var(--bg-sunken); }
+.note-cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.note-head .note-icon { flex: none; }
+/* A list thumb showing an uploaded icon (no cover): the icon sits centred on the sunken tile. */
+.item-thumb.is-icon { display: grid; place-items: center; background: var(--bg-sunken); }
+.item-thumb.is-icon img { width: 70%; height: 70%; border-radius: var(--radius-sm); object-fit: cover; }
 .note-pin { flex: none; display: inline-flex; color: var(--fg-subtle); }
 .note-preview.markdown-body {
   --be-text: var(--text-sm);

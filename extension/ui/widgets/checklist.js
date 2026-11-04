@@ -334,8 +334,11 @@ registerActions({
     const text = input?.value.trim();
     if (!text) { input?.focus(); return; }
     input.value = '';
-    const result = await editNoteContent(ctx, data.note, content => appendTask(content, text, { fillEmpty: true }));
-    if (!result && input && !input.value) input.value = text;
+    let result = null;
+    // An item that did not make it into the note (a conflict or a failed write) goes back in the field.
+    try { result = await editNoteContent(ctx, data.note, content => appendTask(content, text, { fillEmpty: true })); } finally {
+      if (!result && input && !input.value) input.value = text;
+    }
     ctx.nextFrame(() => el.closest('.w-checklist')?.querySelector('.w-checklist-scroll')?.scrollTo({ top: 1e6 }));
   },
   'w.checklist.edit': ({ ctx, data }) => startEdit(ctx, data.widget, data.note, Number(data.index)),

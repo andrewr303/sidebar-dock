@@ -33,6 +33,8 @@ export const COMMANDS = [
     action: 'add.select-parts', when: ctx => ext(ctx) && ctx.env.isSidepanel && hasAction('add.select-parts') },
   { id: 'save-tabs', label: 'Save all tabs', icon: 'layers', keywords: 'window session collection', action: 'add.save-tabs', when: ctx => ext(ctx) && hasAction('add.save-tabs') },
   { id: 'upload', label: 'Upload files', icon: 'upload', keywords: 'pdf image attach', action: 'add.upload', when: () => hasAction('add.upload') },
+  { id: 'autotag', label: 'Organize tags with AI', icon: 'tags', keywords: 'auto tag tagging label categorize clean up merge reorganize assistant',
+    action: 'autotag.open', when: () => hasAction('autotag.open'), data: ctx => ({ collection: currentCollection(ctx)?.id || '' }) },
   { id: 'new-collection', label: 'New collection', icon: 'folder-plus', keywords: 'folder create group', action: 'collections.new', pinned: true },
   // Pin or unpin the collection on screen (the collection's own header and sidebar menu do the same).
   { id: 'pin-collection', label: 'Pin this collection to the sidebar', icon: 'pin', keywords: 'favorite keep top',

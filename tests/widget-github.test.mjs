@@ -425,3 +425,16 @@ test('fetchSnapshot reports a failure instead of an empty list when nothing load
   const client = createGitHubClient({ fetch, getToken: async () => TOKEN });
   await assert.rejects(fetchSnapshot(client, {}), error => error.kind === 'server' && !error.message.includes(TOKEN));
 });
+
+test('rows and the detail pane never link to non-web URLs from GitHub data', async () => {
+  const { prRow, detailPane } = await import('../extension/ui/widgets/github/views.js');
+  const node = prNode({ url: 'javascript:alert(1)', author: { login: 'octo', avatarUrl: 'javascript:alert(3)', __typename: 'User' } });
+  node.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0].detailsUrl = 'javascript:alert(2)';
+  const pr = normalizePullRequest(node, { viewer: 'maddy' });
+  const widget = { id: 'w1' };
+  const markup = `${prRow(widget, pr)}${detailPane(widget, pr)}`;
+  assert.doesNotMatch(markup, /javascript:/);
+  assert.match(markup, /class="w-github-row-title" href="#"/);
+  const safe = normalizePullRequest(prNode(), { viewer: 'maddy' });
+  assert.match(String(detailPane(widget, safe)), /href="https:\/\/github\.com\/acme\/web\/actions\/runs\/9\/job\/1"/);
+});

@@ -119,6 +119,19 @@ function currentPosition() {
   });
 }
 
+/** Whether the scope's picker is on screen (small setup cards hide it and show only their short buttons). */
+function pickerShown(scope) {
+  const el = globalThis.document?.querySelector(`.w-weather-picker[data-scope="${CSS.escape(scope)}"]`);
+  return !!el && el.getClientRects().length > 0;
+}
+
+/** Shows a locate failure in the picker, or as a toast when the picker is hidden (else the click seems to do nothing). */
+function locateFailed(ctx, scope, state, message) {
+  Object.assign(state, { locating: false, error: message });
+  ctx.render();
+  if (!pickerShown(scope)) ctx.toast(message, { tone: 'warning' });
+}
+
 async function locate(ctx, scope, widgetId) {
   const state = scopeState(scope);
   if (state.locating) return;
@@ -129,14 +142,13 @@ async function locate(ctx, scope, widgetId) {
   try {
     position = await currentPosition();
   } catch (error) {
-    Object.assign(state, { locating: false, error: geolocationMessage(error?.code) });
-    ctx.render();
+    locateFailed(ctx, scope, state, geolocationMessage(error?.code));
     return;
   }
   const { latitude, longitude } = position.coords;
   const place = await reversePlace(latitude, longitude, { language: language() });
   state.locating = false;
-  if (!place) { state.error = geolocationMessage(2); ctx.render(); return; }
+  if (!place) { locateFailed(ctx, scope, state, geolocationMessage(2)); return; }
   await choose(ctx, scope, widgetId, place);
 }
 

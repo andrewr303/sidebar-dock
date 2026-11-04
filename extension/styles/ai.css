@@ -767,3 +767,27 @@ button.ai-page-chip:hover { background: var(--bg-hover); }
   .ai-composer:has(.ai-input:focus) { outline: 2px solid Highlight; }
   .ai-send:disabled { border: 1px solid GrayText; }
 }
+
+/* Organize tags with AI (ui/autotag.js). */
+.autotag { display: grid; gap: var(--space-7); }
+.autotag-lead { color: var(--fg-muted); font-size: var(--text-sm); line-height: var(--lh-sm); text-wrap: pretty; }
+.autotag-lead strong { color: var(--fg-default); font-weight: var(--weight-semibold); }
+.autotag-model { color: var(--fg-subtle); }
+.autotag-running { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: var(--space-4) var(--space-5); padding-block: var(--space-6); color: var(--fg-muted); font-size: var(--text-sm); }
+.autotag-meter { grid-column: 1 / -1; block-size: 4px; overflow: hidden; border-radius: 2px; background: var(--bg-sunken); }
+.autotag-meter > span { display: block; block-size: 100%; border-radius: inherit; background: var(--accent); transition: inline-size var(--dur-base) var(--ease-out); }
+.autotag-tags { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; max-block-size: min(46vh, 420px); overflow-y: auto; }
+.autotag-tag {
+  display: grid; grid-template-columns: minmax(0, auto) 1fr auto; grid-template-areas: "check count badge" "desc desc desc" "merge merge merge";
+  align-items: center; column-gap: var(--space-4); row-gap: var(--space-1);
+  padding: var(--space-4) var(--space-5); border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+}
+.autotag-tag > .checkbox { grid-area: check; font-weight: var(--weight-medium); }
+.autotag-tag.is-off { opacity: 0.6; }
+.autotag-count { grid-area: count; color: var(--fg-muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+.autotag-tag > .badge { grid-area: badge; }
+.autotag-desc { grid-area: desc; padding-inline-start: 26px; color: var(--fg-subtle); font-size: var(--text-xs); line-height: var(--lh-xs); }
+.autotag-merge { grid-area: merge; padding-inline-start: 26px; color: var(--fg-muted); font-size: var(--text-xs); line-height: var(--lh-xs); }
+.autotag-note { display: flex; align-items: flex-start; gap: var(--space-3); color: var(--fg-muted); font-size: var(--text-xs); line-height: var(--lh-xs); }
+.autotag-note > svg { flex: none; margin-block-start: 1px; }
+.autotag-note.is-warning { color: var(--fg-default); }

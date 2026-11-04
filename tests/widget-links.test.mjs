@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   normalizeLinkUrl, linkKey, linkLabel, folderLinks, orderLinks, placeBefore, shiftId, gridRows, neighborIndex, gridColumns, dropTarget,
   validateLinkRows, planLinkChanges, hasErrors, normalizeQuickLinks, defaultQuickLinks, planQuickLinks, popoverArrow, URL_ERROR, folderConfig, quickConfig,
+  DEFAULT_PARENT_NAME, NAME_REQUIRED, findDefaultParent, planWidgetCollection,
 } from '../extension/ui/widgets/links/model.js';
 
 const item = (id, props = {}) => ({ id, type: 'bookmark', title: id, url: `https://${id}.example/`, collectionId: 'c1', deletedAt: null, archived: false,
@@ -176,4 +177,92 @@ test('widget configs fill defaults and drop invalid values', () => {
   assert.deepEqual(quickConfig({ links: [] }).links, [], 'an emptied list stays empty');
   assert.equal(quickConfig({ style: 'chips', openIn: 'new', showLabels: false }).style, 'chips');
   assert.equal(quickConfig({ style: 'cloud' }).style, 'tiles');
+});
+
+const col = (id, name, parentId = '', props = {}) => ({ id, name, parentId, ...props });
+
+test('the default parent is the remembered collection, else one named Links folders (top level first)', () => {
+  assert.equal(DEFAULT_PARENT_NAME, 'Links folders');
+  const collections = [col('dev', 'Development'), col('nested', 'links folders', 'dev'), col('top', 'Links Folders'), col('renamed', 'My widgets')];
+  assert.equal(findDefaultParent(collections, 'renamed')?.id, 'renamed', 'a renamed default parent is still found by id');
+  assert.equal(findDefaultParent(collections, 'gone')?.id, 'top', 'a deleted remembered one falls back to the name, top level first');
+  assert.equal(findDefaultParent([col('nested', 'Links folders', 'dev')], '')?.id, 'nested');
+  assert.equal(findDefaultParent([col('x', 'Links folders', '', { deletedAt: '2026-01-01' })], 'x'), null, 'soft-deleted collections do not count');
+  assert.equal(findDefaultParent([], ''), null);
+  assert.equal(findDefaultParent(undefined, 'x'), null);
+});
+
+test('collection widget settings: a name plus a chosen collection makes a subcollection, never a rename', () => {
+  const collections = [col('dev', 'Development'), col('repos', 'My repos', 'dev'), col('lf', 'Links folders'), col('tools', 'Dev tools', 'lf')];
+  assert.deepEqual(planWidgetCollection({ collectionId: 'dev', name: '' }, collections, 'lf'), { kind: 'show', collectionId: 'dev' });
+  assert.deepEqual(planWidgetCollection({ collectionId: 'dev', name: '  Side projects ' }, collections, 'lf'), { kind: 'create', name: 'Side projects', parentId: 'dev' });
+  assert.deepEqual(planWidgetCollection({ collectionId: '', name: 'Reading' }, collections, 'lf'), { kind: 'create', name: 'Reading', parentId: '' },
+    'no chosen collection: the default parent (created on save when missing)');
+  assert.deepEqual(planWidgetCollection({ name: 'Reading' }, collections, ''), { kind: 'create', name: 'Reading', parentId: '' });
+  assert.deepEqual(planWidgetCollection({ collectionId: 'dev', name: 'my REPOS' }, collections, 'lf'), { kind: 'exists', collectionId: 'repos', name: 'My repos' });
+  assert.deepEqual(planWidgetCollection({ name: 'dev tools' }, collections, 'lf'), { kind: 'exists', collectionId: 'tools', name: 'Dev tools' });
+  assert.deepEqual(planWidgetCollection({ collectionId: 'dev', name: 'Dev tools' }, collections, 'lf').kind, 'create', 'same name under another parent is fine');
+  assert.deepEqual(planWidgetCollection({}, collections, 'lf'), { kind: 'invalid', error: NAME_REQUIRED });
+  assert.deepEqual(planWidgetCollection({ collectionId: 'deleted', name: ' ' }, collections, 'lf'), { kind: 'invalid', error: NAME_REQUIRED },
+    'a collection that no longer exists cannot be shown');
+  assert.deepEqual(planWidgetCollection({ collectionId: 'deleted', name: 'Reading' }, collections, 'lf'), { kind: 'create', name: 'Reading', parentId: '' },
+    'a vanished parent falls back to the default parent');
+});
+
+test('quick links without a stored id keep the same id on every read', () => {
+  const stored = [{ url: 'https://a.com' }, { url: 'https://b.com', title: 'B' }, { url: 'https://a.com' }, { id: 'keep', url: 'https://c.com' }];
+  const first = normalizeQuickLinks(stored).map(link => link.id);
+  assert.deepEqual(normalizeQuickLinks(stored).map(link => link.id), first);
+  assert.equal(new Set(first).size, 4, 'two entries with the same address still get distinct ids');
+  assert.equal(first[3], 'keep');
+  const clash = normalizeQuickLinks([{ id: 'x', url: 'https://a.com' }, { id: 'x', url: 'https://b.com' }]).map(link => link.id);
+  assert.deepEqual(clash, ['x', 'x_2'], 'duplicate stored ids are made unique, the same way each time');
+});
+
+test('quick links Undo keeps edits made after the add or remove', async () => {
+  const { undoAddLinks, undoRemoveLink } = await import('../extension/ui/widgets/quick-links.js');
+  const a = { id: 'a', title: '', url: 'https://a.com/' }, b = { id: 'b', title: '', url: 'https://b.com/' }, c = { id: 'c', title: '', url: 'https://c.com/' };
+  // Add c, then undo straight away: back to the old list.
+  assert.deepEqual(undoAddLinks([a, b, c], { previous: [a, b], saved: [a, b, c], addedIds: ['c'] }), [a, b]);
+  // Add c, then remove a, then undo the add: only c goes; a stays removed.
+  assert.deepEqual(undoAddLinks([b, c], { previous: [a, b], saved: [a, b, c], addedIds: ['c'] }), [b]);
+  // Remove b, then undo: b returns to its place.
+  assert.deepEqual(undoRemoveLink([a, c], { previous: [a, b, c], saved: [a, c], link: b, beforeId: 'c' }), [a, b, c]);
+  // Remove b, add d, then undo the removal: d is kept and b goes back before c.
+  const d = { id: 'd', title: '', url: 'https://d.com/' };
+  assert.deepEqual(undoRemoveLink([a, c, d], { previous: [a, b, c], saved: [a, c], link: b, beforeId: 'c' }), [a, b, c, d]);
+  // Its follower is gone too: b goes to the end. Already back: nothing doubles.
+  assert.deepEqual(undoRemoveLink([a, d], { previous: [a, b, c], saved: [a, c], link: b, beforeId: 'c' }), [a, d, b]);
+  assert.deepEqual(undoRemoveLink([a, b, d], { previous: [a, b, c], saved: [a, c], link: b, beforeId: 'c' }), [a, b, d]);
+});
+
+test('a site touch icon is used only when it is square-ish and sharp enough for the tile', async () => {
+  const { usableTouchIcon } = await import('../extension/ui/widgets/links/favicons.js');
+  assert.equal(usableTouchIcon(180, 180, 36, 2), true);
+  assert.equal(usableTouchIcon(120, 120, 44, 2), true, '96 px or more is always enough');
+  assert.equal(usableTouchIcon(57, 57, 36, 2), false, 'an old 57 px icon would blur on a 2x tile');
+  assert.equal(usableTouchIcon(57, 57, 36, 1), true);
+  assert.equal(usableTouchIcon(400, 200, 36, 2), false, 'a banner image is not an icon');
+  assert.equal(usableTouchIcon(0, 0, 36, 1), false);
+});
+
+test('a tile grid scrolls only when tiles are cut off, not for its own bottom padding', async () => {
+  const { gridOverflows } = await import('../extension/ui/widgets/links/shared.js');
+  assert.equal(gridOverflows(400, 400, 20), false);
+  assert.equal(gridOverflows(418, 400, 20), false, 'only padding is hidden: every tile shows');
+  assert.equal(gridOverflows(420.5, 400, 20), false, 'sub-pixel rounding');
+  assert.equal(gridOverflows(460, 400, 20), true);
+  assert.equal(gridOverflows(405, 400, 0), true);
+});
+
+test('rows of a scrolling tile grid snap so a whole number fills the view', async () => {
+  const { snapRows } = await import('../extension/ui/widgets/links/shared.js');
+  assert.equal(snapRows(650, 86, 6, 7), null, 'seven rows of 86 with 6 gaps fit in 650');
+  const snap = snapRows(620, 86, 6, 7);
+  assert.equal(snap.rows, 6);
+  assert.ok(Math.abs(snap.rows * (86 + snap.gap) - 620) < 1e-9, 'the next row starts exactly at the bottom edge');
+  assert.ok(snap.gap >= 6);
+  assert.deepEqual(snapRows(60, 86, 6, 3), { rows: 1, gap: 6 }, 'a view shorter than one row keeps the normal gap');
+  assert.equal(snapRows(0, 86, 6, 3), null);
+  assert.equal(snapRows(500, 86, 6, 0), null);
 });

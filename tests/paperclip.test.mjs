@@ -231,3 +231,68 @@ test('MCP setup adds HTTP, Paperclip and newer client snippets without any token
   assert.equal(getMcpSetup().httpUrl, 'http://127.0.0.1:43123/mcp', 'the default bridge address without a paired one');
   assert.equal(getMcpSetup('', { bridgeUrl: 'javascript:alert(1)' }).httpUrl, 'http://127.0.0.1:43123/mcp');
 });
+
+// The widget's session and render run in Node against an in-memory localStorage (accounts) and the in-memory widget cache.
+async function paperclipWidget() {
+  if (!globalThis.localStorage) {
+    const store = new Map();
+    globalThis.localStorage = { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) };
+  }
+  const sessionModule = await import('../extension/ui/widgets/paperclip/session.js');
+  await import('../extension/ui/widgets/paperclip.js');
+  const { getWidget } = await import('../extension/ui/dashboard/registry.js');
+  const { saveAccount } = await import('../extension/lib/accounts.js');
+  const { writeCache } = await import('../extension/lib/widget-cache.js');
+  return { ...sessionModule, def: getWidget('paperclip'), saveAccount, writeCache };
+}
+const PAPERCLIP_INFO = { connected: true, method: 'local', meta: { baseUrl: 'http://localhost:3100', companyId: 'c1', companyPrefix: 'PAP' } };
+
+test('a request still running when Paperclip is disconnected never refills the cache', async () => {
+  const { session, syncFeed, feedFor, resetSession, saveAccount } = await paperclipWidget();
+  session.loaded = false;
+  await saveAccount(PAPERCLIP_ACCOUNT_ID, { token: LOCAL_TOKEN, method: 'local', meta: PAPERCLIP_INFO.meta });
+  Object.assign(session, { loaded: true, info: PAPERCLIP_INFO, access: true, authFailed: false });
+  const realFetch = globalThis.fetch;
+  const pending = [];
+  globalThis.fetch = () => new Promise(resolve => pending.push(resolve));
+  const reply = () => new Response(JSON.stringify([{ id: 'i1', identifier: 'PAP-1', title: 'Private task', status: 'todo' }]), { status: 200 });
+  const until = async () => { while (!pending.length) await new Promise(resolve => setImmediate(resolve)); return pending.shift(); };
+  try {
+    const config = { view: 'open' };
+    const kept = syncFeed(config, { force: true });
+    (await until())(reply());
+    await kept;
+    assert.equal(feedFor(config).value.issues[0].title, 'Private task', 'a normal refresh is cached');
+    resetSession();
+    const dropped = syncFeed(config, { force: true });
+    const answer = await until();
+    resetSession();   // disconnect while the request runs
+    answer(reply());
+    await dropped;
+    assert.equal(feedFor(config).value, null);
+  } finally {
+    globalThis.fetch = realFetch;
+    resetSession();
+    Object.assign(session, { info: null, access: null });
+  }
+});
+
+test('cached tasks say why they stopped refreshing and offer the fix', async () => {
+  const { session, feedFor, def, writeCache } = await paperclipWidget();
+  Object.assign(session, { loaded: true, info: PAPERCLIP_INFO, access: false, authFailed: false });
+  const config = { view: 'open', projectId: '', refresh: 5 };
+  writeCache(feedFor(config).key, { issues: [{ id: 'i1', identifier: 'PAP-1', title: 'Ship it', status: 'todo' }] });
+  const view = () => String(def.render({ render() {} }, { id: 'w1', config }, { w: 4, h: 4, size: 'm' }));
+  try {
+    assert.match(view(), /Ship it/);
+    assert.match(view(), /data-action="w\.paperclip\.allow-access"/, 'host access was revoked');
+    session.access = true;
+    session.authFailed = true;
+    assert.match(view(), /data-action="w\.paperclip\.open-connect"/, 'the key was rejected');
+    session.authFailed = false;
+    assert.doesNotMatch(view(), /w-paperclip-notice/, 'nothing to report');
+  } finally {
+    session.status.clear();
+    Object.assign(session, { info: null, access: null, authFailed: false });
+  }
+});

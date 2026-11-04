@@ -65,6 +65,17 @@ export const WIDGET_STYLES = Object.freeze([
   { value: 'card', label: 'Cards', description: 'Solid cards with a soft shadow.' },
   { value: 'glass', label: 'Glass', description: 'Frosted, translucent cards. Best over a wallpaper.' },
   { value: 'flat', label: 'Flat', description: 'No card, just a hairline outline.' },
+  { value: 'raised', label: 'Raised', description: 'Solid cards lifted with a deeper shadow.' },
+  { value: 'clear', label: 'Clear glass', description: 'See-through glass with a light frost. Best over a wallpaper.' },
+  { value: 'tinted', label: 'Tinted', description: 'Cards washed with your accent color.' },
+  { value: 'gradient', label: 'Gradient', description: 'Cards that fade from your accent color into the surface.' },
+  { value: 'outline', label: 'Outline', description: 'No fill, just a clear outline.' },
+]);
+/** A widget's own Background choices: the dashboard default, every material, and none. */
+export const WIDGET_FRAMES = Object.freeze([
+  { value: 'default', label: 'Default', description: 'Follows the widget style chosen for the whole dashboard.' },
+  ...WIDGET_STYLES.map(({ value, label, description }) => ({ value, label: value === 'card' ? 'Card' : label, description })),
+  { value: 'none', label: 'None', description: 'No background or title bar.' },
 ]);
 
 /** Whether a skin can show the given color mode. */

@@ -79,6 +79,7 @@ export function errorInfo(error, fallback = 'Unable to load Linear right now. Tr
 
 /** Forget everything tied to the current account (disconnect or a different account). */
 export function resetSession() {
+  generation++;   // requests still in flight belong to the old account: their results are dropped, not cached
   session.status.clear();
   inflight.clear();
   issueOverlay.clear();

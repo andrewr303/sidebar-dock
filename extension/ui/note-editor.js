@@ -5,7 +5,8 @@
 // reloads an editor without unsaved edits and raises a non-destructive conflict bar over unsaved ones. Unsaved text is
 // mirrored to localStorage so a closed side panel never loses it. Subpages (lib/pages.js): "/page" and "Add subpage"
 // create a note inside this one, the page path above the title leads back up, and "Move to page…" re-parents a note.
-import { html, raw, cx, plural } from './html.js';
+import { html, raw, cx, plural, safeSrc } from './html.js';
+import { uploadItemImage, removeItemImage, iconMenuItems, customIcon } from './item-media.js';
 import { morph } from './morph.js';
 import { icon } from './icons.js';
 import { registerMount, registerActions, registerShortcuts, hasAction } from './runtime.js';
@@ -379,9 +380,11 @@ function shell(variant, surface) {
     <div class="ne-toolbar" role="toolbar" aria-label="Formatting and note actions">${toolbarMarkup(surface)}</div>
     <div class="ne-banner" data-region="banner" hidden></div>
     <div class="ne-scroll">
+      <div class="ne-cover" data-region="cover" hidden></div>
       <div class="ne-doc">
         <div class="ne-head">
           <nav class="ne-crumbs" data-region="crumbs" aria-label="Page path" hidden></nav>
+          <div class="ne-decor" data-region="decor"></div>
           <textarea class="ne-title" rows="1" placeholder="Untitled" aria-label="Title" maxlength="300" spellcheck="true" enterkeyhint="next"></textarea>
           <div class="ne-meta" data-region="meta"></div>
         </div>
@@ -762,6 +765,12 @@ function createEditor(host, ctx) {
       els.crumbs.hidden = !String(markup).trim();
       morph(els.crumbs, markup);
     }
+    if (els.cover) {
+      const markup = renderPageCover(record);
+      els.cover.hidden = !String(markup).trim();
+      morph(els.cover, markup);
+    }
+    if (els.decor) morph(els.decor, renderDecor(record));
     if (els.meta) morph(els.meta, renderMeta(ctx, instance, record, surface));
     if (els.subpages) {
       const markup = renderSubpages(ctx, record);
@@ -1255,6 +1264,29 @@ function renderMeta(ctx, instance, record, surface) {
   return html`<div class="ne-props">${picker}${page}${reminder}${pin}</div>${tags}`;
 }
 
+/* ------------------------------------------------------------------ uploaded cover and icon */
+
+/** The page's uploaded (or linked) cover as a banner with change and remove buttons; '' when it has none. */
+function renderPageCover(record) {
+  const src = safeSrc(record.cover);
+  if (!src) return '';
+  return html`<figure class="ne-cover-figure"><img src="${src}" alt="" decoding="async" referrerpolicy="no-referrer" draggable="false">
+    <span class="ne-cover-actions">
+      ${button({ label: 'Change cover', icon: 'image', variant: 'secondary', size: 'sm', action: 'editor.cover-upload' })}
+      ${iconButton({ icon: 'x', label: 'Remove cover', action: 'editor.cover-remove', size: 'sm', variant: 'secondary' })}
+    </span></figure>`;
+}
+
+/** The page icon above the title (a button with change and remove), and Add icon / Add cover while either is missing. */
+function renderDecor(record) {
+  const own = customIcon(record, { size: 56, className: 'ne-page-icon' });
+  return html`${own ? html`<button type="button" class="ne-page-icon-btn" data-action="editor.icon-menu" aria-haspopup="menu" aria-label="Page icon. Change or remove">${own}</button>` : ''}
+    ${!own || !record.cover ? html`<span class="ne-decor-add">
+      ${own ? '' : button({ label: 'Add icon', icon: 'smile-plus', variant: 'ghost', size: 'sm', action: 'editor.icon-upload' })}
+      ${record.cover ? '' : button({ label: 'Add cover', icon: 'image', variant: 'ghost', size: 'sm', action: 'editor.cover-upload' })}
+    </span>` : ''}`;
+}
+
 /* ------------------------------------------------------------------ page path and subpages */
 
 const pageGlyph = (entry, size = 14, className = 'ne-link-icon') => entry.type === 'note' ? icon('file-text', { size, className })
@@ -1422,6 +1454,12 @@ registerActions({
     return undefined;
   }),
   'editor.unarchive': withInstance(instance => instance.metaWrite({ archived: false })),
+  'editor.cover-upload': withInstance((instance, { ctx }) => uploadItemImage(ctx, instance.id, 'cover', { write: instance.metaWrite })),
+  'editor.cover-remove': withInstance((instance, { ctx }) => removeItemImage(ctx, instance.id, 'cover', { write: instance.metaWrite })),
+  'editor.icon-upload': withInstance((instance, { ctx }) => uploadItemImage(ctx, instance.id, 'icon', { write: instance.metaWrite })),
+  'editor.icon-menu': withInstance((instance, { ctx, el }) => {
+    ctx.openMenu(el, iconMenuItems(ctx, latestItem(ctx, instance.id), { write: instance.metaWrite }), { label: 'Page icon' });
+  }),
   'editor.open-link': ({ ctx, data }) => openLinked(ctx, data.id),
   'editor.new-subpage': withInstance(instance => instance.newSubpage()),
   'editor.crumbs-more': ({ ctx, el, data }) => {

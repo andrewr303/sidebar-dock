@@ -174,6 +174,11 @@ function decodeCalendarId(value) {
   } catch { return ''; }
 }
 
+/** decodeURIComponent that keeps text with a stray "%" as it is instead of throwing. */
+function decodePart(value) {
+  try { return decodeURIComponent(value); } catch { return value; }
+}
+
 function google(url) {
   const host = url.hostname;
   if (host === 'docs.google.com') {
@@ -212,7 +217,7 @@ function google(url) {
     const target = new URL('https://maps.google.com/maps');
     const place = /^\/maps\/(?:place|search)\/([^/]+)/.exec(url.pathname);
     const at = /@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)(?:,(\d+(?:\.\d+)?)z)?/.exec(url.pathname);
-    const query = url.searchParams.get('q') || url.searchParams.get('query') || (place ? decodeURIComponent(place[1].replace(/\+/g, ' ')) : '');
+    const query = url.searchParams.get('q') || url.searchParams.get('query') || (place ? decodePart(place[1].replace(/\+/g, ' ')) : '');
     if (query) target.searchParams.set('q', query);
     else if (at) target.searchParams.set('ll', `${at[1]},${at[2]}`);
     else return null;
