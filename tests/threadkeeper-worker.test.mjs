@@ -565,3 +565,32 @@ test('a hello from the paired Threadkeeper refreshes its capabilities; ping repo
   assert.deepEqual((await down.worker.handleRequest('ping')).data, { reachable: false, code: 'unreachable' });
   assert.equal((await down.read()).status, 'paired', 'an unreachable Threadkeeper keeps the pairing');
 });
+
+test('the same new thread planned by two jobs before one coalesced write is created once and keeps its chat data', async () => {
+  const { worker, store, chatData } = await harness({ state: PAIRED, writeIntervalMs: 50 });
+  // A sync push and a manual import of the same new thread, both planned before the flush.
+  const [sync, manual] = await Promise.all([
+    worker.applyThreads([payload(1)], { origin: 'sync' }),
+    worker.applyThreads([payload(1, { seq: 11, fingerprint: 'fp1-11' })], { origin: 'manual' }),
+  ]);
+  assert.equal(sync[0].status, 'created');
+  assert.ok(['updated', 'unchanged'].includes(manual[0].status), JSON.stringify(manual[0]));
+  const item = store.item(chatItemId(KEY(1)));
+  assert.equal(item.chat.hasTranscript, true);
+  assert.equal(item.chat.seq, 11);
+  assert.ok(await chatData.has(chatItemId(KEY(1))), 'the chat keeps its summary record');
+  assert.ok(await chatData.getTranscript(chatItemId(KEY(1))), 'and its transcript');
+});
+
+test('a local_only removal that lands between a plan and its coalesced write is not undone', async () => {
+  const { worker, store, chatData } = await harness({ state: PAIRED, writeIntervalMs: 100 });
+  await worker.applyThreads([payload(1)], { origin: 'sync' });
+  // A picker import refreshes the chat: planned (chat data written), waiting for the coalesced write.
+  const pending = worker.applyThreads([payload(1, { seq: 12, fingerprint: 'fp1-12', fields: { title: 'Secret plan' } })], { origin: 'manual' });
+  await settle(5);
+  const removed = await worker.removeThreads([KEY(1)], 'local_only');
+  assert.deepEqual(removed.map(row => row.status), ['removed']);
+  await pending;
+  assert.equal(store.item(chatItemId(KEY(1))), undefined, 'the private thread stays out of the library');
+  assert.equal(await chatData.has(chatItemId(KEY(1))), false);
+});

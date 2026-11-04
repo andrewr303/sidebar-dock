@@ -22,7 +22,9 @@
  * Applying threads (pushes, imports, refresh) runs under one worker-wide apply mutex: each entry is decided against a fresh
  * library read before anything is written to IndexedDB (invalid, stale seq, dismissed, trashed, out of Still's own scope),
  * chat data (transcript first) is written, then the library entries are coalesced into at most one upsertChats write per
- * writeIntervalMs (≤ 100 chats). Chat data written for a chat the library did not take is deleted again.
+ * writeIntervalMs (≤ 100 chats). Chat data written for a chat the library did not take is deleted again. Every other
+ * operation under the mutex (removals, sweep, re-placing, undo, a plan touching the same chat) first writes the buffered
+ * jobs it overlaps, so a plan never lands after a decision made without it.
  *
  * Page proxy (handleThreadkeeperRequest(op, args) → { ok: true, data } | { ok: false, error: { code, message } }), for
  * worker message type 'still:threadkeeper': state, ping, connect, cancel, disconnect, setPrefs, startSync, syncNow, request,
@@ -169,37 +171,56 @@ export function createThreadkeeperWorker(deps = {}) {
     // Not unref'd: a push is waiting on this write.
     flushTimer = setTimeout(() => { flushTimer = null; flush(); }, Math.max(0, lastFlushAt + writeIntervalMs - now()));
   };
+  // Writes one batch of buffered jobs (≤ MAX_WRITE_ENTRIES chats) with one upsertChats call. The caller holds the apply
+  // mutex. Never throws: a refused write rejects the jobs in that batch.
+  async function writeBatch() {
+    const batch = [];
+    let count = 0;
+    while (buffer.length && (!batch.length || count + buffer[0].entries.length <= MAX_WRITE_ENTRIES)) { const job = buffer.shift(); batch.push(job); count += job.entries.length; }
+    if (!batch.length) return;
+    try {
+      const entries = batch.flatMap(job => job.entries);
+      const ensure = new Map();
+      for (const job of batch) for (const entry of job.ensureCollections) if (!ensure.has(entry.key)) ensure.set(entry.key, entry);
+      const dismissedIds = [...new Set(batch.flatMap(job => job.dismissedIds))];
+      const options = { ...(ensure.size ? { ensureCollections: [...ensure.values()] } : {}), ...(dismissedIds.length ? { dismissedIds } : {}) };
+      const result = await store.upsertChats(entries, options);
+      const results = Array.isArray(result?.results) ? result.results : [];
+      const collections = Array.isArray(result?.collections) ? result.collections : [];
+      let offset = 0;
+      for (const job of batch) {
+        job.resolve({ results: job.entries.map((entry, index) => {
+          const found = results[offset + index];
+          return found?.id === entry.id ? found : results.find(row => row?.id === entry.id) || { threadKey: entry.threadKey, id: entry.id, status: 'skipped', reason: 'invalid' };
+        }), collections });
+        offset += job.entries.length;
+      }
+    } catch (error) {
+      for (const job of batch) job.reject(error);
+    }
+  }
   async function flush() {
     flushing = true;
     lastFlushAt = now();
-    let batch = [];
-    try {
-      await exclusive(async () => {
-        let count = 0;
-        while (buffer.length && (!batch.length || count + buffer[0].entries.length <= MAX_WRITE_ENTRIES)) { const job = buffer.shift(); batch.push(job); count += job.entries.length; }
-        const entries = batch.flatMap(job => job.entries);
-        const ensure = new Map();
-        for (const job of batch) for (const entry of job.ensureCollections) if (!ensure.has(entry.key)) ensure.set(entry.key, entry);
-        const dismissedIds = [...new Set(batch.flatMap(job => job.dismissedIds))];
-        const options = { ...(ensure.size ? { ensureCollections: [...ensure.values()] } : {}), ...(dismissedIds.length ? { dismissedIds } : {}) };
-        const result = await store.upsertChats(entries, options);
-        const results = Array.isArray(result?.results) ? result.results : [];
-        const collections = Array.isArray(result?.collections) ? result.collections : [];
-        let offset = 0;
-        for (const job of batch) {
-          job.resolve({ results: job.entries.map((entry, index) => {
-            const found = results[offset + index];
-            return found?.id === entry.id ? found : results.find(row => row?.id === entry.id) || { threadKey: entry.threadKey, id: entry.id, status: 'skipped', reason: 'invalid' };
-          }), collections });
-          offset += job.entries.length;
-        }
-      });
-    } catch (error) {
-      for (const job of batch) job.reject(error);
-    } finally {
+    try { await exclusive(writeBatch); }
+    finally {
       flushing = false;
       scheduleFlush();
     }
+  }
+  /**
+   * Inside the apply mutex, before an operation decides anything from a library read: writes every buffered job when one
+   * of them carries a chat in `ids` (all of them when ids is null). Without this a plan made earlier (its chat data
+   * already written) would land after the operation and undo it: a local_only removal recreated, or the same new thread
+   * planned twice and the second copy's data deleted as an orphan.
+   */
+  async function drainBuffered(ids = null) {
+    if (!buffer.length) return;
+    if (ids) {
+      const wanted = new Set(ids);
+      if (!buffer.some(job => job.entries.some(entry => wanted.has(entry.id)))) return;
+    }
+    while (buffer.length) await writeBatch();
   }
   const submit = (entries, ensureCollections, dismissedIds = []) => new Promise((resolve, reject) => {
     buffer.push({ entries, ensureCollections, dismissedIds, resolve, reject });
@@ -310,6 +331,7 @@ export function createThreadkeeperWorker(deps = {}) {
     const plan = await exclusive(async () => {
       const current = await getState();
       const { prefs } = current;
+      await drainBuffered(rawThreads.map(raw => (isThreadKey(raw?.threadKey) ? chatItemId(raw.threadKey) : '')).filter(Boolean));
       const library = await readLibrary();
       const byId = new Map(items(library).map(item => [item.id, item]));
       const transcriptsOn = prefs.transcripts && current.tk.capabilities.includes('transcripts');
@@ -426,7 +448,14 @@ export function createThreadkeeperWorker(deps = {}) {
           ...(row.status !== 'skipped' && entry.needsTranscript ? { needsTranscript: true } : {}),
         };
       }
-      if (orphaned.length) await chatData.delete(orphaned).catch(() => {});
+      if (orphaned.length) {
+        // Only data of chats the library does not hold: another job may have created the chat in the meantime.
+        await exclusive(async () => {
+          const held = new Set(items(await readLibrary()).map(item => item.id));
+          const gone = orphaned.filter(id => !held.has(id));
+          if (gone.length) await chatData.delete(gone);
+        }).catch(() => {});
+      }
       if (revived.length) await chatData.undismiss(revived).catch(error => log(error?.message));
       await remember(plan.placement, outcome.collections);
       bookkeeping({ counts });
@@ -460,6 +489,7 @@ export function createThreadkeeperWorker(deps = {}) {
   async function removeThreads(threadKeys, reason) {
     return exclusive(async () => {
       const { prefs } = await getState();
+      await drainBuffered(threadKeys.filter(isThreadKey).map(chatItemId));
       const library = await readLibrary();
       const byId = new Map(items(library).map(item => [item.id, item]));
       const results = [];
@@ -805,6 +835,7 @@ export function createThreadkeeperWorker(deps = {}) {
       const windowOut = { revision: payload.transcript.revision, totalMessages: payload.transcript.totalMessages, messages: payload.transcript.messages };
       if (!current.prefs.transcripts) return { ...windowOut, stored: false, stale: false, truncated: true };
       return exclusive(async () => {
+        await drainBuffered([id]);
         // Merged into the stored transcript of the same revision by lib/chat-data.js; another revision is stale.
         const merged = await chatData.mergeTranscriptWindow(id, { ...payload.transcript, threadKey: payload.threadKey });
         if (!merged?.merged) return { ...windowOut, stored: false, stale: true, truncated: true };
@@ -820,6 +851,7 @@ export function createThreadkeeperWorker(deps = {}) {
     async undoImport({ ids = [] } = {}) {
       const wanted = [...new Set((Array.isArray(ids) ? ids : []).filter(isChatItemId))].slice(0, LIMITS.importKeys);
       return exclusive(async () => {
+        await drainBuffered(wanted);
         const library = await readLibrary();
         const present = new Set(items(library).filter(isTkChat).map(item => item.id));
         const gone = wanted.filter(id => present.has(id));
@@ -849,6 +881,7 @@ export function createThreadkeeperWorker(deps = {}) {
     async replaceChats() {
       const current = await getState();
       return exclusive(async () => {
+        await drainBuffered();
         const library = await readLibrary();
         const untouched = items(library).filter(item => isTkChat(item) && !item.deletedAt && item.chat.removed !== 'local_only' && !isUserTouched(item, library));
         if (!untouched.length) return { moved: 0 };
@@ -868,6 +901,7 @@ export function createThreadkeeperWorker(deps = {}) {
 
     async removeTranscripts() {
       return exclusive(async () => {
+        await drainBuffered();
         const library = await readLibrary();
         const chats = items(library).filter(item => isTkChat(item) && item.chat.hasTranscript === true);
         const ids = chats.map(item => item.id);
@@ -921,6 +955,7 @@ export function createThreadkeeperWorker(deps = {}) {
   /** Orphan sweep (lib/chat-data.js sweep), inside the apply mutex: data of ids that are not library items any more. */
   async function sweep() {
     return exclusive(async () => {
+      await drainBuffered();
       const library = await readLibrary();
       let stored = [];
       try { stored = await chatData.ids(); } catch (error) { log(error?.message); return { deleted: 0 }; }
