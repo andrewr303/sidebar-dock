@@ -388,3 +388,26 @@ test('queryItems finds chats by provider, project and topic', async () => {
   assert.equal(queryItems(state, { query: 'type:chat' }).length, 1);
   assert.equal(queryItems(state, { type: 'note' }).length, 0);
 });
+
+test('reviving a trashed chat the user moved keeps their collection unless the send names a target', async () => {
+  const { call, library } = fixture();
+  const mirror = await call('createCollection', { name: 'AI chats' });
+  const research = await call('createCollection', { name: 'Research' });
+  await call('upsertChats', [entry(KEY, { seq: 10, placement: { collectionId: mirror.id } })]);
+  const id = chatItemId(KEY);
+  await call('updateItem', id, { collectionId: research.id });
+  await call('deleteItem', id);
+  // A manual send with no target: revive, default (mirror) placement, no force.
+  const revived = await call('upsertChats', [entry(KEY, { seq: 11, fingerprint: 'fp2', origin: 'manual', revive: true, placement: { collectionId: mirror.id } })]);
+  assert.equal(revived.results[0].status, 'updated');
+  let item = library().items.find(i => i.id === id);
+  assert.equal(item.deletedAt, null);
+  assert.equal(item.collectionId, research.id, 'the chat comes back where the user put it');
+  assert.equal(item.chat.autoCollectionId, mirror.id);
+  assert.equal(isChatTouched(item, library().items), true, 'it still counts as moved');
+  // A send with an explicit target (force) moves it.
+  await call('deleteItem', id);
+  await call('upsertChats', [entry(KEY, { seq: 12, fingerprint: 'fp3', origin: 'manual', revive: true, placement: { collectionId: mirror.id, force: true } })]);
+  item = library().items.find(i => i.id === id);
+  assert.equal(item.collectionId, mirror.id);
+});

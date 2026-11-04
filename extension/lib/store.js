@@ -896,7 +896,7 @@ export function createLibraryStore({ read, write, withLock = task => task(), rea
          * Rules (against the stored record, inside the queue): an id that is not a chat of this thread → skipped/invalid; an
          * older seq → skipped/stale; a new id listed in dismissedIds (deleted forever by the user) → skipped/dismissed
          * unless revive; a chat in Trash only refreshes its chat metadata (skipped/trashed) unless revive, which restores
-         * it (with the subpages trashed with it) and applies the placement. Title, excerpt and collection change only
+         * it (with the subpages trashed with it) where it was, applying the placement only under the usual rule or when forced. Title, excerpt and collection change only
          * while the user has not changed them; notes, tags, favorite, archive, links and subpages are never touched.
          * Nothing is written when every entry is unchanged or skipped.
          * Returns { results: [{ threadKey, id, status, reason?, fingerprint?, seq? }], collections: [{ key, id, created }] }.
@@ -949,7 +949,9 @@ export function createLibraryStore({ read, write, withLock = task => task(), rea
               if (own.title) change.title = fields.title;
               if (own.excerpt) change.excerpt = fields.excerpt;
               change.sourceUrl = fields.sourceUrl; change.siteName = fields.siteName;
-              if (target && (restore || target.force || text(existing.collectionId) === text(old.autoCollectionId))) {
+              // Restoring follows restoreItem: the chat comes back where it was. Only a forced placement (an explicit
+              // manual target) moves a chat the user moved; otherwise the usual rule applies.
+              if (target && (target.force || text(existing.collectionId) === text(old.autoCollectionId))) {
                 change.collectionId = planner.place(target);
                 chat.autoCollectionId = change.collectionId;
               }
