@@ -14,6 +14,7 @@
  *            topicsAsTags, onRemoved, defaultView, assistant: { search, context, decision } },
  *   collections: { [projectNameLower]: collectionId, __parent: collectionId },   // mirror placement memory
  *   retry: { attempts, at },                                                     // sync.configure backoff
+ *   chatStoreId,                // lib/chat-data.js storeId() last seen; a different one means the chat store was lost
  *   untrack: [hash],            // threads.untrack hashes not yet confirmed by Threadkeeper (retried; ≤ 20000)
  * }
  */
@@ -102,6 +103,7 @@ export function normalizeThreadkeeperState(raw) {
     prefs: normalizePrefs(state.prefs),
     collections,
     retry: { attempts: clampInt(retry.attempts, 0, 100, 0), at: iso(retry.at) },
+    chatStoreId: typeof state.chatStoreId === 'string' && /^[\w-]{1,100}$/.test(state.chatStoreId) ? state.chatStoreId : '',
     untrack: [...new Set((Array.isArray(state.untrack) ? state.untrack : []).filter(isThreadHash))].slice(-MAX_PENDING_UNTRACK),
   };
 }
@@ -117,7 +119,7 @@ export function expirePending(state, now = Date.now()) {
 /** What pages see: a copy without the placement memory, retry bookkeeping and pending untracks. */
 export function publicState(state, { available = true, now = Date.now() } = {}) {
   const current = expirePending(normalizeThreadkeeperState(state), now);
-  const { collections, retry, untrack, ...rest } = structuredClone(current);
+  const { collections, retry, untrack, chatStoreId, ...rest } = structuredClone(current);
   return { ...rest, available };
 }
 

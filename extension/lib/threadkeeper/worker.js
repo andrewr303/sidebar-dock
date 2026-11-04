@@ -320,6 +320,46 @@ export function createThreadkeeperWorker(deps = {}) {
     return result;
   }
 
+  // ---- chat store loss (lib/chat-data.js storeId) ----------------------------------------------------------------------
+  /**
+   * Inside the apply mutex, before anything is written to the chat store: compares its storeId with the one recorded in
+   * the state. A different id (the IndexedDB database was deleted or recreated) or, with `emptyCheck`, an empty store
+   * while the library holds chats means the chat store was lost: chatStoreLost() runs. Returns true on a loss.
+   */
+  async function checkChatStore({ emptyCheck = false, library = null } = {}) {
+    let id = '';
+    try { id = typeof chatData.storeId === 'function' ? await chatData.storeId() : ''; } catch (error) { log(error?.message); }
+    const current = await getState();
+    let lost = false;
+    if (id && current.chatStoreId && current.chatStoreId !== id) lost = true;
+    else if (id && !current.chatStoreId) await updateState(draft => { draft.chatStoreId ||= id; });
+    if (!lost && emptyCheck) {
+      let stored = null;
+      try { stored = await chatData.ids(); } catch (error) { log(error?.message); }
+      const chats = items(library || await readLibrary()).filter(item => isTkChat(item) && !item.deletedAt && item.chat.removed !== 'local_only');
+      lost = !!stored && chats.length > 0 && !stored.length;
+    }
+    if (lost) await chatStoreLost(id);
+    return lost;
+  }
+
+  /**
+   * The chat store went missing (cleared site data, a deleted database, a new profile copy): a new epoch so Threadkeeper
+   * re-offers everything (sync.configure is marked dirty and sent), and chats whose transcript is gone stop claiming one.
+   */
+  async function chatStoreLost(id) {
+    const next = await updateState(draft => { draft.epoch = newEpoch(); if (id) draft.chatStoreId = id; if (draft.configured) draft.configDirty = true; });
+    let held = new Set();
+    try { held = new Set(await chatData.ids()); } catch (error) { log(error?.message); }
+    const flagged = items(await readLibrary()).filter(item => isTkChat(item) && item.chat.hasTranscript === true && !held.has(item.id)).map(item => item.id);
+    for (let start = 0; start < flagged.length; start += 500) {
+      await store.setChatFlags(flagged.slice(start, start + 500).map(chatId => ({ id: chatId, chat: { hasTranscript: false, transcriptTruncated: false } })))
+        .catch(error => log(error?.message));
+    }
+    // Announced outside the apply mutex (Threadkeeper's answer may push threads, which need it).
+    if (next.status === 'paired') Promise.resolve().then(async () => { await hello(); if (next.configured) await configure(); }).catch(error => log(error?.message));
+  }
+
   // ---- applying threads (pushes, imports, refresh) ------------------------------------------------------------------
   const skipped = (threadKey, reason, held = null) => ({ threadKey, status: 'skipped', reason, ...(held?.id ? { itemId: held.id } : {}),
     ...(held?.chat?.fingerprint ? { fingerprint: held.chat.fingerprint } : {}), ...(Number.isFinite(held?.chat?.seq) ? { seq: held.chat.seq } : {}) });
@@ -334,6 +374,7 @@ export function createThreadkeeperWorker(deps = {}) {
       const current = await getState();
       const { prefs } = current;
       await drainBuffered(rawThreads.map(raw => (isThreadKey(raw?.threadKey) ? chatItemId(raw.threadKey) : '')).filter(Boolean));
+      await checkChatStore();
       const library = await readLibrary();
       const byId = new Map(items(library).map(item => [item.id, item]));
       const transcriptsOn = prefs.transcripts && current.tk.capabilities.includes('transcripts');
@@ -983,15 +1024,12 @@ export function createThreadkeeperWorker(deps = {}) {
   async function sweep() {
     return exclusive(async () => {
       await drainBuffered();
+      // The chat store went missing (a new storeId, or empty while the library holds chats): Threadkeeper must re-offer
+      // everything.
+      const lost = await checkChatStore({ emptyCheck: true });
       const library = await readLibrary();
-      let stored = [];
-      try { stored = await chatData.ids(); } catch (error) { log(error?.message); return { deleted: 0 }; }
       let swept = { records: 0, transcripts: 0 };
       try { swept = await chatData.sweep(items(library), { minAgeMs: ORPHAN_AGE_MS }); } catch (error) { log(error?.message); }
-      // The chat store went missing (cleared site data, a new profile copy): Threadkeeper must re-offer everything.
-      const chats = items(library).filter(item => isTkChat(item) && !item.deletedAt && item.chat.removed !== 'local_only');
-      const lost = chats.length > 0 && !stored.length;
-      if (lost) await updateState(draft => { draft.epoch = newEpoch(); });
       return { deleted: swept.records, lost };
     });
   }

@@ -620,3 +620,24 @@ test('threads.untrack goes in batches of 500, outside the read limit, and a fail
   assert.equal(new Set(sent.flatMap(entry => entry.message.hashes)).size, 520);
   assert.deepEqual((await read()).untrack, []);
 });
+
+test('a lost chat store is noticed by its storeId even after a new write, before any sweep', async () => {
+  const { worker, store, chatData, remote, read } = await harness({ state: PAIRED });
+  await worker.applyThreads([payload(1), payload(2)], { origin: 'sync' });
+  const before = await read();
+  assert.ok(before.chatStoreId, 'the chat store identity is recorded');
+  // The IndexedDB database is deleted and recreated: a new identity, and nothing of the old data.
+  const fresh = createChatDataStore({ indexedDB: null });
+  for (const name of ['get', 'put', 'ids', 'storeId', 'getTranscript', 'delete', 'dismissed', 'mergeTranscriptWindow', 'sweep']) chatData[name] = fresh[name];
+  // A push wakes the worker before any sweep and writes one record.
+  await worker.applyThreads([payload(3)], { origin: 'sync' });
+  await settle(10);
+  const after = await read();
+  assert.notEqual(after.epoch, before.epoch, 'a new epoch: Threadkeeper re-offers everything');
+  assert.notEqual(after.chatStoreId, before.chatStoreId);
+  assert.equal(after.configDirty, false, 'sync.configure went out with the new epoch');
+  const configure = remote.sent.filter(entry => entry.message.type === 'sync.configure').at(-1);
+  assert.equal(configure?.message.epoch, after.epoch);
+  assert.equal(store.item(chatItemId(KEY(1))).chat.hasTranscript, false, 'a transcript that is gone is not claimed');
+  assert.equal(store.item(chatItemId(KEY(3))).chat.hasTranscript, true);
+});
