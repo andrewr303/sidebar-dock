@@ -254,3 +254,15 @@ test('a tile grid scrolls only when tiles are cut off, not for its own bottom pa
   assert.equal(gridOverflows(460, 400, 20), true);
   assert.equal(gridOverflows(405, 400, 0), true);
 });
+
+test('rows of a scrolling tile grid snap so a whole number fills the view', async () => {
+  const { snapRows } = await import('../extension/ui/widgets/links/shared.js');
+  assert.equal(snapRows(650, 86, 6, 7), null, 'seven rows of 86 with 6 gaps fit in 650');
+  const snap = snapRows(620, 86, 6, 7);
+  assert.equal(snap.rows, 6);
+  assert.ok(Math.abs(snap.rows * (86 + snap.gap) - 620) < 1e-9, 'the next row starts exactly at the bottom edge');
+  assert.ok(snap.gap >= 6);
+  assert.deepEqual(snapRows(60, 86, 6, 3), { rows: 1, gap: 6 }, 'a view shorter than one row keeps the normal gap');
+  assert.equal(snapRows(0, 86, 6, 3), null);
+  assert.equal(snapRows(500, 86, 6, 0), null);
+});

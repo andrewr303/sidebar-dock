@@ -22,8 +22,9 @@
 }
 :is(.w-links-folder, .w-links-folder-popup, .w-quick-links)[data-tiles="lg"] { --lf-tile: 68px; --lf-tile-radius: 18px; --lf-cell: 96px; }
 
-/* The widget body hosts the panel edge to edge (a bare frame already has no padding; a chosen card frame does). */
-.widget-body:has(> :is(.w-links-folder, .w-links-folder-xs)) { padding: 0; overflow: visible; }
+/* The widget body hosts the panel edge to edge with every Background. A chosen frame makes the widget headless, and
+   .widget.is-headless .widget-body adds top padding for the floating menu; the panel's own head already clears it. */
+:is(.widget, .widget.is-headless) .widget-body:has(> :is(.w-links-folder, .w-links-folder-xs)) { padding: 0; overflow: visible; }
 
 /* ---------- Panel ---------- */
 /* The same material as a widget card (dashboard.css .widget), drawn by the panel because the definition is bare. */
@@ -57,9 +58,10 @@
   display: flex;
   align-items: center;
   flex: none;
-  min-block-size: 40px;
-  /* Lines up with the dashboard's card titles; the inline end keeps clear of the floating ⋯ button. */
-  padding: var(--space-3) calc(var(--space-3) + 36px) 0 var(--space-7);
+  /* One row with the floating ⋯ button (6px from the top, 26px tall), so the title sits in the top corner and the tiles
+     start right under it. The inline end keeps clear of that button. */
+  block-size: 38px;
+  padding: 0 calc(var(--space-3) + 36px) 0 var(--space-7);
 }
 .w-links-folder-title {
   min-inline-size: 0;
@@ -91,6 +93,10 @@
   scrollbar-color: var(--border-strong) transparent;
 }
 .w-links-grid.is-scrollable { overflow-y: auto; }
+/* More rows than fit: w.links.fit spaces the rows so a whole number of them fills the view, and scrolling moves by
+   whole rows, so no row is ever shown half cut off. */
+.w-links-grid.is-snapped { scroll-snap-type: y mandatory; }
+.w-links-grid.is-snapped > .w-links-cell { scroll-snap-align: start; }
 .w-links-folder.is-s .w-links-grid { padding-inline: var(--space-3); }
 
 .w-links-cell { position: relative; display: flex; justify-content: center; min-inline-size: 0; }

@@ -256,15 +256,46 @@ export function focusFirstError(ctx, key) {
  */
 export const gridOverflows = (scrollHeight, clientHeight, paddingEnd = 0) => scrollHeight - clientHeight > Math.max(0, paddingEnd) + 1;
 
-// data-mount="w.links.fit" on a .w-links-grid: it scrolls (is-scrollable) only while tiles are cut off, rechecked when
-// the widget is resized or its tiles change.
+/**
+ * Row spacing that makes a whole number of tile rows fill a scrolling grid: { rows, gap } with rows visible at once and
+ * gap the row gap that puts the next row exactly at the bottom edge. null when everything fits (no snapping needed).
+ *   view: the grid's height minus its top padding      rowHeight: one row of tiles      baseGap: the stylesheet's row gap
+ */
+export function snapRows(view, rowHeight, baseGap, rowCount) {
+  if (!(view > 0) || !(rowHeight > 0) || rowCount < 1) return null;
+  if (rowCount * rowHeight + (rowCount - 1) * baseGap <= view) return null;
+  const rows = Math.max(1, Math.floor((view + baseGap) / (rowHeight + baseGap)));
+  return { rows, gap: Math.max(baseGap, view / rows - rowHeight) };
+}
+
+// data-mount="w.links.fit" on a .w-links-grid: it scrolls (is-scrollable) only while tiles are cut off, and then snaps
+// whole rows to the view (is-snapped). Rechecked when the widget is resized or its tiles change.
 registerMount('w.links.fit', el => {
   const check = () => {
-    const paddingEnd = parseFloat(getComputedStyle(el).paddingBlockEnd) || 0;
-    el.classList.toggle('is-scrollable', gridOverflows(el.scrollHeight, el.clientHeight, paddingEnd));
+    // Measure the stylesheet's own spacing, not the spacing set by the last check (keeping the scroll position).
+    const top = el.scrollTop;
+    el.style.rowGap = '';
+    el.style.paddingBlockEnd = '';
+    const style = getComputedStyle(el);
+    const paddingStart = parseFloat(style.paddingBlockStart) || 0;
+    const paddingEnd = parseFloat(style.paddingBlockEnd) || 0;
+    const overflows = gridOverflows(el.scrollHeight, el.clientHeight, paddingEnd);
+    el.classList.toggle('is-scrollable', overflows);
+    const cells = [...el.children].filter(cell => cell.matches('.w-links-cell'));
+    const columns = Math.max(1, style.gridTemplateColumns.split(' ').filter(Boolean).length);
+    const snap = overflows && cells.length ? snapRows(el.clientHeight - paddingStart, cells[0].offsetHeight, parseFloat(style.rowGap) || 0, Math.ceil(cells.length / columns)) : null;
+    el.classList.toggle('is-snapped', !!snap);
+    if (snap) {
+      el.style.rowGap = `${snap.gap}px`;
+      // The last row ends one period before the bottom too, so the furthest scroll also lands on a row boundary.
+      el.style.paddingBlockEnd = `${snap.gap}px`;
+      el.style.scrollPaddingBlockStart = `${paddingStart}px`;
+    }
+    if (el.scrollTop !== top) el.scrollTop = top;
   };
+  // Border box: the padding and gap set here never change it, so they cannot retrigger the observer.
   const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(check) : null;
-  observer?.observe(el);
+  observer?.observe(el, { box: 'border-box' });
   check();
   return { update: check, destroy: () => observer?.disconnect() };
 });
