@@ -13,6 +13,7 @@ import { openAdd } from './quick-add.js';
 import { createNote } from './notes.js';
 import { confirmTrash, subpagesMoving } from './note-editor.js';
 import { askAi } from './ai-panel.js';
+import { openAutoTag } from './autotag.js';
 import { openCollectionEditor } from './collections.js';
 import { exportBookmarkHtml, exportNotesMarkdown } from '../lib/portability.js';
 import { parentIdOf } from '../lib/pages.js';
@@ -846,6 +847,7 @@ function openViewMenu(ctx, anchor) {
   const mappable = !['trash', 'archive', 'duplicates'].includes(view);
   const entries = [
     { label: 'Ask AI about this view', icon: 'sparkles', run: () => askAboutView(ctx) },
+    { label: id ? 'Organize tags here with AI…' : 'Organize tags with AI…', icon: 'tags', run: () => openAutoTag(ctx, { collectionId: id || '' }) },
     id && { label: 'Edit collection…', icon: 'pencil', run: () => openCollectionEditor(ctx, { id }) },
     id && { label: ctx.select.collection(id)?.pinned ? 'Unpin from sidebar' : 'Pin to sidebar', icon: ctx.select.collection(id)?.pinned ? 'pin-off' : 'pin', run: () => ctx.dispatch('collections.pin', { data: { id } }) },
     id && { label: 'New collection inside…', icon: 'folder-plus', run: () => openCollectionEditor(ctx, { parentId: id }) },

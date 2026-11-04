@@ -37,6 +37,7 @@ New tabs open a dashboard of widgets on a 12-column grid, with a greeting, the d
 ## Themes, full-screen assistant and settings
 
 - **Themes:** Still, White, Liquid Glass, Midnight, Nord, Paper and Rosé recolor the sidebar, side panel, full tab and dashboard. Choose light, dark or system mode, one of seven accents, text size, density, corners, sidebar width, and reduced transparency or motion.
+- **Organize tags with AI:** from the library menu or the command palette, the AI reads the library (or one collection) and your existing tags, proposes the fewest tags that keep things easy to find, and shows the plan for review before applying it, with Undo.
 - **Full-screen assistant:** the **AI assistant** view gives a conversation the whole tab: a chats rail with search and history by day, a wide transcript with a docked composer, and a **Context & sources** rail with what the next question is about and the sources of the latest answer. The same chat moves between the side panel's Ask tab, the full-tab panel and this page. **Ask AI** in the dashboard search continues here.
 - **Settings:** one searchable page (press `/`) with Appearance, New tab & dashboard, General, Library & backup, AI models, Assistant permissions, Research agent, Semantic search, Agents & MCP, Connected accounts, Integrations, Keyboard shortcuts, About and Help. In the side panel it opens as a panel with the same sections.
 
