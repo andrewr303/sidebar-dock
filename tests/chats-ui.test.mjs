@@ -139,6 +139,9 @@ test('transcript helpers: clean messages, gaps, pages from the end, find, foldin
   assert.equal(foldPoint('short'), 5);
   assert.equal(toolTitle('\n\n  Read src/x.ts\nmore'), 'Read src/x.ts');
   assert.equal(toolTitle('x'.repeat(200)).length, 90);
+  assert.equal(toolTitle('[tool] Edit: /src/a.ts'), 'Edit: /src/a.ts');
+  assert.equal(toolTitle('[tool result] PASS 3 tests'), 'Result · PASS 3 tests');
+  assert.equal(toolTitle('[tool error] \nboom'), 'Error');
 });
 
 test('messages: user text escaped, assistant Markdown normalized without images, tools folded, long messages shortened', () => {

@@ -129,7 +129,14 @@ export function filterChats(items, { query = '', category = '', provider = '', c
 
 /** "Tool · Read src/x.ts": the first non-empty line of a tool message, shortened. */
 export function toolTitle(content) {
-  const line = str(content).split('\n').map(part => part.trim()).find(Boolean) || '';
+  let line = str(content).split('\n').map(part => part.trim()).find(Boolean) || '';
+  // Threadkeeper marks CLI tool traffic "[tool] Edit: …", "[tool result] …", "[tool error] …"; the chip already says Tool.
+  const marker = /^\[tool( result| error)?\]\s*/i.exec(line);
+  if (marker) {
+    const rest = line.slice(marker[0].length).trim();
+    const kind = (marker[1] || '').trim().toLowerCase();
+    line = kind === 'result' ? (rest ? `Result · ${rest}` : 'Result') : kind === 'error' ? (rest ? `Error · ${rest}` : 'Error') : rest;
+  }
   return line.length > 90 ? `${line.slice(0, 89)}…` : line;
 }
 
