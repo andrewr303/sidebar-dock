@@ -241,6 +241,18 @@ test('pushes: chat data first, mirror placement, one coalesced library write, id
   assert.equal((await read()).counts.created, 4);
 });
 
+test('the first sync ends for good once every counted thread is in Still', async () => {
+  const { worker, store, read } = await harness({ state: { ...PAIRED, backfill: { total: 2, startedAt: '2026-10-01T00:00:00.000Z', paused: false } } });
+  await worker.handleExternalMessage(msg('threads.upsert', { threads: [payload(1)], origin: 'sync' }), sender());
+  assert.equal((await read()).backfill.total, 2, 'one of two: still bringing threads in');
+  await worker.handleExternalMessage(msg('threads.upsert', { threads: [payload(2)], origin: 'sync' }), sender());
+  assert.deepEqual((await read()).backfill, { total: 0, startedAt: '', paused: false });
+  // A chat leaving later (local_only removal, a manual re-send, a delete) no longer brings the progress back.
+  await worker.handleExternalMessage(msg('threads.remove', { threadKeys: [KEY(1)], reason: 'local_only' }), sender());
+  assert.equal(store.item(chatItemId(KEY(1))), undefined);
+  assert.equal((await read()).backfill.total, 0);
+});
+
 test('a metadata-only push for a new revision asks for the transcript; Still’s own prefs are enforced', async () => {
   const { worker, chatData } = await harness({ state: { ...PAIRED, prefs: { scope: 'projects', projects: ['Still'] } } });
   const meta = await worker.handleExternalMessage(msg('threads.upsert', { threads: [payload(1, { transcript: { included: false, revision: 1, totalMessages: 2 } })], origin: 'sync' }), sender());

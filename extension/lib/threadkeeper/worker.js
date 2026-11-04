@@ -430,8 +430,22 @@ export function createThreadkeeperWorker(deps = {}) {
       if (revived.length) await chatData.undismiss(revived).catch(error => log(error?.message));
       await remember(plan.placement, outcome.collections);
       bookkeeping({ counts });
+      if (origin === 'sync' && counts.created) await finishBackfill();
     }
     return results.map((row, index) => row || skipped(isThreadKey(rawThreads[index]?.threadKey) ? rawThreads[index].threadKey : '', 'invalid'));
+  }
+
+  /**
+   * The first sync is over once Still holds as many synced chats as Threadkeeper counted when it started. Recorded in
+   * the state, so Settings stops showing its progress for good (chats removed, re-sent by hand or deleted later must
+   * not bring the bar back).
+   */
+  async function finishBackfill() {
+    const { backfill } = await getState();
+    if (!backfill?.startedAt || !backfill.total) return;
+    const synced = items(await readLibrary()).filter(item => item?.type === 'chat' && !item.deletedAt && item.chat?.origin === 'sync').length;
+    if (synced < backfill.total) return;
+    await updateState(draft => { if (draft.backfill.startedAt === backfill.startedAt) draft.backfill = { total: 0, startedAt: '', paused: false }; }).catch(error => log(error?.message));
   }
 
   /** Mirror placement memory: matched and ensured collections are remembered per project. */
