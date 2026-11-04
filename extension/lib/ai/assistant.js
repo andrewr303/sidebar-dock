@@ -245,7 +245,9 @@ export function createAssistant({ streamChat, resolveConnection, resolveChatTarg
         .sort((a, b) => text(b.updatedAt).localeCompare(text(a.updatedAt)));
       const collection = (library?.collections || []).find(entry => entry.id === collectionId);
       payload.collection = { id: collectionId, path: collectionPath(library, collectionId), ...(collection?.description ? { description: text(collection.description).slice(0, 2000) } : {}),
-        itemCount: members.length, items: members.slice(0, 150).map(item => ({ id: item.id, title: text(item.title), type: item.type, tags: (item.tags || []).slice(0, 8), excerpt: text(item.excerpt).slice(0, 160) })) };
+        // A chat's excerpt is its thread's gist (untrusted thread text): left out here; the chat sources below carry it marked.
+        itemCount: members.length, items: members.slice(0, 150).map(item => ({ id: item.id, title: text(item.title), type: item.type, tags: (item.tags || []).slice(0, 8),
+          ...(item.type === 'chat' ? {} : { excerpt: text(item.excerpt).slice(0, 160) }) })) };
       left -= JSON.stringify(payload.collection).length;
       const chatKeys = members.filter(item => item.type === 'chat' && text(item.chat?.threadKey)).map(item => item.chat.threadKey);
       const scoped = scopedThreads(chatKeys);

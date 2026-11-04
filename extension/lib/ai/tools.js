@@ -770,7 +770,11 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
         return { id: item.id, title: text(item.title), type: item.type, url: text(item.url), collection: collectionPath(library, text(item.collectionId)),
           tags: item.tags || [], updatedAt: text(item.updatedAt), snippet: text(result.snippet) };
       });
-      return { summary: `Searched library · ${plural(items.length, 'match', 'matches')}`, data: { query, count: items.length, items }, result: { count: items.length, ids: items.map(item => item.id) } };
+      // A chat's title and snippet (its Threadkeeper summary, gist) are thread text: untrusted, and the turn asks before applying.
+      const chatHits = items.some(item => item.type === 'chat');
+      if (chatHits) usedThreads = true;
+      return { summary: `Searched library · ${plural(items.length, 'match', 'matches')}`, data: { query, count: items.length, items, ...(chatHits ? { untrusted: THREAD_NOTE } : {}) },
+        result: { count: items.length, ids: items.map(item => item.id) } };
     },
     async get_items(input) {
       const wanted = [...new Set((Array.isArray(input.ids) ? input.ids : []).filter(id => typeof id === 'string'))];
@@ -1809,7 +1813,8 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
     const results = new Map();
     const done = (call, data, { isError = false, summary = '', result } = {}) => {
       results.set(call.id, { toolUseId: call.id, content: typeof data === 'string' ? data : JSON.stringify(data), isError });
-      onEvent({ type: 'tool', id: call.id, name: call.name, summary: summary || (isError ? `${call.name} failed` : call.name), result, isError });
+      // usedThreads: from now on this turn holds thread text (the panel renders the streaming answer without images).
+      onEvent({ type: 'tool', id: call.id, name: call.name, summary: summary || (isError ? `${call.name} failed` : call.name), result, isError, ...(usedThreads ? { usedThreads: true } : {}) });
     };
     const writes = [];
     for (const call of calls) {
