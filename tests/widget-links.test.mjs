@@ -235,3 +235,13 @@ test('quick links Undo keeps edits made after the add or remove', async () => {
   assert.deepEqual(undoRemoveLink([a, d], { previous: [a, b, c], saved: [a, c], link: b, beforeId: 'c' }), [a, d, b]);
   assert.deepEqual(undoRemoveLink([a, b, d], { previous: [a, b, c], saved: [a, c], link: b, beforeId: 'c' }), [a, b, d]);
 });
+
+test('a site touch icon is used only when it is square-ish and sharp enough for the tile', async () => {
+  const { usableTouchIcon } = await import('../extension/ui/widgets/links/favicons.js');
+  assert.equal(usableTouchIcon(180, 180, 36, 2), true);
+  assert.equal(usableTouchIcon(120, 120, 44, 2), true, '96 px or more is always enough');
+  assert.equal(usableTouchIcon(57, 57, 36, 2), false, 'an old 57 px icon would blur on a 2x tile');
+  assert.equal(usableTouchIcon(57, 57, 36, 1), true);
+  assert.equal(usableTouchIcon(400, 200, 36, 2), false, 'a banner image is not an icon');
+  assert.equal(usableTouchIcon(0, 0, 36, 1), false);
+});

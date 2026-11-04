@@ -125,6 +125,9 @@
 /* Tile icons (links/favicons.js): the favicon sits above the letter tile until the verdict is known, then only one shows. */
 .w-links-icon > .site-icon-img { z-index: 1; }
 .w-links-icon > .site-icon-img.is-probe { opacity: 0; }
+/* The site's touch icon (links/favicons.js): hidden while it is tried, then drawn over the favicon as a rounded square. */
+.site-icon-touch { position: absolute; inset: 0; z-index: 2; inline-size: 100%; block-size: 100%; object-fit: cover; border-radius: 22%; opacity: 0; }
+.site-icon-touch.is-ready { opacity: 1; }
 :is(.w-links-tile, .w-links-folder-peek-tile, .w-quick-links-row-icon):has(> .w-links-icon.is-light) { background: var(--lf-plate-dark); }
 .w-quick-links-chip > .w-links-icon.is-light { border-radius: var(--radius-xs); background: var(--lf-plate-dark); }
 .w-links-tile > .site-icon { border-radius: var(--radius-sm); overflow: hidden; }
