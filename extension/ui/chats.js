@@ -271,11 +271,34 @@ export function invalidateChat(id) {
 /* ------------------------------------------------------------------ page state */
 
 const chatsState = ctx => (ctx.state.chats ||= { chatId: null, query: '', category: '', provider: '', collectionId: '', deep: null });
-const viewFor = ctx => {
-  const saved = ctx.prefs.get('chatView', '');
-  if (saved === 'summary' || saved === 'transcript') return saved;
+/*
+ * Summary | Transcript: each chat remembers the view the user switched it to (prefs 'chatViews', { [chatId]: view }, the
+ * newest MAX_CHAT_VIEWS kept); a chat never switched opens in Settings' "Open chats in" (prefs.defaultView). A jump from a
+ * summary ref (#msg-N) or openChat({ view }) shows that view for this page only and remembers nothing.
+ */
+const MAX_CHAT_VIEWS = 300;
+const isChatView = value => value === 'summary' || value === 'transcript';
+const transientViews = new Map(); // chat id -> view shown until the user switches (never saved)
+const savedViews = ctx => {
+  const value = ctx.prefs.get('chatViews', null);
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+};
+const viewFor = (ctx, id) => {
+  if (isChatView(transientViews.get(id))) return transientViews.get(id);
+  const saved = savedViews(ctx);
+  if (id && Object.hasOwn(saved, id) && isChatView(saved[id])) return saved[id];
   return tkPrefs().defaultView === 'transcript' ? 'transcript' : 'summary';
 };
+function rememberView(ctx, id, view) {
+  transientViews.delete(id);
+  if (!/^[\w:.-]{1,200}$/.test(id)) return;
+  const next = {};
+  for (const [key, value] of Object.entries(savedViews(ctx))) if (key !== id && isChatView(value)) next[key] = value;
+  next[id] = view;
+  const keys = Object.keys(next);
+  for (const key of keys.slice(0, Math.max(0, keys.length - MAX_CHAT_VIEWS))) delete next[key];
+  ctx.prefs.set('chatViews', next);
+}
 const jumps = new Map(); // chat id -> message index to scroll to once the transcript shows
 const liveChat = (ctx, id) => ctx.select.byId(id);
 const chatTitle = item => oneLine(item?.title) || 'Untitled chat';
@@ -284,7 +307,7 @@ const chatTitle = item => oneLine(item?.title) || 'Untitled chat';
 export function openChat(ctx, id, { view } = {}) {
   const item = liveChat(ctx, id);
   if (!item) { ctx.toast('That chat is no longer in your library.', { tone: 'danger' }); return; }
-  if (view) ctx.prefs.set('chatView', view);
+  if (isChatView(view)) transientViews.set(id, view);
   if (ctx.env.isSidepanel) { ctx.state.panel = { kind: 'item', id, tab: 'details' }; ctx.syncUrl?.(); ctx.render(); return; }
   chatsState(ctx).chatId = id;
   if (ctx.state.panel?.kind === 'item') ctx.state.panel = null;
@@ -484,7 +507,7 @@ function renderFooter(ctx, item) {
 export function renderChatPage(ctx, item, { surface = 'page' } = {}) {
   if (!item) return '';
   const variant = surface === 'page' ? 'full' : 'side';
-  const view = viewFor(ctx);
+  const view = viewFor(ctx, item.id);
   const recordEntry = chatRecord(ctx, item);
   const record = recordEntry.status === 'ready' ? recordEntry.value : null;
   const body = view === 'transcript'
@@ -948,8 +971,8 @@ async function saveSummaryNote(ctx, id) {
 }
 
 function setView(ctx, view, id) {
-  if (view !== 'summary' && view !== 'transcript') return;
-  ctx.prefs.set('chatView', view);
+  if (!isChatView(view) || !id) return;
+  rememberView(ctx, id, view);
   ctx.render();
   if (id) ctx.nextFrame(() => document.querySelector(`[data-chat-id="${CSS.escape(id)}"] .chat-views [aria-checked="true"]`)?.focus({ preventScroll: true }));
 }
@@ -965,7 +988,9 @@ registerActions({
     if (match) {
       event.preventDefault();
       jumps.set(el.dataset.id, Number(match[1]));
-      setView(ctx, 'transcript');
+      // Shown for this jump only: the chat's remembered view and Settings' default stay as they are.
+      if (el.dataset.id) transientViews.set(el.dataset.id, 'transcript');
+      ctx.render();
       return;
     }
     if (href.startsWith('#')) event.preventDefault();

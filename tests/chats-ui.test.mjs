@@ -227,7 +227,7 @@ test('without Threadkeeper the page still works from the stored copy, with no Th
 
 test('the transcript view mounts once per stored transcript and has calm empty states', async () => {
   paired();
-  const ctx = fakeCtx([chatItem('c2'), chatItem('c3', {}, { hasTranscript: false })], { prefs: { chatView: 'transcript' } });
+  const ctx = fakeCtx([chatItem('c2'), chatItem('c3', {}, { hasTranscript: false })], { prefs: { chatViews: { c2: 'transcript', c3: 'transcript' } } });
   store.transcripts.set('c2', transcript('c2', 6));
   renderChatPage(ctx, ctx.select.byId('c2'));
   await tick();
@@ -312,19 +312,20 @@ test('actions: switching views, #msg links, collection and tags, refresh, improv
   paired();
   const ctx = fakeCtx([chatItem('c1')], { view: 'all' });
   for (const name of ['chat.view', 'chat.body', 'chat.menu', 'chat.set-collection', 'chat.set-tags', 'chat.refresh', 'chat.improve', 'chat.open-tk', 'chats.open', 'chats.add', 'chats.query']) assert.ok(hasAction(name), name);
-  await dispatch('chat.view', { ctx, el: null, data: { value: 'transcript' } });
-  assert.equal(ctx.prefs.get('chatView'), 'transcript');
-  await dispatch('chat.view', { ctx, el: null, data: { value: 'bogus' } });
-  assert.equal(ctx.prefs.get('chatView'), 'transcript');
-  ctx.prefs.set('chatView', 'summary');
+  const host = { closest: () => ({ dataset: { chatId: 'c1' } }) };
+  await dispatch('chat.view', { ctx, el: host, data: { value: 'transcript' } });
+  assert.deepEqual(ctx.prefs.get('chatViews'), { c1: 'transcript' });
+  await dispatch('chat.view', { ctx, el: host, data: { value: 'bogus' } });
+  assert.deepEqual(ctx.prefs.get('chatViews'), { c1: 'transcript' });
+  ctx.prefs.set('chatViews', { c1: 'summary' });
   // A [m4](#msg-3) link in the summary switches to the transcript (and remembers where to scroll).
   let prevented = false;
   const anchor = { getAttribute: () => '#msg-3' };
   const wrapper = { dataset: { id: 'c1' }, contains: () => true };
   await dispatch('chat.body', { ctx, el: wrapper, data: wrapper.dataset, event: { target: { closest: () => anchor }, preventDefault() { prevented = true; } } });
   assert.ok(prevented);
-  assert.equal(ctx.prefs.get('chatView'), 'transcript');
-  const host = { closest: () => ({ dataset: { chatId: 'c1' } }) };
+  assert.match(flat(renderChatPage(ctx, ctx.select.byId('c1'))), /chat-page is-transcript/);
+  assert.deepEqual(ctx.prefs.get('chatViews'), { c1: 'summary' }, 'the jump is not remembered');
   await dispatch('chat.set-collection', { ctx, el: host, data: { value: 'mine' } });
   await dispatch('chat.set-tags', { ctx, el: host, data: { tags: ['stripe', 'ops'] } });
   assert.deepEqual(ctx.updates, [['c1', { collectionId: 'mine' }], ['c1', { tags: ['stripe', 'ops'] }]]);
@@ -415,4 +416,24 @@ test('Threadkeeper state: paired only when the client says so', () => {
   paired();
   assert.equal(isPaired(), true);
   assert.equal(threadkeeperSnapshot().tk.version, '1.4.0');
+});
+
+test('the chat view is remembered per chat; Settings’ default still decides for the others, and a ref jump changes nothing saved', async () => {
+  paired();
+  const ctx = fakeCtx([chatItem('v1'), chatItem('v2'), chatItem('v3')]);
+  const viewOf = id => (/chat-page is-transcript/.test(flat(renderChatPage(ctx, ctx.select.byId(id)))) ? 'transcript' : 'summary');
+  const hostOf = id => ({ closest: () => ({ dataset: { chatId: id } }) });
+  await dispatch('chat.view', { ctx, el: hostOf('v1'), data: { value: 'transcript' } });
+  assert.deepEqual([viewOf('v1'), viewOf('v2')], ['transcript', 'summary'], 'switching one chat leaves the others on the default');
+  // A citation in v2's summary opens its transcript for that jump only.
+  const wrapper = { dataset: { id: 'v2' }, contains: () => true };
+  await dispatch('chat.body', { ctx, el: wrapper, data: wrapper.dataset, event: { target: { closest: () => ({ getAttribute: () => '#msg-1' }) }, preventDefault() {} } });
+  assert.equal(viewOf('v2'), 'transcript');
+  assert.equal(viewOf('v3'), 'summary', 'a ref jump does not switch every chat');
+  // Settings > Open chats in: Transcript applies to every chat the user never switched.
+  setThreadkeeperSnapshot({ status: 'paired', tk: { version: '1.4.0', capabilities: ['sync'] }, prefs: { defaultView: 'transcript', transcripts: true } });
+  assert.equal(viewOf('v3'), 'transcript');
+  setThreadkeeperSnapshot({ status: 'paired', tk: { version: '1.4.0', capabilities: ['sync'] }, prefs: { defaultView: 'summary', transcripts: true } });
+  assert.equal(viewOf('v3'), 'summary');
+  assert.equal(viewOf('v1'), 'transcript', 'v1 keeps the view it was switched to');
 });
