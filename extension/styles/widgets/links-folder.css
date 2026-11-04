@@ -76,7 +76,8 @@
   flex: 1;
   min-block-size: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--lf-cell), 1fr));
+  /* Cells shrink to half the width before dropping to one column, so a two-unit-wide widget always shows two columns. */
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--lf-cell), 50%), 1fr));
   grid-auto-rows: max-content;
   align-content: start;
   gap: var(--space-3) 0;
@@ -439,3 +440,7 @@
   .w-links-tile, .w-links-folder-peek-tile { border: 1px solid CanvasText; }
   .w-links-cell.is-drop-before::before, .w-links-cell.is-drop-after::after { background: Highlight; }
 }
+
+/* An uploaded icon fills its tile edge to edge instead of sitting on the white plate like a favicon. */
+:is(.w-links-tile, .w-links-folder-peek-tile).has-custom { overflow: hidden; padding: 0; }
+:is(.w-links-tile, .w-links-folder-peek-tile).has-custom > .w-links-custom-icon { inline-size: 100%; block-size: 100%; border-radius: 0; }

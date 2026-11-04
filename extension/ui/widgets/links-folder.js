@@ -27,6 +27,7 @@ import {
   registerLinkGrid, rovingStop, initLinkGrids,
 } from './links/shared.js';
 import { tileIcon } from './links/favicons.js';
+import { customIcon, iconMenuItems } from '../item-media.js';
 
 const TYPE = 'links-folder';
 const POPUP = 'w.links-folder.popup';
@@ -288,6 +289,7 @@ function openTileMenu(ctx, widgetId, id, anchor, gridKey) {
     { label: 'Edit title and URL…', icon: 'pencil', run: () => openEditForm(ctx, item, tile()) },
     { label: 'Move to collection…', icon: 'folder-input', run: () => moveItems(ctx, [id], tile()) },
     item.collectionId && { label: 'Remove from collection', icon: 'inbox', hint: 'To Inbox', run: () => removeFromFolder(ctx, item) },
+    ...iconMenuItems(ctx, item),
     { label: 'Copy link', icon: 'copy', run: () => copyLink(ctx, item.url) },
     { label: 'Open in Still', icon: 'panel-right-open', run: () => ctx.openItem(id) },
     { separator: true },
@@ -296,6 +298,9 @@ function openTileMenu(ctx, widgetId, id, anchor, gridKey) {
 }
 
 /* ------------------------------------------------------------------ render */
+
+/** A link's tile icon: the icon the person uploaded for it, else the site's own. */
+const linkIcon = (item, size) => customIcon(item, { size, className: 'w-links-custom-icon' }) || tileIcon(item.url, { size });
 
 function renderTile(widget, s, item, { gridKey, stop, popup }) {
   const label = linkLabel(item);
@@ -306,7 +311,7 @@ function renderTile(widget, s, item, { gridKey, stop, popup }) {
       data-link-tile data-tile-key="${item.id}" data-link-id="${item.id}" data-drag-item="${item.id}" draggable="true"
       data-focus-key="lf:${gridKey}:${item.id}" tabindex="${stop === item.id ? '0' : '-1'}" ${popup && stop === item.id ? html`data-autofocus` : ''}
       ${showLabels ? html`title="${label === host ? label : `${label} (${host})`}"` : html`aria-label="${label}" data-tooltip="${label}"`}>
-      <span class="w-links-tile">${tileIcon(item.url, { size: ICON_SIZE[tileSize] })}</span>
+      <span class="${cx('w-links-tile', item.customIcon && 'has-custom')}">${linkIcon(item, ICON_SIZE[tileSize])}</span>
       ${showLabels ? html`<span class="w-links-label">${label}</span>` : ''}
     </a>
     <button type="button" class="w-links-more" tabindex="-1" aria-label="Options for ${label}" data-action="w.links-folder.item-menu"
@@ -347,7 +352,7 @@ function renderFolderTile(ctx, widget, s) {
   return html`<div class="w-links-folder-xs" data-key="lf-xs-${widget.id}" data-lf="${widget.id}" data-link-icons>
     <button type="button" class="w-links-folder-folder" data-action="w.links-folder.popup" data-keydown="w.links-folder.folder-key" data-widget="${widget.id}"
       data-links-menu="folder" aria-haspopup="dialog" aria-expanded="${open ? 'true' : 'false'}" aria-label="${s.title}, ${plural(s.links.length, 'link')}">
-      <span class="w-links-folder-peek" data-count="${peek.length}" aria-hidden="true">${peek.map((item, i) => html`<span class="w-links-folder-peek-tile" data-i="${i}">${tileIcon(item.url, { size: 28 })}</span>`)}</span>
+      <span class="w-links-folder-peek" data-count="${peek.length}" aria-hidden="true">${peek.map((item, i) => html`<span class="${cx('w-links-folder-peek-tile', item.customIcon && 'has-custom')}" data-i="${i}">${linkIcon(item, 28)}</span>`)}</span>
       <span class="w-links-folder-front" aria-hidden="true"><span class="w-links-folder-name">${s.title}</span><span class="w-links-folder-count">${s.links.length.toLocaleString()}</span></span>
     </button>
   </div>`;

@@ -2,6 +2,7 @@
 // rows for collection / tags / saved / reminder, personal note, highlights, linked notes, related and similar items,
 // attached file with preview), Reader (saved page text with highlights painted in and a selection highlighter),
 // Notes (notes about this item) and Ask (hands the item to the assistant).
+import { uploadItemImage, coverMenuItems, iconMenuItems } from './item-media.js';
 import { html, raw, cx, safeHref, plural } from './html.js';
 import { icon } from './icons.js';
 import { button, iconButton, collectionIcon, favicon, siteIcon, relativeDate, shortDate, fileSize, emptyState, TYPE_LABELS, TYPE_ICONS, domainOf } from './components.js';
@@ -643,7 +644,15 @@ registerActions({
     const single = el.dataset.field === 'title';
     if (event.key === 'Enter' && (single ? !event.shiftKey : (event.metaKey || event.ctrlKey))) { event.preventDefault(); el.blur(); }
   },
-  'detail.cover': async ({ ctx, data }) => {
+  'detail.cover': ({ ctx, el, data }) => {
+    const item = itemOf(ctx, data.id);
+    if (!item) return undefined;
+    // Upload an image (stored inside the item) or point at one on the web.
+    const link = () => ctx.run(() => ctx.dispatch('detail.cover-link', { data: { id: item.id } }));
+    if (el?.isConnected) { ctx.openMenu(el, coverMenuItems(ctx, item, { link }), { label: 'Cover image' }); return undefined; }
+    return uploadItemImage(ctx, item.id, 'cover');
+  },
+  'detail.cover-link': async ({ ctx, data }) => {
     const item = itemOf(ctx, data.id);
     if (!item) return;
     const value = await ctx.prompt({ title: item.cover ? 'Change cover' : 'Add a cover image', label: 'Image address', placeholder: 'https://example.com/image.jpg', value: /^https?:/i.test(item.cover) ? item.cover : '', confirmLabel: 'Save cover' });
@@ -791,7 +800,8 @@ registerActions({
       item.url && { label: 'Copy link', icon: 'link', action: 'app.copy', data: { text: item.url, done: 'Link copied' } },
       { label: 'Move to…', icon: 'folder-input', run: () => moveItems(ctx, ids, el) },
       item.type !== 'note' && { label: 'Add note', icon: 'notebook-pen', run: () => ctx.run(() => addNoteFor(ctx, item)) },
-      item.type !== 'note' && { label: item.cover ? 'Change cover…' : 'Add cover…', icon: 'image', run: () => ctx.run(() => ctx.dispatch('detail.cover', { data: { id: item.id } })) },
+      { label: item.cover ? 'Upload a new cover…' : 'Upload cover…', icon: 'image', run: () => ctx.run(() => uploadItemImage(ctx, item.id, 'cover')) },
+      ...iconMenuItems(ctx, item),
       { label: 'Ask AI about this', icon: 'sparkles', run: () => askAi(ctx, { scope: 'item', ids }) },
       researchMenuItem(item, ctx),
       paperclipMenuItem(ctx, item),

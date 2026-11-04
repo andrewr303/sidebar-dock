@@ -3,6 +3,7 @@
 import { html, cx } from '../../html.js';
 import { icon, registerIcons } from '../../icons.js';
 import { collectionIcon } from '../../components.js';
+import { customIcon } from '../../item-media.js';
 import { latestItem, rememberItem, openNote, createNoteItem, displayTitle } from '../../note-editor.js';
 import { noteExcerpt, noteTitleFromContent, toggleTask, extractTasks } from '../../../lib/notes.js';
 import { excerptSource } from './model.js';
@@ -209,8 +210,10 @@ export function collectionName(ctx, collectionId) {
   return ctx.select.collection(collectionId)?.name || 'Inbox';
 }
 
-/** Small leading tile for a note row: its collection's icon, or a note glyph for Inbox notes. */
+/** Small leading tile for a note row: the note's uploaded icon, else its collection's icon, or a note glyph for Inbox notes. */
 export function noteTile(ctx, note, size = 20) {
+  const own = customIcon(note, { size });
+  if (own) return own;
   const collection = note.collectionId ? ctx.select.collection(note.collectionId) : null;
   return collection ? collectionIcon(collection, { size }) : html`<span class="w-note-tile" style="--size:${size}px" aria-hidden="true">${icon('sticky-note', { size: Math.round(size * 0.7) })}</span>`;
 }
