@@ -7,7 +7,7 @@
 // link tiles also carry data-link-id. Each kind registers handlers with registerLinkGrid().
 import { html, cx } from '../../html.js';
 import { icon } from '../../icons.js';
-import { registerActions } from '../../runtime.js';
+import { registerActions, registerMount } from '../../runtime.js';
 import { registerPopover } from '../../overlay.js';
 import { button, iconButton, field, input } from '../../components.js';
 import { droppedLinks } from '../../dnd.js';
@@ -143,8 +143,9 @@ export const toRows = links => links.map(link => ({ key: link.id ? `id-${link.id
  * The rows editor. `state` ({ rows, errors }) is owned by the caller (usually kept on the settings draft) and is edited
  * in place by the row actions; errors are keyed by row index as validateLinkRows reports them.
  */
-export function renderLinkRows(_ctx, { key, state, legend = 'Links', addLabel = 'Add link', hint = '', emptyText = 'No links yet.' }) {
+export function renderLinkRows(ctx, { key, state, legend = 'Links', addLabel = 'Add link', hint = '', emptyText = 'No links yet.' }) {
   editors.set(key, state);
+  initRowDrag(ctx);
   const rows = state.rows;
   return html`<fieldset class="w-links-rows" data-key="rows-${key}" data-link-icons>
     <legend class="w-links-rows-legend">${legend}${rows.length ? html` <span class="w-links-rows-count">${rows.length}</span>` : ''}</legend>
@@ -155,7 +156,11 @@ export function renderLinkRows(_ctx, { key, state, legend = 'Links', addLabel = 
         const error = state.errors?.[index];
         const base = `lr-${key}-${row.key}`;
         const url = normalizeLinkUrl(row.url);
-        return html`<li class="${cx('w-links-row', error && 'is-invalid')}" data-key="${row.key}">
+        const name = row.title.trim() || hostOf(url) || `link ${index + 1}`;
+        return html`<li class="${cx('w-links-row', error && 'is-invalid')}" data-key="${row.key}" data-link-row="${row.key}" data-editor="${key}">
+          ${rows.length > 1 ? html`<button type="button" class="w-links-row-grip" data-keydown="w.links.row-grip-key" data-editor="${key}" data-row="${row.key}"
+            id="${base}-grip" data-focus-key="${base}-grip" aria-label="Move ${name}, ${index + 1} of ${rows.length}. Drag, or use the up and down arrow keys."
+            data-tooltip="Drag to reorder">${icon('grip-vertical', { size: 14 })}</button>` : html`<span class="w-links-row-grip is-empty" aria-hidden="true"></span>`}
           <span class="w-links-row-icon" aria-hidden="true">${url ? tileIcon(url, { size: 16 }) : icon('link', { size: 14 })}</span>
           <input class="input w-links-row-url" id="${base}-url" data-focus-key="${base}-url" value="${row.url}" placeholder="example.com" aria-label="URL of link ${index + 1}"
             inputmode="url" autocomplete="off" spellcheck="false" data-input="w.links.row-input" data-keydown="w.links.row-key" data-editor="${key}" data-row="${row.key}" data-field="url"
@@ -168,7 +173,69 @@ export function renderLinkRows(_ctx, { key, state, legend = 'Links', addLabel = 
       })}
     </ol>
     ${button({ label: addLabel, icon: 'plus', variant: 'ghost', size: 'sm', action: 'w.links.row-add', data: { editor: key }, className: 'w-links-rows-add' })}
+    <p class="sr-only" aria-live="polite">${state.announce || ''}</p>
   </fieldset>`;
+}
+
+/** Moves a row of an editor to `to` (an index in the rows after removal); marks the editor reordered. */
+function moveRow(ctx, key, rowKeyToMove, to, { focus = false } = {}) {
+  const state = editors.get(key);
+  const from = state?.rows.findIndex(r => r.key === rowKeyToMove) ?? -1;
+  if (from < 0) return;
+  const target = Math.max(0, Math.min(state.rows.length - 1, to));
+  if (target === from) return;
+  const [row] = state.rows.splice(from, 1);
+  state.rows.splice(target, 0, row);
+  // Errors are keyed by row index; they are checked again on save.
+  state.errors = {};
+  state.reordered = true;
+  state.announce = `Moved to ${target + 1} of ${state.rows.length}`;
+  ctx.render();
+  if (focus) ctx.nextFrame(() => document.getElementById(`lr-${key}-${row.key}-grip`)?.focus());
+}
+
+// Pointer drag on a row's grip (mouse, pen or touch): the row under the pointer shows where it will land.
+let rowDragReady = false;
+function initRowDrag(ctx) {
+  if (rowDragReady || typeof document === 'undefined') return;
+  rowDragReady = true;
+  document.addEventListener('pointerdown', event => {
+    const grip = event.target instanceof Element ? event.target.closest('.w-links-row-grip:not(.is-empty)') : null;
+    if (!grip || event.button !== 0) return;
+    const list = grip.closest('.w-links-rows-list');
+    const source = grip.closest('[data-link-row]');
+    if (!list || !source) return;
+    event.preventDefault();
+    grip.setPointerCapture?.(event.pointerId);
+    source.classList.add('is-dragging');
+    let target = null;
+    let after = false;
+    const clear = () => { for (const el of list.querySelectorAll('.is-drop-before, .is-drop-after')) el.classList.remove('is-drop-before', 'is-drop-after'); };
+    const move = e => {
+      const rows = [...list.querySelectorAll(':scope > [data-link-row]')];
+      target = rows.find(row => { const r = row.getBoundingClientRect(); return e.clientY < r.bottom; }) || rows.at(-1);
+      const r = target.getBoundingClientRect();
+      after = e.clientY > r.top + r.height / 2;
+      clear();
+      if (target !== source) target.classList.add(after ? 'is-drop-after' : 'is-drop-before');
+    };
+    const end = e => {
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', end);
+      grip.removeEventListener('pointercancel', end);
+      source.classList.remove('is-dragging');
+      clear();
+      if (e.type !== 'pointerup' || !target || target === source) return;
+      const rows = [...list.querySelectorAll(':scope > [data-link-row]')];
+      const from = rows.indexOf(source);
+      let to = rows.indexOf(target) + (after ? 1 : 0);
+      if (from < to) to -= 1;
+      moveRow(ctx, source.dataset.editor, source.dataset.linkRow, to);
+    };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', end);
+    grip.addEventListener('pointercancel', end);
+  });
 }
 
 const focusRow = (ctx, key, row, field = 'url') => ctx.nextFrame(() => document.getElementById(`lr-${key}-${row}-${field}`)?.focus());
@@ -180,6 +247,27 @@ export function focusFirstError(ctx, key) {
   const row = state?.rows[index];
   if (row) focusRow(ctx, key, row.key);
 }
+
+/* ------------------------------------------------------------------ grid scrolling */
+
+/**
+ * Whether a tile grid has tiles out of view. Overflow that is only the grid's own bottom padding (every tile visible)
+ * does not count: scrolling there would show a stray scrollbar and catch the wheel on its way to the page.
+ */
+export const gridOverflows = (scrollHeight, clientHeight, paddingEnd = 0) => scrollHeight - clientHeight > Math.max(0, paddingEnd) + 1;
+
+// data-mount="w.links.fit" on a .w-links-grid: it scrolls (is-scrollable) only while tiles are cut off, rechecked when
+// the widget is resized or its tiles change.
+registerMount('w.links.fit', el => {
+  const check = () => {
+    const paddingEnd = parseFloat(getComputedStyle(el).paddingBlockEnd) || 0;
+    el.classList.toggle('is-scrollable', gridOverflows(el.scrollHeight, el.clientHeight, paddingEnd));
+  };
+  const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(check) : null;
+  observer?.observe(el);
+  check();
+  return { update: check, destroy: () => observer?.disconnect() };
+});
 
 /* ------------------------------------------------------------------ tile grids */
 
@@ -443,6 +531,15 @@ registerActions({
     state.rows.push(row);
     ctx.render();
     focusRow(ctx, data.editor, row.key);
+  },
+  'w.links.row-grip-key': ({ event, ctx, data }) => {
+    const state = editors.get(data.editor);
+    const index = state?.rows.findIndex(r => r.key === data.row) ?? -1;
+    if (index < 0) return;
+    const to = { ArrowUp: index - 1, ArrowDown: index + 1, Home: 0, End: state.rows.length - 1 }[event.key];
+    if (to === undefined) return;
+    event.preventDefault();
+    moveRow(ctx, data.editor, data.row, to, { focus: true });
   },
   'w.links.row-remove': ({ ctx, data }) => {
     const state = editors.get(data.editor);

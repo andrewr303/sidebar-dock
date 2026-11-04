@@ -83,13 +83,14 @@
   gap: var(--space-3) 0;
   margin: 0;
   padding: var(--space-3) var(--space-5) var(--space-7);
-  overflow-y: auto;
-  overflow-x: hidden;
-  overscroll-behavior: contain;
+  /* Scrolls only while tiles are cut off (w.links.fit in links/shared.js sets is-scrollable), and a scroll that reaches
+     the end carries on to the page instead of getting caught on the widget. */
+  overflow: hidden;
   list-style: none;
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
 }
+.w-links-grid.is-scrollable { overflow-y: auto; }
 .w-links-folder.is-s .w-links-grid { padding-inline: var(--space-3); }
 
 .w-links-cell { position: relative; display: flex; justify-content: center; min-inline-size: 0; }
@@ -408,8 +409,8 @@
 .w-links-rows-hint, .w-links-rows-empty { color: var(--fg-subtle); font-size: var(--text-xs); line-height: var(--lh-xs); text-wrap: pretty; }
 .w-links-rows-head, .w-links-row {
   display: grid;
-  grid-template-columns: 20px minmax(0, 3fr) minmax(0, 2fr) 28px;
-  grid-template-areas: "icon url title remove" ". error error .";
+  grid-template-columns: 20px 20px minmax(0, 3fr) minmax(0, 2fr) 28px;
+  grid-template-areas: "grip icon url title remove" ". . error error .";
   align-items: center;
   column-gap: var(--space-4);
 }
@@ -417,6 +418,20 @@
 .w-links-rows-head > :first-child { grid-area: url; }
 .w-links-rows-head > :last-child { grid-area: title; }
 .w-links-rows-list { display: grid; gap: var(--space-4); margin: 0; padding: 0; list-style: none; }
+.w-links-row-grip {
+  grid-area: grip; display: grid; place-items: center; inline-size: 20px; block-size: 28px; padding: 0; border: 0; border-radius: var(--radius-xs);
+  background: none; color: var(--fg-faint); cursor: grab; touch-action: none;
+}
+.w-links-row-grip:hover { color: var(--fg-muted); background: var(--bg-hover); }
+.w-links-row-grip:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; color: var(--fg-default); }
+.w-links-row-grip:active { cursor: grabbing; }
+.w-links-row { position: relative; }
+.w-links-row.is-dragging { opacity: 0.5; }
+.w-links-row.is-drop-before::before, .w-links-row.is-drop-after::after {
+  content: ''; position: absolute; inset-inline: 0; block-size: 2px; border-radius: 1px; background: var(--accent);
+}
+.w-links-row.is-drop-before::before { inset-block-start: calc(var(--space-4) / -2 - 1px); }
+.w-links-row.is-drop-after::after { inset-block-end: calc(var(--space-4) / -2 - 1px); }
 .w-links-row-icon { grid-area: icon; display: grid; place-items: center; color: var(--fg-faint); }
 .w-links-row-url { grid-area: url; min-inline-size: 0; }
 .w-links-row-title { grid-area: title; min-inline-size: 0; }
@@ -426,8 +441,8 @@
 @container links-rows (max-width: 440px) {
   .w-links-rows-head { display: none; }
   .w-links-row {
-    grid-template-columns: 20px minmax(0, 1fr) 28px;
-    grid-template-areas: "icon url remove" ". title ." ". error .";
+    grid-template-columns: 20px 20px minmax(0, 1fr) 28px;
+    grid-template-areas: "grip icon url remove" ". . title ." ". . error .";
     row-gap: var(--space-3);
   }
 }

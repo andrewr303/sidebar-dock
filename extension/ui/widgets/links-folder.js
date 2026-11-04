@@ -323,7 +323,7 @@ function renderGrid(widget, s, { gridKey, popup = false }) {
   const keys = [...s.links.map(item => item.id), 'add'];
   const stop = rovingStop(gridKey, keys);
   return html`<ul class="${cx('w-links-grid', popup && 'is-popup')}" role="list" aria-label="Links in ${s.title}" data-key="grid-${gridKey}"
-    data-links-grid="${gridKey}" data-links-kind="folder" data-widget="${widget.id}" data-keydown="w.links.grid-key">
+    data-links-grid="${gridKey}" data-links-kind="folder" data-widget="${widget.id}" data-keydown="w.links.grid-key" data-mount="w.links.fit">
     ${s.links.map(item => renderTile(widget, s, item, { gridKey, stop, popup }))}
     <li class="w-links-cell is-add" data-key="add">
       <button type="button" class="w-links-link is-add" data-action="w.links-folder.add" data-widget="${widget.id}" data-link-tile data-link-add data-tile-key="add"
@@ -515,12 +515,14 @@ async function onSettingsSave(ctx, widget, draft) {
   // A new collection starts its own order; the old collection's manual order means nothing there.
   const kept = target.kind === 'create' ? [] : config.order.filter(id => !listed.has(id) && !trashed.has(id));
   const order = [...sequence, ...kept];
+  // Rows dragged into a new order only stick under manual sorting.
+  const sort = edit.reordered ? 'manual' : config.sort;
   delete draft[EDIT];
   if (session?.draft === draft) session = null;
   if (plan.trash.length) {
     ctx.toast(`Moved ${plural(plan.trash.length, 'link')} to Trash`, { action: { label: 'Undo', run: () => ctx.store.bulkUpdateItems(plan.trash.map(id => ({ id, patch: { deletedAt: null } }))) } });
   }
-  return { ...config, collectionId, order };
+  return { ...config, collectionId, order, sort };
 }
 
 /* ------------------------------------------------------------------ definition and wiring */

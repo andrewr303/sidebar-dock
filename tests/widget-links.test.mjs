@@ -245,3 +245,12 @@ test('a site touch icon is used only when it is square-ish and sharp enough for 
   assert.equal(usableTouchIcon(400, 200, 36, 2), false, 'a banner image is not an icon');
   assert.equal(usableTouchIcon(0, 0, 36, 1), false);
 });
+
+test('a tile grid scrolls only when tiles are cut off, not for its own bottom padding', async () => {
+  const { gridOverflows } = await import('../extension/ui/widgets/links/shared.js');
+  assert.equal(gridOverflows(400, 400, 20), false);
+  assert.equal(gridOverflows(418, 400, 20), false, 'only padding is hidden: every tile shows');
+  assert.equal(gridOverflows(420.5, 400, 20), false, 'sub-pixel rounding');
+  assert.equal(gridOverflows(460, 400, 20), true);
+  assert.equal(gridOverflows(405, 400, 0), true);
+});

@@ -244,7 +244,7 @@ function render(ctx, widget, env) {
   const body = config.style === 'chips' ? renderChips(widget, config, keys) : config.style === 'list' ? renderList(widget, config, keys) : renderTiles(widget, config, keys);
   return html`<div class="${cx('w-quick-links', `is-${config.style}`)}" data-key="ql-${widget.id}" data-link-icons data-labels="${config.showLabels ? 'on' : 'off'}">
     <ul class="${cx(config.style === 'tiles' ? 'w-links-grid' : `w-quick-links-${config.style}`)}" role="list" aria-label="Quick links" data-key="grid-${config.style}"
-      data-links-grid="${gridKey}" data-links-kind="quick" ${config.style === 'list' ? html`data-links-axis="y"` : ''} data-widget="${widget.id}" data-keydown="w.links.grid-key">${body}</ul>
+      data-links-grid="${gridKey}" data-links-kind="quick" ${config.style === 'list' ? html`data-links-axis="y"` : ''} data-widget="${widget.id}" data-keydown="w.links.grid-key" ${config.style === 'tiles' ? html`data-mount="w.links.fit"` : ''}>${body}</ul>
   </div>`;
 }
 
