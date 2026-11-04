@@ -385,7 +385,11 @@ const SOURCES = {
   snapshot: async () => createSnapshot,
   chatData: async () => {
     const chats = await import('./chat-data.js');
-    return { list: chats.listChatRecords, getTranscript: chats.getChatTranscript, importBackup: chats.importChatBackup };
+    // In the extension only the service worker writes the chat store (inside its Threadkeeper apply mutex); the page
+    // sends the restored part there. The preview build has no worker and writes its own.
+    const client = await import('./threadkeeper/client.js');
+    return { list: chats.listChatRecords, getTranscript: chats.getChatTranscript,
+      importBackup: client.canUseWorker() ? client.importChatBackupInWorker : chats.importChatBackup };
   },
   deviceId: async () => getDeviceId(),
 };

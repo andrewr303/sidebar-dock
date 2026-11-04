@@ -165,3 +165,23 @@ test('CSV, bookmark HTML and notes Markdown treat chats as conversations, not li
   assert.match(markdown, /## Lisbon trip\n\n_AI chat · ChatGPT · project Travel · 3 messages_\n\nOriginal conversation: <https:\/\/chatgpt\.com\/c\/abc>\n\nMy packing list/);
   assert.ok(!markdown.includes('Store refactor'), 'a chat without notes is not a notes section');
 });
+
+test('in the extension a restore hands the AI chat data to the service worker instead of writing the chat store', async () => {
+  const { source, chats } = await chatDevice();
+  const backup = await createFullBackup(source.store, { ...isolated, chatData: chats });
+  const sent = [];
+  globalThis.chrome = {
+    runtime: { id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', sendMessage: async request => {
+      sent.push(request);
+      return { ok: true, result: { ok: true, data: { records: request.args.part.records.length, transcripts: request.args.part.transcripts.length } } };
+    } },
+    storage: { local: { get: async () => ({}) } },
+  };
+  try {
+    const target = device();
+    const result = await importPortableFile(jsonFile(serializeBackup(backup).text), target.store, isolated);
+    assert.deepEqual(result.chats, { records: 2, transcripts: 2 });
+    assert.deepEqual(sent.map(request => [request.type, request.op]), [['still:threadkeeper', 'importChatBackup']]);
+    assert.deepEqual(sent[0].args.ids.sort(), [ID, ID2].sort());
+  } finally { delete globalThis.chrome; }
+});

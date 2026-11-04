@@ -641,3 +641,30 @@ test('a lost chat store is noticed by its storeId even after a new write, before
   assert.equal(store.item(chatItemId(KEY(1))).chat.hasTranscript, false, 'a transcript that is gone is not claimed');
   assert.equal(store.item(chatItemId(KEY(3))).chat.hasTranscript, true);
 });
+
+test('a backup’s AI chat data is restored by the worker inside the apply mutex: a newer push is never overwritten', async () => {
+  const { worker, chatData } = await harness({ state: PAIRED, writeIntervalMs: 100 });
+  const id = chatItemId(KEY(1));
+  // The backup holds revision 1 at seq 10.
+  const source = createChatDataStore({ indexedDB: null });
+  await source.put(id, { thread: { ...payload(1), transcript: undefined }, transcript: { ...payload(1).transcript, threadKey: KEY(1) } });
+  const [record] = await source.list();
+  const backupTranscript = await source.getTranscript(id);
+  const { transcript: _meta, ...rest } = record;
+  const part = { version: 1, records: [{ ...rest, transcript: null }], transcripts: [backupTranscript] };
+  // Threadkeeper re-offers the thread at revision 2 / seq 20 right after the restore: planned, waiting for its write.
+  const newer = { ...payload(1, { seq: 20, revision: 2, fingerprint: 'fp1-20' }) };
+  const pending = worker.applyThreads([newer], { origin: 'sync' });
+  await settle(5);
+  const restored = await worker.handleRequest('importChatBackup', { part, ids: [id] });
+  assert.equal(restored.ok, true, JSON.stringify(restored.error));
+  assert.deepEqual(restored.data, { records: 0, transcripts: 0 }, 'the newer record here is kept');
+  await pending;
+  const held = await chatData.get(id);
+  assert.deepEqual([held.seq, held.revision, held.transcript.revision], [20, 2, 2]);
+  // An empty store takes the backup.
+  const fresh = await harness({ state: PAIRED });
+  const into = await fresh.worker.handleRequest('importChatBackup', { part, ids: [id] });
+  assert.deepEqual(into.data, { records: 1, transcripts: 1 });
+  assert.equal((await fresh.worker.handleRequest('importChatBackup', { part: { version: 9 } })).error.code, 'bad_request');
+});

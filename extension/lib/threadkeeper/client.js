@@ -24,6 +24,8 @@
  *   refreshChat(id)                        → { threadKey, status, ... }
  *   loadTranscriptWindow(id, from, count)  → { revision, totalMessages, messages, stored, stale, truncated }
  *   undoThreadkeeperImport(ids)            → { deleted }     (assistant undo: deletes without dismissing)
+ *   importChatBackupInWorker(part, { ids }) → { records, transcripts }  (a backup's AI chat data, written by the worker
+ *                                            inside its apply mutex, in chunks; canUseWorker() says whether it can)
  *   threadkeeperImpact({ patch } | { disconnect: true }) → counts for confirmations
  *   replaceThreadkeeperChats()             → { moved }       (re-place untouched chats after a placement change)
  *   removeThreadkeeperTranscripts()        → { removed }
@@ -116,3 +118,37 @@ export const replaceThreadkeeperChats = () => call('replaceChats');
 export const removeThreadkeeperTranscripts = () => call('removeTranscripts');
 export const isThreadkeeperReady = state => state?.status === 'paired';
 export const hasThreadkeeperCapability = (state, capability) => isThreadkeeperReady(state) && Array.isArray(state?.tk?.capabilities) && state.tk.capabilities.includes(capability);
+
+/** True in the extension, where the service worker owns every chat-data write. */
+export const canUseWorker = () => inExtension();
+
+const CHAT_BACKUP_CHUNK_CHARS = 8 * 1024 * 1024;
+const sizeOf = value => { try { return JSON.stringify(value)?.length ?? 0; } catch { return Infinity; } };
+/**
+ * Restores the `chats` part of a backup through the service worker (op 'importChatBackup'), in chunks of about 8 MB
+ * (each record with its transcript), so the page never writes the chat store itself. Returns { records, transcripts }.
+ */
+export async function importChatBackupInWorker(part, { ids = null } = {}) {
+  if (!part || typeof part !== 'object' || !Array.isArray(part.records) || !Array.isArray(part.transcripts)) {
+    throw new ThreadkeeperError('bad_request', 'The AI chats in this backup are not in a form Still can read.');
+  }
+  const transcripts = new Map(part.transcripts.filter(row => row && typeof row === 'object').map(row => [row.id, row]));
+  const chunks = [];
+  let current = { records: [], transcripts: [] }, size = 0;
+  for (const record of part.records) {
+    const transcript = transcripts.get(record?.id);
+    const bytes = sizeOf(record) + (transcript ? sizeOf(transcript) : 0);
+    if (current.records.length && size + bytes > CHAT_BACKUP_CHUNK_CHARS) { chunks.push(current); current = { records: [], transcripts: [] }; size = 0; }
+    current.records.push(record);
+    if (transcript) current.transcripts.push(transcript);
+    size += bytes;
+  }
+  if (current.records.length || !chunks.length) chunks.push(current);
+  const total = { records: 0, transcripts: 0 };
+  for (const chunk of chunks) {
+    const result = await call('importChatBackup', { part: { ...part, records: chunk.records, transcripts: chunk.transcripts }, ids: Array.isArray(ids) ? ids : null });
+    total.records += Number(result?.records) || 0;
+    total.transcripts += Number(result?.transcripts) || 0;
+  }
+  return total;
+}

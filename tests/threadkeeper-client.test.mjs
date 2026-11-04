@@ -78,3 +78,28 @@ test('in the extension: state from storage, ops through the worker, codes kept, 
   await assert.rejects(discoverThreadkeeper(), error => error.code === 'no_permission');
   delete globalThis.chrome;
 });
+
+test('a backup’s AI chat data goes to the worker in chunks; the page never writes the chat store itself', async () => {
+  const { importChatBackupInWorker, canUseWorker } = await import('../extension/lib/threadkeeper/client.js');
+  const sent = [];
+  globalThis.chrome = {
+    runtime: { id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', sendMessage: async message => {
+      sent.push(message);
+      const { part } = message.args;
+      return { ok: true, result: { ok: true, data: { records: part.records.length, transcripts: part.transcripts.length } } };
+    } },
+    storage: { local: { get: async () => ({}) }, onChanged: events() },
+  };
+  assert.equal(canUseWorker(), true);
+  const big = 'x'.repeat(5 * 1024 * 1024);
+  const id = n => `chat_tk_${String(n).repeat(32).slice(0, 32)}`;
+  const part = { version: 1, records: [1, 2, 3].map(n => ({ id: id(n), threadKey: `k${n}`, thread: { gist: big } })),
+    transcripts: [{ id: id(2), threadKey: 'k2', revision: 1, messages: [] }] };
+  const result = await importChatBackupInWorker(part, { ids: [id(1), id(2), id(3)] });
+  assert.deepEqual(result, { records: 3, transcripts: 1 });
+  assert.equal(sent.length, 3, 'about 8 MB per message');
+  assert.ok(sent.every(message => message.type === 'still:threadkeeper' && message.op === 'importChatBackup' && message.args.part.version === 1));
+  assert.deepEqual(sent[1].args.part.transcripts.map(row => row.id), [id(2)], 'each transcript travels with its record');
+  delete globalThis.chrome;
+  assert.equal(canUseWorker(), false);
+});

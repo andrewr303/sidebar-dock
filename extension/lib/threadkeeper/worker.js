@@ -28,7 +28,8 @@
  *
  * Page proxy (handleThreadkeeperRequest(op, args) → { ok: true, data } | { ok: false, error: { code, message } }), for
  * worker message type 'still:threadkeeper': state, ping, connect, cancel, disconnect, setPrefs, startSync, syncNow, request,
- * pauseSync, importThreads, refreshChat, loadTranscriptWindow, undoImport, impact, replaceChats, removeTranscripts.
+ * pauseSync, importThreads, refreshChat, loadTranscriptWindow, importChatBackup, undoImport, impact, replaceChats,
+ * removeTranscripts.
  *
  * Hooks for background.js: onCommit(change) (chat data cleanup + "deleted forever" dismissals), handleAlarm(alarm),
  * init() on every worker start, startup() on onStartup/onInstalled (orphan sweep + hello), onDataRestored() after a snapshot
@@ -887,6 +888,21 @@ export function createThreadkeeperWorker(deps = {}) {
           await store.setChatFlags([{ id, chat: { hasTranscript: true, transcriptTruncated: truncated } }]);
         }
         return { ...windowOut, stored: true, stale: false, truncated };
+      });
+    },
+
+    /**
+     * Restores the `chats` part of a backup (lib/chat-data.js importBackup) into the worker's chat store, inside the apply
+     * mutex, so it never interleaves with pushes, imports or refreshes (a record newer here by seq is kept). Pages send it
+     * in chunks (lib/threadkeeper/client.js); works paired or not.
+     */
+    async importChatBackup({ part, ids = null } = {}) {
+      if (!isObject(part)) throw new ThreadkeeperError('bad_request', 'Send the AI chats of a backup.');
+      const wanted = Array.isArray(ids) ? ids.filter(isChatItemId) : null;
+      return exclusive(async () => {
+        await drainBuffered(wanted);
+        try { return await chatData.importBackup(part, { ids: wanted }); }
+        catch (error) { throw new ThreadkeeperError('bad_request', oneLine(error?.message, 300) || 'The AI chats in this backup could not be restored.'); }
       });
     },
 
