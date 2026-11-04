@@ -1,6 +1,7 @@
 // Widget frames: the chrome around every widget body (title row, header actions, ⋯ menu, edit handles) and the
 // frame menu (settings, size, rename, style, duplicate, move to board, remove with undo). Bodies come from the
 // widget definitions and render inside an error boundary.
+import { WIDGET_FRAMES } from '../themes.js';
 import { html, cx, raw } from '../html.js';
 import { icon } from '../icons.js';
 import { button, emptyState } from '../components.js';
@@ -11,10 +12,8 @@ import * as dashboardStore from '../../lib/dashboard-store.js';
 import { dashUi, canEdit } from './state.js';
 import { dragVisual, animateNextLayout } from './motion.js';
 
-const FRAMES = [
-  { value: 'default', label: 'Dashboard default' }, { value: 'card', label: 'Card' }, { value: 'glass', label: 'Glass' },
-  { value: 'flat', label: 'Flat' }, { value: 'none', label: 'No background' },
-];
+// The widget menu's Style list: every Background choice, with the two ends spelled out.
+const FRAMES = WIDGET_FRAMES.map(f => ({ ...f, label: f.value === 'default' ? 'Dashboard default' : f.value === 'none' ? 'No background' : f.label }));
 const initialized = new Set();
 
 /** Display title: the instance's own title, else the definition's displayTitle (e.g. a collection name), else its title. */

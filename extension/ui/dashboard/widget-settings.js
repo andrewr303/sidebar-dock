@@ -3,7 +3,8 @@
 // runs the widget's onSettingsSave and writes title, style and config in one update.
 import { html, cx } from '../html.js';
 import { icon } from '../icons.js';
-import { dialogFrame, button, iconButton, input, textarea, select, segmented, switchToggle, field as fieldRow, emptyState, relativeDate, collectionIcon } from '../components.js';
+import { dialogFrame, button, iconButton, input, textarea, select, segmented, materialPicker, switchToggle, field as fieldRow, emptyState, relativeDate, collectionIcon } from '../components.js';
+import { WIDGET_FRAMES } from '../themes.js';
 import { registerActions } from '../runtime.js';
 import { registerDialog } from '../overlay.js';
 import { renderCollectionPickerTrigger } from '../pickers.js';
@@ -14,10 +15,7 @@ import * as dashboardStore from '../../lib/dashboard-store.js';
 import { envFor, widgetTitle, removeWidget, bindWidgetSettings } from './frame.js';
 
 const DIALOG = 'dashboard.widget-settings';
-const FRAMES = [
-  { value: 'default', label: 'Default' }, { value: 'card', label: 'Card' }, { value: 'glass', label: 'Glass' },
-  { value: 'flat', label: 'Flat' }, { value: 'none', label: 'None' },
-];
+const FRAMES = WIDGET_FRAMES;
 const fieldId = name => `wset-${String(name).replace(/[^\w-]+/g, '-')}`;
 const entry = ctx => ctx.state.dialogs.findLast(d => d.name === DIALOG);
 const uid = () => globalThis.crypto?.randomUUID?.().slice(0, 8) || Math.random().toString(36).slice(2, 10);
@@ -186,8 +184,8 @@ function renderDialog(ctx, props) {
           control: input({ id: 'wset-title', value: props.title, placeholder: widgetTitle({ ...widget, title: '' }, def, ctx), action: 'dashboard.settings-title' }) })}
         ${bareDef ? '' : html`<div class="dash-settings-toggle">${switchToggle({ checked: !props.hideTitle, label: 'Show the title bar', description: 'Hidden titles stay available to screen readers.',
           action: 'dashboard.settings-hide-title' })}</div>`}
-        ${fieldRow({ label: 'Background', control: segmented({ name: 'frame', value: props.frame, options: FRAMES, action: 'dashboard.settings-frame', ariaLabel: 'Background' }),
-          hint: props.frame === 'default' ? 'Follows the widget style chosen for the whole dashboard.' : '' })}
+        ${fieldRow({ label: 'Background', control: materialPicker({ name: 'frame', value: props.frame, options: FRAMES, action: 'dashboard.settings-frame', ariaLabel: 'Background' }),
+          hint: FRAMES.find(f => f.value === props.frame)?.description || '' })}
       </div>
     </section>
     ${props.formError ? html`<p class="field-error dash-settings-error" role="alert">${icon('circle-alert', { size: 14 })}<span>${props.formError}</span></p>` : ''}`;

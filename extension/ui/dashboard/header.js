@@ -10,7 +10,7 @@ import { navToggle } from '../sidebar.js';
 import { askAi } from '../ai-panel.js';
 import { stickiesShown, setStickiesShown } from '../stickies.js';
 import * as weather from '../widgets/weather.js';
-import { WALLPAPER_PRESETS } from '../themes.js';
+import { WALLPAPER_PRESETS, WIDGET_STYLES } from '../themes.js';
 import { patchGroup, settingsGroup } from '../../lib/settings-schema.js';
 import * as dashboardStore from '../../lib/dashboard-store.js';
 import { renderSearch } from './search.js';
@@ -22,7 +22,7 @@ registerIcons({
 
 export const BOARD_ICONS = Object.freeze(['layout-dashboard', 'house', 'briefcase', 'code-xml', 'book-open', 'sparkles', 'palette', 'rocket',
   'coffee', 'music', 'plane', 'star', 'heart', 'leaf', 'target', 'graduation-cap']);
-const STYLES = [{ value: 'card', label: 'Cards' }, { value: 'glass', label: 'Glass' }, { value: 'flat', label: 'Flat' }];
+const STYLES = WIDGET_STYLES;
 const GAPS = [{ value: 'sm', label: 'Compact spacing' }, { value: 'md', label: 'Comfortable spacing' }, { value: 'lg', label: 'Roomy spacing' }];
 const menuOpenFor = (ctx, action) => ctx.state.popover?.anchorEl?.dataset?.action === action;
 

@@ -3,7 +3,7 @@
 // live in lib/dashboard-store.js. Uploaded wallpapers are IndexedDB attachments: replacing or removing one deletes the old file.
 import { html, cx, plural } from '../html.js';
 import { icon } from '../icons.js';
-import { segmented, select, input, button, iconButton, badge, spinner } from '../components.js';
+import { segmented, materialPicker, select, input, button, iconButton, badge, spinner } from '../components.js';
 import { registerActions } from '../runtime.js';
 import { WALLPAPER_PRESETS, WIDGET_STYLES, wallpaperPreset, themeById, resolveMode } from '../themes.js';
 import { settingsGroup, patchGroup, appearanceOf } from '../../lib/settings-schema.js';
@@ -106,7 +106,7 @@ export function renderNewTab(ctx) {
     ]) })}
     ${group({ title: 'Dashboard', body: () => card([
       row({ label: 'Widget style', keywords: 'card glass flat frame', description: `${WIDGET_STYLES.find(style => style.value === dash.widgetStyle)?.description || ''} A widget can override it from its menu.`.trim(),
-        control: segmented({ name: 'widgetStyle', value: dash.widgetStyle, options: WIDGET_STYLES.map(({ value, label }) => ({ value, label })), action: 'settings.dashboard-choice', ariaLabel: 'Widget style' }) }),
+        control: materialPicker({ name: 'widgetStyle', value: dash.widgetStyle, options: WIDGET_STYLES, action: 'settings.dashboard-choice', ariaLabel: 'Widget style' }) }),
       row({ label: 'Widget spacing', keywords: 'gap gutter', description: 'Space between widgets on the board.',
         control: segmented({ name: 'gap', value: dash.gap, options: GAPS, action: 'settings.dashboard-choice', ariaLabel: 'Widget spacing' }) }),
       switchRow({ label: 'Show the board header', keywords: 'title switcher', description: 'Board name, board switcher and greeting above the widgets.',
