@@ -692,7 +692,8 @@ function onEvent(ctx, run, event) {
       break;
     case 'tool':
       m.tools.push({ id: event.id, name: event.name, summary: text(event.summary), result: event.result, isError: !!event.isError });
-      if (/_ai_threads$/.test(text(event.name))) m.usedThreads = true;
+      // Any tool that read thread text (get_items or search_library on a chat, the AI thread tools) says so on its event.
+      if (event.usedThreads === true || /_ai_threads$/.test(text(event.name))) m.usedThreads = true;
       break;
     case 'proposal':
       registerProposal(run, event.proposal);
