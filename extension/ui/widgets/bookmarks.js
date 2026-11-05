@@ -635,6 +635,8 @@ function render(ctx, widget, env) {
   if (!isFolder(root)) return session.live ? missingState(widget, env) : loadingState(config, env);
   const view = viewOf(widget.id, config);
   if (!isFolder(index.nodes.get(view.folderId)) || !isWithin(index, view.folderId, root.id)) view.folderId = root.id;
+  // With the search field turned off in settings, a search typed before would stay applied with no field to clear it.
+  if (!config.showSearch && (view.query || view.searchOpen)) { view.query = ''; view.searchOpen = false; }
   const folder = index.nodes.get(view.folderId);
   const s = { widget, config, view, index };
   const ctx2 = { config, index, env, gridKey: `bm:${widget.id}`, stop: '' };

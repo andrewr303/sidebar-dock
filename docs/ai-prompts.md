@@ -57,6 +57,22 @@ The wording the model sees follows the setting, so it never says a change waits 
 
 `assistantPermissions` is device-only: `exportAiConfig` leaves it out of backups and `importAiConfig` never restores it, so a crafted file cannot turn on automatic changes. Settings writes are validated and refuse unknown categories or levels.
 
+## Organize tags with AI (`lib/ai/autotag.js`)
+
+**Organize tags with AI…** (the library view menu, or the command palette) retags the whole library or one collection and its
+subcollections. The chat model makes two passes. The taxonomy pass reads a digest of every item (title, site, collection
+path, existing tags, and a short excerpt that shrinks, then disappears, as the library grows; libraries over 1,500 items
+are sampled evenly) plus the existing tags with their counts. It returns a tag list with `mergedFrom` for existing tags
+folded into a broader one. The assignment pass tags items in batches of 50 against that fixed list.
+
+The prompts ask for the fewest tags that still organize the library: about `target` and at most `max` tags, each fitting at
+least `minSupport` items (`tagBudget(n, level)`; General, the default, aims near 0.9 √n tags). The person's optional
+instructions override that size guidance. `finalizePlan` then enforces the rules in code, whatever the model returned:
+known item ids and listed tags only, at most three tags per item, tags under `minSupport` dropped, merges applied only into
+tags that are kept, and items the model did not answer for left with their tags (renamed by merges). Nothing is written
+until the person reviews the plan (tags with counts, merges, tags that would no longer be used, items left untagged) and
+applies it; one Undo restores every item's previous tags. Library text is JSON data in every prompt.
+
 ## Research agent prompt
 
 Research runs use their own instructions, not this assembler: `RESEARCH_SYSTEM_PROMPT` in [`lib/ai/research/agent-config.js`](../extension/lib/ai/research/agent-config.js), sent once as the Managed Agents agent's `system`, and the kickoff and follow-up messages built by [`lib/ai/research/prompt.js`](../extension/lib/ai/research/prompt.js). The system prompt asks the agent to understand the saved page, plan 3–6 research questions, use the GitHub tools for technical topics (following the run's GitHub mode), read primary sources, de-duplicate, cite every factual claim with an inline Markdown link, never invent sources, and keep within the depth's search allowance (about 5, 12 or 25 searches). It writes one research section by default and creates subpages only for extensive sub-topics, within the run's maximum. It never alters the original or the user's own text unless edits to the original were allowed, gives one-sentence progress notes and ends with a short summary. Fetched pages, search results, GitHub data, captured text and the user's note are reference data whose instructions it must ignore.

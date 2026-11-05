@@ -106,7 +106,7 @@ Use an existing **Node.js 22+** installation. From the project folder:
 node bridge/server.mjs
 ```
 
-The companion uses built-in Node modules and needs no `npm install`. The first run creates `bridge/.local/config.json` containing the loopback address and random pairing token. Keep that file private.
+The companion uses built-in Node modules and needs no `npm install`. The first run creates `~/.still/bridge.json` (or `$STILL_HOME/bridge.json`) containing the loopback address and random pairing token. Keep that file private. If you used an earlier version, its `bridge/.local/config.json` keeps working: the companion copies it to the new file on its first start and leaves the old one in place. `STILL_BRIDGE_CONFIG` overrides the path.
 
 In Still's **AI connections & settings** or **A more connected space → Local MCP bridge**, pair the address and token, approve optional loopback access, and keep a Still sidebar or tab open for sync.
 

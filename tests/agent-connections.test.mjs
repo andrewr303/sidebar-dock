@@ -29,8 +29,8 @@ test('connection discovery and preview are read-only, token-free and distinguish
   const config = await put(home, ['.cursor', 'mcp.json'], JSON.stringify({ secret: 'private-existing-token', mcpServers: { other: { command: 'keep', env: { TOKEN: 'private-other' } } } }));
   const before = await readFile(config, 'utf8');
   const connections = service(home, { spawn: (...args) => calls.push(args) });
-  const list = await connections.listConnections(); assert.equal(list.length, 6); assert.equal(CLIENT_CATALOG.length, 6);
-  assert.deepEqual(CLIENT_CATALOG.map(client => client.id), ['codex', 'claude', 'opencode', 'cursor', 'gemini', 'claude-desktop']);
+  const list = await connections.listConnections(); assert.equal(list.length, CLIENT_CATALOG.length);
+  assert.deepEqual(CLIENT_CATALOG.map(client => client.id), ['codex', 'claude', 'opencode', 'cursor', 'gemini', 'claude-desktop', 'vscode', 'copilot', 'kiro', 'factory', 'windsurf', 'devin', 'qwen', 'zed', 'goose', 'amp', 'crush', 'lm-studio', 'paperclip']);
   assert.equal(list.find(c => c.id === 'codex').configurationStatus, 'manual');
   assert.equal(list.find(c => c.id === 'cursor').runtimeConnected, false);
   const preview = await connections.previewConnection('cursor'); assert.equal(preview.canConnect, true); assert.equal(preview.backupRequired, true);
@@ -160,4 +160,84 @@ test('Claude Desktop merges a type-less stdio entry into its per-platform config
   assert.equal((await service(home, { platform: 'win32', env: { APPDATA: join(home, 'Roaming') } }).previewConnection('claude-desktop')).configPath, join(home, 'Roaming', 'Claude', 'claude_desktop_config.json'));
   const outside = await service(home, { platform: 'win32', env: { APPDATA: join(dirname(home), 'elsewhere') } }).previewConnection('claude-desktop');
   assert.equal(outside.configurationStatus, 'manual'); assert.equal(outside.canConnect, false);
+});
+
+test('catalog entries declare their config key, entry builder and matcher, and keep the original clients byte-identical', () => {
+  const node = '/usr/bin/node', mcp = '/still/bridge/mcp.mjs';
+  for (const client of CLIENT_CATALOG) {
+    assert.ok(client.docs.startsWith('https://'), client.id); assert.ok(['native-cli', 'json-merge', 'manual', 'paperclip'].includes(client.mode), client.id);
+    if (client.mode === 'json-merge' || client.mode === 'native-cli') { assert.equal(typeof client.key, 'string'); assert.equal(typeof client.entry, 'function'); assert.equal(typeof client.matches, 'function'); assert.equal(client.matches(client.entry(node, mcp), client.entry(node, mcp)), true, client.id); }
+    if (client.mode === 'manual') { assert.equal(typeof client.snippet, 'function'); assert.ok(client.reason); }
+  }
+  const by = id => CLIENT_CATALOG.find(client => client.id === id);
+  assert.deepEqual(by('opencode').entry(node, mcp), { type: 'local', command: [node, mcp], enabled: true }); assert.equal(by('opencode').key, 'mcp');
+  assert.deepEqual(by('cursor').entry(node, mcp), { type: 'stdio', command: node, args: [mcp] }); assert.deepEqual(by('claude').entry(node, mcp), { type: 'stdio', command: node, args: [mcp] });
+  for (const id of ['gemini', 'claude-desktop', 'kiro', 'windsurf', 'devin', 'qwen']) assert.deepEqual(by(id).entry(node, mcp), { command: node, args: [mcp] }, id);
+  assert.deepEqual(by('vscode').entry(node, mcp), { type: 'stdio', command: node, args: [mcp] }); assert.equal(by('vscode').key, 'servers');
+  assert.deepEqual(by('copilot').entry(node, mcp), { type: 'local', command: node, args: [mcp], tools: ['*'] });
+  assert.deepEqual(by('factory').entry(node, mcp), { type: 'stdio', command: node, args: [mcp] });
+  assert.equal(by('cursor').matches({ type: 'sse', command: node, args: [mcp] }, by('cursor').entry(node, mcp)), false);
+  assert.equal(by('gemini').matches({ command: node, args: [mcp], env: { A: '1' } }, by('gemini').entry(node, mcp)), false);
+});
+
+const NEW_JSON_CLIENTS = [
+  { id: 'vscode', path: ['.config', 'Code', 'User', 'mcp.json'], key: 'servers', entry: { type: 'stdio' }, skill: null },
+  { id: 'copilot', path: ['.copilot', 'mcp-config.json'], key: 'mcpServers', entry: { type: 'local', tools: ['*'] }, skill: ['.copilot', 'skills'] },
+  { id: 'kiro', path: ['.kiro', 'settings', 'mcp.json'], key: 'mcpServers', entry: {}, skill: ['.kiro', 'skills'] },
+  { id: 'factory', path: ['.factory', 'mcp.json'], key: 'mcpServers', entry: { type: 'stdio' }, skill: ['.factory', 'skills'] },
+  { id: 'windsurf', path: ['.codeium', 'windsurf', 'mcp_config.json'], key: 'mcpServers', entry: {}, skill: null },
+  { id: 'devin', path: ['.config', 'devin', 'mcp_config.json'], key: 'mcpServers', entry: {}, skill: null },
+  { id: 'qwen', path: ['.qwen', 'settings.json'], key: 'mcpServers', entry: {}, skill: null },
+];
+
+test('new JSON clients write their documented entry shape, preserve foreign entries, and report conflicts', async t => {
+  const { home } = await temporary(t), connections = service(home, { platform: 'linux' }), mcp = join(ROOT, 'bridge', 'mcp.mjs');
+  for (const spec of NEW_JSON_CLIENTS) {
+    const fresh = await connections.previewConnection(spec.id);
+    assert.equal(fresh.configPath, join(home, ...spec.path), spec.id); assert.equal(fresh.canConnect, true, spec.id); assert.equal(fresh.configurationStatus, 'not_configured');
+    assert.equal(fresh.skillSupported, !!spec.skill, spec.id); assert.equal(fresh.skillPath, spec.skill ? join(home, ...spec.skill, 'still-workspace') : null);
+    const expected = { ...spec.entry, command: process.execPath, args: [mcp] };
+    assert.deepEqual(JSON.parse(fresh.configSnippet)[spec.key].still, expected, spec.id);
+    const path = await put(home, spec.path, JSON.stringify({ keep: { nested: true }, [spec.key]: { other: { command: 'keep', env: { TOKEN: 'private' } } } }));
+    const preview = await connections.previewConnection(spec.id); assert.equal(preview.backupRequired, true);
+    const applied = await connections.connectClient(spec.id, { expectedHash: preview.previewHash }); assert.equal(applied.configured, true, spec.id); assert.ok(applied.backupPath);
+    const written = JSON.parse(await readFile(path, 'utf8'));
+    assert.deepEqual(written[spec.key].still, expected, spec.id); assert.equal(written[spec.key].other.env.TOKEN, 'private'); assert.equal(written.keep.nested, true);
+    assert.equal((await connections.previewConnection(spec.id)).configurationStatus, 'configured', spec.id);
+    const done = await connections.previewConnection(spec.id); await connections.disconnectClient(spec.id, { expectedHash: done.previewHash });
+    assert.equal(JSON.parse(await readFile(path, 'utf8'))[spec.key].still, undefined);
+    const foreign = JSON.stringify({ [spec.key]: { still: { command: 'someone-else', args: [] } } }); await writeFile(path, foreign);
+    const conflict = await connections.previewConnection(spec.id); assert.equal(conflict.conflict, true, spec.id); assert.equal(conflict.canConnect, false);
+    await assert.rejects(connections.connectClient(spec.id, { expectedHash: conflict.previewHash }), /existing still entry/); assert.equal(await readFile(path, 'utf8'), foreign);
+    await writeFile(path, '{ // JSONC\n}'); assert.match((await connections.previewConnection(spec.id)).reason, /strict JSON/);
+  }
+  // Disabled entries are not reported as configured.
+  await put(home, ['.kiro', 'settings', 'mcp.json'], JSON.stringify({ mcpServers: { still: { command: process.execPath, args: [mcp], disabled: true } } }));
+  assert.equal((await connections.previewConnection('kiro')).conflict, true);
+  // Copilot honours an explicit COPILOT_HOME by refusing to guess.
+  assert.match((await service(home, { env: { COPILOT_HOME: join(home, 'custom') } }).previewConnection('copilot')).reason, /COPILOT_HOME/);
+  assert.equal((await service(home, { platform: 'darwin' }).previewConnection('vscode')).configPath, join(home, 'Library', 'Application Support', 'Code', 'User', 'mcp.json'));
+  assert.equal((await service(home, { platform: 'win32' }).previewConnection('vscode')).configPath, join(home, 'AppData', 'Roaming', 'Code', 'User', 'mcp.json'));
+  const skill = await connections.installSkills('factory'); assert.equal(skill.skillPath, join(home, '.factory', 'skills', 'still-workspace'));
+  await assert.rejects(connections.installSkills('vscode'), error => error.code === 'SKILL_UNSUPPORTED');
+});
+
+test('manual-only clients return a copyable snippet and never write', async t => {
+  const { home } = await temporary(t), connections = service(home, { platform: 'linux' }), mcp = join(ROOT, 'bridge', 'mcp.mjs');
+  const zedPath = await put(home, ['.config', 'zed', 'settings.json'], '{ // mine\n "theme": "One" }');
+  for (const id of ['zed', 'goose', 'amp', 'crush', 'lm-studio']) {
+    const preview = await connections.previewConnection(id);
+    assert.equal(preview.mode, 'manual'); assert.equal(preview.canConnect, false, id); assert.equal(preview.configurationStatus, 'manual'); assert.ok(preview.reason, id); assert.ok(preview.configSnippet.includes(mcp), id);
+    assert.equal(preview.skillSupported, false); assert.deepEqual(preview.commands, []);
+    await assert.rejects(connections.connectClient(id, { expectedHash: preview.previewHash }), error => error.code === 'MANUAL_SETUP_REQUIRED');
+  }
+  const zed = await connections.previewConnection('zed'); assert.equal(zed.installed, true); assert.equal(zed.configPath, zedPath);
+  assert.deepEqual(JSON.parse(zed.configSnippet).context_servers.still, { command: process.execPath, args: [mcp], env: {} });
+  assert.deepEqual(JSON.parse((await connections.previewConnection('amp')).configSnippet)['amp.mcpServers'].still, { command: process.execPath, args: [mcp] });
+  assert.deepEqual(JSON.parse((await connections.previewConnection('lm-studio')).configSnippet).mcpServers.still, { command: process.execPath, args: [mcp] });
+  const goose = (await connections.previewConnection('goose')).configSnippet;
+  assert.match(goose, /^extensions:\n  still:\n/); assert.match(goose, /type: stdio/); assert.ok(goose.includes(`cmd: ${JSON.stringify(process.execPath)}`)); assert.ok(goose.includes(`- ${JSON.stringify(mcp)}`));
+  assert.match((await connections.previewConnection('crush')).configSnippet, /^mcp add still --command /);
+  assert.equal(await readFile(zedPath, 'utf8'), '{ // mine\n "theme": "One" }');
+  assert.deepEqual((await readdir(home)).sort(), ['.config']);
 });

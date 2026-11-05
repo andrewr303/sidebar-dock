@@ -1,0 +1,126 @@
+/* Paperclip widget (.w-paperclip-*), its account card and the New task / Send to Paperclip dialog. Status pills mix the
+   palette color toward the text color so they keep contrast on light and dark surfaces. */
+.w-paperclip {
+  --w-paperclip-inset: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  block-size: 100%;
+  min-block-size: 0;
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+}
+
+.w-paperclip-scroll {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  margin-inline: calc(var(--w-paperclip-inset) * -1);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.w-paperclip-scroll:has(> .empty-state) { display: grid; place-items: center; }
+.w-paperclip-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+
+.w-paperclip-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-block-size: 36px;
+  padding-inline: var(--w-paperclip-inset) var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.w-paperclip-row:hover,
+.w-paperclip-row:focus-within { background: var(--bg-hover); }
+
+.w-paperclip-link {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-inline-size: 0;
+  padding-block: var(--space-2);
+  color: var(--fg-default);
+  text-decoration: none;
+}
+.w-paperclip-link:focus-visible { outline: none; }
+.w-paperclip-row:has(.w-paperclip-link:focus-visible) { box-shadow: var(--focus-ring); }
+.w-paperclip-id,
+.w-paperclip-mono { flex: none; color: var(--fg-muted); font-family: var(--font-mono); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+.w-paperclip-title { flex: 1 1 12ch; min-inline-size: 0; overflow: hidden; font-weight: var(--weight-medium); text-overflow: ellipsis; white-space: nowrap; }
+.w-paperclip-meta { display: inline-flex; flex: none; align-items: center; gap: var(--space-3); color: var(--fg-muted); font-size: var(--text-xs); line-height: var(--lh-xs); }
+
+.w-paperclip-pill {
+  --tone: var(--c-gray);
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-full);
+  background: color-mix(in oklab, var(--tone) 16%, transparent);
+  color: color-mix(in oklab, var(--tone) 70%, var(--fg-default));
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+}
+.w-paperclip-pill[data-tone="amber"] { --tone: var(--c-amber); }
+.w-paperclip-pill[data-tone="violet"] { --tone: var(--c-violet); }
+.w-paperclip-pill[data-tone="red"] { --tone: var(--c-red); }
+.w-paperclip-pill[data-tone="green"] { --tone: var(--c-green); }
+.w-paperclip-priority[data-priority="critical"] { color: var(--c-red); font-weight: var(--weight-medium); }
+.w-paperclip-priority[data-priority="high"] { color: var(--c-orange); }
+.w-paperclip-updated { font-variant-numeric: tabular-nums; }
+
+.w-paperclip-save { flex: none; opacity: 0; transition: opacity var(--dur-fast) var(--ease-out); }
+.w-paperclip-row:hover .w-paperclip-save,
+.w-paperclip-row:focus-within .w-paperclip-save,
+.w-paperclip-save.is-busy { opacity: 1; }
+@media (hover: none) { .w-paperclip-save { opacity: 1; } }
+
+.w-paperclip-notice {
+  display: flex; flex: none; align-items: center; gap: var(--space-3); margin: 0; padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-sm); background: var(--warning-soft); color: var(--fg-default); font-size: var(--text-xs);
+}
+.w-paperclip-notice > .icon { flex: none; color: var(--warning); }
+.w-paperclip-notice > span { flex: 1 1 auto; min-inline-size: 0; }
+.w-paperclip-notice-action { flex: none; }
+.w-paperclip-foot {
+  display: flex; flex: none; justify-content: space-between; gap: var(--space-4); min-inline-size: 0;
+  color: var(--fg-muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.w-paperclip-foot > span { overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- account card (Settings > Connected accounts and the connect dialog) ---------- */
+.w-paperclip-account { display: flex; flex-direction: column; gap: var(--space-5); }
+.w-paperclip-account-status { margin: 0; }
+.w-paperclip-account-who { padding: var(--space-5) var(--space-6); border-radius: var(--radius-md); background: var(--bg-sunken); }
+.w-paperclip-account-person { margin: 0; font-weight: var(--weight-medium); }
+.w-paperclip-account-meta { margin: 0; color: var(--fg-muted); font-size: var(--text-xs); line-height: var(--lh-xs); overflow-wrap: anywhere; }
+.w-paperclip-account-alert {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3) var(--space-4); margin: 0;
+  padding: var(--space-4) var(--space-5); border-radius: var(--radius-md); background: var(--warning-soft); color: var(--fg-default); font-size: var(--text-sm);
+}
+.w-paperclip-account-alert > .icon { flex: none; color: var(--warning); }
+.w-paperclip-account-alert > span { flex: 1 1 24ch; }
+.w-paperclip-account-form { display: flex; flex-direction: column; gap: var(--space-5); max-inline-size: 560px; }
+.w-paperclip-account-submit,
+.w-paperclip-account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) var(--space-6); }
+.w-paperclip-account-note { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--fg-muted); font-size: var(--text-xs); }
+
+/* ---------- New task / Send to Paperclip ---------- */
+.w-paperclip-create-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--space-6); }
+.w-paperclip-create-checks { display: flex; flex-wrap: wrap; gap: var(--space-4) var(--space-8); }
+.w-paperclip-create-error { display: flex; gap: var(--space-3); margin: 0; color: var(--danger); font-size: var(--text-sm); }
+
+/* ---------- Settings > Agents & MCP: Paperclip card ---------- */
+.paperclip-setup-scope { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-4) var(--space-6); }
+.paperclip-setup-steps { margin: 0; padding-inline-start: var(--space-8); color: var(--fg-default); font-size: var(--text-sm); line-height: var(--lh-sm); }
+.paperclip-setup-steps > li + li { margin-block-start: var(--space-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .w-paperclip-row, .w-paperclip-save { transition: none; }
+}
+@media (forced-colors: active) {
+  .w-paperclip-pill { border: 1px solid CanvasText; }
+  .w-paperclip-save { opacity: 1; }
+}

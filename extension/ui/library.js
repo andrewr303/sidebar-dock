@@ -14,9 +14,11 @@ import { createNote } from './notes.js';
 import { confirmTrash, subpagesMoving, addSubpage } from './note-editor.js';
 import { threadkeeperSnapshot } from './chats.js';
 import { askAi } from './ai-panel.js';
+import { openAutoTag } from './autotag.js';
 import { openCollectionEditor } from './collections.js';
 import { exportBookmarkHtml, exportNotesMarkdown } from '../lib/portability.js';
 import { parentIdOf } from '../lib/pages.js';
+import { paperclipMenuItem } from './widgets/paperclip/create.js';
 
 const PAGE = 150;
 export const LAYOUTS = ['list', 'cards', 'masonry', 'headlines'];
@@ -811,6 +813,7 @@ export function openItemMenu(ctx, id, anchor) {
         : item.type !== 'note' && { label: 'Add note', icon: 'notebook-pen', run: () => ctx.run(() => addNoteFor(ctx, item)) },
       { label: 'Ask AI about this', icon: 'sparkles', run: () => askAi(ctx, { scope: 'item', ids }) },
       researchMenuItem(item, ctx),
+      paperclipMenuItem(ctx, item),
       { separator: true },
       { label: item.archived ? 'Unarchive' : 'Archive', icon: item.archived ? 'archive-restore' : 'archive', run: () => ctx.run(() => setArchived(ctx, ids, !item.archived)) },
       { label: 'Delete', icon: 'trash-2', danger: true, hint: 'Moves to Trash', run: () => ctx.run(() => trashItems(ctx, ids)) },
@@ -866,6 +869,7 @@ function openViewMenu(ctx, anchor) {
   const mappable = !['trash', 'archive', 'duplicates'].includes(view);
   const entries = [
     { label: 'Ask AI about this view', icon: 'sparkles', run: () => askAboutView(ctx) },
+    { label: id ? 'Organize tags here with AI…' : 'Organize tags with AI…', icon: 'tags', run: () => openAutoTag(ctx, { collectionId: id || '' }) },
     id && { label: 'Edit collection…', icon: 'pencil', run: () => openCollectionEditor(ctx, { id }) },
     id && { label: ctx.select.collection(id)?.pinned ? 'Unpin from sidebar' : 'Pin to sidebar', icon: ctx.select.collection(id)?.pinned ? 'pin-off' : 'pin', run: () => ctx.dispatch('collections.pin', { data: { id } }) },
     id && { label: 'New collection inside…', icon: 'folder-plus', run: () => openCollectionEditor(ctx, { parentId: id }) },

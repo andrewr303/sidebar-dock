@@ -91,7 +91,13 @@ test('Settings scales match their tokens.css blocks', () => {
   const motion = block(TOKENS, '[data-motion="reduced"]');
   assert.equal(motion['--dur-fast'], '0ms');
   assert.equal(motion['--press-scale'], '1');
-  assert.deepEqual(WIDGET_STYLES.map(s => s.value), ['card', 'glass', 'flat']);
+  assert.deepEqual(WIDGET_STYLES.map(s => s.value), ['card', 'glass', 'flat', 'raised', 'clear', 'tinted', 'gradient', 'outline']);
+  const dashboardCss = readFileSync(new URL('../extension/styles/dashboard.css', import.meta.url), 'utf8');
+  for (const style of WIDGET_STYLES.filter(s => s.value !== 'card')) {
+    assert.ok(dashboardCss.includes(`[data-widget-style="${style.value}"]`), `${style.value} has a dashboard-wide material`);
+    assert.ok(dashboardCss.includes(`[data-frame="${style.value}"]`), `${style.value} has a per-widget Background and a preview`);
+    assert.ok(style.description, style.value);
+  }
 });
 
 test('skins.css honours reduced motion and reduced transparency', () => {

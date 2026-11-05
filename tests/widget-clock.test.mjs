@@ -76,6 +76,10 @@ test('time zone search finds cities, aliases, abbreviations and offsets', () => 
   assert.equal(searchZones('bengaluru', { date: AT })[0].tz, 'Asia/Kolkata');
   assert.ok(searchZones('+5:30', { date: AT }).every(r => zoneOffsetMinutes(AT, r.tz) === 330));
   assert.ok(searchZones('GMT-3', { date: AT }).length > 0);
+  assert.ok(searchZones('UTC−3', { date: AT }).every(r => zoneOffsetMinutes(AT, r.tz) === -180));
+  // Only + and − mark an offset: digits and letters are not signs ("10" is not "−0").
+  assert.deepEqual(searchZones('10', { date: AT }), []);
+  assert.deepEqual(searchZones('a5', { date: AT }).filter(r => zoneOffsetMinutes(AT, r.tz) === -300 && !/a5/i.test(r.tz)), []);
   assert.ok(searchZones('europe', { date: AT, limit: 5 }).length === 5);
   assert.deepEqual(searchZones('zzzz-nothing', { date: AT }), []);
   assert.ok(searchZones('', { date: AT }).length > 3);

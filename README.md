@@ -30,24 +30,26 @@ Open [the local preview](http://127.0.0.1:4173/). Preview storage and extension 
 New tabs open a dashboard of widgets on a 12-column grid, with a greeting, the date and the weather, and one search bar for the web, your library or the assistant. **Settings → New tab & dashboard** chooses the start page (Dashboard, All items, Inbox, Notes or the AI assistant), the search engine, the greeting and the wallpaper.
 
 - **Boards:** several dashboards, switched from the header. **Edit layout** moves and resizes widgets with the pointer or the keyboard; narrow windows stack them in order. Each widget has its own settings, title and background (card, glass, flat or none).
-- **Widgets:** Links folder, Quick links, Notes, Checklist, Sticky notes, Kanban board, Clock, Weather, Calendar, Website, Most visited, Bookmarks, Product Hunt, GitHub and Linear. Library widgets show ordinary Still items, so their links, notes and tasks also appear in search, backups and AI context. Fetched data is cached so a new tab paints at once and refreshes in the background. Widgets that need Chrome access (top sites, bookmarks, a site's address) ask the first time.
+- **Widgets:** Collection (a sidebar collection as link tiles; new ones go in a "Links folders" collection you can move or delete), Quick links, Notes, Checklist, Sticky notes, Kanban board, Clock, Weather, Calendar, Website, Most visited, Bookmarks, Product Hunt, GitHub and Linear. Library widgets show ordinary Still items, so their links, notes and tasks also appear in search, backups and AI context. Fetched data is cached so a new tab paints at once and refreshes in the background. Widgets that need Chrome access (top sites, bookmarks, a site's address) ask the first time.
 - **Sticky notes:** notes that float over a board, move and resize freely, and gather on the **Sticky notes** corkboard. They stay ordinary notes in Notes, search, backups, the assistant and MCP clients. One switch shows or hides them on every board.
 - **Wallpaper:** six presets, a color or your own image, with dim and blur, behind the dashboard or every page.
 
 ## Themes, full-screen assistant and settings
 
 - **Themes:** Still, White, Liquid Glass, Midnight, Nord, Paper and Rosé recolor the sidebar, side panel, full tab and dashboard. Choose light, dark or system mode, one of seven accents, text size, density, corners, sidebar width, and reduced transparency or motion.
+- **Organize tags with AI:** from the library menu or the command palette, the AI reads the library (or one collection) and your existing tags, proposes the fewest tags that keep things easy to find, and shows the plan for review before applying it, with Undo.
 - **Full-screen assistant:** the **AI assistant** view gives a conversation the whole tab: a chats rail with search and history by day, a wide transcript with a docked composer, and a **Context & sources** rail with what the next question is about and the sources of the latest answer. The same chat moves between the side panel's Ask tab, the full-tab panel and this page. **Ask AI** in the dashboard search continues here.
 - **Settings:** one searchable page (press `/`) with Appearance, New tab & dashboard, General, Library & backup, AI models, Assistant permissions, Research agent, Semantic search, Agents & MCP, Connected accounts, Integrations, Keyboard shortcuts, About and Help. In the side panel it opens as a panel with the same sections.
 
 ## Connected accounts
 
-The GitHub and Linear widgets sign in from **Settings → Connected accounts** or from the widget. Credentials stay in this device's extension storage, apart from the library: never in backups, exports, widget settings, cached widget data or bridge sync. Chrome asks for optional access to the service's API when you connect.
+The GitHub, Linear and Paperclip widgets sign in from **Settings → Connected accounts** or from the widget. Credentials stay in this device's extension storage, apart from the library: never in backups, exports, widget settings, cached widget data or bridge sync. Chrome asks for optional access to the service's API when you connect.
 
 | Service | Sign-in |
 | --- | --- |
 | GitHub | A personal access token (classic with `repo`, `read:org`, `workflow` and `notifications` for every feature, or fine-grained for chosen repositories); **Sign in** with GitHub's OAuth device flow and an OAuth app you own (paste its client ID; Still ships no client secret); or **GitHub CLI**, where the paired local bridge answers `GET /github/token` with `gh auth token` (or `GITHUB_TOKEN` / `GH_TOKEN` from its environment), only with the pairing token |
 | Linear | A personal API key, checked with Linear before it is saved |
+| Paperclip | Your Paperclip address (default `http://localhost:3100`) and no key in local trusted mode, or a board key (`pcp_board_…`) or agent key. Adds a tasks widget, **Send to Paperclip…** on saved items and read-only Paperclip tools for the assistant. See [Paperclip and Still](docs/paperclip.md) |
 
 ## One library, connected ideas
 
@@ -93,7 +95,7 @@ The optional local companion handles provider credentials, streaming and coding-
 node bridge/server.mjs
 ```
 
-The first run creates `bridge/.local/config.json` with a random pairing token. Keep it private. In Still → **Settings → AI models → Local bridge**, enter the loopback address and token, approve Chrome's optional loopback permission and keep a Still view open for sync. Starting the bridge does not configure or launch an AI client.
+The first run creates `~/.still/bridge.json` (or `$STILL_HOME/bridge.json`) with a random pairing token. Keep it private. An existing `bridge/.local/config.json` from an earlier version is copied there on the bridge's first start and left in place. In Still → **Settings → AI models → Local bridge**, enter the loopback address and token, approve Chrome's optional loopback permission and keep a Still view open for sync. Starting the bridge does not configure or launch an AI client.
 
 Open **Settings → AI models** to choose a connection:
 
@@ -103,7 +105,7 @@ Open **Settings → AI models** to choose a connection:
 | Compatible/local endpoints | OpenAI-compatible and Anthropic-compatible APIs, Ollama and LM Studio |
 | Coding agents | Codex CLI and Claude Code discovered on the bridge's PATH, using supported models and existing CLI authentication |
 | Codex OAuth | Explicit **Sign in with ChatGPT** through Codex's official device-code/app-server flow; Codex owns its credentials |
-| MCP clients | Claude Desktop, Claude Code, Codex and compatible clients using the local bridge |
+| MCP clients | Claude Code, Codex, Claude Desktop, Cursor, VS Code, GitHub Copilot CLI, Gemini CLI and other compatible clients using the local bridge, plus agents in Paperclip |
 
 Choose exact models and supported effort, temperature, image and context/output limits. Credentials for providers configured in the local companion are encrypted in its storage; an API key added directly in Still stays in this device's extension storage and never enters a backup. Provider tests and model discovery are explicit actions. Sending a prompt uses the selected provider or CLI. Still does not install coding agents or copy Codex account tokens.
 
@@ -127,13 +129,16 @@ The assistant can also organize the library. It searches and reads items, then s
 
 ### MCP and coding agents
 
-The MCP server exposes **33 tools** to read and update notes, saved article text, highlights, relationships, collection metadata, tags and item state, plus paginated exports and bounded original-file reads. Subpages are notes with a `parentId`: `create_item` accepts one, `list_items` and `search_library` filter by it, `get_item` lists `subpageIds`, and `move_page` moves a note inside another item or back to the top level. Mutations return a queued receipt; clients must check `get_operation` for `saved` or `failed`. Revision checks reject stale edits. File reads return at most 65,536 bytes per chunk and never accept arbitrary filesystem paths.
+The MCP server exposes **33 tools** to read and update notes, saved article text, highlights, relationships, collection metadata, tags and item state, plus paginated exports and bounded original-file reads. Subpages are notes with a `parentId`: `create_item` accepts one, `list_items` and `search_library` filter by it, `get_item` lists `subpageIds`, and `move_page` moves a note inside another item or back to the top level. Mutations return a queued receipt; clients must check `get_operation` for `saved` or `failed`. Revision checks reject stale edits. File reads return at most 65,536 bytes per chunk and never accept arbitrary filesystem paths. Each tool is annotated as read (14), write (13) or destructive (6), and items, collections and searches are also offered as MCP resources, with five prompts such as `research` and `task_context`.
 
-**Settings → Agents & MCP** offers reviewable client setup and installation of the included [Still workspace agent skill](agent-skills/still-workspace/SKILL.md). Configuration and skill installation require an explicit action and return receipts. Keep a syncing Still view open while a client uses the library.
+**Settings → Agents & MCP** and `npm run connect -- <client>` offer reviewable setup for 13 clients, snippets for 5 more, and installation of the included [Still workspace agent skill](agent-skills/still-workspace/SKILL.md). Configuration and skill installation require an explicit action and return receipts. Claude Code can also install Still as a plugin: `/plugin marketplace add AVRCORP/sidebar-dock`, then `/plugin install still@still-plugins`. Keep a syncing Still view open while a client uses the library.
+
+**Paperclip** agents reach Still over the bridge's HTTP endpoint with their own token, limited to read-only, everyday or full access. `npm run connect -- paperclip` (or **Connect Paperclip** in Settings) prints the config to paste into Paperclip. Paperclip must run on this computer or your private network. See [Paperclip and Still](docs/paperclip.md).
 
 - [Providers and local endpoints](docs/ai-providers.md)
 - [CLI agents and official Codex sign-in](docs/ai-cli.md)
 - [MCP clients and agent skills](docs/mcp-agents.md)
+- [Paperclip and Still](docs/paperclip.md)
 - [Context and prompt contracts](docs/ai-prompts.md)
 - [Research with AI](docs/research-agent.md)
 - [Raindrop, GitHub and other integrations](docs/integrations.md)
@@ -173,7 +178,7 @@ node scripts/package.mjs
 node scripts/package-runtime.mjs
 ```
 
-The current local suite contains **1,206 tests** covering storage/revisions, dashboard layout and backup, widget data, themes, sticky notes, rich-note round trips, nested space boundaries, explicit graph links, capture planning/cancellation/cleanup, binary backup restoration, rejected imports, file conversion against real PDF/Office/EPUB fixtures, AI import fallbacks, embed round trips, provider transports, official CLI login protocol handling and authenticated MCP mutation receipts. Newer tests cover article extraction and the Markdown converter on a small test DOM, the page picker, article capture through the worker, subpage cascades, imports and MCP tools, assistant permission levels, and the research engine against a local fake Managed Agents server. On the latest run on the development machine, **1,194 passed and 12 failed**. All 12 failures are in `tests/ai-cli.test.mjs` and depend on the machine: there, the tests' temporary folders resolve through `/private/var`, and their stand-in Codex CLI is reported as unsupported. The same 12 fail on a clean checkout of the previous commit, so these features did not cause them. Static checks validate imports, assets, manifest/CSP, reference images, injected page scripts and the vendored file's pin. Packaging checks validate ZIP entrypoints and integrity.
+The current local suite contains **1,274 tests** covering storage/revisions, dashboard layout and backup, widget data, themes, sticky notes, rich-note round trips, nested space boundaries, explicit graph links, capture planning/cancellation/cleanup, binary backup restoration, rejected imports, file conversion against real PDF/Office/EPUB fixtures, AI import fallbacks, embed round trips, provider transports, official CLI login protocol handling and authenticated MCP mutation receipts. Newer tests cover article extraction and the Markdown converter on a small test DOM, the page picker, article capture through the worker, subpage cascades, imports and MCP tools, assistant permission levels, the research engine against a local fake Managed Agents server, MCP protocol edge cases, scoped tokens, the per-user bridge config, the newer client setups, and both Paperclip directions against fakes. On the latest run (Linux, Node 22.23), **1,273 passed and 1 failed**. The failure is `AI writes take the still.ai.v2 Web Lock` in `tests/storage-stores.test.mjs`, which needs `navigator.locks`; that Node runtime doesn't provide it, and it failed the same way before these changes. Earlier, on a macOS development machine, 12 tests in `tests/ai-cli.test.mjs` failed because temporary folders resolve through `/private/var`; results depend on the machine. Static checks validate imports, assets, manifest/CSP, reference images, injected page scripts and the vendored file's pin. Packaging checks validate ZIP entrypoints and integrity.
 
 BrowserOS neo checks exercised table/toggle editing and persistence, space metadata/layout persistence, a locally mocked space-cited AI answer, separate conversations when changing spaces, keyboard map navigation, wide/narrow layouts and dark mode. Screenshots above show the actual isolated preview; no paid model request was made. Reduced-motion styles were checked; animation frame rate was not measured.
 

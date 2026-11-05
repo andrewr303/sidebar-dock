@@ -7,6 +7,7 @@ import { favicon, relativeDate, shortDate, domainOf, colorName, colorVar, collec
 import { renderMarkdown } from '../lib/markdown.js';
 import { taskProgress, linkResolver, noteTitleFromContent } from '../lib/notes.js';
 import { canonicalUrl } from '../lib/store.js';
+import { customIcon, customIconSrc } from './item-media.js';
 
 const TILE_HUES = ['red', 'orange', 'amber', 'green', 'teal', 'cyan', 'blue', 'indigo', 'violet', 'pink'];
 const TYPE_HUES = { note: 'yellow', image: 'violet', video: 'pink', file: 'gray', chat: 'indigo' };
@@ -141,8 +142,10 @@ export function generatedArt(ctx, item, { size = 'md', className } = {}) {
 /** Thumbnail for list rows and related lists: the cover image or a generated tile. */
 export function itemThumb(ctx, item, { className, size = 'md' } = {}) {
   const src = coverOf(item);
+  const own = src ? '' : customIconSrc(item);
   return src
     ? html`<span class="${cx('item-thumb', className)}" data-cover>${img(src)}</span>`
+    : own ? html`<span class="${cx('item-thumb', 'is-icon', className)}">${img(own)}</span>`
     : html`<span class="${cx('item-thumb', 'is-generated', className)}">${generatedArt(ctx, item, { size })}</span>`;
 }
 
@@ -294,9 +297,12 @@ function noteCard(ctx, item, opts) {
   const tasks = progressOf(item);
   const collection = item.collectionId ? ctx.select.collection(item.collectionId) : null;
   const domain = itemDomain(item);
-  return shell(ctx, item, { ...opts, className: cx('item-notecard', opts.surface === 'side' && 'is-side'), label: ariaLabel(item) }, html`
+  const src = coverOf(item);
+  const own = customIcon(item, { size: 18, className: 'note-icon' });
+  return shell(ctx, item, { ...opts, className: cx('item-notecard', opts.surface === 'side' && 'is-side', src && 'has-cover'), label: ariaLabel(item) }, html`
+    ${src ? html`<span class="note-cover" data-cover>${img(src)}</span>` : ''}
     ${check(item, opts.selected)}
-    <span class="note-head">${collection ? html`<span class="note-dot" style="--dot:${colorVar(collection.color)}" aria-hidden="true"></span>` : ''}<span class="item-title">${item.title}</span>${item.pinned ? html`<span class="note-pin" title="Pinned">${icon('pin', { size: 14 })}<span class="sr-only">Pinned</span></span>` : ''}</span>
+    <span class="note-head">${own || (collection ? html`<span class="note-dot" style="--dot:${colorVar(collection.color)}" aria-hidden="true"></span>` : '')}<span class="item-title">${item.title}</span>${item.pinned ? html`<span class="note-pin" title="Pinned">${icon('pin', { size: 14 })}<span class="sr-only">Pinned</span></span>` : ''}</span>
     <span class="note-preview markdown-body">${previewOf(ctx, item)}</span>
     <span class="item-meta">${domain ? html`<span class="item-source">${favicon(item.url, { size: 14 })}<span class="item-source-text">${domain}</span></span>${dot}` : ''}${tasks.total ? html`<span class="${cx('item-ind', tasks.done === tasks.total && 'is-done')}" title="${tasks.done} of ${tasks.total} tasks done">${icon('list-checks', { size: 14 })}${tasks.done}/${tasks.total}</span>${dot}` : ''}<span class="item-date">Edited ${sentence(relativeDate(item.updatedAt))}</span>${pathBit(ctx, item)}${item.favorite ? html`<span class="item-ind is-favorite">${icon('star', { size: 14 })}<span class="sr-only">Favorite</span></span>` : ''}</span>
     ${rowActions(ctx, item, { ...opts, overlay: true })}`);

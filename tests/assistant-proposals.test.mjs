@@ -218,8 +218,8 @@ test('the dashboard adapter loads first, describes boards, and adds and removes 
   assert.equal(readies, 1, 'describe waits for the dashboard to load');
   assert.equal(described.activeBoardId, 'board_main');
   assert.deepEqual(described.boards.map(board => [board.id, board.name, board.widgets.length]), [['board_main', 'Main', 3], ['board_work', 'Work', 0]]);
-  assert.deepEqual(described.boards[0].widgets[1], { id: 'w_old', type: LINKS_WIDGET, title: 'Links folder', collectionId: 'collection_old', includeSubcollections: true });
-  assert.equal(described.boards[0].widgets[2].collectionId, undefined, 'only links folders name the collection they show');
+  assert.deepEqual(described.boards[0].widgets[1], { id: 'w_old', type: LINKS_WIDGET, title: 'Collection', collectionId: 'collection_old', includeSubcollections: true });
+  assert.equal(described.boards[0].widgets[2].collectionId, undefined, 'only collection widgets name the collection they show');
   assert.equal(described.boards[0].widgets[2].title, 'Notes');
 
   const added = await adapter.addCollectionWidget({ collectionId: 'collection_api' });

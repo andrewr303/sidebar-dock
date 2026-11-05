@@ -110,7 +110,8 @@ defineWidget({
 
 // ------------------------------------------------------------------ background refresh
 
-// One hidden element per widget instance: refreshes when due and while the page is visible, stops when the widget goes.
+// One hidden element per widget instance: refreshes when due (checked after renders, every 30 seconds, on focus and when
+// back online) while the page is visible, and stops when the widget goes.
 registerMount('w.github.live', (el, ctx) => {
   const widgetId = el.dataset.widget;
   const tick = () => {
@@ -125,7 +126,8 @@ registerMount('w.github.live', (el, ctx) => {
   addEventListener('online', onVisible);
   queueMicrotask(tick);
   return {
-    update: () => {},
+    // After every render (cheap when nothing is due), so a settings change that needs new data fetches at once.
+    update: tick,
     destroy: () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); removeEventListener('online', onVisible); },
   };
 });

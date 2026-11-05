@@ -1,8 +1,9 @@
-// Pure helpers shared by the links-folder and quick-links widgets: which library items a folder shows and in what
-// order, typed-URL normalization, settings-save planning and grid keyboard movement. No DOM; unit tested.
+// Pure helpers shared by the collection widget (type 'links-folder') and quick-links widgets: which library items a
+// widget shows and in what order, typed-URL normalization, settings-save planning and grid keyboard movement. No DOM;
+// unit tested.
 import { safeUrl, canonicalUrl } from '../../../lib/store.js';
 
-/** Library item types a links folder shows (when they carry a web address). Notes and files are left out. */
+/** Library item types a collection widget shows (when they carry a web address). Notes and files are left out. */
 export const LINK_TYPES = Object.freeze(['bookmark', 'article', 'image', 'video']);
 export const OPEN_IN = Object.freeze(['current', 'new', 'background']);
 export const FOLDER_SORTS = Object.freeze(['manual', 'title', 'newest', 'oldest']);
@@ -25,6 +26,46 @@ export function folderConfig(config = {}) {
     showLabels: c.showLabels !== false,
     tileSize: TILE_SIZES.includes(c.tileSize) ? c.tileSize : 'md',
   };
+}
+
+/**
+ * The collection that holds the collections made from collection widgets when no parent was chosen. It is an ordinary
+ * collection: people can rename, move or delete it, and the widgets keep showing their own collections (the store
+ * moves a deleted collection's children up a level, and a widget refers to its collection by id).
+ */
+export const DEFAULT_PARENT_NAME = 'Links folders';
+export const NAME_REQUIRED = 'Name the new collection, or choose one to show.';
+
+const sameName = (a, b) => String(a ?? '').trim().toLocaleLowerCase() === String(b ?? '').trim().toLocaleLowerCase();
+const liveCollections = collections => (Array.isArray(collections) ? collections : []).filter(c => c && typeof c.id === 'string' && c.id && !c.deletedAt);
+
+/** The default parent: the remembered collection while it exists, else one named Links folders (top level first); null when none. */
+export function findDefaultParent(collections = [], rememberedId = '') {
+  const live = liveCollections(collections);
+  return (rememberedId && live.find(c => c.id === rememberedId))
+    || live.find(c => !c.parentId && sameName(c.name, DEFAULT_PARENT_NAME))
+    || live.find(c => sameName(c.name, DEFAULT_PARENT_NAME)) || null;
+}
+
+/**
+ * What saving a collection widget's settings does with the Collection choice and the New collection name:
+ *   { kind: 'show', collectionId }          no name: show the chosen collection itself
+ *   { kind: 'create', name, parentId }      a name: create it inside the chosen collection, or inside the default
+ *                                           parent when none was chosen (parentId '')
+ *   { kind: 'exists', collectionId, name }  a collection with that name is already in the same place
+ *   { kind: 'invalid', error }              neither a name nor a collection that still exists
+ * defaultParentId is the existing default parent's id ('' when it has not been created yet).
+ */
+export function planWidgetCollection({ collectionId = '', name = '' } = {}, collections = [], defaultParentId = '') {
+  const live = liveCollections(collections);
+  const trimmed = String(name ?? '').trim();
+  const chosen = collectionId ? live.find(c => c.id === collectionId) : null;
+  if (!trimmed) return chosen ? { kind: 'show', collectionId: chosen.id } : { kind: 'invalid', error: NAME_REQUIRED };
+  const parentId = chosen?.id || '';
+  const siblingsOf = parentId || defaultParentId;
+  const clash = siblingsOf ? live.find(c => (c.parentId || '') === siblingsOf && sameName(c.name, trimmed)) : null;
+  if (clash) return { kind: 'exists', collectionId: clash.id, name: clash.name };
+  return { kind: 'create', name: trimmed, parentId };
 }
 
 /** quick-links widget.config with every key present and valid (links are cleaned by normalizeQuickLinks). */
@@ -237,7 +278,6 @@ export function planLinkChanges(existing = [], rows = []) {
 export const hasErrors = plan => Object.keys(plan?.errors || {}).length > 0;
 
 export const quickLinkId = () => `ql_${globalThis.crypto?.randomUUID?.().slice(0, 8) || Math.random().toString(36).slice(2, 10)}`;
-const uid = quickLinkId;
 
 export const DEFAULT_QUICK_LINKS = Object.freeze([
   { title: 'Gmail', url: 'https://mail.google.com/' },
@@ -249,14 +289,24 @@ export const DEFAULT_QUICK_LINKS = Object.freeze([
 ]);
 
 /** Stored quick links cleaned up: valid http(s) URLs only, unique ids, trimmed titles. */
+/** Short non-cryptographic hash (FNV-1a, base 36) for ids that must stay the same across reads. */
+const stableHash = text => {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(36);
+};
+
 export function normalizeQuickLinks(list = []) {
   const ids = new Set();
   const out = [];
   for (const entry of Array.isArray(list) ? list : []) {
     const url = normalizeLinkUrl(entry?.url);
     if (!url) continue;
-    let id = typeof entry.id === 'string' && entry.id ? entry.id : uid();
-    while (ids.has(id)) id = uid();
+    // A stored link without an id (an import or a hand-edited config) gets one derived from its address and place, so
+    // it keeps the same id on every read and its menu, reorder and remove can find it.
+    const base = typeof entry.id === 'string' && entry.id ? entry.id : `ql_${stableHash(`${out.length}|${url}`)}`;
+    let id = base;
+    for (let n = 2; ids.has(id); n++) id = `${base}_${n}`;
     ids.add(id);
     out.push({ id, title: String(entry.title ?? '').trim().slice(0, 120), url });
   }

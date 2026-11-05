@@ -14,3 +14,4 @@ import './bookmarks.js';
 import './product-hunt.js';
 import './github.js';
 import './linear.js';
+import './paperclip.js';

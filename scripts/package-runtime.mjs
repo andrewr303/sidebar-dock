@@ -26,7 +26,7 @@ files += list((root/'docs'/'screenshots').glob('*'))
 temporary=target.with_suffix('.zip.tmp')
 with zipfile.ZipFile(temporary,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=9) as z:
     for p in sorted(set(files)): z.write(p,p.relative_to(root).as_posix())
-    z.writestr('START.md','# Still runtime\n\nExtract this folder. Use Node.js 22 or later. No packages need installing.\n\n1. Load the extension subfolder with Chrome Load unpacked.\n2. From this folder run: node bridge/server.mjs\n3. Pair Still with the local address and private token from bridge/.local/config.json.\n4. Open Ask AI settings to choose a provider or CLI, or MCP & agents to review a client connection and install its skill.\n\nNo credentials, original third-party extension packages, test fixtures or research archives are included. Live accounts still require your authorization. Verification commands in the source README require the full source checkout.\n')
+    z.writestr('START.md','# Still runtime\n\nExtract this folder. Use Node.js 22 or later. No packages need installing.\n\n1. Load the extension subfolder with Chrome Load unpacked.\n2. From this folder run: node bridge/server.mjs\n3. Pair Still with the local address and private token from ~/.still/bridge.json (or $STILL_HOME/bridge.json).\n4. Open Ask AI settings to choose a provider or CLI, or MCP & agents to review a client connection and install its skill.\n\nNo credentials, original third-party extension packages, test fixtures or research archives are included. Live accounts still require your authorization. Verification commands in the source README require the full source checkout.\n')
 with zipfile.ZipFile(temporary) as z:
     names=z.namelist()
     pins=json.loads(sys.argv[3])

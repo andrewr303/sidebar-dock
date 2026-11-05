@@ -359,6 +359,27 @@
   margin-block-end: var(--space-6);
 }
 .ne-full .ne-head { max-inline-size: calc(72ch + var(--be-gutter)); margin-inline: auto; }
+
+/* Uploaded cover (a banner above the page) and page icon (above the title), from ui/item-media.js. */
+.ne-cover-figure { position: relative; margin: 0; block-size: clamp(120px, 28vh, 260px); overflow: hidden; background: var(--bg-sunken); }
+.ne-side .ne-cover-figure { block-size: clamp(96px, 20vh, 160px); }
+.ne-cover-figure > img { display: block; inline-size: 100%; block-size: 100%; object-fit: cover; }
+.ne-cover-actions { position: absolute; inset-block-end: var(--space-4); inset-inline-end: var(--space-4); display: flex; gap: var(--space-2);
+  opacity: 0; transition: opacity var(--dur-fast) var(--ease-out); }
+.ne-cover-figure:hover .ne-cover-actions, .ne-cover-actions:focus-within { opacity: 1; }
+.ne-decor { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3); margin-block-end: var(--space-3); }
+.ne-decor:empty { display: none; }
+.ne-page-icon-btn { display: inline-flex; padding: 0; border: 0; border-radius: var(--radius-md); background: none; cursor: pointer; }
+.ne-page-icon-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.ne-page-icon { box-shadow: 0 0 0 1px var(--border-subtle); }
+/* The cover pulls the icon up so it overlaps the banner edge, as in a page header. */
+.ne-cover:not([hidden]) + .ne-doc .ne-page-icon-btn { margin-block-start: calc(var(--space-9) * -1 - 28px); background: var(--bg-surface); }
+.ne-side .ne-page-icon { --size: 40px !important; }
+/* Add icon / Add cover stay out of the way until the header is hovered or focused (always shown on touch screens). */
+.ne-decor-add { display: flex; gap: var(--space-1); opacity: 0; transition: opacity var(--dur-fast) var(--ease-out); }
+.ne-head:hover .ne-decor-add, .ne-decor-add:focus-within { opacity: 1; }
+@media (hover: none) { .ne-decor-add, .ne-cover-actions { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .ne-decor-add, .ne-cover-actions { transition: none; } }
 .ne-title {
   display: block;
   width: 100%;

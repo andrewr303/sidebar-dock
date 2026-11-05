@@ -1100,3 +1100,8 @@
 .site-icon { position: relative; display: inline-grid; place-items: center; inline-size: var(--size, 16px); block-size: var(--size, 16px); flex: none; }
 .site-icon > .favicon { inline-size: 100%; block-size: 100%; }
 .site-icon-img { position: absolute; inset: 0; inline-size: 100%; block-size: 100%; object-fit: contain; border-radius: inherit; }
+
+/* An icon the person uploaded for an item (ui/item-media.js): a rounded square image of --size. */
+.item-custom-icon { display: inline-grid; flex: none; place-items: center; inline-size: var(--size, 20px); block-size: var(--size, 20px); overflow: hidden;
+  border-radius: calc(var(--size, 20px) * 0.22); }
+.item-custom-icon > img { display: block; inline-size: 100%; block-size: 100%; object-fit: cover; }

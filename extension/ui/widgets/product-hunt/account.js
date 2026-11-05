@@ -1,7 +1,7 @@
 // Product Hunt account card: shown in Settings > Connected accounts, in the "Connect Product Hunt" dialog and behind the
 // widget's "Get rankings" prompts. A developer token is checked against the API before it is saved to lib/accounts.js.
 // The API accepts requests from any origin, so connecting needs no host access.
-import { html, cx } from '../../html.js';
+import { html, cx, safeSrc } from '../../html.js';
 import { icon } from '../../icons.js';
 import { button, input, field, badge, shortDate, dialogFrame, avatarTile } from '../../components.js';
 import { registerActions } from '../../runtime.js';
@@ -46,7 +46,7 @@ export function renderAccountCard(ctx, { context = 'settings', level = 4, bare =
       </div>
     </header>
     ${isConnected ? html`<div class="w-ph-account-who">
-      ${person?.avatarUrl ? html`<img class="w-ph-account-avatar" src="${person.avatarUrl}" alt="" width="36" height="36" referrerpolicy="no-referrer">`
+      ${safeSrc(person?.avatarUrl) ? html`<img class="w-ph-account-avatar" src="${safeSrc(person.avatarUrl)}" alt="" width="36" height="36" referrerpolicy="no-referrer">`
         : avatarTile({ label: person?.name || 'Product Hunt', icon: person?.name ? undefined : 'key-round', size: 36, round: true, color: 'orange' })}
       <div class="w-ph-account-who-text">
         <p class="w-ph-account-person">${person?.name || 'Developer token'}</p>

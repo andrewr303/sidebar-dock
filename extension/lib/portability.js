@@ -129,10 +129,10 @@ function safeSettings(settings) { return stripSecrets(settings); }
 
 /* ------------------------------------------------------------------ record checks (shared by import and export) */
 
-// parentId (subpages) and the captured page details (siteName, author, publishedAt, icon, lang) are plain strings here; the
+// parentId (subpages) and the captured page details (siteName, author, publishedAt, icon, lang) and an uploaded customIcon are plain strings here; the
 // store's normalizeItem repairs any value it cannot use (an unreadable date or icon becomes '').
 const ITEM_STRINGS = ['title', 'url', 'excerpt', 'content', 'articleContent', 'fileName', 'mime', 'sourceUrl', 'art', 'collectionId', 'attachmentId',
-  'parentId', 'siteName', 'author', 'publishedAt', 'icon', 'lang'];
+  'parentId', 'siteName', 'author', 'publishedAt', 'icon', 'lang', 'customIcon'];
 const ITEM_FLAGS = ['favorite', 'archived', 'pinned', 'read'];
 const ITEM_DATES = ['createdAt', 'updatedAt', 'deletedAt', 'reminderAt', 'reminderNotifiedAt'];
 const validDate = value => value === undefined || value === null || value === '' || (typeof value === 'string' && Number.isFinite(Date.parse(value)));

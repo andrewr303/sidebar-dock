@@ -38,7 +38,7 @@ export const WALLPAPER_DEFAULTS = Object.freeze({
 });
 
 export const DASHBOARD_DEFAULTS = Object.freeze({
-  widgetStyle: 'card',    // card | glass | flat
+  widgetStyle: 'card',    // card | glass | flat | raised | clear | tinted | gradient | outline
   gap: 'md',              // sm | md | lg
   header: true,           // board header (switcher, greeting, weather)
   weatherChip: true,

@@ -98,7 +98,12 @@ archived, deletedAt (Trash), createdAt, updatedAt, cover, art, sourceUrl, highli
 relatedIds[], reminderAt, reminderNotifiedAt, attachmentId, fileName, mime, size, pinned, read,
 sticky ({ color, board, x, y, w, h, z, hidden } | null, notes only), chat ({ … }, chats only, below), parentId ('' = top level, notes only),
 siteName (<= 200), author (<= 300), publishedAt (ISO or ''), icon (http(s) URL or data:image <= 16 KB, else ''),
-lang (language tag <= 35)`.
+lang (language tag <= 35), customIcon (an uploaded icon: base64 PNG, JPEG, GIF, WebP or AVIF data URL <= 64 KB, else '')`.
+
+`cover` and `customIcon` can be uploads: `ui/item-media.js` decodes any image Chrome can open, scales it (covers to
+1600 px on the longest side, icons to a 192 px square) and stores it in the item as a WebP data URL, so it works
+offline and is included in backups. `customIcon` is kept apart from the captured `icon`, so saving the page again
+never replaces an uploaded icon.
 
 `siteName`, `author`, `publishedAt`, `icon` and `lang` are details captured with a page. Saving the same URL again
 fills them only when the new value is not empty, so a later capture never blanks one. None of these fields needed a

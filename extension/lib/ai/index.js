@@ -11,8 +11,10 @@ import { createVectorStore } from './vector-store.js';
 import { createIndexer } from './indexer.js';
 import { createSearch } from './search.js';
 import { createAssistant } from './assistant.js';
+import { createPaperclipToolProvider } from './paperclip-tools.js';
 import { undoChanges } from './tools.js';
 import { createTransforms } from './transforms.js';
+import { createAutotag } from './autotag.js';
 import { createConversationStore } from './conversations.js';
 import { createImports } from './imports.js';
 import { getProvider as catalogProvider } from './catalog.js';
@@ -25,7 +27,9 @@ export { listConnections, saveConnection, deleteConnection, testConnection, list
 export { streamChat } from './chat.js';
 export { handoffUrl, buildHandoffPrompt, handoffPlan, HANDOFF_TARGETS } from './handoff.js';
 
-const runtime = { store: libraryStore, getLibrary: null, snapshot: null, requestBridge, dispose: null, dashboard: null, threadSources: null };
+// external: the assistant's read-only external tool providers; undefined means the default (Paperclip), built on first use.
+const runtime = { store: libraryStore, getLibrary: null, snapshot: null, requestBridge, dispose: null, dashboard: null, threadSources: null, external: undefined };
+const externalProviders = () => runtime.external === undefined ? (runtime.external = [createPaperclipToolProvider()]) : runtime.external;
 let services = null;
 
 async function currentLibrary() {
@@ -64,11 +68,13 @@ function engine() {
   const indexer = createIndexer({ vectorStore, embedder, getLibrary: currentLibrary, getSettings: aiSettings, extraText: item => chatsNow()?.digest?.(item) || '' });
   const search = createSearch({ getLibrary: currentLibrary, vectorStore, isSemanticReady: () => indexer.isReady(), embedQuery: (query, options) => indexer.embedQuery(query, options) });
   const assistant = createAssistant({ streamChat: chatStream, resolveConnection: connections.resolveConnection, resolveChatTarget: connections.resolveChatTarget, modelInfo: connections.modelInfo,
-    getAiSettings: aiSettings, getLibrary: currentLibrary, store, searchLibrary: search.searchLibrary, conversations, dashboard: () => runtime.dashboard, threads: threadsNow, chats: chatsNow });
+    getAiSettings: aiSettings, getLibrary: currentLibrary, store, searchLibrary: search.searchLibrary, conversations, dashboard: () => runtime.dashboard, threads: threadsNow, chats: chatsNow,
+    external: externalProviders });
   const transforms = createTransforms({ streamChat: chatStream, resolveConnection: connections.resolveConnection, resolveChatTarget: connections.resolveChatTarget,
     getAiSettings: aiSettings, getLibrary: currentLibrary });
   const imports = createImports({ streamChat: chatStream, resolveChatTarget: connections.resolveChatTarget, resolveConnection: connections.resolveConnection, getProvider: catalogProvider });
-  services = { conversations, indexer, search, assistant, transforms, imports };
+  const autotag = createAutotag({ streamChat: chatStream, resolveChatTarget: connections.resolveChatTarget, getLibrary: currentLibrary });
+  services = { conversations, indexer, search, assistant, transforms, imports, autotag };
   return services;
 }
 
@@ -127,6 +133,9 @@ export async function openThreadInThreadkeeper(threadKey) {
 }
 export const transformText = options => engine().transforms.transformText(options);
 export const suggestForSave = input => engine().transforms.suggestForSave(input);
+/** AI auto-tagging plan for review (lib/ai/autotag.js); apply it with finalizePlan + store.bulkUpdateItems. */
+export const planAutoTags = options => engine().autotag.planAutoTags(options);
+export { finalizePlan as finalizeAutoTags } from './autotag.js';
 export const searchLibrary = (query, options) => engine().search.searchLibrary(query, options);
 /** The fast model file imports use (or null when no AI is connected), and the import itself; see imports.js. */
 export const importTarget = () => engine().imports.importTarget();
@@ -184,15 +193,18 @@ export async function semanticSearchAvailable() {
 }
 
 /**
- * Called once from app.js: init({ store, getLibrary, integrations, onLibraryChange, dashboard, threads }).
+ * Called once from app.js: init({ store, getLibrary, integrations, onLibraryChange, dashboard, threads, external }).
  * threads (optional): lib/ai/threads.js threadSources(); it gives the assistant the chats saved in Still and, while Still is
  * paired with Threadkeeper, the thread tools and automatic thread context.
  * onLibraryChange(listener) -> unsubscribe defaults to store.subscribe. Indexing starts shortly after boot when enabled.
  * dashboard (optional): { describe(), addCollectionWidget({ collectionId, boardId }), removeWidget(widgetId) }; it lets the
  * assistant see the dashboard and show a collection on it. Without it those tools are not offered.
+ * external (optional): the assistant's read-only external tool providers (see tools.js createToolSession); the default is
+ * Paperclip (paperclip-tools.js), offered only while Paperclip is connected. Pass [] or null to offer none.
  */
-export function init({ store: appStore, getLibrary, integrations, onLibraryChange, dashboard, threads } = {}) {
+export function init({ store: appStore, getLibrary, integrations, onLibraryChange, dashboard, threads, external } = {}) {
   runtime.dispose?.();
+  if (external !== undefined) runtime.external = Array.isArray(external) ? external.filter(Boolean) : [];
   if (appStore) runtime.store = appStore;
   if (dashboard !== undefined) runtime.dashboard = dashboardAdapter(dashboard);
   if (threads !== undefined) runtime.threadSources = threadSourcesAdapter(threads);

@@ -10,12 +10,12 @@ const SPEC_EXPORTS = ['CATALOG', 'listConnections', 'saveConnection', 'deleteCon
 test('the facade exposes the SPEC 7.2 API (plus pauseIndexing and the semanticSearch adapters) with explicit re-exports', async () => {
   for (const name of SPEC_EXPORTS) assert.ok(name in ai, name);
   // Beyond SPEC 7.2: indexing control, the bridge search adapter, file imports, and helpers the settings and assistant UIs need.
-  // The research agent's run API (build contracts §6) is part of the facade too.
+  // The research agent's run API (build contracts §6) is part of the facade too, and so is AI auto-tagging (autotag.js).
   assert.deepEqual(Object.keys(ai).filter(name => !SPEC_EXPORTS.includes(name)).sort(), ['ANTHROPIC_EFFORTS', 'DEFAULT_AI_SETTINGS', 'EFFORT_LABELS', 'EFFORT_LEVELS',
-    'HANDOFF_TARGETS', 'cancelChatGptSignIn', 'chatGptSignInStatus', 'chatProviders', 'cliSignInStatus', 'continueResearch', 'embeddingProviders', 'ensureHostPermission', 'getBridgeStatus',
-    'getProvider', 'handoffPlan', 'hostPermissionOrigins', 'importDocument', 'importTarget', 'importThreadCitation', 'onConnectionsChanged', 'openThreadInThreadkeeper', 'pairBridge',
-    'pauseIndexing', 'raiseResearchBudget', 'researchAvailability', 'resetResearchProvisioning', 'resolveChatTarget', 'resolveThreadCitation', 'resumeResearch', 'semanticSearch',
-    'semanticSearchAvailable', 'startChatGptSignIn', 'startResearch', 'stopResearch', 'subscribeResearch', 'threadStatus', 'undoProposal', 'undoResearch', 'warmThreads']);
+    'HANDOFF_TARGETS', 'cancelChatGptSignIn', 'chatGptSignInStatus', 'chatProviders', 'cliSignInStatus', 'continueResearch', 'embeddingProviders', 'ensureHostPermission', 'finalizeAutoTags',
+    'getBridgeStatus', 'getProvider', 'handoffPlan', 'hostPermissionOrigins', 'importDocument', 'importTarget', 'importThreadCitation', 'onConnectionsChanged', 'openThreadInThreadkeeper',
+    'pairBridge', 'pauseIndexing', 'planAutoTags', 'raiseResearchBudget', 'researchAvailability', 'resetResearchProvisioning', 'resolveChatTarget', 'resolveThreadCitation', 'resumeResearch',
+    'semanticSearch', 'semanticSearchAvailable', 'startChatGptSignIn', 'startResearch', 'stopResearch', 'subscribeResearch', 'threadStatus', 'undoProposal', 'undoResearch', 'warmThreads']);
   for (const name of ['researchAvailability', 'startResearch', 'continueResearch', 'resumeResearch', 'stopResearch', 'raiseResearchBudget', 'undoResearch', 'subscribeResearch', 'resetResearchProvisioning']) {
     assert.equal(typeof ai[name], 'function', name);
   }

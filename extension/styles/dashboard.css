@@ -62,9 +62,72 @@
 .dashboard .widget[data-frame="flat"] {
   --widget-bg: var(--bg-sunken); --widget-border: transparent; --widget-rim: 0 0 0 0 transparent; --widget-shadow: 0 0 0 0 transparent; --widget-blur: 0px;
 }
+/* More materials: Raised, Clear glass, Tinted, Gradient and Outline. Built from theme tokens, so every skin and mode
+   paints them. The dashboard-wide rules carry :not(#_) so they win over a skin's default material (skins.css), while a
+   widget's own Background ([data-frame]) still wins over the dashboard because it is set on the widget itself. The
+   same rules paint the previews in the Background and Widget style pickers (.material-swatch). */
+:root:not(#_) .dashboard[data-widget-style="raised"], .dashboard .widget[data-frame="raised"], .material-swatch[data-frame="raised"] {
+  --widget-bg: var(--bg-surface); --widget-border: transparent; --widget-rim: 0 0 0 0 transparent; --widget-blur: 0px;
+  --widget-shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 12px 32px -12px rgb(0 0 0 / 0.28);
+}
+:root:not(#_) .dashboard[data-widget-style="clear"], .dashboard .widget[data-frame="clear"], .material-swatch[data-frame="clear"] {
+  --widget-bg: color-mix(in oklab, var(--bg-surface) 28%, transparent);
+  --widget-border: color-mix(in oklab, var(--bg-surface) 50%, transparent);
+  --widget-rim: inset 0 1px 0 color-mix(in oklab, var(--bg-surface) 60%, transparent);
+  --widget-shadow: var(--shadow-sm);
+  --widget-blur: 12px;
+}
+:root:not(#_) .dashboard[data-widget-style="tinted"], .dashboard .widget[data-frame="tinted"], .material-swatch[data-frame="tinted"] {
+  --widget-bg: color-mix(in oklab, var(--accent) 10%, var(--bg-surface));
+  --widget-border: color-mix(in oklab, var(--accent) 18%, transparent);
+  --widget-rim: 0 0 0 0 transparent; --widget-shadow: 0 0 0 0 transparent; --widget-blur: 0px;
+}
+:root:not(#_) .dashboard[data-widget-style="gradient"], .dashboard .widget[data-frame="gradient"], .material-swatch[data-frame="gradient"] {
+  --widget-bg: linear-gradient(155deg, color-mix(in oklab, var(--accent) 20%, var(--bg-surface)) 0%, var(--bg-surface) 62%);
+  --widget-border: color-mix(in oklab, var(--accent) 14%, transparent);
+  --widget-rim: inset 0 1px 0 color-mix(in oklab, var(--bg-surface) 70%, transparent); --widget-shadow: var(--shadow-sm); --widget-blur: 0px;
+}
+:root:not(#_) .dashboard[data-widget-style="outline"], .dashboard .widget[data-frame="outline"], .material-swatch[data-frame="outline"] {
+  --widget-bg: transparent; --widget-border: var(--border-strong);
+  --widget-rim: 0 0 0 0 transparent; --widget-shadow: 0 0 0 0 transparent; --widget-blur: 0px;
+}
+/* The Liquid Glass skin's sheen would replace the gradient's image. */
+:root:not(#_) :is(.dashboard[data-widget-style="gradient"] .widget[data-frame="default"], .dashboard .widget[data-frame="gradient"]):not(.is-bare) { background-image: var(--widget-bg); }
+
+/* Background and Widget style pickers: previews over a soft "wallpaper" so glass and outline read as such. */
+.material-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: var(--space-4); }
+.material-option {
+  display: flex; flex-direction: column; align-items: stretch; gap: var(--space-3); min-inline-size: 0;
+  padding: var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+  background: none; color: var(--fg-muted); font: inherit; font-size: var(--text-xs); cursor: pointer;
+}
+.material-option:hover { border-color: var(--border-default); color: var(--fg-default); }
+.material-option[aria-checked="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); color: var(--fg-default); }
+.material-option:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.material-label { overflow: hidden; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.material-swatch {
+  --widget-bg: var(--bg-surface); --widget-border: transparent; --widget-rim: 0 0 0 0 transparent; --widget-shadow: var(--shadow-sm); --widget-blur: 0px;
+  position: relative; display: flex; flex-direction: column; justify-content: center; gap: 5px;
+  block-size: 46px; padding: 0 var(--space-4);
+  border: 1px solid var(--widget-border); border-radius: var(--radius-md);
+  background: var(--widget-bg); box-shadow: var(--widget-rim), var(--widget-shadow);
+  -webkit-backdrop-filter: blur(var(--widget-blur)); backdrop-filter: blur(var(--widget-blur));
+}
+.material-option { background-image: radial-gradient(120% 90% at 0% 0%, color-mix(in oklab, var(--accent) 22%, transparent), transparent 70%); }
+.material-swatch-line { display: block; block-size: 4px; inline-size: 70%; border-radius: 2px; background: color-mix(in oklab, var(--fg-default) 22%, transparent); }
+.material-swatch-line.is-short { inline-size: 42%; }
+.material-swatch[data-frame="glass"] {
+  --widget-bg: color-mix(in oklab, var(--bg-surface) 64%, transparent); --widget-border: color-mix(in oklab, var(--bg-surface) 55%, transparent);
+  --widget-rim: inset 0 1px 0 color-mix(in oklab, var(--bg-surface) 80%, transparent); --widget-shadow: var(--shadow-md); --widget-blur: 24px;
+}
+.material-swatch[data-frame="flat"] { --widget-bg: var(--bg-sunken); --widget-shadow: 0 0 0 0 transparent; }
+.material-swatch[data-frame="default"] { --widget-border: var(--border-default); border-style: dashed; }
+.material-swatch[data-frame="none"] { --widget-bg: transparent; --widget-border: var(--border-default); --widget-shadow: 0 0 0 0 transparent; border-style: dashed; }
+
 :root[data-transparency="reduced"] .dashboard { --widget-blur: 0px; }
 :root[data-transparency="reduced"] .dashboard[data-widget-style="glass"],
 :root[data-transparency="reduced"] .dashboard .widget[data-frame="glass"] { --widget-bg: var(--bg-surface); }
+:root[data-transparency="reduced"]:not(#_) :is(.dashboard[data-widget-style="clear"], .dashboard .widget[data-frame="clear"]) { --widget-bg: var(--bg-surface); }
 
 /* ------------------------------------------------------------------ header */
 

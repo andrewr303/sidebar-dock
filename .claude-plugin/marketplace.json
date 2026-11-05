@@ -1,0 +1,12 @@
+{
+  "name": "still-plugins",
+  "description": "Claude Code plugins for the Still library.",
+  "owner": { "name": "Still" },
+  "plugins": [
+    {
+      "name": "still",
+      "source": "./",
+      "description": "Connects Claude Code to your Still library through the local bridge and adds the still-workspace skill."
+    }
+  ]
+}

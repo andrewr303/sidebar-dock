@@ -86,3 +86,34 @@ test('excerptSource skips what the title already shows', () => {
   assert.equal(excerptSource({ title: 'Plan', content: '# Other\nBody' }), '# Other\nBody');
   assert.equal(excerptSource(null), '');
 });
+
+test('setTaskDone keeps the newest click shown while an earlier write for the same task finishes', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] }); // the completed-task linger timer must not keep the test waiting
+  const { setTaskDone, shownDone } = await import('../extension/ui/widgets/notes-kit/shared.js');
+  let note = { id: 'race-note', type: 'note', content: '- [ ] Buy milk', updatedAt: '2026-11-01T00:00:00.000Z' };
+  const writes = [];
+  const ctx = {
+    select: { byId: id => (id === note.id ? note : null) },
+    store: {
+      updateItem: (id, patch) => new Promise(resolve => writes.push(() => {
+        note = { ...note, ...patch, updatedAt: new Date(Date.parse(note.updatedAt) + 1000).toISOString() };
+        resolve(note);
+      })),
+    },
+    render() {}, toast() {},
+  };
+  const task = () => ({ index: 0, done: /\[x\]/.test(note.content) });
+  const first = setTaskDone(ctx, note.id, 0, true);
+  const second = setTaskDone(ctx, note.id, 0, false);
+  assert.equal(shownDone(note.id, task()), false, 'the box shows the latest click at once');
+  while (!writes.length) await new Promise(resolve => setImmediate(resolve));
+  writes.shift()();
+  await first;
+  assert.equal(task().done, true, 'the first write landed');
+  assert.equal(shownDone(note.id, task()), false, 'the second click still shows while its write is pending');
+  while (!writes.length) await new Promise(resolve => setImmediate(resolve));
+  writes.shift()();
+  await second;
+  assert.equal(task().done, false);
+  assert.equal(shownDone(note.id, task()), false);
+});

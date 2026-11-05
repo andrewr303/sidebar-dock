@@ -1,9 +1,12 @@
+#!/usr/bin/env node
 import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { execFile as nodeExecFile } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { realpathSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.mjs';
-import { createBridgeState } from './protocol.mjs';
+import { createBridgeState, SUPPORTED_PROTOCOL_VERSIONS } from './protocol.mjs';
 import { createAiRouter } from './ai/router.mjs';
 import { createConnectionsService } from './connections.mjs';
 
@@ -21,7 +24,26 @@ function authorized(value, token) {
   const expected = Buffer.from(`Bearer ${token}`);
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
-async function readJson(request, { maximum = MAX_BODY } = {}) {
+const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '::1'];
+// The Host header's name without its port; IPv6 literals arrive in brackets.
+function hostName(host) {
+  const match = /^(?:\[([0-9a-f:.]+)\]|([a-z0-9.-]+))(?::\d{1,5})?$/i.exec(host || '');
+  return match ? (match[1] || match[2]).toLowerCase() : null;
+}
+export const isLoopbackAddress = address => address === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(address || '');
+// Paperclip's tool gateway can forward these metadata headers; they only label receipts and never grant access.
+const PAPERCLIP_HEADERS = { agentId: 'x-paperclip-agent-id', issueId: 'x-paperclip-issue-id', runId: 'x-paperclip-run-id', companyId: 'x-paperclip-company-id' };
+// Paperclip forwards those headers only when the connection's header policy allows it (off by default), so a call also
+// counts as Paperclip's when it uses the scoped "paperclip" token or Paperclip's User-Agent. That keeps the shorter
+// semantic_search wait (under Paperclip's 10 s gateway limit) working for a plain pasted connection.
+function requestContext(headers, caller) {
+  const context = {};
+  for (const [key, name] of Object.entries(PAPERCLIP_HEADERS)) { const value = headers[name]; if (typeof value === 'string' && /^[A-Za-z0-9._:@-]{1,128}$/.test(value)) context[key] = value; }
+  const paperclip = Object.keys(context).length || caller?.name === 'paperclip' || /^Paperclip\//.test(headers['user-agent'] || '');
+  return paperclip ? { client: 'paperclip', ...context } : undefined;
+}
+const rpcError = (code, message) => ({ jsonrpc: '2.0', id: null, error: { code, message } });
+async function readJson(request, { maximum = MAX_BODY, allowEmpty = false } = {}) {
   const chunks = [];
   let size = 0;
   for await (const chunk of request) {
@@ -29,6 +51,7 @@ async function readJson(request, { maximum = MAX_BODY } = {}) {
     if (size > maximum) throw Object.assign(new Error(`Request exceeds the ${Math.round(maximum / 1024 / 1024)} MiB bridge limit.`), { status: 413 });
     chunks.push(chunk);
   }
+  if (allowEmpty && !size) return {};
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw Object.assign(new Error('Request must contain valid JSON.'), { status: 400 }); }
 }
 const GITHUB_TOKEN_RE = /^[A-Za-z0-9_.-]{20,255}$/;
@@ -55,27 +78,55 @@ export function createGitHubTokenSource({ execFile = nodeExecFile, env = process
     return null;
   };
 }
-export function createBridgeServer({ token, state = createBridgeState(), ai = createAiRouter(), connections = createConnectionsService(), extensionIds = [], githubToken = createGitHubTokenSource() }) {
+/**
+ * tokens: scoped client tokens [{name, scope, token}] (or a function returning them, so tokens created while the bridge
+ * runs work at once). They are accepted only on /mcp; every other route needs the primary pairing token.
+ * allowedHosts: extra Host header names to accept besides loopback (for example host.docker.internal).
+ */
+export function createBridgeServer({ token, tokens = [], allowedHosts = [], state = createBridgeState(), ai = createAiRouter(), connections = createConnectionsService(), extensionIds = [], githubToken = createGitHubTokenSource() }) {
   if (typeof token !== 'string' || token.length < 24) throw new Error('A strong bridge token is required.');
+  const hosts = new Set([...LOOPBACK_HOSTS, ...allowedHosts.map(host => String(host).replace(/^\[|\]$/g, '').toLowerCase())]);
+  const scopedTokens = async () => { try { const list = typeof tokens === 'function' ? await tokens() : tokens; return Array.isArray(list) ? list : []; } catch { return []; } };
+  // Every candidate is compared so the time taken does not reveal which token matched.
+  async function credential(header) {
+    let found = authorized(header, token) ? { primary: true, scope: 'full' } : null;
+    for (const entry of await scopedTokens()) if (typeof entry?.token === 'string' && entry.token.length >= 24 && authorized(header, entry.token) && !found) found = { primary: false, scope: entry.scope, name: entry.name };
+    return found;
+  }
   return createServer(async (request, response) => {
     const origin = request.headers.origin;
     const reply = (status, body) => { response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(body === undefined ? undefined : JSON.stringify(body)); };
     // Host validation also rejects DNS rebinding through an attacker-controlled name.
-    const host = request.headers.host || '';
-    if (!/^(127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(host) || !allowedOrigin(origin, extensionIds)) return reply(403, { error: 'Origin or host is not allowed.' });
-    if (origin) { response.setHeader('Access-Control-Allow-Origin', origin); response.setHeader('Vary', 'Origin'); }
+    const name = hostName(request.headers.host);
+    if (!name || !hosts.has(name) || !allowedOrigin(origin, extensionIds)) return reply(403, { error: 'Origin or host is not allowed.' });
+    if (origin) { response.setHeader('Access-Control-Allow-Origin', origin); response.setHeader('Vary', 'Origin'); response.setHeader('Access-Control-Expose-Headers', 'MCP-Protocol-Version, Mcp-Session-Id, WWW-Authenticate'); }
     if (request.method === 'OPTIONS') {
       response.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
-      response.setHeader('Access-Control-Allow-Headers', 'Authorization,Content-Type,Accept,MCP-Protocol-Version');
+      response.setHeader('Access-Control-Allow-Headers', 'Authorization,Content-Type,Accept,MCP-Protocol-Version,Mcp-Session-Id,Last-Event-ID');
       response.setHeader('Access-Control-Max-Age', '600');
       return reply(204);
     }
     // Routes match the pathname, so a cache-busting query string does not turn a known route into a 404.
     let path;
     try { path = new URL(request.url, 'http://127.0.0.1').pathname; } catch { return reply(400, { error: 'Invalid request path.' }); }
+    if (path === '/mcp/') path = '/mcp';
     if (path === '/health' && request.method === 'GET') return reply(200, { name: 'still-library', requiresAuth: true });
-    if (!authorized(request.headers.authorization, token)) return reply(401, { error: 'Invalid bridge token.' });
+    // No OAuth here: a plain 404 stops clients from looping into authorization-server discovery.
+    if (path.startsWith('/.well-known/')) return reply(404, { error: 'This bridge uses a bearer token, not OAuth. Add the Authorization header from the Still bridge configuration.' });
+    const caller = await credential(request.headers.authorization);
+    if (!caller) { response.setHeader('WWW-Authenticate', 'Bearer realm="still"'); return reply(401, { error: 'Invalid bridge token.' }); }
     try {
+      if (path === '/mcp') {
+        if (request.method !== 'POST') { response.setHeader('Allow', 'POST'); return reply(405, { error: 'This server uses JSON response mode. Send MCP requests with POST.' }); }
+        const version = request.headers['mcp-protocol-version'];
+        if (version !== undefined && !SUPPORTED_PROTOCOL_VERSIONS.includes(version)) return reply(400, rpcError(-32600, `Unsupported MCP-Protocol-Version. Supported versions: ${SUPPORTED_PROTOCOL_VERSIONS.join(', ')}.`));
+        let message;
+        try { message = await readJson(request); }
+        catch (error) { return error.status === 413 ? reply(413, rpcError(-32600, error.message)) : reply(400, rpcError(-32700, 'Parse error')); }
+        const result = await state.rpc(message, { scope: caller.scope, context: requestContext(request.headers, caller) });
+        return result ? reply(200, result) : reply(202);
+      }
+      if (!caller.primary) return reply(403, { error: 'This client token only works for MCP requests at /mcp.' });
       if (path === '/github/token') {
         if (request.method !== 'GET') { response.setHeader('Allow', 'GET'); return reply(405, { error: 'Use GET to read the GitHub token.' }); }
         const found = await githubToken();
@@ -83,6 +134,21 @@ export function createBridgeServer({ token, state = createBridgeState(), ai = cr
         return reply(200, { token: found.token, source: found.source });
       }
       if (await ai.handle(request, response, { readJson, reply })) return;
+      // Paperclip gets a scoped token instead of a client config file, so its routes come before the generic ones.
+      const paperclipRoute = /^\/connections\/paperclip\/(setup|revoke)$/.exec(path);
+      if (paperclipRoute) {
+        if (request.method !== 'POST') { response.setHeader('Allow', 'POST'); return reply(405, { error: 'Use POST for Paperclip setup.' }); }
+        const body = await readJson(request, { allowEmpty: true });
+        if (paperclipRoute[1] === 'revoke') {
+          if (typeof connections.paperclipRevoke !== 'function') return reply(404, { error: 'Paperclip setup is not available in this bridge.' });
+          return reply(200, await connections.paperclipRevoke());
+        }
+        if (typeof connections.paperclipSetup !== 'function') return reply(404, { error: 'Paperclip setup is not available in this bridge.' });
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return reply(400, { error: 'Send Paperclip setup options as a JSON object.' });
+        if (body.scope !== undefined && !['read', 'write', 'full'].includes(body.scope)) return reply(400, { error: 'Choose read, write or full access for Paperclip.' });
+        if (body.rotate !== undefined && typeof body.rotate !== 'boolean') return reply(400, { error: 'rotate must be true or false.' });
+        return reply(200, await connections.paperclipSetup({ ...(body.scope ? { scope: body.scope } : {}), rotate: body.rotate === true }));
+      }
       const connectionRoute = /^\/connections(?:\/([a-z][a-z-]{0,40})\/(preview|connect|disconnect|skills))?$/.exec(path);
       if (connectionRoute) {
         if (!connectionRoute[1] && request.method === 'GET') return reply(200, { clients: await connections.listConnections() });
@@ -95,27 +161,39 @@ export function createBridgeServer({ token, state = createBridgeState(), ai = cr
       }
       if (path === '/status' && request.method === 'GET') return reply(200, state.status());
       if (path === '/sync' && request.method === 'POST') return reply(200, state.sync(await readJson(request, { maximum: MAX_SYNC_BODY })));
-      if (path === '/mcp' && request.method === 'POST') {
-        const result = await state.rpc(await readJson(request));
-        return result ? reply(200, result) : reply(202);
-      }
-      if (path === '/mcp' && request.method === 'GET') { response.setHeader('Allow', 'POST'); return reply(405, { error: 'This server uses JSON response mode. Send MCP requests with POST.' }); }
       return reply(404, { error: 'Route not found.' });
     } catch (error) { return reply(error.status || 400, { error: error.message }); }
   });
 }
+// Scoped tokens are reread when the file changes, so a token created by `npm run connect -- paperclip` works without a restart.
+export function configTokens(config) {
+  let current = config.tokens, checkedAt = 0, modified = null;
+  return async () => {
+    if (Date.now() - checkedAt < 1000) return current;
+    checkedAt = Date.now();
+    try {
+      const { mtimeMs } = await stat(config.path);
+      if (mtimeMs !== modified) current = (await loadConfig(config.path)).tokens;
+      modified = mtimeMs;
+    } catch { current = []; modified = null; /* missing or invalid file: accept no scoped tokens, so a revoked one cannot linger */ }
+    return current;
+  };
+}
 export async function startBridge({ configPath } = {}) {
   const config = await loadConfig(configPath, { create: true });
   const url = new URL(config.url);
-  const server = createBridgeServer({ token: config.token, extensionIds: config.extensionIds });
+  const server = createBridgeServer({ token: config.token, tokens: configTokens(config), allowedHosts: config.allowedHosts, extensionIds: config.extensionIds, connections: createConnectionsService({ configPath: config.path }) });
   server.requestTimeout = 20000;
   server.headersTimeout = 10000;
-  try { await new Promise((resolve, reject) => { server.once('error', reject); server.listen(Number(url.port) || 80, '127.0.0.1', resolve); }); }
+  try { await new Promise((resolve, reject) => { server.once('error', reject); server.listen(Number(url.port) || 80, config.bindAddress || '127.0.0.1', resolve); }); }
   catch (error) { if (error.code === 'EADDRINUSE') throw new Error(`Port ${url.port} is already in use. Another Still bridge may be running; stop it or change the port in ${config.path}.`); throw error; }
+  if (!isLoopbackAddress(config.bindAddress || '127.0.0.1')) process.stderr.write(`Warning: the Still bridge is listening on ${config.bindAddress}, beyond this computer. Anyone who can reach it and has a token can use your library; keep the token private and remove bindAddress from ${config.path} when you no longer need it.\n`);
   process.stderr.write(`Still bridge listening at ${config.url}\nPair Still (Settings → Agents & MCP) with this URL and the token in ${config.path}, or run \`npm run connect -- status\`. Keep a Still view open to sync.\n`);
   return server;
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Robust to npm bin symlinks: compare real paths, not the launched path.
+const launchedDirectly = () => { try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; } };
+if (launchedDirectly()) {
   startBridge().then(server => {
     const stop = () => server.close(() => process.exit(0));
     process.once('SIGINT', stop); process.once('SIGTERM', stop);

@@ -1,6 +1,6 @@
 // GitHub widget markup: summary tiles (xs/s), tabbed lists (m), list + detail pane (l/xl), Copilot, CI and inbox panels.
 // Pure render helpers over a snapshot from lib/github.js; actions are registered in ../github.js.
-import { html, cx, plural } from '../../html.js';
+import { html, cx, plural, safeHref } from '../../html.js';
 import { icon } from '../../icons.js';
 import { button, iconButton, badge, emptyState, skeleton, select, switchToggle, spinner, shortDate } from '../../components.js';
 import {
@@ -41,7 +41,7 @@ export const updatedLabel = at => {
   const minutes = Math.round((Date.now() - at) / 60000);
   return minutes < 1 ? 'Updated just now' : minutes < 60 ? `Updated ${plural(minutes, 'minute')} ago` : `Updated ${new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
 };
-const external = (href, content, className = '') => html`<a class="${className}" href="${href}" target="_blank" rel="noopener noreferrer">${content}</a>`;
+const external = (href, content, className = '') => html`<a class="${className}" href="${safeHref(href)}" target="_blank" rel="noopener noreferrer">${content}</a>`;
 
 function stateIcon(pr, status) {
   if (pr.draft) return 'git-pull-request-draft';
@@ -82,7 +82,7 @@ export function prRow(widget, pr, { selectable = false, selected = false, implic
   const agent = copilot ? copilotState(pr) : null;
   const title = selectable
     ? html`<button type="button" class="w-github-row-title" data-action="w.github.select" data-widget="${widget.id}" data-pr="${pr.id}" aria-current="${selected && !implicit ? 'true' : 'false'}" title="${pr.title}">${pr.title}</button>`
-    : html`<a class="w-github-row-title" href="${pr.url}" target="_blank" rel="noopener noreferrer" title="${pr.title}">${pr.title}</a>`;
+    : html`<a class="w-github-row-title" href="${safeHref(pr.url)}" target="_blank" rel="noopener noreferrer" title="${pr.title}">${pr.title}</a>`;
   return html`<li class="${cx('w-github-row', selected && 'is-selected', selected && implicit && 'is-implicit', pr.approving && 'is-busy')}" data-status="${status}" data-key="ghr-${widget.id}-${pr.id}">
     <span class="w-github-state" data-tone="${agent ? agent.tone : meta.tone}" data-tooltip="${agent ? agent.label : meta.label}">${icon(agent ? agent.icon : stateIcon(pr, status), { size: 16 })}<span class="sr-only">${agent ? agent.label : meta.label}.</span></span>
     <div class="w-github-row-main">

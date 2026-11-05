@@ -5,7 +5,7 @@
 //
 // State: { version: 1, activeBoardId, boards: [Board], prefs: {}, updatedAt }
 // Board: { id, name, icon, widgets: [Widget] }
-// Widget: { id, type, x, y, w, h, title, style: { frame: 'default'|'card'|'glass'|'flat'|'none', hideTitle }, config: {} }
+// Widget: { id, type, x, y, w, h, title, style: { frame: 'default'|'card'|'glass'|'flat'|'raised'|'clear'|'tinted'|'gradient'|'outline'|'none', hideTitle }, config: {} }
 // Coordinates are grid cells on the 12-column board grid (x 0..11, w 1..12, y >= 0, h >= 1).
 //
 // Durability rules: fields this build does not know (written by a newer or older build) ride along on every record, so
@@ -28,7 +28,7 @@ const int = (value, fallback, min, max) => {
   const n = Math.round(Number(value));
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
 };
-const FRAMES = ['default', 'card', 'glass', 'flat', 'none'];
+const FRAMES = ['default', 'card', 'glass', 'flat', 'raised', 'clear', 'tinted', 'gradient', 'outline', 'none'];
 const WIDGET_KEYS = ['id', 'type', 'x', 'y', 'w', 'h', 'title', 'style', 'config'];
 const STYLE_KEYS = ['frame', 'hideTitle'];
 const BOARD_KEYS = ['id', 'name', 'icon', 'widgets'];

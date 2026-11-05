@@ -23,7 +23,7 @@ const isObject = value => !!value && typeof value === 'object' && !Array.isArray
 const ITEM_FIELDS = new Set(['id', 'type', 'title', 'url', 'excerpt', 'content', 'articleContent', 'tags', 'collectionId', 'favorite',
   'archived', 'deletedAt', 'createdAt', 'updatedAt', 'cover', 'art', 'sourceUrl', 'highlights', 'relatedIds', 'reminderAt',
   'reminderNotifiedAt', 'attachmentId', 'fileName', 'mime', 'size', 'pinned', 'read', 'sticky', 'chat',
-  'parentId', 'siteName', 'author', 'publishedAt', 'icon', 'lang']);
+  'parentId', 'siteName', 'author', 'publishedAt', 'icon', 'lang', 'customIcon']);
 const COLLECTION_FIELDS = new Set(['id', 'name', 'color', 'icon', 'parentId', 'description', 'cover', 'pinned', 'layout', 'sidebarLayout',
   'createdAt', 'updatedAt', 'deletedAt']);
 const HIGHLIGHT_FIELDS = new Set(['id', 'text', 'note', 'color', 'createdAt', 'url']);
@@ -95,6 +95,12 @@ function iconUrl(value) {
   if (str.length > 8192) return '';
   try { return safeUrl(str); } catch { return ''; }
 }
+// An icon the person uploaded for an item (dashboard tiles, note pages): a small base64 raster image kept inside the item,
+// so it works offline and travels with backups. Unlike `icon` (the captured page icon), saving the page again never
+// replaces it. Anything else is dropped.
+export const MAX_CUSTOM_ICON_DATA = 64 * 1024;
+const CUSTOM_ICON = /^data:image\/(?:png|jpeg|gif|webp|avif);base64,[A-Za-z0-9+/]+={0,2}$/i;
+const customIconUrl = value => { const str = text(value).trim(); return str.length <= MAX_CUSTOM_ICON_DATA && CUSTOM_ICON.test(str) ? str : ''; };
 const langTag = value => { const tag = text(value).trim().replace(/_/g, '-'); return tag.length <= 35 && /^[a-z]{1,8}(?:-[a-z0-9]{1,8})*$/i.test(tag) ? tag : ''; };
 // Only notes sit inside a page, and never inside themselves. Whether the parent exists is checked by the store ops.
 const MAX_PARENT_ID = 200;
@@ -274,7 +280,7 @@ export function normalizeItem(input, existing = {}, { stored = false, syncChat =
     ...(chat ? { chat } : {}),
     parentId: pageParent(merged.parentId, type, id),
     siteName: oneLine(merged.siteName, 200), author: oneLine(merged.author, 300), publishedAt: isoDate(merged.publishedAt),
-    icon: iconUrl(merged.icon), lang: langTag(merged.lang),
+    icon: iconUrl(merged.icon), lang: langTag(merged.lang), customIcon: customIconUrl(merged.customIcon),
   };
   return keepUnknown(item, stored ? merged : existing, ITEM_FIELDS);
 }
