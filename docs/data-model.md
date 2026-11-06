@@ -23,6 +23,7 @@ local-first: nothing leaves the device unless the user exports a file or connect
 | `still.meta.v1` | `lib/storage/meta.js` | `{ deviceId, installedAt, lastVersion, lastSnapshotAt, changedAt }` | no (bookkeeping) | `deviceId` only, in the manifest | **yes** |
 | `still.widget-cache.v1` | `lib/widget-cache.js` | Rebuildable widget data cache `{ <key>: { value, at } }` | no (cache) | no | yes |
 | `still.ui.recent.v1` | `ui/prefs.js`, `background.js` | Recently used collections for the "Save to" menus | no (cache) | no | yes |
+| `still.threadkeeper.v1` | `lib/threadkeeper/state.js` | Pairing with Threadkeeper and the AI chat sync preferences (below) | no (bookkeeping) | **never** | **yes** |
 
 "Secret-like" means a key that matches `token|secret|password|passphrase|credential|bridge|integration|api[-_]?key|authorization|cookie`
 (case-insensitive). Those keys never go into an export file. Imports never apply them, and the device keeps its own.
@@ -33,6 +34,17 @@ it. Writes use the Web Lock `still.ai.research.v1`. A stored `version` above 1 i
 refuses to run (`newer_version`) rather than create agents the newer record cannot see. **Reset research agent** writes
 an empty record; nothing is deleted from the Anthropic account. Restoring a snapshot that lacks the key removes it, and the
 next run creates a new agent and environment.
+
+`still.threadkeeper.v1` is device-only integration state, written under the Web Lock `still.threadkeeper.v1` by the
+worker and the settings page: `{ version: 1, extensionId, status ('off' | 'pending' | 'paired' | 'denied' | 'revoked'),
+pending: { requestId, extensionId, code, at } | null, epoch, configured, configDirty, backfill: { total, startedAt, paused },
+tk: { version, capabilities }, pairedAt, lastSeenAt, lastSyncAt, lastError, lastErrorAt, counts: { created, updated,
+removed }, prefs: { scope, projects, providers, transcripts, autoUpdate, placement, parentName, singleCollectionId,
+matchExisting, topicsAsTags, onRemoved, defaultView, assistant: { search, context, decision } }, collections }`. The
+protocol and every field's meaning are in `docs/threadkeeper-integration.md`. It is excluded from snapshots
+(`SNAPSHOT_EXCLUDED_KEYS`): restoring an older snapshot must never unpair Still or bring back a revoked pairing. After a
+snapshot restore or a backup import the worker starts a new sync `epoch`, so Threadkeeper re-offers what the restored
+library lacks. It is never in a backup, so a crafted file cannot approve an extension id.
 
 ### chrome.storage.session (extension only, cleared when the browser closes)
 
@@ -63,6 +75,7 @@ build everything lives in localStorage, and snapshots include it, except the cac
 | `still.attachments.v1` (v1) | `files` (keyPath `id`) | `{ id: 'file_<uuid>', blob, name, mime, size, createdAt }`: item files, screenshots, the uploaded wallpaper (`settings.wallpaper.attachmentId`) |
 | `still.embeddings.v1` (v1) | `chunks`, `meta` | Semantic-search vectors. Rebuildable from the library (rebuilding costs embedding calls) |
 | `still.snapshots.v1` (v1) | `summaries`, `payloads` (keyPath `id`) | Automatic device-local snapshots (see below) |
+| `still.chats.v1` (v1) | `records`, `transcripts`, `dismissed`, `meta` (keyPath `id`) | AI chats' summaries and transcripts (`lib/chat-data.js`, see "AI chats") |
 
 Every IndexedDB open uses guarded upgrades (`objectStoreNames.contains()` before `createObjectStore`). It closes its
 connection on `versionchange`, reopens on the next call, and reports `blocked` as a clear error.
@@ -79,11 +92,11 @@ connection on `versionchange`, reopens on the next call, and reports `blocked` a
 }
 ```
 
-**Item:** `id ('item_<uuid>' or a fixed seed / import id), type ('bookmark' | 'article' | 'image' | 'video' | 'file' | 'note'),
+**Item:** `id ('item_<uuid>' or a fixed seed / import id), type ('bookmark' | 'article' | 'image' | 'video' | 'file' | 'note' | 'chat'),
 title, url, excerpt, content (Markdown note), articleContent (<= 250k chars), tags[], collectionId ('' = Inbox), favorite,
 archived, deletedAt (Trash), createdAt, updatedAt, cover, art, sourceUrl, highlights[{ id, text, note, color, createdAt, url }],
 relatedIds[], reminderAt, reminderNotifiedAt, attachmentId, fileName, mime, size, pinned, read,
-sticky ({ color, board, x, y, w, h, z, hidden } | null, notes only), parentId ('' = top level, notes only),
+sticky ({ color, board, x, y, w, h, z, hidden } | null, notes only), chat ({ … }, chats only, below), parentId ('' = top level, notes only),
 siteName (<= 200), author (<= 300), publishedAt (ISO or ''), icon (http(s) URL or data:image <= 16 KB, else ''),
 lang (language tag <= 35), customIcon (an uploaded icon: base64 PNG, JPEG, GIF, WebP or AVIF data URL <= 64 KB, else '')`.
 
@@ -120,6 +133,101 @@ createdAt, updatedAt, deletedAt? (only when set)`. Order is the array order.
 - Trash is a soft delete (`deletedAt`). Hard deletes (delete forever, empty Trash, delete collection) record a tombstone,
   one per id, including subpages deleted with their page. Tombstones are capped at the newest 10,000, and one is
   removed when its id is created again.
+
+### AI chats (type `chat`)
+
+A chat is an AI conversation Still keeps from Threadkeeper (`docs/threadkeeper-integration.md`). The library item stays
+small (about 1 KB); the analysis and the transcript live in IndexedDB `still.chats.v1`.
+
+- **Item fields.** `id` is always `'chat_tk_' + threadHash(threadKey)` (`lib/threadkeeper/protocol.js chatItemId`). `url` is
+  always `''` (saving a page dedupes non-notes by URL, so a chat never has one); `sourceUrl` is the original
+  conversation (https) or `''`; `title` (≤ 300 when sync writes it), `excerpt` (the gist, ≤ 300) and `siteName` (the
+  provider) come from sync; `createdAt` is the thread's. `content` holds the user's own notes, and `tags`, `favorite`,
+  `archived`, `relatedIds` and subpages are the user's: sync never writes them (topics become tags only when a chat is
+  created with the "Add topics as tags" preference, and those are recorded in `chat.syncedTags`).
+- **`chat`:**
+
+  ```js
+  { v: 1, source: 'threadkeeper',
+    threadKey,                 // ≤ 600, required: "A chat needs its Threadkeeper thread."
+    provider,                  // [a-z0-9_]{1,40} or ''
+    providerLabel,             // ≤ 80
+    category,                  // 'chat' | 'coding_agent' | 'agent' | 'builder' | 'search' | 'companion' (else 'chat')
+    kind, project, model,      // ≤ 40 / ≤ 200 / ≤ 120
+    workflowState,             // 'active' | 'needs_review' | 'waiting' | 'paused' | 'done' | 'archived' | ''
+    messageCount, lastActivityAt,
+    topics,                    // ≤ 8 strings ≤ 40, deduped
+    analysis: { source: 'ai' | 'local' | '', generatedAt }, analysisVersion,
+    fingerprint, revision, seq,          // what Still holds (seq is Threadkeeper's monotonic counter)
+    hasTranscript, transcriptTruncated,
+    origin,                    // 'sync' | 'manual' | 'assistant' | 'import': how the chat was first created
+    syncedAt,                  // last time sync changed the item
+    syncedTitleHash, syncedExcerptHash,  // syncedHash() (lib/threadkeeper/protocol.js; 8 hex of the one-line text) of the
+                                         // title / excerpt sync last wrote; store.js exports it as chatTextHash
+    syncedTags,                // tags sync added on create
+    autoCollectionId,          // the collection sync last chose ('' = Inbox)
+    removed }                  // '' | 'deleted' | 'out_of_scope' | 'local_only' | 'disconnected'
+  ```
+
+  Every field is coerced and capped by `normalizeChat`; unknown keys from a newer build survive edits. The agent label,
+  kind label, workspace path, git branch, start time and analysis model live in the IndexedDB record, not here.
+- **Guards** (`normalizeItem`): no conversion into or out of `chat` ("Chats cannot be converted."); `saveItem` refuses
+  `type: 'chat'` ("Chats come from Threadkeeper."); an ordinary edit (`updateItem`, `bulkUpdateItems`) can rename, move,
+  tag, annotate or trash a chat but never rewrite its `chat` object. Chats can be parents of note subpages, never
+  subpages. `LIBRARY_SCHEMA_VERSION` did not change: older builds refuse to import a backup with chats ("unsupported
+  item type") and leave chats out of their exports as damaged items.
+- **"Touched"** (`isChatTouched(item, items)`): the user wrote notes, has live subpages, added tags (beyond
+  `syncedTags`), starred, renamed (title hash ≠ `syncedTitleHash`) or moved it (`collectionId ≠ autoCollectionId`). Sync
+  never trashes or deletes a touched chat.
+- **Store operations** (each one write, nothing written when nothing changes, `updatedAt` bumped on changed records):
+  - `upsertChats(entries, { revive, ensureCollections, dismissedIds })` → `{ results: [{ threadKey, id, status, reason?,
+    fingerprint?, seq? }], collections: [{ key, id, created }] }`, at most 100 entries. An entry is `{ threadKey, id?,
+    fingerprint, seq, origin, revive?, tags?, item: { title, excerpt, sourceUrl, siteName, createdAt }, chat: { provider,
+    providerLabel, category, kind, project, model, workflowState, messageCount, lastActivityAt, topics, analysis,
+    analysisVersion, revision, hasTranscript, transcriptTruncated }, placement?: { collectionId } | { collectionKey } (+
+    `force: true`) }`. Statuses: `created`, `updated`, `unchanged`, `skipped` with reason `invalid` (wrong id, or the id
+    is not a chat of this thread), `stale` (older `seq`), `dismissed` (a new id listed in `dismissedIds`, unless revived)
+    or `trashed` (only the `chat` metadata of a chat in Trash is refreshed). With `revive` a chat in Trash is restored
+    with the subpages trashed with it and placed. Title, excerpt and collection follow sync only while the user has not
+    changed them (`force` moves a chat the user moved, for an explicit manual target). A different `seq` alone is not
+    a change. `ensureCollections: [{ key, name, parentKey?, parentId?, icon?, color? }]` are resolved on first use: a
+    live collection with the same name (trimmed, any case) under the same parent is reused, else created. A collection
+    id that no longer exists falls back to the Inbox. Creating a chat lifts its tombstone: the worker, not the store,
+    decides whether a chat the user deleted forever may come back.
+  - `markChatsRemoved([{ id, reason }], { trash })` → `{ results: [{ id, status: 'removed' | 'kept' | 'missing' }] }`.
+    `local_only`: an untouched chat is deleted forever (with a tombstone); a touched one keeps its notes, user tags and
+    subpages but loses everything from the thread (`title` "Private thread" unless renamed, excerpt, `sourceUrl`,
+    `siteName`, synced tags, and `chat` down to `{ v, source, threadKey, origin, removed, syncedTitleHash,
+    autoCollectionId }`). Such chats are left out of the bridge snapshot and the assistant. `deleted`, `out_of_scope`,
+    `disconnected`: `chat.removed` is set; with `trash` untouched chats go to Trash, touched ones are `kept`.
+  - `placeChats([{ id, collectionId | collectionKey }], { ensureCollections })` re-places chats after the placement
+    preference changed; a chat the user moved is `kept`.
+  - `setChatFlags([{ id, restore?, chat: { removed?, hasTranscript?, transcriptTruncated? } }])` changes only Still's
+    own bookkeeping flags (an ordinary `bulkUpdateItems` never touches `chat`); `restore` brings a chat back from Trash
+    (used after a stored transcript changes and when a new pairing restores chats a disconnect trashed).
+  - `deleteChats(ids)` deletes chats forever without a tombstone (undoing an assistant import).
+  - `CHAT_SYSTEM_DELETES` (`markChatsRemoved`, `deleteChats`) names the operations whose deletes are bookkeeping; for
+    any other operation the worker's `onCommit` treats a deleted `chat_tk_` id as "deleted forever by the user" and
+    records it in the `dismissed` store.
+- **`still.chats.v1`** (`lib/chat-data.js`, injectable `indexedDB`, memory fallback without one):
+  - `records`: `{ id, threadKey, fingerprint, revision, seq, storedAt, bytes, transcript: { revision, totalMessages,
+    stored, truncated, bytes, storedAt } | null, thread }`, where `thread` is the sanitized `ThreadPayload` without its
+    transcript (≤ 1 MB).
+  - `transcripts`: `{ id, threadKey, revision, truncated, totalMessages, messages: [{ index, role, content, createdAt }],
+    storedAt, bytes }`: messages sorted by 0-based index, roles `user | assistant | system | tool`, ≤ 121,000
+    characters each, ≤ 20,000 messages and 32 M characters (first 20 and newest kept).
+  - `dismissed`: `{ id, at }`, uncapped; `meta`: `{ id: 'store', storeId, createdAt }` (a new `storeId` means the
+    store was lost, which starts a new sync epoch).
+  - A record and its transcript are written in one transaction. `putChatData(id, { thread, transcript })` refuses an
+    older `seq`, and without a transcript keeps the stored one only for the same `revision`.
+    `mergeChatTranscriptWindow` merges later windows into the same revision (`truncated` clears once contiguous).
+    Writes come from the service worker; pages read (`getChatRecord`, `getChatTranscript`, `searchChats`).
+  - `sweepChatData(library)` deletes data whose id is not a library item (Trash counts; tombstones do not) once it is 10
+    minutes old, and the data of `local_only` chats at once. The worker runs it on startup, install and the daily alarm.
+  - `searchChats(query, { filters, limit })` is the offline search over summaries and transcript text.
+  - `chatEntryFromThread(payload, { origin, placement, tags, revive, transcript })` maps a sanitized `ThreadPayload`
+    onto an `upsertChats` entry (pure).
+  - Not in snapshots. A restored chat whose data is missing shows that and can refresh from Threadkeeper.
 
 ### Subpages (the page tree)
 
@@ -208,7 +316,8 @@ functions in `lib/pages.js`. The bridge (`bridge/protocol.mjs`) imports the same
 `lib/storage/snapshots.js` keeps snapshots in IndexedDB `still.snapshots.v1`, on this device only.
 
 - **Content:** every `still.` key in chrome.storage.local except caches and bookkeeping (`still.widget-cache.v1`,
-  `still.ui.recent.v1`, `still.meta.v1`, plus the localStorage caches in the preview build). Secrets are included,
+  `still.ui.recent.v1`, `still.meta.v1`, `still.threadkeeper.v1`, plus the localStorage caches in the preview build).
+  IndexedDB (attachments, AI chat data) is not copied. Secrets are included,
   because snapshots never leave the device and are never exported. Attachment blobs are not copied: they are only
   removed by an explicit delete forever or empty Trash.
 - **Record:** `{ id, reason, createdAt, extensionVersion, previousVersion?, counts: { items, collections, notes, boards,
@@ -297,12 +406,13 @@ Writes use the Web Lock `still.meta.v1`, and unknown keys are kept.
   ```
   { backupVersion: 2, schemaVersion, exportedAt,
     manifest: { app: 'still', extensionVersion, deviceId?, counts: { items, collections, notes, attachments, boards,
-      conversations, aiConnections }, warnings: [text] },
+      conversations, aiConnections, chats }, warnings: [text] },
     items, collections, settings, tombstones?, updatedAt,   // the library, secret-like settings stripped
     dashboard?,                                            // portableDashboard: secret-like keys stripped
     attachments: [{ id, name, mime, data: 'data:<mime>;base64,…', ref?: 'wallpaper' }],
     conversations?: { version: 2, conversations },         // conversations.js exportAll
-    aiConfig?: { version: 2, settings, connections } }     // connections.js exportAiConfig: no keys or bridge auth
+    aiConfig?: { version: 2, settings, connections },      // connections.js exportAiConfig: no keys or bridge auth
+    chats?: { version: 1, records, transcripts } }         // still.chats.v1 rows of the library's chat items
   ```
 
   - The wallpaper image (`settings.wallpaper.attachmentId`) travels as an attachment marked `ref: 'wallpaper'`.
@@ -312,11 +422,18 @@ Writes use the Web Lock `still.meta.v1`, and unknown keys are kept.
   - Export never fails because of one bad record. Unrestorable fields are repaired, unrestorable records and missing
     attachment blobs are left out, and each of these adds a line to `manifest.warnings`. Files are added wallpaper
     first, then smallest first, while the file stays under the limit; the rest are left out with a warning.
-  - It never contains API keys, account or integration tokens, snapshots or caches.
+  - AI chats: the summary records of the library's chat items always come first (smallest first, at most half the
+    limit). Transcripts are added after the files, smallest first, chosen by their stored size without loading them
+    all, so they are the first thing left out when the file runs out of room (with a warning; Threadkeeper can send
+    them again). `manifest.counts.chats` counts the chat items.
+  - It never contains API keys, account or integration tokens, the Threadkeeper pairing, snapshots or caches.
 - **Other formats:** bookmarks as Netscape HTML, notes as Markdown, items as CSV (`url, title, tags, note, excerpt, type,
   collection, created, updated, site, author, published, language`; cells that start with `= + - @` get a leading
   apostrophe) and assistant chats as Markdown.
   - The CSV has no item ids, so subpages export and import as flat rows. Page icons are not a CSV column.
+  - Chats: a CSV row carries the original conversation's link and comes back in as a bookmark (a chat row without a
+    link is skipped, like a file); bookmark HTML leaves chats out; the notes Markdown includes a chat only when it has
+    the user's notes, under an "AI chat · provider · project" line and the original link.
   - The notes Markdown puts each subpage section right after its parent page (depth first) under a "Subpage of" line
     linking to the parent's section, and turns page blocks into `- [Title](#section)` links (the page's title when it is
     not in the file). Lines inside code fences are left as written.
@@ -328,7 +445,11 @@ Writes use the Web Lock `still.meta.v1`, and unknown keys are kept.
   4. The library merges through `importLibrary(data, { settings })`, so newer local edits and tombstones are respected.
      Settings are restored for any JSON backup (version 1 or 2), never for HTML or CSV.
   5. Files saved for records the merge did not take (`importSummary.skippedItemIds`) are deleted again.
-  6. The dashboard, chats (`importAll`) and AI connections (`importAiConfig`) follow. A failure in one of them, such as
+  6. AI chat data (`chats` part, checked before the snapshot: every record and transcript must belong to a chat item in
+     the file, ids must match their thread, roles and sizes are bounded) is written for the chat items the merge took;
+     a record older (by `seq`) than this device's is skipped, and this device's transcript of the same revision stays
+     when the file left it out. A backup without the part restores its chats without summaries or transcripts.
+  7. The dashboard, assistant chats (`importAll`) and AI connections (`importAiConfig`) follow. A failure in one of them, such as
      `newer_version`, becomes a warning. Undo data in imported chat proposals is dropped: restored chats show their
      proposals without Undo. A research conversation's run record (`conversation.research`, including its `undo`
      record) is restored as it was saved. Device-only AI settings are never restored.

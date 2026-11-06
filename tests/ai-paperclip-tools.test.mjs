@@ -176,7 +176,7 @@ test('external definitions merge after the library tools; malformed and collidin
   assert.deepEqual(read.inputSchema, valid.inputSchema);
   assert.deepEqual(tools.definitions().find(tool => tool.name === 'fake_other').inputSchema, { type: 'object', properties: {}, required: [], additionalProperties: false });
   assert.deepEqual([...externalToolMap(providers).keys()], ['fake_read', 'fake_other']);
-  assert.equal(LIBRARY_TOOLS.length, 29);
+  assert.equal(LIBRARY_TOOLS.length, 32);
 });
 
 test('external calls are routed to their provider, framed as untrusted and never staged as proposals', async () => {

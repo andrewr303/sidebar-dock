@@ -33,6 +33,9 @@
  *                               existing the saved item at that address (summary) or null, url the address it saves under;
  *                               save true: saved Item + { created, updated } (an already saved page only gets fresh article
  *                               text and missing metadata). { needsPermission } exactly like getPageContext.
+ *   still:threadkeeper       { op, args } -> { ok: true, data } | { ok: false, error: { code, message } } (never a thrown error,
+ *                            so pages keep the code): the Threadkeeper link's page proxy (lib/threadkeeper/worker.js;
+ *                            pages use lib/threadkeeper/client.js).
  *   still:start-picker       { tabId?, windowId?, from: 'panel' | 'menu' } -> { requestId, tabId, windowId } | { needsPermission }
  *                               Injects the page picker; its single result comes back as still:picker-result.
  *   still:picker-result      content script only (the picker in frame 0 of the tab it was started in, with a request id
@@ -42,6 +45,14 @@
  * Senders: content scripts share the extension id, so senders are classified by origin (sender.url outside
  * chrome-extension://<id>/), never by sender.tab (a full-tab Still page has one). A content script may only send
  * still:picker-result; everything else from a web page, including still:store, is refused.
+ *
+ * Threadkeeper (docs/threadkeeper-integration.md): runtime.onMessageExternal accepts only the protocol envelope from the
+ * paired Threadkeeper's own extension pages (sender id + chrome-extension://<id> origin, no tab; unpaired senders may only
+ * say hello or answer Still's pairing request) and answers with flat protocol responses. It never reaches handleMessage
+ * or the store's operation set. Chats arrive through one coalesced upsertChats write; chat data (summaries, transcripts)
+ * lives in IndexedDB (lib/chat-data.js). Alarms 'still:threadkeeper:retry' (sync.configure backoff) and
+ * 'still:threadkeeper:sweep' (daily orphan sweep + liveness hello); onStartup/onInstalled sweep and say hello after the
+ * startup gate. A snapshot restore or library import gives Threadkeeper a new epoch so it re-offers what Still may lack.
  *
  * Storage safety (lib/storage/): on every worker start the snapshot gate compares the manifest version with
  * still.meta.v1.lastVersion and, when it changed, snapshots all Still data (reason 'update') before any library operation
@@ -72,6 +83,9 @@ import {
 import { assertCaptureTab, captureRateLimiter, captureFullPagePixels, checkCaptureCancelled, pngDataUrlBlob } from './lib/full-page-capture.js';
 import { configureSnapshotWorker, handleSnapshotRequest, isSnapshotKey, SNAPSHOT_ALARM, SNAPSHOT_MESSAGE } from './lib/storage/snapshots.js';
 import { LIBRARY_SCHEMA_VERSION, libraryVersion } from './lib/storage/migrations.js';
+import { configureThreadkeeperWorker, handleExternalMessage, handleThreadkeeperRequest, THREADKEEPER_MESSAGE } from './lib/threadkeeper/worker.js';
+import { STATE_KEY as THREADKEEPER_STATE_KEY } from './lib/threadkeeper/state.js';
+import { chatDataStore } from './lib/chat-data.js';
 
 // The worker owns snapshots and the library. Store operations wait for the startup snapshot gate (set below once the
 // extension APIs exist); a failed snapshot is logged and never blocks the library.
@@ -80,11 +94,22 @@ let startupGate = Promise.resolve(null);
 const warnSnapshot = error => console.warn('Still snapshot:', error?.message || String(error));
 configureStoreWorker({
   ready: () => startupGate,
-  onCommit: () => { snapshots.markDirty().catch(warnSnapshot); },
+  // Chats deleted forever lose their chat data (and the user's deletions stop Threadkeeper from sending them again).
+  onCommit: change => { snapshots.markDirty().catch(warnSnapshot); threadkeeper.onCommit(change); },
   beforeMigration: () => snapshots.create('before-migration'),
 });
 
 const api = globalThis.chrome;
+// The Threadkeeper link reads the stored library directly: it decides against the latest write, not the cached copy.
+const freshLibrary = async () => (api?.storage?.local ? (await api.storage.local.get(STORAGE_KEY))[STORAGE_KEY] : null) || { items: [], collections: [], settings: {} };
+const storeOperation = name => (...args) => handleStoreOperation(name, args);
+const threadkeeper = configureThreadkeeperWorker({
+  store: Object.fromEntries(['upsertChats', 'markChatsRemoved', 'placeChats', 'setChatFlags', 'deleteChats'].map(name => [name, storeOperation(name)])),
+  // The same chat store this context's chat-data helpers use (one IndexedDB connection; pages open their own).
+  chatData: chatDataStore(),
+  readLibrary: freshLibrary,
+});
+const warnThreadkeeper = error => console.warn('Still Threadkeeper:', error?.message || String(error));
 let visibleScreenshotJobs = 0;
 const REMINDER_PREFIX = 'still:reminder:';
 const RECENT_COLLECTIONS_KEY = 'still.ui.recent.v1';
@@ -113,7 +138,7 @@ const CAPTURE_MESSAGES = ['captureCurrent', 'saveCurrentTab', 'still:capture-cur
 const MESSAGE_TYPES = ['still:store', SNAPSHOT_MESSAGE, ...CAPTURE_MESSAGES, 'captureScreenshot', 'still:capture-screenshot', 'captureFullPage',
   'cancelFullPageCapture', 'getFullPageCaptureJob', 'openLibrary', 'still:open-library', 'openSidePanel', 'still:open-sidepanel',
   'newNote', 'still:new-note', 'importBrowserBookmarks', 'saveTabs', 'getActiveTab', 'getPageContext', 'listTabs',
-  'still:capture-article', 'still:start-picker', 'still:picker-result'];
+  'still:capture-article', 'still:start-picker', 'still:picker-result', THREADKEEPER_MESSAGE];
 // Picker requests survive a worker restart in storage.session (cleared with the browser, never readable by pages).
 const PICKER_SESSION_KEY = 'still.capture.pickers.v1';
 const PICKER_TTL_MS = 30 * 60 * 1000;
@@ -841,6 +866,7 @@ export async function handleAlarm(alarm) {
     return;
   }
   if (alarm.name === SNAPSHOT_ALARM) { await startupGate; await snapshots.daily(); return; }
+  if (alarm.name.startsWith('still:threadkeeper:')) { await startupGate; await threadkeeper.handleAlarm(alarm); return; }
   if (!alarm.name.startsWith(REMINDER_PREFIX)) return;
   const id = alarm.name.slice(REMINDER_PREFIX.length);
   // Read storage directly: a seedless loadLibrary() would persist an empty library when none exists yet.
@@ -891,8 +917,18 @@ export async function handleMessage(message, sender) {
     throw new Error('Untrusted extension message.');
   }
   if (message.type === 'still:picker-result') throw new Error('Only the page picker reports selections.');
-  if (message.type === 'still:store') return handleStoreOperation(input.operation, input.args);
-  if (message.type === SNAPSHOT_MESSAGE) return handleSnapshotRequest(input.op, input.args, snapshots);
+  if (message.type === 'still:store') {
+    const result = await handleStoreOperation(input.operation, input.args);
+    // A restored backup may hold other chats than Threadkeeper believes Still has: start a new epoch.
+    if (input.operation === 'importLibrary') threadkeeper.onDataRestored().catch(warnThreadkeeper);
+    return result;
+  }
+  if (message.type === SNAPSHOT_MESSAGE) {
+    const result = await handleSnapshotRequest(input.op, input.args, snapshots);
+    if (input.op === 'restore') threadkeeper.onDataRestored().catch(warnThreadkeeper);
+    return result;
+  }
+  if (message.type === THREADKEEPER_MESSAGE) return handleThreadkeeperRequest(input.op, input.args);
   if (CAPTURE_MESSAGES.includes(message.type)) return captureCurrentTab(input);
   if (['captureScreenshot', 'still:capture-screenshot'].includes(message.type)) return captureScreenshot(await targetTab(input));
   if (message.type === 'captureFullPage') return captureFullPage(targetTab(input), { jobId: input.jobId });
@@ -957,12 +993,20 @@ if (api?.runtime?.onMessage) {
     handleMessage(message, sender).then(result => respond({ ok: true, result }), error => respond({ ok: false, error: error.message }));
     return true;
   });
+  // Other extensions (only the paired Threadkeeper gets anywhere; see lib/threadkeeper/worker.js). Registered synchronously so
+  // a message can wake the worker. The answer is the flat protocol envelope, never { ok, result }.
+  api.runtime.onMessageExternal?.addListener((message, sender, sendResponse) => {
+    const respond = response => { try { sendResponse(response); } catch { /* Threadkeeper stopped waiting. */ } };
+    handleExternalMessage(message, sender).then(respond, () => respond({ ok: false, proto: 'still-threadkeeper/1', error: { code: 'internal', message: 'Still could not handle that message.' } }));
+    return true;
+  });
   // Snapshot gate first: nothing below may change data before an update snapshot exists. Bounded, so a stalled
   // IndexedDB can delay the library by at most STARTUP_GATE_MS, never lock it.
   startupGate = Promise.race([snapshots.startup(), new Promise((resolve, reject) => {
     later(() => reject(new Error('the update snapshot is taking too long')), STARTUP_GATE_MS);
   })]).catch(error => { warnSnapshot(error); return null; });
   ensureSnapshotAlarm().catch(warnSnapshot);
+  threadkeeper.init().catch(warnThreadkeeper);
   api.runtime.onInstalled.addListener(details => {
     installMenus().then(readLibrary).then(library => installCollectionMenus(library, { force: true })).catch(reportError);
     Promise.resolve(api.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })).catch(reportError);
@@ -971,11 +1015,13 @@ if (api?.runtime?.onMessage) {
     if (details?.reason === 'update' && details.previousVersion) {
       startupGate.then(summary => snapshots.annotate(summary?.id, { previousVersion: details.previousVersion })).catch(warnSnapshot);
     }
+    startupGate.then(() => threadkeeper.startup()).catch(warnThreadkeeper);
   });
   api.runtime.onStartup.addListener(() => {
     Promise.resolve(api.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })).catch(reportError);
     restoreReminders().catch(reportError);
     readLibrary().then(library => installCollectionMenus(library)).catch(error => console.warn('Still menus:', error?.message));
+    startupGate.then(() => threadkeeper.startup()).catch(warnThreadkeeper);
   });
   api.contextMenus.onClicked.addListener(handleMenuClick);
   api.commands.onCommand.addListener(handleCommand);
@@ -985,6 +1031,7 @@ if (api?.runtime?.onMessage) {
     api.notifications.clear(id);
   });
   api.storage?.onChanged?.addListener((changes, area) => { if (area === 'local' && changes[RECENT_COLLECTIONS_KEY]) scheduleLibraryRefresh(); });
+  api.storage?.onChanged?.addListener((changes, area) => { if (area === 'local' && changes[THREADKEEPER_STATE_KEY]) threadkeeper.invalidate(); });
   // Dashboard, AI and other Still keys change outside the library store: they also make the next daily snapshot due.
   api.storage?.onChanged?.addListener((changes, area) => {
     if (area === 'local' && Object.keys(changes).some(isSnapshotKey)) snapshots.markDirty().catch(warnSnapshot);
@@ -1000,4 +1047,4 @@ if (api?.runtime?.onMessage) {
   hasPermission({ permissions: ['tabs'] }).then(granted => { if (granted) startTabTracking(); });
 }
 
-export { MENU_ITEMS, MESSAGE_TYPES, STORAGE_KEY, PANEL_DRAFTS_KEY };
+export { MENU_ITEMS, MESSAGE_TYPES, STORAGE_KEY, PANEL_DRAFTS_KEY, handleExternalMessage, threadkeeper };

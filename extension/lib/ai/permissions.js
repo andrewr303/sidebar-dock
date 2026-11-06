@@ -7,7 +7,7 @@
 export const PERMISSION_LEVELS = Object.freeze(['ask', 'allow']);
 
 export const PERMISSION_CATEGORIES = Object.freeze([
-  Object.freeze({ id: 'create', label: 'Create', hint: 'New notes, saved links and collections' }),
+  Object.freeze({ id: 'create', label: 'Create', hint: 'New notes, saved links, imported chats and collections' }),
   Object.freeze({ id: 'organize', label: 'Organize', hint: 'Move items, tags, favorites, archive, restore, links between items' }),
   Object.freeze({ id: 'edit', label: 'Edit', hint: 'Change titles, notes and collection details' }),
   Object.freeze({ id: 'dashboard', label: 'Dashboard', hint: 'Add widgets to your boards' }),
@@ -30,7 +30,7 @@ export const MAX_AUTO_ITEMS = 50;
 // The write tools (lib/ai/tools.js LIBRARY_TOOLS). A tool can mean more than the op it stages: delete_tag stages
 // remove_tags across every tagged item but is a deletion, so the tool is looked at before the op.
 const TOOL_CATEGORIES = Object.freeze({
-  create_note: 'create', save_links: 'create', create_collection: 'create',
+  create_note: 'create', save_links: 'create', create_collection: 'create', import_ai_threads: 'create',
   update_item: 'edit', append_to_note: 'edit', update_collection: 'edit', convert_items: 'edit', rename_tag: 'edit',
   move_items: 'organize', add_tags: 'organize', remove_tags: 'organize', set_favorite: 'organize', archive_items: 'organize',
   unarchive_items: 'organize', restore_items: 'organize', link_items: 'organize', unlink_items: 'organize',
@@ -39,7 +39,7 @@ const TOOL_CATEGORIES = Object.freeze({
 });
 // The ops staged into a proposal (buildChanges / applyDraft). Most share their tool's name.
 const OP_CATEGORIES = Object.freeze({
-  create_note: 'create', save_links: 'create', create_collection: 'create',
+  create_note: 'create', save_links: 'create', create_collection: 'create', import_ai_threads: 'create',
   update_item: 'edit', append_to_note: 'edit', update_collection: 'edit', convert_items: 'edit', rename_tag: 'edit',
   move_items: 'organize', add_tags: 'organize', remove_tags: 'organize', set_favorite: 'organize', archive_items: 'organize',
   unarchive_items: 'organize', restore_items: 'organize', link_items: 'organize', unlink_items: 'organize',
@@ -47,8 +47,9 @@ const OP_CATEGORIES = Object.freeze({
   trash_items: 'delete', delete_collection: 'delete',
 });
 // The ops a write tool can stage when they are not just the op of the same name (save_links also moves links that are
-// already saved into the chosen collection).
-const TOOL_OPS = Object.freeze({ save_links: ['save_links', 'move_items'], delete_tag: ['remove_tags'], show_collection_on_dashboard: ['add_dashboard_widget'] });
+// already saved into the chosen collection; import_ai_threads moves and tags chats that are already in Still).
+const TOOL_OPS = Object.freeze({ save_links: ['save_links', 'move_items'], delete_tag: ['remove_tags'], show_collection_on_dashboard: ['add_dashboard_widget'],
+  import_ai_threads: ['import_ai_threads', 'move_items', 'add_tags'] });
 
 const isObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
 const lookup = (table, key) => (typeof key === 'string' && Object.hasOwn(table, key) ? table[key] : null);

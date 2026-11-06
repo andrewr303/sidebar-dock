@@ -28,7 +28,7 @@ export { streamChat } from './chat.js';
 export { handoffUrl, buildHandoffPrompt, handoffPlan, HANDOFF_TARGETS } from './handoff.js';
 
 // external: the assistant's read-only external tool providers; undefined means the default (Paperclip), built on first use.
-const runtime = { store: libraryStore, getLibrary: null, snapshot: null, requestBridge, dispose: null, dashboard: null, external: undefined };
+const runtime = { store: libraryStore, getLibrary: null, snapshot: null, requestBridge, dispose: null, dashboard: null, threadSources: null, external: undefined };
 const externalProviders = () => runtime.external === undefined ? (runtime.external = [createPaperclipToolProvider()]) : runtime.external;
 let services = null;
 
@@ -52,6 +52,11 @@ const researchStore = {
   get upsertContentSection() { return typeof runtime.store?.upsertContentSection === 'function' ? (id, section) => runtime.store.upsertContentSection(id, section) : undefined; },
 };
 const dashboardAdapter = value => value && typeof value.describe === 'function' && typeof value.addCollectionWidget === 'function' ? value : null;
+// AI threads (lib/ai/threads.js createThreadSources): { chats, threads() }; chats are the chats saved in Still, threads()
+// resolves to the Threadkeeper adapter for a turn, or null.
+const threadSourcesAdapter = value => value && typeof value.threads === 'function' && value.chats && typeof value.chats.readLocal === 'function' ? value : null;
+const chatsNow = () => runtime.threadSources?.chats || null;
+const threadsNow = async () => { try { return (await runtime.threadSources?.threads()) || null; } catch { return null; } };
 const aiSettings = () => connections.getAiSettings();
 
 function engine() {
@@ -59,10 +64,11 @@ function engine() {
   const conversations = createConversationStore();
   const embedder = createEmbedder({ resolveConnection: connections.resolveConnection, providerFetch, requestBridge: (...args) => runtime.requestBridge(...args) });
   const vectorStore = createVectorStore();
-  const indexer = createIndexer({ vectorStore, embedder, getLibrary: currentLibrary, getSettings: aiSettings });
+  // Chats are indexed with a digest of their stored summary (the library item itself holds only a gist).
+  const indexer = createIndexer({ vectorStore, embedder, getLibrary: currentLibrary, getSettings: aiSettings, extraText: item => chatsNow()?.digest?.(item) || '' });
   const search = createSearch({ getLibrary: currentLibrary, vectorStore, isSemanticReady: () => indexer.isReady(), embedQuery: (query, options) => indexer.embedQuery(query, options) });
-  const assistant = createAssistant({ streamChat: chatStream, resolveConnection: connections.resolveConnection, modelInfo: connections.modelInfo, getAiSettings: aiSettings,
-    getLibrary: currentLibrary, store, searchLibrary: search.searchLibrary, conversations, dashboard: () => runtime.dashboard,
+  const assistant = createAssistant({ streamChat: chatStream, resolveConnection: connections.resolveConnection, resolveChatTarget: connections.resolveChatTarget, modelInfo: connections.modelInfo,
+    getAiSettings: aiSettings, getLibrary: currentLibrary, store, searchLibrary: search.searchLibrary, conversations, dashboard: () => runtime.dashboard, threads: threadsNow, chats: chatsNow,
     external: externalProviders });
   const transforms = createTransforms({ streamChat: chatStream, resolveConnection: connections.resolveConnection, resolveChatTarget: connections.resolveChatTarget,
     getAiSettings: aiSettings, getLibrary: currentLibrary });
@@ -87,7 +93,44 @@ export async function setAiSettings(patch) {
 
 export const runAssistant = options => engine().assistant.runAssistant(options);
 /** Undoes an applied proposal from its saved plain-data record (proposal.undo), e.g. after a reload lost the live undo. */
-export const undoProposal = undo => undoChanges(store, undo, { dashboard: runtime.dashboard });
+export const undoProposal = undo => undoChanges(store, undo, { dashboard: runtime.dashboard, chats: chatsNow() });
+
+/**
+ * AI threads for the assistant panel. threadStatus() -> { status, enabled, paused, capabilities, prefs } | null.
+ * warmThreads(): wakes Threadkeeper when the assistant opens (best effort). resolveThreadCitation({ id, threadKey }) ->
+ * { itemId } when the cited thread is saved in Still, else { threadKey, canImport, canOpen } (or null when unknown).
+ * importThreadCitation({ id, threadKey }) imports one cited thread (origin 'manual': the user clicked Import) ->
+ * { itemId } ; openThreadInThreadkeeper(threadKey) opens it in Threadkeeper.
+ */
+export const threadStatus = () => runtime.threadSources?.state?.() || null;
+export const warmThreads = () => Promise.resolve(runtime.threadSources?.warm?.()).catch(() => false);
+export async function resolveThreadCitation({ id = '', threadKey = '' } = {}) {
+  const chats = chatsNow();
+  const library = await currentLibrary().catch(() => null);
+  const chat = (threadKey && chats?.localChatFor(threadKey, library)) || chats?.chatForCite(id, library) || null;
+  if (chat) return { itemId: chat.id };
+  const tk = await threadsNow();
+  let key = threadKey;
+  if (!key && tk && /^tk:[0-9a-f]{16}$/.test(id)) key = (await tk.get({ citeIds: [id] }).catch(() => null))?.threads?.[0]?.threadKey || '';
+  if (!key) return tk ? null : { threadKey: '', canImport: false, canOpen: false };
+  return { threadKey: key, canImport: !!tk, canOpen: !!tk && tk.capabilities.includes('open') };
+}
+export async function importThreadCitation({ id = '', threadKey = '' } = {}) {
+  const resolved = await resolveThreadCitation({ id, threadKey });
+  if (resolved?.itemId) return resolved;
+  const tk = await threadsNow();
+  if (!tk || !resolved?.threadKey) throw new Error('Threadkeeper is not connected, so this thread cannot be imported now.');
+  const { results } = await tk.importThreads([resolved.threadKey], { origin: 'manual' });
+  const entry = results.find(result => result.threadKey === resolved.threadKey) || results[0];
+  const itemId = typeof entry?.id === 'string' ? entry.id : typeof entry?.itemId === 'string' ? entry.itemId : '';
+  if (!itemId || entry?.status === 'skipped') throw new Error(entry?.reason === 'invalid' ? 'Threadkeeper would not send this thread.' : 'This thread could not be imported.');
+  return { itemId };
+}
+export async function openThreadInThreadkeeper(threadKey) {
+  const tk = await threadsNow();
+  if (!tk) throw new Error('Threadkeeper is not connected.');
+  await tk.open(threadKey);
+}
 export const transformText = options => engine().transforms.transformText(options);
 export const suggestForSave = input => engine().transforms.suggestForSave(input);
 /** AI auto-tagging plan for review (lib/ai/autotag.js); apply it with finalizePlan + store.bulkUpdateItems. */
@@ -150,18 +193,21 @@ export async function semanticSearchAvailable() {
 }
 
 /**
- * Called once from app.js: init({ store, getLibrary, integrations, onLibraryChange, dashboard }).
+ * Called once from app.js: init({ store, getLibrary, integrations, onLibraryChange, dashboard, threads, external }).
+ * threads (optional): lib/ai/threads.js threadSources(); it gives the assistant the chats saved in Still and, while Still is
+ * paired with Threadkeeper, the thread tools and automatic thread context.
  * onLibraryChange(listener) -> unsubscribe defaults to store.subscribe. Indexing starts shortly after boot when enabled.
  * dashboard (optional): { describe(), addCollectionWidget({ collectionId, boardId }), removeWidget(widgetId) }; it lets the
  * assistant see the dashboard and show a collection on it. Without it those tools are not offered.
  * external (optional): the assistant's read-only external tool providers (see tools.js createToolSession); the default is
  * Paperclip (paperclip-tools.js), offered only while Paperclip is connected. Pass [] or null to offer none.
  */
-export function init({ store: appStore, getLibrary, integrations, onLibraryChange, dashboard, external } = {}) {
+export function init({ store: appStore, getLibrary, integrations, onLibraryChange, dashboard, threads, external } = {}) {
   runtime.dispose?.();
   if (external !== undefined) runtime.external = Array.isArray(external) ? external.filter(Boolean) : [];
   if (appStore) runtime.store = appStore;
   if (dashboard !== undefined) runtime.dashboard = dashboardAdapter(dashboard);
+  if (threads !== undefined) runtime.threadSources = threadSourcesAdapter(threads);
   if (typeof getLibrary === 'function') runtime.getLibrary = getLibrary;
   if (typeof integrations?.requestBridge === 'function') runtime.requestBridge = integrations.requestBridge;
   if (integrations) connections.configureConnections({ integrations });

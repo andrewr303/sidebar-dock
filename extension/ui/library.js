@@ -11,7 +11,8 @@ import { renderItem, watchBrokenCovers } from './cards.js';
 import { renderMap, setMapScope } from './map.js';
 import { openAdd } from './quick-add.js';
 import { createNote } from './notes.js';
-import { confirmTrash, subpagesMoving } from './note-editor.js';
+import { confirmTrash, subpagesMoving, addSubpage } from './note-editor.js';
+import { threadkeeperSnapshot } from './chats.js';
 import { askAi } from './ai-panel.js';
 import { openAutoTag } from './autotag.js';
 import { openCollectionEditor } from './collections.js';
@@ -36,13 +37,14 @@ const SIDE_LAYOUT_OPTIONS = [
 const SORT_SHORT = { newest: 'Newest', oldest: 'Oldest', updated: 'Updated', title: 'Title', domain: 'Website' };
 const TYPE_CHIPS = [
   { value: 'bookmark', label: 'Links' }, { value: 'article', label: 'Articles' }, { value: 'note', label: 'Notes' },
-  { value: 'image', label: 'Images' }, { value: 'video', label: 'Videos' }, { value: 'file', label: 'Files' },
+  { value: 'image', label: 'Images' }, { value: 'video', label: 'Videos' }, { value: 'file', label: 'Files' }, { value: 'chat', label: 'AI chats' },
 ];
 const VIEW_META = {
   all: { icon: 'book-open-text', title: 'All items' },
   inbox: { icon: 'inbox', title: 'Inbox' },
   favorites: { icon: 'star', title: 'Favorites' },
   notes: { icon: 'sticky-note', title: 'Notes' },
+  chats: { icon: 'messages-square', title: 'Chats' },
   highlights: { icon: 'highlighter', title: 'Highlights' },
   archive: { icon: 'archive', title: 'Archive' },
   trash: { icon: 'trash-2', title: 'Trash' },
@@ -55,6 +57,7 @@ const VIEW_META = {
   'type:video': { icon: 'film', title: 'Videos' },
   'type:file': { icon: 'file-text', title: 'Files' },
   'type:note': { icon: 'sticky-note', title: 'Notes' },
+  'type:chat': { icon: 'messages-square', title: 'Chats' },
 };
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -294,16 +297,24 @@ function syncUi(ctx) {
   }
   return u;
 }
+/**
+ * Whether All items and the Inbox list the AI chats still where sync placed them: the "+N AI chats" chip (a saved
+ * preference), and the Inbox always when Threadkeeper's placement is the Inbox (that is where the user asked for them).
+ */
+export function showChatsIn(ctx, view = ctx.state.view) {
+  if (ctx.prefs.get('libraryShowChats', false) === true) return true;
+  return view === 'inbox' && threadkeeperSnapshot()?.prefs?.placement === 'inbox';
+}
 const untaggedCache = new WeakMap();
 function viewRows(ctx) {
-  const rows = ctx.select.itemsForView(ctx.state);
+  const rows = ctx.select.itemsForView({ ...ctx.state, showChats: showChatsIn(ctx) });
   if (!ui(ctx).noTags) return rows;
   if (!untaggedCache.has(rows)) untaggedCache.set(rows, rows.filter(item => !item.tags?.length));
   return untaggedCache.get(rows);
 }
 const facetCache = new WeakMap();
 function facetsFor(ctx) {
-  const rows = ctx.select.itemsForView({ ...ctx.state, typeFilter: 'all', tagFilter: '' });
+  const rows = ctx.select.itemsForView({ ...ctx.state, typeFilter: 'all', tagFilter: '', showChats: showChatsIn(ctx) });
   if (!facetCache.has(rows)) facetCache.set(rows, viewFacets(rows));
   return facetCache.get(rows);
 }
@@ -391,7 +402,14 @@ function renderFilters(ctx, facets) {
   const tags = facets.tags.filter(t => t.name.toLowerCase() !== viewTag);
   if (state.tagFilter && !tags.some(t => t.name.toLowerCase() === state.tagFilter.toLowerCase())) tags.unshift({ name: state.tagFilter, count: null });
   const showUntagged = facets.untagged > 0 && facets.untagged < facets.total && view !== 'untagged';
-  if (!showTypes && !tags.length && !showUntagged) return '';
+  // AI chats left out of All items or the Inbox: a chip brings them in (and back out). Searches always include them.
+  const chatsPref = ctx.prefs.get('libraryShowChats', false) === true;
+  const placedChats = state.query.trim() || (!chatsPref && showChatsIn(ctx)) ? 0 : ctx.select.hiddenChats?.(view) || 0;
+  const chatsShown = chatsPref && placedChats > 0;
+  const chatsChip = placedChats
+    ? html`<span class="lib-filters-sep" aria-hidden="true"></span>${chip({ label: chatsShown ? 'Hide AI chats' : `+${placedChats.toLocaleString()} AI chats`, icon: 'messages-square', selected: chatsShown, action: 'library.toggle-chats',
+      title: chatsShown ? 'Leave synced AI chats out of this list' : 'Show the AI chats synced from Threadkeeper in this list too' })}` : '';
+  if (!showTypes && !tags.length && !showUntagged) return chatsChip ? html`<div class="lib-filters" role="group" aria-label="Filters">${chatsChip}</div>` : '';
   const none = state.typeFilter === 'all' && !state.tagFilter && !u.noTags;
   const hash = html`<span class="lib-hash" aria-hidden="true">#</span>`;
   return html`<div class="lib-filters" role="group" aria-label="Filters">
@@ -400,6 +418,7 @@ function renderFilters(ctx, facets) {
     ${showTypes && (tags.length || showUntagged) ? html`<span class="lib-filters-sep" aria-hidden="true"></span>` : ''}
     ${tags.map(t => chip({ label: html`${hash}${t.name}`, count: t.count ?? undefined, selected: state.tagFilter.toLowerCase() === t.name.toLowerCase(), action: 'library.tag-filter', data: { tag: t.name }, title: `Show items tagged ${t.name}` }))}
     ${showUntagged ? html`${tags.length ? html`<span class="lib-filters-sep" aria-hidden="true"></span>` : ''}${chip({ label: 'Without tags', count: facets.untagged, selected: u.noTags, action: 'library.no-tags' })}` : ''}
+    ${chatsChip}
   </div>`;
 }
 
@@ -428,6 +447,7 @@ const EMPTY = {
   untagged: { icon: 'tag', title: 'Everything is tagged', body: 'Items without tags show up here.' },
   reminders: { icon: 'bell', title: 'No reminders', body: 'Set a reminder on an item to see it here.' },
   notes: { icon: 'sticky-note', title: 'No notes yet', body: 'Write a note about a page, or start a blank one.' },
+  chats: { icon: 'messages-square', title: 'No AI chats yet', body: 'Chats you sync or add from Threadkeeper show up here, with a summary and the whole conversation.' },
 };
 
 function renderEmpty(ctx, meta, { side }) {
@@ -449,6 +469,7 @@ function renderEmpty(ctx, meta, { side }) {
       actions: html`${button({ label: 'Add link', icon: 'plus', variant: 'primary', size: 'sm', action: 'library.add', data: { collection: collectionId } })}${button({ label: 'New note', icon: 'sticky-note', variant: 'secondary', size: 'sm', action: 'library.new-note', data: { collection: collectionId } })}` });
   }
   if (view.startsWith('tag:')) return emptyState({ icon: 'hash', compact, title: `Nothing tagged ${meta.title}`, body: 'Add this tag to an item from its details or with Add tags in the item menu.' });
+  if (view === 'chats' || view === 'type:chat') return emptyState({ ...EMPTY.chats, compact, actions: button({ label: 'Add chats…', icon: 'plus', variant: 'primary', size: 'sm', action: 'chats.add' }) });
   if (view.startsWith('type:')) return emptyState({ icon: VIEW_META[view]?.icon || 'file', compact, title: `No ${meta.title.toLowerCase()} yet`, body: 'Items of this type show up here when you save them.' });
   const copy = EMPTY[view] || EMPTY.all;
   const addable = ['all', 'inbox'].includes(view);
@@ -788,7 +809,8 @@ export function openItemMenu(ctx, id, anchor) {
       { label: 'Move to…', icon: 'folder-input', run: () => moveItems(ctx, ids, follow) },
       { label: 'Add tags…', icon: 'tag', run: () => ctx.run(() => tagItems(ctx, ids)) },
       { label: item.favorite ? 'Remove from favorites' : 'Add to favorites', icon: 'star', run: () => ctx.run(() => setFavorite(ctx, ids, !item.favorite, { quiet: true })) },
-      item.type !== 'note' && { label: 'Add note', icon: 'notebook-pen', run: () => ctx.run(() => addNoteFor(ctx, item)) },
+      item.type === 'chat' ? { label: 'Add a subpage note', icon: 'file-plus', run: () => ctx.run(() => addSubpage(ctx, item.id)) }
+        : item.type !== 'note' && { label: 'Add note', icon: 'notebook-pen', run: () => ctx.run(() => addNoteFor(ctx, item)) },
       { label: 'Ask AI about this', icon: 'sparkles', run: () => askAi(ctx, { scope: 'item', ids }) },
       researchMenuItem(item, ctx),
       paperclipMenuItem(ctx, item),
@@ -959,6 +981,7 @@ registerActions({
     ctx.syncUrl?.();
     ctx.render();
   },
+  'library.toggle-chats': ({ ctx }) => { ctx.prefs.set('libraryShowChats', ctx.prefs.get('libraryShowChats', false) !== true); ctx.render(); },
   'library.no-tags': ({ ctx }) => { const u = ui(ctx); u.noTags = !u.noTags; ctx.state.tagFilter = ''; ctx.render(); },
   'library.clear-filters': ({ ctx }) => { Object.assign(ctx.state, { typeFilter: 'all', tagFilter: '' }); ui(ctx).noTags = false; ctx.syncUrl?.(); ctx.render(); },
   'library.toggle-select': ({ ctx, data, event }) => toggleSelected(ctx, data.id, { range: !!event?.shiftKey }),

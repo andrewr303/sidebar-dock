@@ -33,20 +33,21 @@ export function buildSpaceContext(library, key) {
   const id = collection ? collection.id : '';
   const collectionIds = collection ? getDescendantCollectionIds(library, id) : [''];
   const admitted = new Set(collectionIds);
-  let itemCount = 0, noteCount = 0, fileCount = 0, sourceCount = 0;
+  let itemCount = 0, noteCount = 0, fileCount = 0, sourceCount = 0, chatCount = 0;
   for (const item of library?.items || []) {
     if (!active(item) || !admitted.has(text(item.collectionId))) continue;
     itemCount++;
     if (item.type === 'note') noteCount++;
     else if (['file', 'image', 'video'].includes(item.type)) fileCount++;
     else if (['bookmark', 'article'].includes(item.type)) sourceCount++;
+    else if (item.type === 'chat') chatCount++;
   }
   return {
     key, id, kind: collection ? 'collection' : 'inbox', name: collection ? text(collection.name) : 'Inbox',
     description: text(collection?.description).slice(0, 12000), cover: text(collection?.cover),
     color: text(collection?.color), icon: text(collection?.icon) || 'folder',
     updatedAt: text(collection ? collection.updatedAt : library?.updatedAt),
-    collectionIds, itemCount, noteCount, fileCount, sourceCount,
+    collectionIds, itemCount, noteCount, fileCount, sourceCount, chatCount,
   };
 }
 

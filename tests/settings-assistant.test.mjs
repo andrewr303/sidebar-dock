@@ -24,7 +24,7 @@ test('Assistant permissions shows the preset and an Ask or Allow control for eac
   assert.deepEqual(PERMISSION_PRESET_CHOICES.map(choice => choice.label), ['Always ask', 'Trusted', 'Full access', 'Custom']);
   for (const label of ['Always ask', 'Trusted', 'Full access', 'Custom']) assert.ok(out.includes(`<span>${label}</span>`), label);
   assert.deepEqual(checked(out, 'preset'), ['ask']);
-  for (const [label, hint] of [['Create', 'New notes, saved links and collections'], ['Organize', 'Move items, tags, favorites, archive, restore, links between items'],
+  for (const [label, hint] of [['Create', 'New notes, saved links, imported chats and collections'], ['Organize', 'Move items, tags, favorites, archive, restore, links between items'],
     ['Edit', 'Change titles, notes and collection details'], ['Dashboard', 'Add widgets to your boards'], ['Delete', 'Move to Trash, delete collections and tags']]) {
     assert.ok(out.includes(`<span class="settings-row-label">${label}</span>`), label);
     assert.ok(out.includes(hint), hint);

@@ -63,6 +63,33 @@ The server listens only on `127.0.0.1` unless you set `bindAddress` in its confi
 
 Advanced clients can use authenticated Streamable HTTP at `http://127.0.0.1:43123/mcp`; POST returns a JSON MCP response. GET returns 405 because no SSE stream is maintained. The stdio entry above works with both clients without putting the token into their settings; for Claude Code over HTTP, `bridge/auth-header.mjs` supplies the token as a headers helper (`npm run connect -- claude --http` prints the command). The bridge supports MCP initialization, ping, tools, resources, prompts and argument completion; it does not implement elicitation, sampling or subscriptions. Other clients can get their own scoped token (read, write or full) that works only on `/mcp`. See [MCP and agent skills](mcp-agents.md#scoped-tokens).
 
+## AI chat threads from Threadkeeper
+
+Settings → Integrations → **AI chat threads** connects Still to the Threadkeeper extension, which keeps your
+conversations from ChatGPT, Claude, Gemini, coding agents and other AI apps. The protocol is in
+[threadkeeper-integration.md](threadkeeper-integration.md).
+
+1. **Find Threadkeeper** asks Chrome, from the click, for the optional `management` permission, lists the enabled
+   extensions named like Threadkeeper (name, version, ID, install type) and drops the permission again. Still never
+   connects on its own: pick one and press **Connect**, or paste the ID from Threadkeeper → Settings → Sidebar Dock.
+2. While Threadkeeper asks for consent, the card shows a six-digit code. Type it in Threadkeeper's window and choose
+   Allow. **Send again** re-sends the request; **Cancel** forgets it. Requests expire after 10 minutes.
+3. **Choose what to sync**: every thread, threads from chosen projects, or only threads you add; optionally only
+   some apps; where chats go (mirror Threadkeeper's projects inside “AI chats”, one collection, or the Inbox); and
+   whether to keep full transcripts. A preview gives the thread count and the collections it would create or reuse.
+   Nothing syncs until **Start syncing**.
+4. Once syncing, the card shows the chats in Still, the first-sync progress (with Pause), the last update and any
+   error, and keeps every preference one click away. Narrowing what syncs, moving chats to a new place and turning
+   transcripts off each ask first and say how many chats are affected; chats you added notes to, tagged or moved
+   are never trashed. **Disconnect** keeps your chats unless you tick “Also move the synced chats to Trash”.
+5. **Add chats…** (also in Quick add's menu) opens a picker that searches Threadkeeper,
+   filters by kind of app, app, project and kind, marks threads already in Still or in Trash, and copies the
+   selected ones into a collection of your choice or wherever synced chats go.
+
+The assistant switches on the same card decide whether the assistant may search your AI threads, when it adds
+thread context to a question (Smart, Always, Off) and whether a fast model makes that decision. The pairing and
+these choices are stored only on this device (`still.threadkeeper.v1`) and never go into backups.
+
 ## Raindrop.io library import and selected-item export
 
 Create an application in [Raindrop's App Management Console](https://app.raindrop.io/settings/integrations) and copy its Test token for your own account. In Still → Integrations, paste the token and connect. Chrome asks for optional access to `https://api.raindrop.io/`. The token is stored separately in `chrome.storage.local` on this device, never in the portable library backup or bridge snapshot.
@@ -88,6 +115,31 @@ GitHub widget: personal access token, OAuth device flow with your own OAuth app,
 - **GitHub CLI through the local bridge:** with the bridge paired, Still calls `GET /github/token` on the loopback bridge with the pairing token. The bridge runs `gh auth token`, or reads `GITHUB_TOKEN` or `GH_TOKEN` from its own environment when the CLI is not signed in, and answers 404 when it finds neither. When the token changes, Still reads it again.
 
 Linear widget: a personal API key from Linear's security settings, checked against Linear's viewer query before it is saved. Disconnect removes the key and cached issues from this device; revoke the key in Linear to stop it working everywhere.
+
+## Threadkeeper: AI chat threads
+
+[Threadkeeper](threadkeeper-integration.md) is a separate extension that captures and analyzes your AI conversations
+(ChatGPT, Claude, Gemini, coding agents such as Claude Code and Codex, and more). Still connects to it in **Settings →
+Integrations → AI chat threads**: find it (or paste its ID), press **Connect**, type the six-digit code Still shows into
+Threadkeeper's own window, then choose what to sync and press **Start syncing**. Nothing is synced before that.
+
+- **Two separate extensions.** They talk only with `chrome.runtime.sendMessage` between extension IDs. Still accepts
+  messages only from the connected Threadkeeper's own pages (its ID and its `chrome-extension://` origin, never one of its
+  content scripts on a web page) and answers only the protocol messages in the contract; nothing reaches Still's other
+  operations.
+- **Still keeps its own copy.** Each synced thread becomes a library item of type `chat` (compact metadata), with its
+  summary and transcript in IndexedDB (`still.chats.v1`). Chats keep working, open, search and back up when Threadkeeper
+  is turned off, updating or uninstalled.
+- **You stay in charge.** Chats you rename, move, tag, favorite, write notes in or add subpages to are never deleted or
+  trashed by sync. Deleting a chat forever stops Threadkeeper from sending it again until you send it yourself. Threads
+  Threadkeeper may not share (local-only) are never sent, and leave Still when they become local-only: untouched chats
+  are deleted, chats you worked on keep only your notes.
+- **Device only.** The connection (`still.threadkeeper.v1`) is not in backups or snapshots; restoring either tells
+  Threadkeeper to re-offer what Still may be missing.
+- Disconnect from the same card at any time; "Also remove the synced chats" moves untouched chats to Trash (they come
+  back if you connect again).
+
+The message contract, limits and privacy rules are in [threadkeeper-integration.md](threadkeeper-integration.md).
 
 ## Other services
 

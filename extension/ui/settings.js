@@ -3,7 +3,7 @@
 // drill-in below 760px (styles/settings.css container queries). A search field filters every section down to matching rows.
 // Library settings go through ctx.store.updateSettings (app.js applies them to <html>); AI configuration through the ctx.ai
 // facade; bridge, MCP and Raindrop through lib/integrations.js. Appearance, New tab & dashboard, Connected accounts, Assistant
-// permissions and Research agent live in ui/settings/*.js; the building blocks and the search renderer in ui/settings/parts.js.
+// permissions, Research agent and the Threadkeeper card (AI chat threads) live in ui/settings/*.js; the building blocks and the search renderer in ui/settings/parts.js.
 import { html, cx, plural, safeHref, safeSrc } from './html.js';
 import { icon } from './icons.js';
 import { button, iconButton, segmented, select, field, input, badge, spinner, emptyState, kbd, fileSize, relativeDate, shortDate } from './components.js';
@@ -23,6 +23,7 @@ import { renderAppearance, ACCENTS } from './settings/appearance.js';
 import { renderNewTab, attachNewTab, detachNewTab } from './settings/newtab.js';
 import { renderAccounts, attachAccounts, detachAccounts } from './settings/accounts.js';
 import { renderAssistantPermissions, renderResearch, researchPatch } from './settings/assistant.js';
+import { renderThreadkeeper, attachThreadkeeper, detachThreadkeeper } from './settings/threadkeeper.js';
 import { PERMISSION_CATEGORIES, PERMISSION_LEVELS, PERMISSION_PRESETS } from '../lib/ai/permissions.js';
 import { MCP_TOOLS, MCP_SCOPES } from '../lib/mcp-tools.js';
 
@@ -397,6 +398,7 @@ function attach(ctx) {
   if (data.login && ['pending', 'user_action_needed'].includes(data.login.status)) pollLogin(ctx);
   attachNewTab(ctx);
   attachAccounts(ctx);
+  attachThreadkeeper(ctx);
   refresh(ctx, { bridge: true }).catch(error => console.error(error));
 }
 
@@ -408,6 +410,7 @@ function detach() {
   Object.assign(live, { offAi: null, offIndex: null, tick: 0, loginTimer: 0, mounted: false });
   detachNewTab();
   detachAccounts();
+  detachThreadkeeper();
 }
 
 // Mounted on an invisible marker inside the page, so loading starts when Settings appears and listeners stop when it leaves.
@@ -421,8 +424,8 @@ registerMount('settings-live', (el, ctx) => {
 
 /**
  * Opens Settings at a section: appearance, newtab, general, library, ai, assistant, research, search, agents, accounts,
- * integrations, shortcuts, about, help. options: { anchor } scrolls to a row id; { providerId } opens that AI provider's
- * connect dialog (section 'ai').
+ * integrations, shortcuts, about, help. options: { anchor } scrolls to a row id (the Threadkeeper card is 'settings-threadkeeper'
+ * in 'integrations'); { providerId } opens that AI provider's connect dialog (section 'ai').
  */
 export function openSettings(ctx, section = 'general', options = {}) {
   const ui = uiState(ctx);
@@ -680,7 +683,7 @@ function renderLibrary(ctx) {
   return html`
     ${group({ title: 'Backup', body: () => card([
       row({ label: 'Full backup', keywords: 'export download json everything settings dashboard wallpaper chats conversations ai connections',
-        description: 'Everything in one JSON file: items, notes, highlights, collections and files, your settings and wallpaper, dashboards and widgets, assistant chats and AI connections. API keys, account tokens and passwords are never included.',
+        description: 'Everything in one JSON file: items, notes, highlights, collections and files, your settings and wallpaper, dashboards and widgets, assistant chats and AI connections, and AI chats from Threadkeeper with their summaries and transcripts. API keys, account tokens and passwords are never included.',
         control: button({ label: 'Download backup', icon: 'download', size: 'sm', action: 'settings.backup', loading: isBusy('backup') }) }),
       data.backupJob && !isSearching() ? backupStatus(data.backupJob) : '',
       row({ label: 'Restore or bring in a file', keywords: 'import upload html csv bookmarks restore', description: 'A Still backup, a bookmarks HTML file from any browser or Raindrop, or a CSV with a url column. Nothing on this device is deleted: where the file and this device have the same item, the newer copy is kept. Still saves a snapshot first, so you can go back.',
@@ -1260,6 +1263,7 @@ function renderIntegrations(ctx) {
   const info = data.integration || {};
   const others = integrations.INTEGRATION_CATALOG.filter(entry => !['claude', 'codex', 'raindrop'].includes(entry.id));
   return html`
+    ${renderThreadkeeper(ctx, { where: 'integrations' })}
     ${group({ title: 'Built in', body: () => card([
       row({ lead: providerMark('raindrop', 32), label: html`Raindrop.io ${badge(raindropStatus(info))}`, keywords: 'import token bookmarks', description: 'Bring in collections, bookmarks, notes and highlights with your API token.',
         control: button({ label: 'Set up Raindrop', iconRight: 'arrow-right', size: 'sm', action: 'settings.section', data: { section: 'library', anchor: 'settings-raindrop' } }) }),
@@ -1319,6 +1323,8 @@ function renderAbout(ctx) {
       row({ label: 'Connected accounts', keywords: 'github linear token', description: 'Tokens for dashboard widgets stay on this device and go only to the service they belong to.' }),
       row({ label: 'AI requests', description: 'When you ask a question, the question and the context you choose go to the provider you picked. The footnote under Ask names it.' }),
       row({ label: 'Local bridge', description: 'When paired, the library syncs to the bridge on this computer so agents can use it. Files and keys stay in the browser.' }),
+      row({ label: 'AI chat threads', keywords: 'threadkeeper transcripts chats', description: 'Chats from Threadkeeper are copies kept on this device: their details in the library, summaries and transcripts in this browser’s database. Threadkeeper never sends threads you keep private, and the connection is never part of backups.',
+        control: button({ label: 'Threadkeeper', iconRight: 'arrow-right', size: 'sm', action: 'settings.section', data: { section: 'integrations', anchor: 'settings-threadkeeper' } }) }),
       row({ label: 'Backups', description: 'Download a full backup now and then. Removing the extension deletes its storage.',
         control: button({ label: 'Library & backup', iconRight: 'arrow-right', size: 'sm', action: 'settings.section', data: { section: 'library' } }) }),
     ]) })}
@@ -1640,7 +1646,7 @@ registerActions({
     const { counts, warnings } = backup.manifest;
     data.backupJob = warnings.length ? { warnings } : null;
     const parts = [plural(counts.items, 'item'), counts.attachments && plural(counts.attachments, 'file'), counts.boards && plural(counts.boards, 'dashboard'),
-      counts.conversations && plural(counts.conversations, 'chat')].filter(Boolean);
+      counts.conversations && plural(counts.conversations, 'chat'), counts.chats && plural(counts.chats, 'AI chat')].filter(Boolean);
     ctx.toast(`Backup downloaded: ${parts.join(', ')}`, { tone: warnings.length ? 'warning' : 'success' });
   }),
   'settings.backup-dismiss': ({ ctx }) => { data.backupJob = null; ctx.render(); },

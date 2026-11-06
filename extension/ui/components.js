@@ -320,5 +320,5 @@ export function fileSize(bytes = 0) {
   const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
   return `${(bytes / 1024 ** i).toFixed(i ? 1 : 0)} ${units[i]}`;
 }
-export const TYPE_LABELS = { bookmark: 'Link', article: 'Article', note: 'Note', file: 'File', image: 'Image', video: 'Video' };
-export const TYPE_ICONS = { bookmark: 'bookmark', article: 'newspaper', note: 'sticky-note', file: 'file-text', image: 'image', video: 'film' };
+export const TYPE_LABELS = { bookmark: 'Link', article: 'Article', note: 'Note', file: 'File', image: 'Image', video: 'Video', chat: 'Chat' };
+export const TYPE_ICONS = { bookmark: 'bookmark', article: 'newspaper', note: 'sticky-note', file: 'file-text', image: 'image', video: 'film', chat: 'messages-square' };

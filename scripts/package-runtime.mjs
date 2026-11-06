@@ -20,7 +20,7 @@ for directory in ['extension','bridge','agent-skills']:
         if p.is_symlink() or not p.resolve().is_relative_to(root): raise ValueError('Runtime source escapes project')
         if directory=='bridge' and p.suffix!='.mjs': continue
         files.append(p)
-files += [root/'docs'/name for name in ['INSTALL.md','integrations.md','ai-providers.md','ai-cli.md','ai-prompts.md','mcp-agents.md','fabric-expansion.md']]
+files += [root/'docs'/name for name in ['INSTALL.md','integrations.md','ai-providers.md','ai-cli.md','ai-prompts.md','mcp-agents.md','fabric-expansion.md','threadkeeper-integration.md']]
 files += [root/'package.json',root/'README.md']
 files += list((root/'docs'/'screenshots').glob('*'))
 temporary=target.with_suffix('.zip.tmp')

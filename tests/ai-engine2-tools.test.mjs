@@ -53,7 +53,7 @@ function assertSimpleSchema(schema, where, nested = false) {
 }
 
 test('every tool schema is strict-compatible: an object with properties, additionalProperties false and required ⊆ properties', () => {
-  assert.equal(LIBRARY_TOOLS.length, 29);
+  assert.equal(LIBRARY_TOOLS.length, 32);
   const names = new Set();
   for (const tool of LIBRARY_TOOLS) {
     assert.match(tool.name, /^[a-z_]{3,40}$/);
@@ -64,9 +64,10 @@ test('every tool schema is strict-compatible: an object with properties, additio
     assertSimpleSchema(tool.inputSchema, tool.name);
     if (tool.access === 'write') assert.match(tool.description, /only after the user approves/);
   }
-  const reads = ['search_library', 'get_items', 'list_items', 'lookup_urls', 'list_collections', 'list_tags', 'get_page', 'get_dashboard'];
+  const reads = ['search_library', 'get_items', 'list_items', 'lookup_urls', 'list_collections', 'list_tags', 'get_page', 'get_dashboard', 'search_ai_threads', 'get_ai_threads'];
   const writes = ['create_collection', 'update_collection', 'delete_collection', 'save_links', 'move_items', 'add_tags', 'remove_tags', 'rename_tag', 'delete_tag', 'set_favorite',
-    'archive_items', 'unarchive_items', 'trash_items', 'restore_items', 'convert_items', 'create_note', 'append_to_note', 'update_item', 'link_items', 'unlink_items', 'show_collection_on_dashboard'];
+    'archive_items', 'unarchive_items', 'trash_items', 'restore_items', 'convert_items', 'create_note', 'append_to_note', 'update_item', 'link_items', 'unlink_items', 'show_collection_on_dashboard',
+    'import_ai_threads'];
   assert.deepEqual([...names].sort(), [...reads, ...writes].sort());
   for (const name of reads) assert.equal(LIBRARY_TOOLS.find(tool => tool.name === name).access, 'read', name);
   for (const name of writes) assert.equal(LIBRARY_TOOLS.find(tool => tool.name === name).access, 'write', name);
@@ -78,6 +79,11 @@ test('every tool schema is strict-compatible: an object with properties, additio
   assert.ok(!toolDefinitions().some(tool => ['get_dashboard', 'show_collection_on_dashboard'].includes(tool.name)), 'dashboard tools need a dashboard adapter');
   assert.deepEqual(toolDefinitions({ dashboard: true }).filter(tool => /dashboard/.test(tool.name)).map(tool => tool.name), ['get_dashboard', 'show_collection_on_dashboard']);
   assert.ok(toolDefinitions({ write: false }).every(tool => LIBRARY_TOOLS.find(entry => entry.name === tool.name).access === 'read'));
+  // The AI thread tools need the thread adapters: reads with Threadkeeper or saved chats, the import with Threadkeeper.
+  const threadTools = ['search_ai_threads', 'get_ai_threads', 'import_ai_threads'];
+  assert.ok(!toolDefinitions().some(tool => threadTools.includes(tool.name)), 'thread tools need a thread adapter');
+  assert.deepEqual(toolDefinitions({ threads: true }).filter(tool => threadTools.includes(tool.name)).map(tool => tool.name), threadTools);
+  assert.deepEqual(toolDefinitions({ threads: true, threadImport: false }).filter(tool => threadTools.includes(tool.name)).map(tool => tool.name), ['search_ai_threads', 'get_ai_threads']);
   assert.deepEqual(Object.keys(toolDefinitions()[0]).sort(), ['description', 'inputSchema', 'name']);
 });
 

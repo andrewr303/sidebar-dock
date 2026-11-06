@@ -35,14 +35,14 @@ const TOOL_ROWS = 3;
 // Write tools (lib/ai/tools.js): their calls are shown as proposal cards, never as tool-step rows.
 export const WRITE_TOOLS = new Set(['create_collection', 'move_items', 'add_tags', 'remove_tags', 'set_favorite', 'archive_items', 'trash_items', 'create_note',
   'append_to_note', 'update_item', 'save_links', 'convert_items', 'restore_items', 'unarchive_items', 'update_collection', 'delete_collection', 'rename_tag',
-  'delete_tag', 'link_items', 'unlink_items', 'show_collection_on_dashboard']);
+  'delete_tag', 'link_items', 'unlink_items', 'show_collection_on_dashboard', 'import_ai_threads']);
 // Proposal ops whose items can be left out in Review (their itemIds are existing items, or links still to be saved).
 const ITEM_CHANGES = new Set(['move_items', 'add_tags', 'remove_tags', 'set_favorite', 'archive_items', 'trash_items', 'update_item', 'save_links', 'convert_items',
-  'restore_items', 'unarchive_items', 'rename_tag', 'link_items', 'unlink_items']);
+  'restore_items', 'unarchive_items', 'rename_tag', 'link_items', 'unlink_items', 'import_ai_threads']);
 const CHANGE_ICONS = { create_collection: 'folder-plus', move_items: 'folder-input', add_tags: 'hash', remove_tags: 'hash', set_favorite: 'star', archive_items: 'archive',
   trash_items: 'trash-2', create_note: 'sticky-note', append_to_note: 'notebook-pen', update_item: 'pencil', save_links: 'bookmark-plus', convert_items: 'repeat',
   restore_items: 'rotate-ccw', unarchive_items: 'archive-restore', update_collection: 'folder-open', delete_collection: 'trash-2', rename_tag: 'tag', link_items: 'link',
-  unlink_items: 'unlink', add_dashboard_widget: 'layout-dashboard' };
+  unlink_items: 'unlink', add_dashboard_widget: 'layout-dashboard', import_ai_threads: 'messages-square' };
 const DESTRUCTIVE = new Set(['trash_items', 'delete_collection']);
 /** The icon a proposal row shows for an op (a plain circle for an op this version does not know). */
 export const changeIcon = op => CHANGE_ICONS[op] || 'circle';
@@ -194,13 +194,13 @@ export function classifyError({ code = '', message = '', aborted = false } = {})
 // Past tense for receipts; lib/ai/tools.js (labelFor) words its tool results the same way. Unknown verbs stay as they are.
 const PAST_VERBS = { Create: 'Created', Move: 'Moved', Add: 'Added', Remove: 'Removed', Archive: 'Archived', Unarchive: 'Unarchived', Append: 'Appended',
   Rename: 'Renamed', Update: 'Updated', Save: 'Saved', Turn: 'Turned', Change: 'Changed', Convert: 'Converted', Restore: 'Restored', Delete: 'Deleted',
-  Link: 'Linked', Unlink: 'Unlinked', Replace: 'Replaced', Clear: 'Cleared', Mark: 'Marked', Pin: 'Pinned', Unpin: 'Unpinned', Merge: 'Merged' };
+  Link: 'Linked', Unlink: 'Unlinked', Replace: 'Replaced', Clear: 'Cleared', Mark: 'Marked', Pin: 'Pinned', Unpin: 'Unpinned', Merge: 'Merged', Import: 'Imported' };
 const PAST_PHRASES = [[/^Show (.+) on the dashboard$/, 'Added $1 to the dashboard'], [/\bmoves? (to Inbox|up a level)\b/g, 'moved $1']];
 const pastTense = label => PAST_PHRASES.reduce((value, [from, to]) => value.replace(from, to), text(label))
   .replace(/^([A-Z][a-z]+) /, (match, verb) => PAST_VERBS[verb] ? `${PAST_VERBS[verb]} ` : match);
 const changeCount = change => Number.isFinite(change?.count) ? change.count : (change?.itemIds || []).length;
 // "Save 17 links to …" with 2 left out reads "Save 15 links to …": the first count of what the change acts on is rewritten.
-const recount = (label, total, left) => text(label).replace(new RegExp(`\\b${total} (item|link|note|bookmark|article|image|video|file)s?\\b`), (match, noun) => plural(left, noun));
+const recount = (label, total, left) => text(label).replace(new RegExp(`\\b${total} (item|link|note|bookmark|article|image|video|file|chat)s?\\b`), (match, noun) => plural(left, noun));
 const isSkipped = (change, out) => !!out?.size && changeCount(change) - out.size <= 0;
 
 /**
@@ -405,6 +405,39 @@ const popoverOpen = (ctx, name) => ctx.state.popover?.name === name;
 const threadMessages = s => [...(s.conversation?.messages || []), ...(s.run ? [s.run.user, s.run.message] : [])];
 const findMessage = (s, id) => threadMessages(s).find(message => message.id === id) || null;
 const liveItem = (ctx, id) => { const item = ctx.select?.byId?.(id); return item && !item.deletedAt ? item : null; };
+// An AI thread an answer cites that is not a live saved item: from the engine's early 'sources' event while the answer
+// streams, then from the saved citation (which keeps its thread key).
+const threadSourceOf = (message, id) => (message?.citations || []).find(source => source?.id === id && source.kind === 'ai_thread')
+  || (message?.threadSources || []).find(source => source?.id === id && source.kind === 'ai_thread') || null;
+const isThreadCitation = source => source?.kind === 'ai_thread' && typeof source.threadKey === 'string' && !!source.threadKey;
+// A cited AI thread: opens the chat when it is saved in Still; otherwise a menu offers to import it (the user's own
+// click, so a chat they deleted earlier can come back) or to open it in Threadkeeper.
+async function openThreadCitation(ctx, el, { id, threadKey }) {
+  const key = threadKey || threadMessages(st(ctx)).flatMap(message => message.citations || []).find(source => source?.id === id && source.threadKey)?.threadKey || '';
+  let resolved = null;
+  try { resolved = await ctx.ai?.resolveThreadCitation?.({ id, threadKey: key }); } catch { resolved = null; }
+  if (resolved?.itemId) { ctx.openItem(resolved.itemId); return; }
+  if (!resolved?.canImport && !resolved?.canOpen) { ctx.toast('This AI thread is not saved in Still, and Threadkeeper is not connected right now.'); return; }
+  const target = { id, threadKey: resolved.threadKey || key };
+  ctx.openMenu(el, [
+    ...(resolved.canImport ? [{ label: 'Import to Still', icon: 'download', run: async () => {
+      try {
+        const { itemId } = await ctx.ai.importThreadCitation(target);
+        ctx.toast('Chat imported', { action: { label: 'Open', run: () => ctx.openItem(itemId) } });
+      } catch (error) { ctx.toast(text(error?.message) || 'This thread could not be imported.'); }
+    } }] : []),
+    ...(resolved.canOpen ? [{ label: 'Open in Threadkeeper', icon: 'external-link', run: async () => {
+      try { await ctx.ai.openThreadInThreadkeeper(target.threadKey); } catch (error) { ctx.toast(text(error?.message) || 'Threadkeeper could not open this thread.'); }
+    } }] : []),
+  ]);
+}
+let warmedAt = 0;
+// Wakes Threadkeeper when the assistant shows (at most every two minutes), so the first question does not wait for it.
+function warmThreads(ctx) {
+  if (typeof ctx.ai?.warmThreads !== 'function' || Date.now() - warmedAt < 120000) return;
+  warmedAt = Date.now();
+  ctx.ai.warmThreads().catch?.(() => {});
+}
 // The full-screen assistant: the 'assistant' view of a full tab or the new tab (the side panel shows the Ask tab instead).
 const onPage = ctx => !ctx.env.isSidepanel && ctx.state.view === 'assistant';
 const aiVisible = ctx => ctx.env.isSidepanel ? ctx.state.panel?.kind === 'ai' || (!ctx.state.panel && ctx.state.sideTab === 'ask')
@@ -659,6 +692,8 @@ function onEvent(ctx, run, event) {
       break;
     case 'tool':
       m.tools.push({ id: event.id, name: event.name, summary: text(event.summary), result: event.result, isError: !!event.isError });
+      // Any tool that read thread text (get_items or search_library on a chat, the AI thread tools) says so on its event.
+      if (event.usedThreads === true || /_ai_threads$/.test(text(event.name))) m.usedThreads = true;
       break;
     case 'proposal':
       registerProposal(run, event.proposal);
@@ -676,6 +711,11 @@ function onEvent(ctx, run, event) {
       break;
     case 'citations':
       m.citations = Array.isArray(event.items) ? event.items : [];
+      break;
+    case 'sources':
+      // AI threads in this answer's context: their [[tk:…]] citations render while the answer streams.
+      m.threadSources = (Array.isArray(event.items) ? event.items : []).filter(source => source && typeof source.id === 'string');
+      m.usedThreads = true;
       break;
     case 'error':
       m.error = text(event.message) || 'The assistant could not answer.';
@@ -1053,6 +1093,7 @@ export function renderAiPanel(ctx, { surface = ctx.env?.isSidepanel ? 'side' : '
   const resolved = contextFor(ctx);
   const research = ready ? researchOf(s) : null;
   watchStale(ctx, research);
+  if (ready) warmThreads(ctx);
   return html`<section class="ai-panel" data-surface="${surface}" aria-label="Assistant">
     ${head === undefined ? renderHead(ctx, surface, hasThread) : head}
     ${research ? renderResearchBar(ctx, research) : ''}
@@ -1284,11 +1325,13 @@ function renderQuestion(ctx, message, { last }) {
 function citationsFor(ctx, message) {
   if (message.citations?.length) return message.citations;
   const page = st(ctx).run?.scope?.page;
-  return streamingCitations(message.text, id => id === 'page:current' ? page || null : liveItem(ctx, id));
+  return streamingCitations(message.text, id => id === 'page:current' ? page || null : liveItem(ctx, id) || threadSourceOf(message, id))
+    .map(source => { const thread = threadSourceOf(message, source.id); return thread && !liveItem(ctx, source.id) ? { ...source, kind: 'ai_thread', threadKey: text(thread.threadKey) } : source; });
 }
 
-function renderMd(ctx, value, citations) {
-  return raw(numberCitations(renderMarkdown(value, { citations }), citations));
+// Answers built on AI thread text show remote images as links (the thread text is untrusted and may point at trackers).
+function renderMd(ctx, value, citations, { images = true } = {}) {
+  return raw(numberCitations(renderMarkdown(value, { citations, ...(images ? {} : { images: false }) }), citations));
 }
 
 function renderAnswer(ctx, view, message, { last }) {
@@ -1307,7 +1350,7 @@ function renderAnswer(ctx, view, message, { last }) {
     if (!part.trim()) return;
     // The key changes whenever the text does, so a stored answer that grows (followed from another window) repaints.
     const key = live ? `md:${message.id}:${from}:${part.length}${tail ? ':tail' : ''}` : `md:${message.id}:${from}:${part.length}:${signature}`;
-    blocks.push(skipBlock(view, key, cx('ai-md markdown-body is-compact', tail && 'is-typing'), () => renderMd(ctx, part, citations)));
+    blocks.push(skipBlock(view, key, cx('ai-md markdown-body is-compact', tail && 'is-typing'), () => renderMd(ctx, part, citations, { images: !message.usedThreads })));
   };
   for (const { proposal, at } of cards) {
     pushText(body.slice(cursor, at), cursor);
@@ -1384,6 +1427,7 @@ function toolLabel(tool) {
   const query = text(tool.result?.query || tool.query);
   const count = tool.result?.count;
   if (tool.name === 'search_library' && query) return `Searched library for “${query}”${Number.isFinite(count) ? ` · ${plural(count, 'result')}` : ''}`;
+  if (tool.name === 'search_ai_threads' && query) return `Searched AI threads for “${query}”${Number.isFinite(count) ? ` · ${plural(count, 'result')}` : ''}`;
   return tool.summary || tool.name.replace(/_/g, ' ');
 }
 
@@ -1445,7 +1489,7 @@ function renderActions(ctx, message, { last, citations }) {
   const note = openNote(ctx);
   const sourcesKey = `sources:${message.id}`;
   const showSources = s.open.has(sourcesKey);
-  const sources = citations.filter(source => source.id === 'page:current' || liveItem(ctx, source.id));
+  const sources = citations.filter(source => source.id === 'page:current' || liveItem(ctx, source.id) || isThreadCitation(source));
   return html`<div class="${cx('ai-actions', last && 'is-last')}" role="toolbar" aria-label="Answer actions">
     ${iconButton({ icon: 'copy', label: 'Copy', size: 'sm', action: 'ai.copy', data: { id: message.id } })}
     ${iconButton({ icon: 'notebook-pen', label: 'Save as note', size: 'sm', action: 'ai.save-note', data: { id: message.id } })}
@@ -1459,12 +1503,17 @@ function renderActions(ctx, message, { last, citations }) {
   ${showSources ? html`<ol class="ai-sources" role="list" data-key="src:${message.id}">${renderSourceRows(ctx, sources)}</ol>` : ''}`;
 }
 
-/** Numbered rows for the sources that can still be opened (saved items and the page an answer read). */
+/**
+ * Numbered rows for the sources that can still be opened: saved items, the page an answer read, and AI threads (which
+ * open the saved chat, or offer to import the thread or open it in Threadkeeper).
+ */
 export function renderSourceRows(ctx, citations = []) {
-  return citations.filter(source => source.id === 'page:current' || liveItem(ctx, source.id)).map(source => source.id === 'page:current'
+  return citations.filter(source => source.id === 'page:current' || liveItem(ctx, source.id) || isThreadCitation(source)).map(source => source.id === 'page:current'
     ? html`<li><button type="button" class="ai-source" data-action="ai.cite" data-id="page:current" data-url="${source.url}"><span class="ai-source-n">${source.n}</span>${siteIcon(source.url, { size: 16 })}
       <span class="ai-source-title">${source.title || 'This page'}</span><span class="ai-source-meta">${domainOf(source.url)}</span></button></li>`
-    : sourceRow(ctx, liveItem(ctx, source.id), source.n));
+    : liveItem(ctx, source.id) ? sourceRow(ctx, liveItem(ctx, source.id), source.n)
+      : html`<li><button type="button" class="ai-source" data-action="ai.cite" data-id="${source.id}" data-thread="${source.threadKey}"><span class="ai-source-n">${source.n}</span>
+        <span class="ai-source-icon">${icon('messages-square', { size: 14 })}</span><span class="ai-source-title">${source.title || 'AI thread'}</span><span class="ai-source-meta">AI thread</span></button></li>`);
 }
 
 // ------------------------------------------------------------------------------------------------ rendering: proposals
@@ -1612,6 +1661,11 @@ export function changeSub(ctx, change, out = new Set(), { created = new Map() } 
         noteSnippet(note.markdown)].filter(Boolean).join(' · ');
     }
     case 'append_to_note': return noteSnippet(change.note?.markdown);
+    case 'import_ai_threads': {
+      const chats = kept(change.items?.length ? change.items : change.chats);
+      return [andMore(chats.slice(0, 3).map(chat => [text(chat.title), text(chat.provider)].filter(Boolean).join(' · ')).filter(Boolean), changeCount(change) - out.size),
+        taggedWith(uniqueTags([change.tags || []]))].filter(Boolean).join(' · ');
+    }
     default:
       if (!ITEM_CHANGES.has(change.op)) return '';
       return andMore(kept(change.items).slice(0, 3).map(item => text(item.title)).filter(Boolean), changeCount(change) - out.size);
@@ -1634,6 +1688,7 @@ export function changeLabel(ctx, change, included, createdIds = new Set(), creat
     case 'archive_items': return `Archive ${items}`;
     case 'trash_items': return `Move ${items} to Trash`;
     case 'save_links': return html`Save ${plural(included, 'link')} to ${pill()}`;
+    case 'import_ai_threads': return typeof change.collectionId === 'string' ? html`Import ${plural(included, 'chat')} to ${pill()}` : `Import ${plural(included, 'chat')} into Still`;
     case 'update_collection': {
       const patch = change.patch || {};
       const only = Object.keys(patch).length === 1 ? Object.keys(patch)[0] : '';
@@ -1699,7 +1754,7 @@ function renderProposal(ctx, proposal) {
 function renderReview(ctx, proposal, change, index, ui) {
   const out = ui.excluded;
   const listed = change.items || [];
-  const noun = change.op === 'save_links' ? 'link' : 'item';
+  const noun = change.op === 'save_links' ? 'link' : change.op === 'import_ai_threads' ? 'chat' : 'item';
   const included = listed.filter(item => !out.has(item.id)).length;
   const all = included === listed.length;
   return html`<div class="ai-review">
@@ -2205,6 +2260,8 @@ registerActions({
       if (isWebUrl(url)) ctx.dispatch('app.open-url', { el, data: { url } });
       return;
     }
+    if (liveItem(ctx, data.id)) { ctx.openItem(data.id); return; }
+    if (data.thread || /^tk:/.test(text(data.id))) { openThreadCitation(ctx, el, { id: text(data.id), threadKey: text(data.thread) }); return; }
     // External sources (such as paperclip:PAP-12 from the assistant's Paperclip tools) are not library items: open
     // the URL their tool reported instead.
     if (/^[a-z][a-z0-9-]*:/.test(data.id || '')) {

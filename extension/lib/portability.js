@@ -8,7 +8,9 @@
 //     dashboard?,                                            boards and widgets (dashboard-store portableDashboard)
 //     attachments: [{ id, name, mime, data: 'data:<mime>;base64,…', ref?: 'wallpaper' }],
 //     conversations?: { version: 2, conversations },         assistant chats (ai/conversations.js exportAll)
-//     aiConfig?: { version: 2, settings, connections } }     AI setup without keys (ai/connections.js exportAiConfig)
+//     aiConfig?: { version: 2, settings, connections },      AI setup without keys (ai/connections.js exportAiConfig)
+//     chats?: { version: 1, records, transcripts } }         AI chats' summaries and transcripts (lib/chat-data.js), for the
+//                                                            library's chat items only; manifest.counts.chats counts those items
 // Never in a backup: API keys, account and integration tokens, snapshots, caches. Version 1 files (library, dashboard
 // and item files) still restore.
 //
@@ -21,6 +23,8 @@ import { LIBRARY_SCHEMA_VERSION, libraryVersion } from './storage/migrations.js'
 import { createSnapshot } from './storage/snapshots.js';
 import { getDeviceId } from './storage/meta.js';
 import { pageIndex, parentOf, childrenOf, parsePageBlockLine } from './pages.js';
+import { chatItemId } from './threadkeeper/protocol.js';
+import { validateChatBackup } from './chat-data.js';
 
 export const BACKUP_VERSION = 2;
 export const MAX_BACKUP_BYTES = 200 * 1024 * 1024;
@@ -30,7 +34,7 @@ const MAX_STRING = MAX_BACKUP_BYTES;
 // Chrome refuses URLs over 2 MB, so no saved page has a longer one.
 const MAX_URL = 2 * 1024 * 1024;
 const MAX_LIST = 100000;
-const TYPES = new Set(['bookmark', 'article', 'image', 'video', 'file', 'note']);
+const TYPES = new Set(['bookmark', 'article', 'image', 'video', 'file', 'note', 'chat']);
 const BAD_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 // Settings keys that hold credentials or device wiring (the store uses the same rule for imports).
 const SECRET_KEY = /token|secret|password|passphrase|credential|bridge|integration|api[-_]?key|authorization|cookie/i;
@@ -165,6 +169,7 @@ function checkItem(item, fix = null) {
   attempt('collectionId', () => { if (item.collectionId) validId(item.collectionId, 'Collection'); }, '');
   attempt('parentId', () => { if (item.parentId) validId(item.parentId, 'Parent page'); }, '');
   if (['bookmark', 'image', 'video'].includes(item.type) && !item.url && !item.attachmentId && !item.cover) throw new Error('A bookmark or media item needs a URL, cover or attachment.');
+  checkChat(item);
   for (const field of ITEM_FLAGS) if (has(item, field) && typeof item[field] !== 'boolean') repair(field, `Item ${field} must be a boolean.`);
   if (has(item, 'size') && item.size !== null && !(Number.isFinite(item.size) && item.size >= 0 && item.size <= Number.MAX_SAFE_INTEGER)) repair('size', 'An item has an invalid file size.');
   // A trashed item with a damaged date stays in Trash rather than coming back.
@@ -184,6 +189,15 @@ function checkItem(item, fix = null) {
       if (kept.length !== item.highlights.length) repair('highlights', '', kept);
     }
   }
+}
+
+// A chat (from Threadkeeper) needs its thread: { chat: { threadKey } } with id = chatItemId(threadKey), as the store's
+// normalizeItem requires. Nothing else in it can stop a restore (the store coerces every other chat field), so there is
+// nothing to repair: a chat without its thread cannot be restored at all.
+function checkChat(item) {
+  if (item.type !== 'chat') return;
+  const threadKey = isObject(item.chat) && typeof item.chat.threadKey === 'string' ? item.chat.threadKey.trim() : '';
+  if (!threadKey || threadKey.length > 600 || chatItemId(threadKey) !== item.id) throw new Error('A chat needs its Threadkeeper thread.');
 }
 
 function checkCollection(collection) {
@@ -369,6 +383,14 @@ const SOURCES = {
   conversations: async () => (await import('./ai/conversations.js')).createConversationStore(),
   aiConfig: async () => import('./ai/connections.js'),
   snapshot: async () => createSnapshot,
+  chatData: async () => {
+    const chats = await import('./chat-data.js');
+    // In the extension only the service worker writes the chat store (inside its Threadkeeper apply mutex); the page
+    // sends the restored part there. The preview build has no worker and writes its own.
+    const client = await import('./threadkeeper/client.js');
+    return { list: chats.listChatRecords, getTranscript: chats.getChatTranscript,
+      importBackup: client.canUseWorker() ? client.importChatBackupInWorker : chats.importChatBackup };
+  },
   deviceId: async () => getDeviceId(),
 };
 const sourceOf = (options, key) => (has(options, key) ? options[key] : SOURCES[key]());
@@ -425,11 +447,43 @@ export async function createFullBackup(store, options = {}) {
     return value;
   });
 
+  // AI chats: the summary records of the library's chats now; their transcripts after the files (they go first when
+  // the backup runs out of room, because Threadkeeper can send them again).
+  const limit = Number(options.maxBytes) > 0 ? Number(options.maxBytes) : MAX_BACKUP_BYTES;
+  const chatIds = new Set(library.items.filter(item => item.type === 'chat').map(item => item.id));
+  let chatSource = null;
+  if (chatIds.size) {
+    await part('chatData', 'Your AI chats\' summaries and transcripts', async source => {
+      if (!source?.list) return null;
+      chatSource = source;
+      const records = [];
+      let damaged = 0, budget = Math.floor(limit / 2);
+      const rows = plainCopy(await source.list()).filter(record => isObject(record) && chatIds.has(record.id))
+        .map(record => ({ record, size: byteLength(JSON.stringify(record, null, 2)) })).sort((a, b) => a.size - b.size);
+      let left = 0;
+      for (const { record, size } of rows) {
+        try { guardJson(record, 3); validateChatBackup({ version: 1, records: [record], transcripts: [] }); } catch { damaged++; continue; }
+        if (size > budget) { left++; continue; }
+        budget -= size;
+        const { transcript, ...rest } = record;
+        records.push({ ...rest, transcript: null, ...(transcript ? { transcriptMeta: transcript } : {}) });
+      }
+      if (damaged) warnings.push(`Left out the saved summaries of ${plural(damaged, 'damaged AI chat')}.`);
+      if (left) warnings.push(`Left out the saved summaries of ${plural(left, 'AI chat')} to keep the backup under ${Math.round(limit / 1024 / 1024)} MB; Threadkeeper can send them again.`);
+      return { version: 1, records, transcripts: [] };
+    });
+  }
+
   const backup = {
     backupVersion: BACKUP_VERSION, schemaVersion: library.schemaVersion, exportedAt: new Date().toISOString(), manifest: null,
     ...library, ...(parts.dashboard ? { dashboard: parts.dashboard } : {}), attachments: [],
     ...(parts.conversations ? { conversations: parts.conversations } : {}), ...(parts.aiConfig ? { aiConfig: parts.aiConfig } : {}),
+    ...(parts.chatData ? { chats: parts.chatData } : {}),
   };
+  // Transcript sizes come from the records, so choosing them never loads every transcript.
+  const transcriptPlan = (parts.chatData?.records || []).filter(record => record.transcriptMeta).map(record => ({ record, meta: record.transcriptMeta }))
+    .sort((a, b) => (a.meta.bytes || 0) - (b.meta.bytes || 0));
+  for (const record of parts.chatData?.records || []) delete record.transcriptMeta;
 
   // Files: the wallpaper first, then item files smallest first, while the file stays under the import limit.
   // Only an image wallpaper needs its bytes; other kinds can keep the id of an older upload, which is not exported.
@@ -448,7 +502,6 @@ export async function createFullBackup(store, options = {}) {
   }
   entries.push(...itemFiles.sort((a, b) => a.record.blob.size - b.record.blob.size));
   // Measured against the readable JSON (the larger form); serializeBackup makes the exact check on the final text.
-  const limit = Number(options.maxBytes) > 0 ? Number(options.maxBytes) : MAX_BACKUP_BYTES;
   let room = entries.length ? limit - byteLength(JSON.stringify(backup, null, 2)) - Math.min(64 * 1024, limit / 8) : 0;
   let corrected = 0;
   for (const { id, record, ref } of entries) {
@@ -479,6 +532,30 @@ export async function createFullBackup(store, options = {}) {
   if (skipped.budget) warnings.push(`${plural(skipped.budget, 'file')} did not fit: a backup can hold up to ${Math.round(limit / 1024 / 1024)} MB. Download the largest files from your library to keep a copy.`);
   if (missing.wallpaper && !skipped.budget) warnings.push('Your wallpaper image could not be read, so it is not in the backup.');
 
+  if (backup.chats && transcriptPlan.length) {
+    let roomLeft = limit - byteLength(JSON.stringify(backup, null, 2)) - Math.min(64 * 1024, limit / 8);
+    let dropped = 0, unreadable = 0;
+    for (const { record, meta } of transcriptPlan) {
+      // Readable JSON indents each message line deeply; 160 bytes per message covers it.
+      const estimate = (meta.bytes || 0) + (meta.stored || 0) * 160 + 512;
+      if (estimate > roomLeft) { dropped++; continue; }
+      let row;
+      try {
+        row = plainCopy(await chatSource.getTranscript(record.id));
+        if (!isObject(row) || row.revision !== record.revision) { unreadable++; continue; }
+        guardJson(row, 3);
+        validateChatBackup({ version: 1, records: [record], transcripts: [row] });
+      } catch { unreadable++; continue; }
+      const cost = byteLength(JSON.stringify(row)) + row.messages.length * 160 + 512;
+      if (cost > roomLeft) { dropped++; continue; }
+      roomLeft -= cost;
+      backup.chats.transcripts.push(row);
+      record.transcript = { revision: row.revision, totalMessages: row.totalMessages, stored: row.messages.length, truncated: row.truncated === true };
+    }
+    if (dropped) warnings.push(`${plural(dropped, 'AI chat transcript')} did not fit in the backup and ${dropped === 1 ? 'is' : 'are'} left out; the chat${dropped === 1 ? '' : 's'} and ${dropped === 1 ? 'its' : 'their'} summar${dropped === 1 ? 'y are' : 'ies are'} included, and Threadkeeper can send ${dropped === 1 ? 'it' : 'them'} again.`);
+    if (unreadable) warnings.push(`${plural(unreadable, 'AI chat transcript')} could not be read on this device and ${unreadable === 1 ? 'is' : 'are'} not in the backup.`);
+  }
+
   let deviceId = '';
   try { deviceId = String(await sourceOf(options, 'deviceId') || ''); } catch { deviceId = ''; }
   backup.manifest = {
@@ -486,7 +563,8 @@ export async function createFullBackup(store, options = {}) {
     ...(deviceId ? { deviceId } : {}),
     counts: { items: backup.items.length, collections: backup.collections.length, notes: backup.items.filter(item => item.type === 'note').length,
       attachments: backup.attachments.length, boards: backup.dashboard?.boards?.length || 0,
-      conversations: backup.conversations?.conversations?.length || 0, aiConnections: backup.aiConfig?.connections?.length || 0 },
+      conversations: backup.conversations?.conversations?.length || 0, aiConnections: backup.aiConfig?.connections?.length || 0,
+      chats: backup.items.filter(item => item.type === 'chat').length },
     warnings,
   };
   return backup;
@@ -565,12 +643,13 @@ function collectionResolver(local, created) {
   };
 }
 // The type column: blank or "link" is a bookmark. Only notes and articles exist without a link; a file row (its bytes
-// are not in a CSV) or an unknown type with a link comes in as a bookmark.
+// are not in a CSV), a chat row (chats come only from Threadkeeper; its link is the original conversation) or an unknown
+// type with a link comes in as a bookmark.
 function csvType(value, url) {
   const name = value.trim().toLowerCase();
   const type = !name || name === 'link' ? 'bookmark' : name;
   if (!url) return type === 'note' || type === 'article' ? type : '';
-  return TYPES.has(type) && type !== 'file' ? type : 'bookmark';
+  return TYPES.has(type) && type !== 'file' && type !== 'chat' ? type : 'bookmark';
 }
 function csvLibrary(source, localCollections = []) {
   const rows = parseCsv(source);
@@ -614,7 +693,8 @@ export function exportItemsCsv(library) {
     while (id && byId.has(id) && !seen.has(id)) { seen.add(id); names.unshift(byId.get(id).name.trim()); id = byId.get(id).parentId; }
     return names.join(PATH_SEPARATOR);
   };
-  const rows = snapshot.items.filter(item => !item.deletedAt).map(item => [item.url || '', item.title || '', (item.tags || []).join(', '), item.content || '',
+  // A chat has no url of its own; its row carries the original conversation's link (it comes back in as a bookmark).
+  const rows = snapshot.items.filter(item => !item.deletedAt).map(item => [(item.type === 'chat' ? item.sourceUrl : item.url) || '', item.title || '', (item.tags || []).join(', '), item.content || '',
     item.excerpt || '', item.type, path(item.collectionId), item.createdAt || '', item.updatedAt || '',
     item.siteName || '', item.author || '', item.publishedAt || '', item.lang || '']);
   return `﻿${[CSV_COLUMNS, ...rows].map(row => row.map(csvCell).join(',')).join('\r\n')}\r\n`;
@@ -723,6 +803,7 @@ export async function importPortableFile(file, store, options = {}) {
   const backupDashboard = validateDashboard(snapshot.dashboard);
   const backupChats = validateConversations(snapshot.conversations);
   const backupAi = validateAiConfig(snapshot.aiConfig);
+  const backupChatData = validateChatBackup(snapshot.chats, { chatIds: snapshot.items.filter(item => item.type === 'chat').map(item => item.id) });
   const wallpaper = isObject(snapshot.settings.wallpaper) ? snapshot.settings.wallpaper : null;
   const wallpaperId = typeof wallpaper?.attachmentId === 'string' ? wallpaper.attachmentId : '';
   const records = snapshot.attachments ?? [];
@@ -854,6 +935,11 @@ export async function importPortableFile(file, store, options = {}) {
     const full = Number(result.conversations?.full) || 0;
     if (full) warnings.push(`${plural(full, 'assistant chat')} ${full === 1 ? 'was' : 'were'} not restored: this device already keeps the most chats it can. Delete some chats, then restore this file again.`);
   });
+  // AI chat summaries and transcripts, for the chats the merge took (a chat kept from this device keeps its own data).
+  await restore('chatData', backupChatData, 'the AI chat summaries and transcripts in this file', async target => {
+    if (!target.importBackup) return;
+    result.chats = await target.importBackup(backupChatData, { ids: taken.filter(item => item.type === 'chat').map(item => item.id) });
+  });
   await restore('aiConfig', backupAi, 'the AI connections in this file', async target => {
     if (!target.importAiConfig) return;
     const outcome = await target.importAiConfig(backupAi);
@@ -867,7 +953,7 @@ export async function importPortableFile(file, store, options = {}) {
 
 export function exportBookmarkHtml(library) {
   const snapshot = exportableLibrary(library);
-  const entries = snapshot.items.filter(item => !item.deletedAt && item.url);
+  const entries = snapshot.items.filter(item => !item.deletedAt && item.url && item.type !== 'chat');
   const renderItems = collectionId => entries.filter(item => (item.collectionId || '') === collectionId).map(item => `    <DT><A HREF="${escapeHtml(item.url)}"${item.createdAt ? ` ADD_DATE="${Math.floor(Date.parse(item.createdAt) / 1000)}"` : ''} TAGS="${escapeHtml((item.tags || []).join(','))}">${escapeHtml(item.title || item.url)}</A>${item.content ? `\n    <DD>${escapeHtml(item.content)}` : ''}`).join('\n');
   const renderCollection = parentId => snapshot.collections.filter(collection => (collection.parentId || '') === parentId).map(collection => `    <DT><H3>${escapeHtml(collection.name)}</H3>\n    <DL><p>\n${renderItems(collection.id)}\n${renderCollection(collection.id)}\n    </DL><p>`).join('\n');
   return `<!DOCTYPE NETSCAPE-Bookmark-file-1>\n<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">\n<TITLE>Still bookmarks</TITLE>\n<H1>Still bookmarks</H1>\n<DL><p>\n${renderItems('')}\n${renderCollection('')}\n</DL><p>\n`;
@@ -927,7 +1013,14 @@ export function exportNotesMarkdown(library) {
     const parent = parentOf(pages, item);
     if (parent) lines.push('', { parent: parent.id });
     if (item.url) lines.push('', `Source: <${item.url}>`);
-    const byline = [item.siteName, item.author && `by ${item.author}`, day(item.publishedAt) && `published ${day(item.publishedAt)}`].filter(Boolean).map(oneLine);
+    // A chat's section holds the user's own notes on it, under where the conversation came from.
+    if (item.type === 'chat') {
+      const chat = isObject(item.chat) ? item.chat : {};
+      const about = [chat.providerLabel || item.siteName || 'AI', chat.project && `project ${chat.project}`, Number(chat.messageCount) > 0 && plural(Number(chat.messageCount), 'message')].filter(Boolean).map(oneLine);
+      lines.push('', `_AI chat · ${about.join(' · ').replace(/[_*]/g, '\\$&')}_`);
+      if (isWebUrl(item.sourceUrl)) lines.push('', `Original conversation: <${item.sourceUrl}>`);
+    }
+    const byline = item.type === 'chat' ? [] : [item.siteName, item.author && `by ${item.author}`, day(item.publishedAt) && `published ${day(item.publishedAt)}`].filter(Boolean).map(oneLine);
     if (byline.length) lines.push('', `_${byline.join(' · ').replace(/[_*]/g, '\\$&')}_`);
     const body = String(item.content || '').replace(/^(?:[ \t]*\r?\n)+/, '').trimEnd();
     if (body) {

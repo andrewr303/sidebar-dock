@@ -10,7 +10,7 @@ import { canonicalUrl } from '../lib/store.js';
 import { customIcon, customIconSrc } from './item-media.js';
 
 const TILE_HUES = ['red', 'orange', 'amber', 'green', 'teal', 'cyan', 'blue', 'indigo', 'violet', 'pink'];
-const TYPE_HUES = { note: 'yellow', image: 'violet', video: 'pink', file: 'gray' };
+const TYPE_HUES = { note: 'yellow', image: 'violet', video: 'pink', file: 'gray', chat: 'indigo' };
 const MEDIA_TYPES = new Set(['image', 'video']);
 const brokenCovers = new Set();
 let notifyBroken = null;
@@ -97,7 +97,13 @@ const previewOf = (ctx, item, compact = true) => remember(`md:${item.id}:${item.
   () => raw(renderMarkdown(notePreviewSource(item.content || item.excerpt, item.title), { compact, resolveLink: noteLinkResolver(ctx) })));
 
 export const itemDomain = item => domainOf(item.url) || domainOf(item.sourceUrl);
+// AI chats (Threadkeeper): the provider names the source; coding agents get a terminal glyph.
+const CHAT_GLYPHS = { chat: 'messages-square', coding_agent: 'square-terminal', agent: 'bot', builder: 'hammer', search: 'search', companion: 'heart' };
+const chatInfo = item => (item?.chat && typeof item.chat === 'object' ? item.chat : {});
+export const chatGlyph = item => CHAT_GLYPHS[chatInfo(item).category] || CHAT_GLYPHS.chat;
+const chatActivity = item => chatInfo(item).lastActivityAt || item.updatedAt;
 export function itemSource(item) {
+  if (item.type === 'chat') return String(chatInfo(item).providerLabel || item.siteName || '').trim() || 'Chat';
   if (item.type === 'note') return itemDomain(item) || 'Note';
   return itemDomain(item) || item.fileName || TYPE_LABELS[item.type] || 'Item';
 }
@@ -126,7 +132,8 @@ const hueStyle = hue => hue.name ? `--gen:var(--c-${hue.name})` : `--gen:${hue.h
 export function generatedArt(ctx, item, { size = 'md', className } = {}) {
   const hue = tileHue(item, item.collectionId ? ctx.select.collection(item.collectionId) : null);
   const domain = itemDomain(item);
-  const glyph = item.type === 'note' || item.type === 'file' || !domain || (MEDIA_TYPES.has(item.type) && !item.url)
+  const glyph = item.type === 'chat' ? icon(chatGlyph(item), { size: size === 'lg' ? 32 : size === 'sm' ? 18 : 22 })
+    : item.type === 'note' || item.type === 'file' || !domain || (MEDIA_TYPES.has(item.type) && !item.url)
     ? icon(TYPE_ICONS[item.type] || 'bookmark', { size: size === 'lg' ? 32 : size === 'sm' ? 18 : 22 })
     : html`<span class="item-gen-letter">${domain[0].toUpperCase()}</span>`;
   return html`<span class="${cx('item-gen', `item-gen-${size}`, className)}" style="${hueStyle(hue)}" aria-hidden="true">${glyph}</span>`;
@@ -145,6 +152,7 @@ export function itemThumb(ctx, item, { className, size = 'md' } = {}) {
 const dot = html`<span class="item-dot" aria-hidden="true">·</span>`;
 
 function sourceBit(item, { fav = 14 } = {}) {
+  if (item.type === 'chat') return html`<span class="item-source">${icon(chatGlyph(item), { size: 12 })}<span class="item-source-text">${itemSource(item)}</span></span>`;
   if (item.type === 'note' && !itemDomain(item)) return html`<span class="item-source">${icon('sticky-note', { size: 12 })}<span class="item-source-text">Note</span></span>`;
   const url = item.url || item.sourceUrl;
   if (!url) return html`<span class="item-source">${icon(TYPE_ICONS[item.type] || 'file', { size: 12 })}<span class="item-source-text">${item.fileName || TYPE_LABELS[item.type] || 'Item'}</span></span>`;
@@ -196,11 +204,18 @@ export function indicators(ctx, item, { compact = false } = {}) {
   const tasks = progressOf(item);
   const highlights = item.highlights?.length || 0;
   if (item.reminderAt && !item.reminderNotifiedAt) parts.push(html`<span class="item-ind" title="Reminder ${shortDate(item.reminderAt)}">${icon('bell', { size: 14 })}<span class="sr-only">Reminder set</span></span>`);
+  if (item.type === 'chat') {
+    const chat = chatInfo(item);
+    const messages = Number(chat.messageCount) || 0;
+    if (chat.category === 'coding_agent') parts.push(html`<span class="item-ind" title="Coding agent session">${icon('square-terminal', { size: 14 })}<span class="sr-only">Coding agent session</span></span>`);
+    if (messages) parts.push(html`<span class="item-ind" title="${messages} ${messages === 1 ? 'message' : 'messages'}">${icon('messages-square', { size: 14 })}${messages.toLocaleString()}<span class="sr-only"> ${messages === 1 ? 'message' : 'messages'}</span></span>`);
+    if (chat.removed) parts.push(html`<span class="item-ind" title="No longer syncing from Threadkeeper">${icon('circle-dot', { size: 14 })}<span class="sr-only">No longer syncing</span></span>`);
+  }
   if (item.type === 'note' && item.sticky) parts.push(html`<span class="item-ind" title="Sticky note">${icon('sticker', { size: 14 })}<span class="sr-only">Sticky note</span></span>`);
   if (tasks.total) parts.push(html`<span class="${cx('item-ind', tasks.done === tasks.total && 'is-done')}" title="${tasks.done} of ${tasks.total} tasks done">${icon('list-checks', { size: 14 })}${tasks.done}/${tasks.total}</span>`);
   if (highlights) parts.push(html`<span class="item-ind" title="${highlights} ${highlights === 1 ? 'highlight' : 'highlights'}">${icon('highlighter', { size: 14 })}${highlights}</span>`);
   if (notes) parts.push(html`<span class="item-ind" title="${notes} ${notes === 1 ? 'note' : 'notes'} on this page">${icon('sticky-note', { size: 14 })}${notes}</span>`);
-  else if (item.type !== 'note' && item.content && !compact) parts.push(html`<span class="item-ind" title="Has a note">${icon('notebook-pen', { size: 14 })}<span class="sr-only">Has a note</span></span>`);
+  else if (item.type !== 'note' && item.content && !compact) parts.push(html`<span class="item-ind" title="${item.type === 'chat' ? 'Has your notes' : 'Has a note'}">${icon('notebook-pen', { size: 14 })}<span class="sr-only">Has a note</span></span>`);
   if (item.attachmentId && !compact) parts.push(html`<span class="item-ind" title="${item.fileName || 'Attached file'}">${icon('paperclip', { size: 14 })}<span class="sr-only">Attached file</span></span>`);
   const subpages = item.deletedAt ? 0 : ctx.select.subpageCount?.(item.id) || 0;
   if (subpages) parts.push(html`<span class="item-ind" title="${subpages} ${subpages === 1 ? 'subpage' : 'subpages'}">${icon('files', { size: 14 })}${subpages}<span class="sr-only"> ${subpages === 1 ? 'subpage' : 'subpages'}</span></span>`);
@@ -241,7 +256,7 @@ function check(item, selected) {
 function shell(ctx, item, { selected, tabStop, className, label }, inner) {
   const active = ctx.state.panel?.kind === 'item' && ctx.state.panel.id === item.id;
   if (selected) label += ', selected';
-  return html`<article class="${cx('item', className, selected && 'is-selected', active && 'is-active', item.type === 'note' && 'is-note')}"
+  return html`<article class="${cx('item', className, selected && 'is-selected', active && 'is-active', item.type === 'note' && 'is-note', item.type === 'chat' && 'is-chat')}"
     data-key="item:${item.id}" data-item-card data-id="${item.id}" data-action="app.open-item" draggable="true" data-drag-item="${item.id}"
     role="listitem" tabindex="${tabStop ? '0' : '-1'}" aria-label="${label}" ${active ? raw('aria-current="true"') : ''}>${inner}</article>`;
 }
@@ -290,6 +305,20 @@ function noteCard(ctx, item, opts) {
     <span class="note-head">${own || (collection ? html`<span class="note-dot" style="--dot:${colorVar(collection.color)}" aria-hidden="true"></span>` : '')}<span class="item-title">${item.title}</span>${item.pinned ? html`<span class="note-pin" title="Pinned">${icon('pin', { size: 14 })}<span class="sr-only">Pinned</span></span>` : ''}</span>
     <span class="note-preview markdown-body">${previewOf(ctx, item)}</span>
     <span class="item-meta">${domain ? html`<span class="item-source">${favicon(item.url, { size: 14 })}<span class="item-source-text">${domain}</span></span>${dot}` : ''}${tasks.total ? html`<span class="${cx('item-ind', tasks.done === tasks.total && 'is-done')}" title="${tasks.done} of ${tasks.total} tasks done">${icon('list-checks', { size: 14 })}${tasks.done}/${tasks.total}</span>${dot}` : ''}<span class="item-date">Edited ${sentence(relativeDate(item.updatedAt))}</span>${pathBit(ctx, item)}${item.favorite ? html`<span class="item-ind is-favorite">${icon('star', { size: 14 })}<span class="sr-only">Favorite</span></span>` : ''}</span>
+    ${rowActions(ctx, item, { ...opts, overlay: true })}`);
+}
+
+/** A chat as a card: provider and title, the gist (what the thread is about), then project, size and last activity. */
+function chatCard(ctx, item, opts) {
+  const chat = chatInfo(item);
+  const collection = item.collectionId ? ctx.select.collection(item.collectionId) : null;
+  const project = String(chat.project || '').trim();
+  const messages = Number(chat.messageCount) || 0;
+  return shell(ctx, item, { ...opts, className: cx('item-notecard', 'item-chatcard', opts.surface === 'side' && 'is-side'), label: ariaLabel(item) }, html`
+    ${check(item, opts.selected)}
+    <span class="note-head">${collection ? html`<span class="note-dot" style="--dot:${colorVar(collection.color)}" aria-hidden="true"></span>` : ''}<span class="item-title">${item.title}</span></span>
+    <span class="note-preview chat-card-gist">${item.excerpt || 'Not summarized yet'}</span>
+    <span class="item-meta">${sourceBit(item)}${project && !/^unfiled\b/i.test(project) ? html`${dot}<span class="item-source-text">${project}</span>` : ''}${messages ? html`${dot}<span class="item-ind" title="${messages} ${messages === 1 ? 'message' : 'messages'}">${icon('messages-square', { size: 14 })}${messages.toLocaleString()}</span>` : ''}${dot}<span class="item-date">${sentence(relativeDate(chatActivity(item)))}</span>${item.favorite ? html`<span class="item-ind is-favorite">${icon('star', { size: 14 })}<span class="sr-only">Favorite</span></span>` : ''}</span>
     ${rowActions(ctx, item, { ...opts, overlay: true })}`);
 }
 
@@ -358,6 +387,7 @@ export function renderItem(ctx, item, { layout = 'list', surface = 'full', index
   if (!item) return '';
   const opts = { layout, surface, index, selected, tabStop: tabStop ?? index === 0, showCollection, view };
   if (item.type === 'note' && (layout === 'cards' || layout === 'masonry')) return noteCard(ctx, item, opts);
+  if (item.type === 'chat' && (layout === 'cards' || layout === 'masonry')) return chatCard(ctx, item, opts);
   if (surface === 'side') {
     if (layout === 'cards') return item.type === 'note' ? noteCard(ctx, item, opts) : mediaCard(ctx, item, opts);
     if (layout === 'masonry') return masonryTile(ctx, item, opts);

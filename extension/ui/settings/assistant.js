@@ -21,7 +21,7 @@ const PRESET_TEXT = {
 };
 const LEVEL_CHOICES = [{ value: 'ask', label: 'Ask' }, { value: 'allow', label: 'Allow' }];
 // Words people search for that the rows do not say.
-const CATEGORY_KEYWORDS = { create: 'add new save links bookmarks notes collections folders', organize: 'move tag tags favorite archive restore link folders',
+const CATEGORY_KEYWORDS = { create: 'add new save links bookmarks notes collections folders import chats threads threadkeeper', organize: 'move tag tags favorite archive restore link folders',
   edit: 'rename change title note text description', dashboard: 'widget board new tab', delete: 'trash remove delete collection tag' };
 
 /** Settings > Assistant permissions: the preset, then Ask or Allow for each kind of change. */

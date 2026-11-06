@@ -167,6 +167,7 @@ const MARKS = {
   'chatgpt-oauth': { icon: 'message-circle', color: 'green' }, raindrop: { icon: 'cloud', color: 'blue' }, cursor: { text: 'Cu', color: 'gray' },
   vscode: { icon: 'code-xml', color: 'blue' }, chrome: { icon: 'globe', color: 'blue' }, opencode: { text: 'OC', color: 'gray' }, gemini: { text: 'G', color: 'blue' }, 'claude-desktop': { text: 'A', color: 'orange' },
   github: { icon: 'github', color: 'gray' }, linear: { text: 'L', color: 'indigo' }, producthunt: { text: 'P', color: 'orange' },
+  threadkeeper: { icon: 'messages-square', color: 'violet' },
   paperclip: { icon: 'paperclip', color: 'violet' }, copilot: { icon: 'github', color: 'gray' }, kiro: { text: 'K', color: 'violet' }, factory: { text: 'F', color: 'gray' },
   windsurf: { text: 'W', color: 'teal' }, zed: { text: 'Z', color: 'blue' }, goose: { text: 'Go', color: 'gray' }, qwen: { text: 'Q', color: 'violet' }, amp: { text: 'A', color: 'red' },
   crush: { text: 'Cr', color: 'pink' }, 'lm-studio': { text: 'LM', color: 'gray' }, devin: { text: 'D', color: 'teal' },

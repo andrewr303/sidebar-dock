@@ -1068,6 +1068,7 @@ export function openCaptureMenu(ctx, anchor, options = {}) {
     { label: 'Highlight selection', icon: 'highlighter', action: 'add.highlight-tip' },
     { separator: true },
     { label: 'Save all tabs…', icon: 'layers', action: 'add.save-tabs', disabled: !ctx.env.isExtension, hint: ctx.env.isExtension ? '' : 'Extension' },
+    { label: 'Add AI chats…', icon: 'messages-square', action: 'threadkeeper.picker-open', disabled: !ctx.env.isExtension, hint: ctx.env.isExtension ? '' : 'Extension' },
   ], { placement: options.placement || 'bottom-end', label: 'Add' });
 }
 

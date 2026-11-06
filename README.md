@@ -60,10 +60,11 @@ The GitHub, Linear and Paperclip widgets sign in from **Settings → Connected a
 - **Spaces:** Inbox for uncollected items; nested collections with descriptions, covers, colors, icons and pins. The icon picker offers about 600 icons in browsable groups, searchable by meaning ("money" finds wallets and coins). Overviews count notes, files/media and links/articles across descendants. Full-tab and sidebar layouts are independent, including per-space preferences.
 - **Connections:** related items and computed backlinks let notes, articles and files support the same idea. The **Knowledge map** shows explicit saved links with scope/search/type filters, keyboard navigation and a clear 60-item display cap. Similarity does not create edges.
 - **Organization:** tags, favorites, archive, recoverable Trash, reminders, bulk actions, drag-to-collection and grid/list/masonry views.
-- **Search:** titles, URLs, descriptions, notes, captured text and highlights. Use `tag:design`, `#design`, `type:note` or quoted phrases.
+- **Search:** titles, URLs, descriptions, notes, captured text and highlights. Use `tag:design`, `#design`, `type:note`, `type:chat` or quoted phrases.
 - **Capture:** right-click pages, links, images or selected text to save sources, highlights and connected notes. Choose visible-page or full-page screenshots; both retain source attribution.
 - **Article capture:** **Save article** keeps a page's readable text as Markdown with its headings, lists, quotes, code, tables, images and video embeds, plus its site, author, publication date, language and icon. **Select parts** lets you click several parts of a page and saves them, in page order, as one article. Both are in the side panel (and its command palette) and in a page's right-click menu.
 - **Research with AI:** a research agent reads a saved item, searches the web and GitHub, and writes a cited Research section and, when needed, subpages into it. See [Research with AI](#research-with-ai).
+- **AI chats:** threads from [Threadkeeper](docs/threadkeeper-integration.md) (ChatGPT, Claude, Gemini, coding-agent sessions and more) become **Chat** items in your collections. See [AI chats](#ai-chats).
 
 Full-page capture has progress, cancellation before saving, source-page restoration and an explicit result action. It is bounded to **16,384 pixels per axis, 48 megapixels, 50 viewport tiles and a 120-second capture deadline**. Oversized pages fail with guidance to choose visible capture. Protected pages, changing content, nested scroll containers and browser access restrictions can prevent capture.
 
@@ -76,6 +77,15 @@ Full-page capture has progress, cancellation before saving, source-page restorat
 **Select parts** (the side panel, or **Select parts of page…** in the right-click menu) starts a picker on the page. Hover and click parts to select them, use **−** and **+** on a selection (or ↓ and ↑ while hovering) to narrow or widen it, then choose **Done** or press Enter; Esc cancels. Selecting a part that contains another absorbs it. Up to 30 parts are saved as one article. From the side panel the result opens in the article preview; from the menu it saves to your default collection and Chrome shows a notification such as "Saved 3 selections from example.com". The picker draws its outlines in its own layer and never styles page elements.
 
 The detail view shows a captured page's icon, site, author and publication date. Images in captured articles stay links to their source sites.
+
+### AI chats
+
+When Threadkeeper is connected (Settings › Integrations › AI chat threads), the threads you sync or add become library items of type **Chat**. Still keeps its own copy of each one (the summary and the transcript in this browser), so a chat stays readable and searchable when Threadkeeper is off, updating or uninstalled.
+
+- **The chat page** looks like a note page, with two views. **Summary** shows Threadkeeper's analysis: what the thread is about, goal, outcome and status, key points, where you left off and the next step, decisions, next steps as tasks, open questions, what was produced, and context (topics, mentions, project, model, workspace and a resume command for Claude Code and Codex sessions). Small `m12` references jump to that message. Below it, **Your notes** is yours to edit, and the chat can hold subpages like any page. **Transcript** recreates the conversation: your messages in bubbles, answers as formatted text, tool calls folded into chips, long messages folded with **Show more**, 150 messages at a time from the end, and **Find in chat** (Enter and Shift+Enter step through matching messages). A long session Threadkeeper sent in part shows which messages are missing and loads them on request.
+- **Where chats show:** the **Chats** view (full tab: list and page side by side, filtered by kind, provider and collection, with a search that also reads the stored summaries and transcripts), their collections, search results, `type:chat` and the map's **Chats** filter. Chats still where sync placed them stay out of All items and the Inbox; the **+N AI chats** chip brings them in.
+- **Actions:** **Ask** about a chat, open the original conversation, **Open in Threadkeeper**, **Refresh from Threadkeeper**, **Improve** an older summary, copy the summary as Markdown, save it as a note inside the chat, copy the resume command, and move or trash it like any item. **Add chats** (the Chats view and the command palette) picks threads from Threadkeeper.
+- **Safety:** thread text is treated as untrusted: it is never rendered as HTML, Markdown in it cannot create links into your library or embeds, and images named in a chat show as links instead of loading.
 
 ## AI and coding agents
 

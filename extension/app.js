@@ -29,6 +29,7 @@ import * as dashboard from './ui/dashboard/index.js';
 import * as stickies from './ui/stickies.js';
 import * as assistantPage from './ui/assistant-page.js';
 import * as research from './ui/research.js';
+import * as chats from './ui/chats.js';
 
 const params = new URLSearchParams(location.search);
 const isExtension = !!globalThis.chrome?.runtime?.id;
@@ -45,6 +46,7 @@ const state = {
   panel: null, sideTab: 'page', sideStack: [],
   dialogs: [], popover: null,
   page: null, notes: { scope: 'all', collectionId: '', noteId: null, query: '', mode: 'list', sort: 'updated' },
+  chats: { chatId: null, query: '', category: '', provider: '', collectionId: '', deep: null },
   ai: {}, capture: null, boot: { ready: false, error: null },
 };
 
@@ -87,7 +89,10 @@ const ctx = {
     ctx.render();
   },
   openItem(id, { tab = 'details' } = {}) {
-    if (!id || !ctx.select.byId(id)) { toast('That item is no longer in your library.', { tone: 'danger' }); return; }
+    const target = id ? ctx.select.byId(id) : null;
+    if (!target) { toast('That item is no longer in your library.', { tone: 'danger' }); return; }
+    // In the full tab an AI chat opens as a page in the Chats workspace (as notes open in the Notes workspace).
+    if (target.type === 'chat' && !isSidepanel) { chats.openChat(ctx, id); return; }
     state.panel = { kind: 'item', id, tab };
     syncUrl();
     ctx.render();
@@ -121,6 +126,8 @@ function syncUrl() {
   if (state.tagFilter) url.searchParams.set('tag', state.tagFilter);
   if (state.typeFilter !== 'all') url.searchParams.set('type', state.typeFilter);
   if (state.panel?.kind === 'item') url.searchParams.set('item', state.panel.id);
+  // The Chats workspace keeps its open chat in the address, so a reload or a copied link opens it again.
+  else if (state.view === 'chats' && state.chats?.chatId) url.searchParams.set('item', state.chats.chatId);
   if (url.href !== location.href) history.replaceState(null, '', url);
 }
 ctx.syncUrl = syncUrl;
@@ -254,7 +261,9 @@ registerActions({
   'app.open-full': async () => {
     // Carry the side panel's context into the full tab: the open item, the Ask conversation, Notes or the library view.
     const tab = state.panel?.kind === 'ai' ? 'ask' : state.sideTab;
+    const panelItem = state.panel?.kind === 'item' ? ctx.select.byId(state.panel.id) : null;
     const view = state.panel?.kind === 'settings' ? 'settings'
+      : panelItem?.type === 'chat' ? 'chats'
       : state.panel?.kind === 'item' ? state.view
       : tab === 'ask' ? 'assistant' : tab === 'notes' ? 'notes' : state.view;
     const item = state.panel?.kind === 'item' ? state.panel.id : '';
@@ -305,7 +314,7 @@ function applyBootParams() {
 // (a local bridge may take seconds to answer), and the worker retries "Save and research with AI" for only about 2 s, like
 // still:open-add and still:open-note, whose modules also start earlier. A request handled before aiPanel's init still
 // opens in the assistant: research events carry the whole conversation, so the panel repaints from the next one.
-const modules = [sidebar, command, collections, libraryView, detail, map, quickAdd, pickers, page, notes, noteEditor, research, aiPanel, settings, dashboard, stickies, assistantPage];
+const modules = [sidebar, command, collections, libraryView, detail, map, quickAdd, pickers, page, notes, noteEditor, chats, research, aiPanel, settings, dashboard, stickies, assistantPage];
 
 /** Keeps the browser tab title in step with the view (the new tab always reads "New Tab"). */
 function updateTitle() {
@@ -362,7 +371,8 @@ async function boot() {
   try {
     const ai = await import('./lib/ai/index.js');
     // dashboard: lets the assistant see the boards and show a collection on them (it loads the dashboard on first use).
-    ai.init?.({ store, getLibrary: () => library, integrations, onLibraryChange: fn => store.subscribe(fn), dashboard: dashboard.assistantDashboard?.() });
+    ai.init?.({ store, getLibrary: () => library, integrations, onLibraryChange: fn => store.subscribe(fn), dashboard: dashboard.assistantDashboard?.(),
+      threads: await import('./lib/ai/threads.js').then(mod => mod.threadSources({ getLibrary: () => library }), () => null) });
     ctx.ai = ai;
   } catch (error) { console.warn('[still] AI engine unavailable', error); }
 
