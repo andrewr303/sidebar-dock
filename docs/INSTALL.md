@@ -60,7 +60,7 @@ All of these are optional host permissions in the manifest; Chrome lists the one
   assistant from working in tabs until you allow it again.
 
 Still's manifest also requires the `debugger` permission, which Chrome does not let an extension ask for later. Chrome
-lists it at install as "Access the page debugger backend". Still uses it only for browser automation: nothing attaches
+lists it at install as "Access the page debugger backend" and "Read and change all your data on all websites". Still uses it only for browser automation: nothing attaches
 to a tab until you have turned browser automation on and asked the assistant for something that needs a page. While it
 is attached, Chrome shows a bar saying that Still started debugging this browser; **Cancel** on that bar detaches it.
 An update from a version without this permission keeps an unpacked extension running; an extension installed from a

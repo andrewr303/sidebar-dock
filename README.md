@@ -135,7 +135,7 @@ It is off until you turn it on in **Settings → Browser automation**, which is 
 | Sending a form, posting, deleting | Waits on a card for **Allow** or **Don't allow** | Runs, except on sites you set to Ask |
 | Paying, granting access to an account, typing a password, card number or code, answering a page's prompt | Yours to do, in every mode | Yours to do, in every mode |
 
-A rule per site can always allow changes there, always ask, or keep the assistant off the site. Text from pages reaches the model marked as data, never as instructions, and once a request has read a page, any change it proposes to your library waits for your review whatever **Assistant permissions** allow. Steps the assistant could not confirm are listed under its answer. Chrome shows its debugging bar while the assistant is attached to a tab, and lists "Access the page debugger backend" among Still's permissions. See [Browser automation and the assistant's engine](docs/browser-automation.md).
+A rule per site can always allow changes there, always ask, or keep the assistant off the site. Text from pages reaches the model marked as data, never as instructions, and once a request has read a page, any change it proposes to your library waits for your review whatever **Assistant permissions** allow. Steps the assistant could not confirm are listed under its answer. Chrome shows its debugging bar while the assistant is attached to a tab, and lists "Access the page debugger backend" and "Read and change all your data on all websites" among Still's permissions. See [Browser automation and the assistant's engine](docs/browser-automation.md).
 
 ### Web search and long sources
 

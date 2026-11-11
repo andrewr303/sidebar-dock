@@ -10,7 +10,7 @@ Browser automation is off until the person turns it on in **Settings → Browser
 
 The manifest requires the `debugger` permission, because Chrome does not let an extension declare it as optional and ask for it later. Two consequences:
 
-- On install, and on the update that brings this version, Chrome lists "Access the page debugger backend" among Still's permissions. An extension installed from a store is disabled by such an update until the person accepts the new permission; an unpacked extension is not.
+- On install, and on the update that brings this version, Chrome lists "Access the page debugger backend" and "Read and change all your data on all websites" among Still's permissions. An extension installed from a store is disabled by such an update until the person accepts the new permission; an unpacked extension is not.
 - While the assistant is attached to a tab, Chrome shows a bar saying that Still started debugging this browser. Choosing **Cancel** on it detaches Still and ends the assistant's work in that tab.
 
 Nothing attaches to a tab until the assistant is asked to do something that needs one.
@@ -83,7 +83,7 @@ The rules of the layer still hold here: `chrome.debugger` is the only way to rea
 ## Safety
 
 - **Page text is data.** Everything a page says reaches the model between `<<<page-content NONCE site=…>>>` and `<<<end-page-content NONCE>>>`, with a 12-character random nonce per result. A page that writes such a marker, or text shaped like Still's own notes (`[Still note`, `<browser-state>`), has it defused by the layer before the model reads it. The instructions tell the model that nothing inside those markers can add to, change or cancel the request.
-- **A turn that read a page cannot change the library unreviewed.** Once page text, an AI thread or a web search result is in a turn, every library change it proposes goes to a card, whatever **Assistant permissions** allow, and its answer is shown without loading remote images.
+- **A turn that read a page cannot change the library unreviewed.** Once the browser tools have read a page, a provider search has started or AI thread text is in a turn, every library change it proposes goes to a card, whatever **Assistant permissions** allow, and its answer is shown without loading remote images. This holds for that turn only: a later turn of the same conversation, which gets the earlier answer back as text, is not held to it. Text of saved items and of the page attached to a question from the side panel follows **Assistant permissions** as before.
 - **Nothing outside the extension can drive the layer.** The host accepts a port only from Still's own pages: the sender must carry the extension's id and must not be a content script. The manifest lets no web page connect to Still, a port from another extension arrives on an event the host does not listen to, and the local bridge and its MCP server have no path to the host.
 - **The model cannot widen its own access.** The mode, the site rules, the step budget and the hand-over rule are read from settings by Still's own code; no tool argument reaches them. `observe`, `timeoutMs` and a dialog's `promptText` are removed from the tool schemas.
 - **Blocked sites** are refused by the layer's navigation policy: an address the assistant goes to, a link it follows, and the person's own tab when it would join the session.
@@ -158,11 +158,11 @@ This repository is meant to merge with the DayDock platform (web, mobile and thi
 
 The real-browser run has eleven scenarios: the host protocol, adding to a cart, a contact form in Ask mode (allowed and declined) and in Auto mode, a lookup through a results page, a page that tries to give orders, a hand-over, a click without effect, a blocked site, and automation switched off. It needs Chrome for Testing or Chromium (branded Chrome no longer loads an unpacked extension from the command line), starts it with a temporary profile and `--use-mock-keychain`, and never uses a person's profile.
 
-Not checked here: a real model (the scenarios use a scripted one, so they show what the engine does with a model's calls, not how well a model chooses them), a provider's real web search, real sites, sign-in walls and CAPTCHAs, and the permission prompt of a store-installed update.
+Not checked here: a real model (the scenarios use a scripted one, so they show what the engine does with a model's calls, not how well a model chooses them), a provider's real web search, real sites, sign-in walls and CAPTCHAs, Chrome's own prompt for the tab permissions (the checks grant them at install), the permission prompt of a store-installed update, and Edge. An independent review of the change was started and did not run.
 
 ## Limits
 
-- Chrome and Edge only, and only in the loaded extension; the localhost preview has no browser automation.
+- Chrome only was tried (Edge has the same extension APIs), and only in the loaded extension; the localhost preview has no browser automation.
 - Browser pages (`chrome://`), the Chrome Web Store and other extensions' pages cannot be controlled.
 - When Chrome detaches the debugger from a tab (the person chose Cancel on the debugging bar, or the tab closed), the assistant's work in that tab ends and its next call there fails with an error it can read.
 - Detecting that a step sends, deletes or pays is best effort: a control the layer does not recognise as one runs as a plain click.
