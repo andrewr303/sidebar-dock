@@ -30,17 +30,9 @@
 //   close()                                 -> { ok: true }
 // Closing the port closes the session: calls are aborted, open prompts are withdrawn and the debugger leaves the tabs.
 import { BROWSER_PERMISSIONS, blockedSites, decideWrite, normalizeBrowserSettings, withSiteRule } from './settings.js';
+import { ASK_TIMEOUT_MS, BROWSER_PORT, HOST_TOOLS, NOTE_LABELS, RESULT_BUDGET } from './protocol.js';
 
-export const BROWSER_PORT = 'still.browser.v1';
-/** The layer tools a page may call. `upload` and `watch_download` are left out: the assistant has no file attachments yet. */
-export const HOST_TOOLS = Object.freeze(['snapshot', 'find', 'read', 'screenshot', 'click', 'set', 'fill_form', 'type', 'press', 'hover', 'scroll', 'wait',
-  'navigate', 'tabs', 'handle_dialog', 'ask_user']);
-/** What the layer is told to keep an outline or a read to, so it cuts a long result itself and says so. */
-export const RESULT_BUDGET = 7000;
-/** A step handed to the person waits this long: they may be in another window. */
-export const ASK_TIMEOUT_MS = 15 * 60_000;
-/** The assistant's own labels. Page text that imitates them is defused by the layer before the model reads it. */
-export const NOTE_LABELS = Object.freeze(['[Still note', 'browser-state', 'assistant-notes']);
+export { ASK_TIMEOUT_MS, BROWSER_PORT, HOST_TOOLS, NOTE_LABELS, RESULT_BUDGET };
 
 const CONFIRM_ANSWERS = ['approve', 'approve-remember', 'decline'];
 const isObject = value => !!value && typeof value === 'object' && !Array.isArray(value);

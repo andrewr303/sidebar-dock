@@ -663,8 +663,13 @@ export function externalToolMap(external) {
  * saved in Still. threadTools: offer the AI thread reads (default: when threads is set). threadContext: this turn's reference
  * data already holds thread text. knownThreads: [{ id, title, threadKey }] cited earlier, so their ids resolve. A turn that read thread text (here or in its context) never applies a proposal
  * without review: thread text is untrusted and may carry instructions.
+ * actions (optional): tool providers that act outside the library, such as the browser tools (lib/ai/browser-tools.js):
+ * [{ id, label?, definitions(), beginStep?(), call(name, input, { signal, id }) -> { content, isError?, summary?, result?,
+ * images?: [{ mediaType, data, note }], untrusted? } }]. Their content reaches the model as they return it (they mark
+ * untrusted text themselves), they ask the person through their own cards, and a result they flag as untrusted makes
+ * the turn's library proposals ask, exactly as thread text does. execute() returns their images beside the result.
  */
-export function createToolSession({ getLibrary, searchLibrary, store, page = null, dashboard = null, permissions = null, external = [], onProposal, onEvent = () => {}, signal, uid = uidDefault,
+export function createToolSession({ getLibrary, searchLibrary, store, page = null, dashboard = null, permissions = null, external = [], actions = [], onProposal, onEvent = () => {}, signal, uid = uidDefault,
   now = () => new Date().toISOString(), threads = null, chats = null, threadTools, threadContext = false, knownThreads = [] } = {}) {
   const board = dashboard && typeof dashboard.describe === 'function' && typeof dashboard.addCollectionWidget === 'function' ? dashboard : null;
   const policy = normalizePermissions(permissions);
@@ -678,6 +683,9 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
   const sources = new Map();
   const proposals = [];
   const externalTools = externalToolMap(external);
+  // Action tools are named apart from the library's and the external sources' tools; a clash drops the action tool.
+  const actionProviders = (Array.isArray(actions) ? actions : []).filter(provider => provider && typeof provider.definitions === 'function' && typeof provider.call === 'function');
+  const actionTools = new Map([...externalToolMap(actionProviders)].filter(([name]) => !externalTools.has(name)));
   let declined = false;
   // The library's updatedAt right after this session's last apply. Until the app's snapshot (getLibrary) reaches it, reads
   // and staging use the store's own copy so a later step sees what an earlier proposal created.
@@ -1903,19 +1911,44 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
     }
   }
 
-  /** Runs one model step's tool calls; returns [{ toolUseId, content, isError }] in call order. */
+  // An action provider's call (the browser tools). The provider frames its own content; here its result only switches
+  // on the turn's untrusted latch and travels on, with any images it took.
+  async function runAction(call, input, done) {
+    const { provider, definition } = actionTools.get(call.name);
+    if (signal?.aborted) throw signal.reason || new DOMException('Stopped', 'AbortError');
+    try {
+      const output = (await provider.call(definition.name, input, { signal, id: call.id })) || {};
+      // Text from outside the library entered the turn: from now on its proposals ask and its answer loads no remote images.
+      if (output.untrusted) usedThreads = true;
+      const images = (Array.isArray(output.images) ? output.images : []).filter(image => image && typeof image.data === 'string' && image.data);
+      done(call, text(output.content) || (output.isError ? 'error' : 'ok'), { isError: output.isError === true, summary: text(output.summary).slice(0, 200), result: output.result, images, action: true });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      const message = text(error?.message).split('\n')[0].slice(0, 300) || 'the tool failed';
+      done(call, `error: ${message}`, { isError: true, summary: `${call.name.replace(/_/g, ' ')} failed`, action: true });
+    }
+  }
+
+  /**
+   * Runs one model step's tool calls; returns [{ toolUseId, content, isError, images?, result? }] in call order. `images`
+   * and `result` (the provider's small structured result) are only on an action tool's entry.
+   */
   async function execute(calls) {
     const results = new Map();
-    const done = (call, data, { isError = false, summary = '', result } = {}) => {
-      results.set(call.id, { toolUseId: call.id, content: typeof data === 'string' ? data : JSON.stringify(data), isError });
+    const done = (call, data, { isError = false, summary = '', result, images = [], action = false } = {}) => {
+      results.set(call.id, { toolUseId: call.id, content: typeof data === 'string' ? data : JSON.stringify(data), isError,
+        ...(action ? { action: true, result: result ?? null } : {}), ...(images.length ? { images } : {}) });
       // usedThreads: from now on this turn holds thread text (the panel renders the streaming answer without images).
       onEvent({ type: 'tool', id: call.id, name: call.name, summary: summary || (isError ? `${call.name} failed` : call.name), result, isError, ...(usedThreads ? { usedThreads: true } : {}) });
     };
     const writes = [];
+    // A new model step: an action provider's batch rules start over (the rest of a step is not run on a changed page).
+    for (const provider of actionProviders) { try { provider.beginStep?.(); } catch (error) { console.error(error); } }
     for (const call of calls) {
       const tool = TOOL_BY_NAME.get(call.name);
       const input = call.input && typeof call.input === 'object' && !Array.isArray(call.input) ? call.input : {};
       if (!tool && externalTools.has(call.name)) { await runExternal(call, input, done); continue; }
+      if (!tool && actionTools.has(call.name)) { await runAction(call, input, done); continue; }
       if (!tool || !offered(call.name)) { done(call, { error: `Unknown tool ${call.name}.` }, { isError: true }); continue; }
       if (tool.access === 'write') { writes.push({ call, input }); continue; }
       if (signal?.aborted) throw signal.reason || new DOMException('Stopped', 'AbortError');
@@ -1932,8 +1965,8 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
   }
 
   const definitions = options => [...toolDefinitions({ page: !!page, dashboard: !!board, permissions: policy, threads: threadReads, threadImport: !!tk, ...options }),
-    ...[...externalTools.values()].map(({ definition }) => ({ ...definition, inputSchema: structuredClone(definition.inputSchema) }))];
+    ...[...externalTools.values(), ...actionTools.values()].map(({ definition }) => ({ ...definition, inputSchema: structuredClone(definition.inputSchema) }))];
   return { definitions, execute, sources, proposals,
-    /** True once this turn read AI thread text (its context or a thread tool): its proposals always ask. */
+    /** True once this turn read untrusted text (AI thread text in its context or from a thread tool, or page text from an action tool): its proposals always ask. */
     get usedThreads() { return usedThreads; } };
 }

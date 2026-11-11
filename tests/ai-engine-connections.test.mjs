@@ -7,6 +7,7 @@ import {
 } from '../extension/lib/ai/connections.js';
 import { PERMISSION_PRESETS } from '../extension/lib/ai/permissions.js';
 import { RESEARCH_DEFAULTS } from '../extension/lib/ai/research/settings.js';
+import { BROWSER_DEFAULTS } from '../extension/lib/browser/settings.js';
 import { SECRETS_KEY } from '../extension/lib/ai/secrets.js';
 import { CATALOG, clampEffort, getProvider, normalizeBaseUrl } from '../extension/lib/ai/catalog.js';
 import { streamChat } from '../extension/lib/ai/chat.js';
@@ -143,6 +144,34 @@ test('research settings default from lib/ai/research/settings.js and accept only
   assert.deepEqual((await getAiSettings()).research, { ...RESEARCH_DEFAULTS, depth: 'deep', github: 'off', maxSubpages: 12, budgetUsd: 50, allowOriginalEdits: true, enabled: false, connectionId: 'conn_1' });
 });
 
+test('browser automation settings default to off and Ask, merge one level deep and accept only values already in their saved form', async t => {
+  reset(t);
+  assert.deepEqual({ ...DEFAULT_AI_SETTINGS.browser, sites: {} }, { ...BROWSER_DEFAULTS, sites: {} });
+  assert.deepEqual((await getAiSettings()).browser, { enabled: false, mode: 'ask', sites: {}, maxSteps: 60 });
+  let next = await setAiSettings({ browser: { enabled: true, mode: 'auto' } });
+  assert.deepEqual(next.browser, { enabled: true, mode: 'auto', sites: {}, maxSteps: 60 });
+  next = await setAiSettings({ browser: { sites: { 'shop.example': 'allow', 'bank.example': 'ask', 'localhost:3000': 'block' }, maxSteps: 120 } });
+  assert.deepEqual(next.browser, { enabled: true, mode: 'auto', sites: { 'shop.example': 'allow', 'bank.example': 'ask', 'localhost:3000': 'block' }, maxSteps: 120 });
+  // A host may be called like a secret; it is still only a host.
+  assert.equal((await setAiSettings({ browser: { sites: { token: 'block' } } })).browser.sites.token, 'block');
+  for (const patch of [{ mode: 'always' }, { enabled: 'yes' }, { glow: true }, { maxSteps: 5 }, { maxSteps: 500 }, { maxSteps: 60.5 }, { sites: { 'https://www.Shop.example/cart': 'allow' } },
+    { sites: { 'shop.example': 'maybe' } }, { sites: ['shop.example'] }, { sites: { 'not a host !!': 'allow' } }, { unknown: true }]) {
+    await assert.rejects(setAiSettings({ browser: patch }), error => error.code === 'bad_request' && /Browser automation settings are not valid/.test(error.message), JSON.stringify(patch));
+  }
+  await assert.rejects(setAiSettings({ browser: true }), /Browser automation settings are not valid/);
+  await assert.rejects(setAiSettings({ browser: null }), /Browser automation settings are not valid/);
+  assert.deepEqual((await getAiSettings()).browser.sites, { token: 'block' }, 'a refused write changes nothing');
+});
+
+test('a stored browser section a build cannot use is read as safe values', async t => {
+  reset(t);
+  localStorage.setItem(AI_STORE_KEY, JSON.stringify({ version: 2, connections: [], overlays: {}, modelCache: {},
+    settings: { browser: { enabled: 'true', mode: 'yolo', sites: { 'Shop.example': 'allow', 'x.example': 'sometimes' }, maxSteps: 9999, extra: 1 } } }));
+  const settings = await getAiSettings();
+  assert.deepEqual(settings.browser, { enabled: false, mode: 'ask', sites: { 'shop.example': 'allow' }, maxSteps: 200 }, 'only an exact true turns it on, and only Auto is Auto');
+  assert.equal((await setAiSettings({ handoffTarget: 'grok' })).handoffTarget, 'grok', 'another setting can still be saved');
+});
+
 test('stored permission and research values a build cannot use are read as safe values and never block other writes', async t => {
   reset(t);
   localStorage.setItem(AI_STORE_KEY, JSON.stringify({ version: 2, connections: [], overlays: {}, modelCache: {},
@@ -161,18 +190,23 @@ test('stored permission and research values a build cannot use are read as safe 
 test('assistant permissions and research settings stay on the device: never exported, never imported from a file', async t => {
   reset(t, { chrome: { permissions: { request: async () => true, contains: async () => true } } });
   const connection = await saveConnection({ providerId: 'anthropic', apiKey: KEY });
-  await setAiSettings({ assistantPermissions: { ...PERMISSION_PRESETS.full }, research: { connectionId: connection.id, budgetUsd: 20, allowOriginalEdits: true }, handoffTarget: 'grok' });
+  await setAiSettings({ assistantPermissions: { ...PERMISSION_PRESETS.full }, research: { connectionId: connection.id, budgetUsd: 20, allowOriginalEdits: true }, handoffTarget: 'grok',
+    browser: { enabled: true, mode: 'auto', sites: { 'shop.example': 'allow' } } });
   const exported = await exportAiConfig();
   assert.equal(exported.settings.handoffTarget, 'grok');
   assert.ok(!('assistantPermissions' in exported.settings), 'permissions are not in the backup');
   assert.ok(!('research' in exported.settings), 'research settings are not in the backup');
+  assert.ok(!('browser' in exported.settings), 'browser automation settings are not in the backup');
   // A crafted backup on a fresh device cannot turn on auto-apply or loosen the research agent.
   localStorage.clear();
-  const crafted = { ...exported, settings: { ...exported.settings, assistantPermissions: { ...PERMISSION_PRESETS.full }, research: { ...RESEARCH_DEFAULTS, allowOriginalEdits: true, budgetUsd: 50 } } };
+  const crafted = { ...exported, settings: { ...exported.settings, assistantPermissions: { ...PERMISSION_PRESETS.full }, research: { ...RESEARCH_DEFAULTS, allowOriginalEdits: true, budgetUsd: 50 },
+    browser: { enabled: true, mode: 'auto', sites: { 'bank.example': 'allow' }, maxSteps: 200 } } };
   const result = await importAiConfig(crafted);
   assert.ok(result.settingsAdded.includes('handoffTarget'));
-  assert.ok(!result.settingsAdded.includes('assistantPermissions') && !result.settingsAdded.includes('research'));
+  assert.ok(!result.settingsAdded.includes('assistantPermissions') && !result.settingsAdded.includes('research') && !result.settingsAdded.includes('browser'));
   const settings = await getAiSettings();
+  // A backup file cannot turn browser automation on, switch it to Auto or allow a site.
+  assert.deepEqual(settings.browser, { enabled: false, mode: 'ask', sites: {}, maxSteps: 60 });
   assert.deepEqual(settings.assistantPermissions, ASK_ALL);
   assert.deepEqual(settings.research, { ...RESEARCH_DEFAULTS });
   assert.ok(!('assistantPermissions' in stored(AI_STORE_KEY).settings), 'nothing from the file was stored');

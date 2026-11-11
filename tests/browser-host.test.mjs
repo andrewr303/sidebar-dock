@@ -1,58 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ASK_TIMEOUT_MS, BROWSER_PORT, HOST_TOOLS, NOTE_LABELS, RESULT_BUDGET, createBrowserHost } from '../extension/lib/browser/host.js';
-
-const EXTENSION_ID = 'stillextensionidstillextensionid';
-const PAGE = { id: EXTENSION_ID, url: `chrome-extension://${EXTENSION_ID}/index.html?view=sidepanel`, origin: `chrome-extension://${EXTENSION_ID}` };
-const tick = () => new Promise(resolve => setTimeout(resolve, 0));
-const settle = async () => { for (let index = 0; index < 5; index++) await tick(); };
-const events = () => { const listeners = []; return { listeners, addListener: listener => listeners.push(listener), removeListener: listener => listeners.splice(listeners.indexOf(listener), 1) }; };
-
-function fakePort(sender = PAGE, name = BROWSER_PORT) {
-  const port = { name, sender, posted: [], disconnected: false, onMessage: events(), onDisconnect: events(),
-    postMessage(message) { port.posted.push(structuredClone(message)); },
-    disconnect() { port.disconnected = true; },
-    send(message) { for (const listener of port.onMessage.listeners) listener(message); },
-    close() { for (const listener of port.onDisconnect.listeners) listener(port); } };
-  return port;
-}
-
-/** A stand-in for the browser control layer: one controller, sessions that record what they were asked. */
-function fakeLayer({ failStart = 0 } = {}) {
-  const layer = { loads: 0, starts: 0, sessions: [], closed: [], prompt: null, tabStates: new Map(),
-    siteOf: address => { try { return new URL(address).hostname.replace(/^www\./, ''); } catch { return ''; } } };
-  const controller = {
-    epoch: { prefix: 'a', persisted: true },
-    tabState(tabId) { if (!layer.tabStates.has(tabId)) layer.tabStates.set(tabId, { rev: 0, pending: [] }); return layer.tabStates.get(tabId); },
-    createSession(config) {
-      const session = { id: `s${layer.sessions.length + 1}`, config, tabs: new Map(), activeTabId: null, calls: [], policies: [], handler: null,
-        hasTab: tabId => session.tabs.has(tabId),
-        async share(tabId) {
-          if (tabId === 404) throw Object.assign(new Error('Tab 404 does not exist'), { code: 'TAB_NOT_IN_SESSION' });
-          session.tabs.set(tabId, { tabId, url: `https://site${tabId}.example/`, title: `Tab ${tabId}`, active: true });
-          session.activeTabId = tabId;
-          config.onTabJoined?.(tabId, 'shared');
-        },
-        async setUrlPolicy(policy) { session.policies.push(policy); },
-        async call(tool, args, options = {}) {
-          session.calls.push({ tool, args, signal: options.signal });
-          if (tool === 'tabs' && args.action === 'list') return { ok: true, text: '', data: { tabs: [...session.tabs.values()], activeTabId: session.activeTabId } };
-          return session.handler ? session.handler(tool, args, options) : { ok: true, text: `${tool}: ok` };
-        } };
-      layer.sessions.push(session);
-      return session;
-    },
-    async closeSession(session) { layer.closed.push(session.id); },
-  };
-  layer.createChromeController = async ({ prompt }) => {
-    layer.starts++;
-    if (layer.starts <= failStart) throw new Error('no debugger');
-    layer.prompt = prompt;
-    return controller;
-  };
-  layer.load = async () => { layer.loads++; return layer; };
-  return layer;
-}
+import { EXTENSION_ID, PAGE, fakeLayer, fakePort, settle, tick } from './helpers/browser-fakes.mjs';
 
 function setup({ granted = ['tabs', 'webNavigation'], layer = fakeLayer(), debuggerApi = { sendCommand() {} } } = {}) {
   const api = {

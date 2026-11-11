@@ -11,6 +11,7 @@ import { SECRETS_KEY, connectionIdsWithKeys, deleteApiKey, getApiKey, setApiKey,
 import { aiError, authHeaders, providerFetch, readJsonBody } from './http.js';
 import { DEFAULT_PERMISSIONS, PERMISSION_CATEGORIES, PERMISSION_LEVELS, normalizePermissions } from './permissions.js';
 import { RESEARCH_DEFAULTS, normalizeResearchSettings } from './research/settings.js';
+import { BROWSER_DEFAULTS, isNormalBrowserSettings, normalizeBrowserSettings } from '../browser/settings.js';
 import * as integrationsModule from '../integrations.js';
 import * as anthropicTransport from './transports/anthropic.js';
 import * as responsesTransport from './transports/openai-responses.js';
@@ -37,10 +38,13 @@ export const DEFAULT_AI_SETTINGS = Object.freeze({
   // Which kinds of assistant change apply without review (lib/ai/permissions.js), and how the research agent runs.
   assistantPermissions: DEFAULT_PERMISSIONS,
   research: RESEARCH_DEFAULTS,
+  // Whether and how the assistant may work in browser tabs (lib/browser/settings.js): off until the user turns it on.
+  browser: BROWSER_DEFAULTS,
 });
 // Settings that never leave this device: backups do not carry them and importAiConfig never restores them, so a crafted
-// file cannot turn on auto-apply, give the research agent the right to edit originals, or raise its spending cap.
-const DEVICE_ONLY_SETTINGS = new Set(['assistantPermissions', 'research']);
+// file cannot turn on auto-apply, give the research agent the right to edit originals, raise its spending cap, or let
+// the assistant work in browser tabs or change pages without asking.
+const DEVICE_ONLY_SETTINGS = new Set(['assistantPermissions', 'research', 'browser']);
 
 const AGENT_IDS = { claude: 'agent:claude-code', codex: 'agent:codex' };
 const LEGACY_IDS = { 'cli:codex': 'agent:codex', 'cli:claude': 'agent:claude-code' };
@@ -271,6 +275,7 @@ function mergeSettings(stored = {}) {
   // without re-checking, and a write of any other setting must not fail on a stale value here.
   result.assistantPermissions = normalizePermissions(result.assistantPermissions);
   result.research = normalizeResearchSettings(result.research);
+  result.browser = normalizeBrowserSettings(result.browser);
   return result;
 }
 
@@ -299,6 +304,9 @@ function validateSettings(settings) {
   if (typeof settings.handoffTarget !== 'string' || !/^[\w-]{1,40}$/.test(settings.handoffTarget)) throw aiError('Choose a supported app to open answers in.', { code: 'bad_request' });
   validatePermissions(settings.assistantPermissions);
   validateResearch(settings.research);
+  // Valid means already in the form lib/browser/settings.js gives: a rule for something that is not a site, an unknown
+  // mode or a step count out of range is refused rather than silently changed.
+  if (!isNormalBrowserSettings(settings.browser)) throw aiError('Browser automation settings are not valid: choose Ask or Auto, and Allow, Ask or Block for each site.', { code: 'bad_request' });
 }
 
 const CATEGORY_IDS = new Set(PERMISSION_CATEGORIES.map(category => category.id));
@@ -336,7 +344,8 @@ export async function getAiSettings() {
 
 export async function setAiSettings(patch = {}) {
   if (!isObject(patch)) throw aiError('AI settings must be an object.', { code: 'bad_request' });
-  for (const [key, value] of Object.entries(patch)) checkSettingsValue(key, value);
+  // `browser` is checked exactly by validateSettings below; its site names are hosts, and a host may be called "token".
+  for (const [key, value] of Object.entries(patch)) if (key !== 'browser') checkSettingsValue(key, value);
   return update(state => {
     const next = mergeSettings(state.settings);
     for (const [key, value] of Object.entries(patch)) {

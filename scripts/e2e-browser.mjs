@@ -82,8 +82,9 @@ const job = { scenarios: [] };
 const server = await startServer({ job });
 const scenarios = buildScenarios({ origin: server.origin, port: server.port, server }).filter(scenario => !only.length || only.includes(scenario.name));
 if (!scenarios.length) { process.stderr.write('No scenario matches --only.\n'); await server.close(); process.exit(2); }
-// The driver gets the plain data of each scenario; the checks stay here.
-job.scenarios = scenarios.map(({ check, ...data }) => data);
+// The driver gets the plain data of each scenario; the checks and the scripted models stay here.
+job.scenarios = scenarios.map(({ check, script, ...data }) => data);
+for (const scenario of scenarios) if (typeof scenario.script === 'function') server.setModel(scenario.model, scenario.script);
 
 const work = await mkdtemp(join(tmpdir(), 'still-e2e-'));
 const extension = await prepareExtension(work, server.origin);

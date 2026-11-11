@@ -3,6 +3,8 @@
 // assistant's engine through the same modules the app uses. It fetches a job from the local server, runs each scenario
 // and posts what happened; the Node side judges the results.
 import { BROWSER_PORT } from '../../extension/lib/browser/host.js';
+import * as ai from '../../extension/lib/ai/index.js';
+import * as store from '../../extension/lib/store.js';
 
 const log = document.getElementById('log');
 const say = line => { log.textContent += `${line}\n`; };
@@ -75,7 +77,66 @@ async function runProtocol(scenario) {
   return { steps, events: host.events };
 }
 
-const runners = { protocol: runProtocol };
+// The assistant's engine, started once the way app.js starts it: the shared library store and a connection to the
+// scripted model on the local server.
+let engine = null;
+function startEngine() {
+  engine ||= (async () => {
+    let library = await store.loadLibrary();
+    store.subscribe(next => { library = next; });
+    const handle = ai.init({ store, getLibrary: () => library, onLibraryChange: listener => store.subscribe(listener) });
+    await Promise.resolve(handle.ready).catch(() => null);
+    const connection = await ai.saveConnection({ providerId: 'custom-openai', baseUrl: `${server}/v1`, label: 'Scripted model' });
+    return { connectionId: connection.id };
+  })();
+  return engine;
+}
+
+const BROWSER_OFF = { enabled: false, mode: 'ask', sites: {}, maxSteps: 60 };
+const ASK_ALL = { create: 'ask', organize: 'ask', edit: 'ask', dashboard: 'ask', delete: 'ask' };
+
+/**
+ * A scenario of one request to the assistant: { model, input, context?, hint?, settings?: { browser, assistantPermissions },
+ * seed?: [items], answers?: { confirm: [], ask: [], handover: [], proposal: [] } }. Cards are answered in order; a card
+ * nobody expected is declined. Reports the saved message, the events, the cards and the library afterwards.
+ */
+async function runAssistant(scenario) {
+  const { connectionId } = await startEngine();
+  const seeded = [];
+  for (const item of scenario.seed || []) seeded.push((await store.saveItem(item)).id);
+  await ai.setAiSettings({ chat: { connectionId, model: scenario.model },
+    browser: { ...BROWSER_OFF, ...(scenario.settings?.browser || {}) }, assistantPermissions: { ...ASK_ALL, ...(scenario.settings?.assistantPermissions || {}) } });
+  const answers = { confirm: [], ask: [], handover: [], proposal: [], ...(scenario.answers || {}) };
+  const declined = { confirm: 'decline', ask: { outcome: 'cancel' }, handover: 'cancelled' };
+  const events = [];
+  const prompts = [];
+  const proposals = [];
+  const withdrawn = [];
+  const status = await ai.browserStatus();
+  const { message } = await ai.runAssistant({
+    input: scenario.input, context: scenario.context || { scope: 'library' }, browser: scenario.hint || { reveal: false },
+    onEvent: event => {
+      if (event.type === 'text' || event.type === 'thinking') return;
+      if (event.type === 'done') { events.push({ type: 'done' }); return; }
+      events.push(JSON.parse(JSON.stringify(event)));
+    },
+    onProposal: async proposal => { proposals.push(JSON.parse(JSON.stringify(proposal))); return answers.proposal.length ? answers.proposal.shift() : 'discard'; },
+    onBrowserPrompt: async prompt => {
+      prompts.push(JSON.parse(JSON.stringify(prompt)));
+      return answers[prompt.type]?.length ? answers[prompt.type].shift() : declined[prompt.type];
+    },
+    onBrowserWithdrawn: id => withdrawn.push(id),
+  });
+  const library = await store.loadLibrary();
+  return {
+    status, seeded, events, prompts, proposals, withdrawn,
+    message: { text: message.text, error: message.error, tools: message.tools, browser: message.browser || null, usedThreads: message.usedThreads === true,
+      proposals: (message.proposals || []).map(proposal => ({ status: proposal.status, autoApproved: proposal.autoApproved === true })) },
+    items: library.items.map(item => ({ id: item.id, title: item.title, deleted: !!item.deletedAt })),
+  };
+}
+
+const runners = { protocol: runProtocol, assistant: runAssistant };
 
 async function main() {
   const job = await (await fetch(`${server}/e2e/job`)).json();
