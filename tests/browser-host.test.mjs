@@ -27,7 +27,7 @@ async function request(port, method, params) {
   throw new Error(`No response to ${method}`);
 }
 
-async function opened(options = {}, params = { policy: { mode: 'ask' }, reveal: true, startTabId: 7 }) {
+async function opened(options = {}, params = { policy: { engine: 'precise', mode: 'ask' }, reveal: true, startTabId: 7 }) {
   const context = setup(options);
   const port = fakePort();
   context.host.connect(port);
@@ -65,21 +65,21 @@ test('status names the missing Chrome permissions without loading the layer', as
   const { host, layer } = setup({ granted: ['tabs'] });
   const port = fakePort();
   host.connect(port);
-  const response = await request(port, 'status');
-  assert.deepEqual(response, { kind: 'response', id: response.id, ok: true, result: { available: false, missing: ['webNavigation'] } });
+  const response = await request(port, 'status', { engine: 'precise' });
+  assert.deepEqual(response, { kind: 'response', id: response.id, ok: true, result: { available: false, missing: ['webNavigation'], engine: 'precise' } });
   assert.equal(layer.loads, 0);
 
   const withAll = setup();
-  assert.deepEqual(await withAll.host.status(), { available: true, missing: [] });
+  assert.deepEqual(await withAll.host.status('precise'), { available: true, missing: [], engine: 'precise' });
   const withoutDebugger = setup({ debuggerApi: null });
-  assert.equal((await withoutDebugger.host.status()).available, false);
+  assert.equal((await withoutDebugger.host.status('precise')).available, false);
 });
 
 test('open refuses without the tab permissions and says which to ask for', async () => {
   const { host, layer } = setup({ granted: [] });
   const port = fakePort();
   host.connect(port);
-  const response = await request(port, 'open', { policy: { mode: 'auto' } });
+  const response = await request(port, 'open', { policy: { engine: 'precise', mode: 'auto' } });
   assert.equal(response.ok, false);
   assert.equal(response.error.code, 'needs_permission');
   assert.deepEqual(response.error.permissions, ['tabs', 'webNavigation']);
@@ -87,7 +87,7 @@ test('open refuses without the tab permissions and says which to ask for', async
 });
 
 test('open creates a session with the fixed preset and shares the tab the person is on', async () => {
-  const { response, session, layer } = await opened({}, { policy: { mode: 'ask', sites: { 'blocked.example': 'block', 'ok.example': 'allow' } }, reveal: true, startTabId: 7 });
+  const { response, session, layer } = await opened({}, { policy: { engine: 'precise', mode: 'ask', sites: { 'blocked.example': 'block', 'ok.example': 'allow' } }, reveal: true, startTabId: 7 });
   assert.equal(response.ok, true);
   assert.equal(layer.loads, 1);
   assert.equal(response.result.sessionId, 's1');
@@ -108,25 +108,25 @@ test('open creates a session with the fixed preset and shares the tab the person
 });
 
 test('a start tab that cannot join is reported, and the session still opens', async () => {
-  const { response } = await opened({}, { policy: {}, startTabId: 404 });
+  const { response } = await opened({}, { policy: { engine: 'precise' }, startTabId: 404 });
   assert.equal(response.ok, true);
   assert.deepEqual(response.result.startTab, { ok: false, code: 'TAB_NOT_IN_SESSION', message: 'Tab 404 does not exist' });
   assert.deepEqual(response.result.state, { tabs: [], activeTabId: null });
 });
 
 test('the write decision follows the person\'s mode and site rules', async () => {
-  const ask = await opened({}, { policy: { mode: 'ask', sites: { 'shop.example': 'allow', 'bank.example': 'ask' } } });
+  const ask = await opened({}, { policy: { engine: 'precise', mode: 'ask', sites: { 'shop.example': 'allow', 'bank.example': 'ask' } } });
   const decide = ask.session.config.decideWrite;
   assert.deepEqual(decide({ category: 'submit', site: 'other.example', tabId: 1 }), { decision: 'ask', by: 'auto', canRemember: true });
   assert.deepEqual(decide({ category: 'delete', site: 'shop.example', tabId: 1 }), { decision: 'run', by: 'site-rule', canRemember: true });
   assert.deepEqual(decide({ category: 'submit', site: 'bank.example', tabId: 1 }), { decision: 'ask', by: 'site-rule', canRemember: false });
   assert.deepEqual(decide({ category: 'submit', site: '', tabId: 1 }), { decision: 'ask', canRemember: false }, 'a page without a host always asks');
 
-  const auto = await opened({}, { policy: { mode: 'auto', sites: { 'bank.example': 'ask' } } });
+  const auto = await opened({}, { policy: { engine: 'precise', mode: 'auto', sites: { 'bank.example': 'ask' } } });
   assert.equal(auto.session.config.decideWrite({ category: 'submit', site: 'other.example', tabId: 1 }).decision, 'run');
   assert.equal(auto.session.config.decideWrite({ category: 'submit', site: 'bank.example', tabId: 1 }).decision, 'ask', 'a site set to Ask asks in Auto mode too');
 
-  const nonsense = await opened({}, { policy: { mode: 'everything', sites: 'no' } });
+  const nonsense = await opened({}, { policy: { engine: 'precise', mode: 'everything', sites: 'no' } });
   assert.equal(nonsense.session.config.decideWrite({ category: 'submit', site: 'a.example', tabId: 1 }).decision, 'ask', 'an unknown mode is Ask');
 });
 
@@ -266,15 +266,15 @@ test('a hand-over names the site from the tab, not from page text, and bounds a 
 });
 
 test('policy replaces the rules and the blocked sites of the open session', async () => {
-  const { port, session } = await opened({}, { policy: { mode: 'ask' }, startTabId: 7 });
-  const response = await request(port, 'policy', { policy: { mode: 'auto', sites: { 'https://www.Blocked.example/x': 'block' } } });
+  const { port, session } = await opened({}, { policy: { engine: 'precise', mode: 'ask' }, startTabId: 7 });
+  const response = await request(port, 'policy', { policy: { engine: 'precise', mode: 'auto', sites: { 'https://www.Blocked.example/x': 'block' } } });
   assert.deepEqual(response.result, { ok: true });
   assert.deepEqual(session.policies.at(-1), { allow: [], deny: [], blocked: ['blocked.example'] });
   assert.equal(session.config.decideWrite({ category: 'submit', site: 'any.example', tabId: 7 }).decision, 'run');
 });
 
 test('share adds a tab and reports a tab that cannot join', async () => {
-  const { port, session } = await opened({}, { policy: {} });
+  const { port, session } = await opened({}, { policy: { engine: 'precise' } });
   const response = await request(port, 'share', { tabId: 9 });
   assert.equal(response.ok, true);
   assert.equal(response.result.state.activeTabId, 9);
@@ -310,10 +310,10 @@ test('close ends the session and a second open starts a new one', async () => {
   assert.deepEqual((await request(port, 'close')).result, { ok: true });
   assert.deepEqual(layer.closed, ['s1']);
   assert.equal((await request(port, 'state')).error.code, 'not_open');
-  const again = await request(port, 'open', { policy: {} });
+  const again = await request(port, 'open', { policy: { engine: 'precise' } });
   assert.equal(again.result.sessionId, 's2');
   assert.equal(layer.starts, 1, 'the controller is made once per worker');
-  const reopened = await request(port, 'open', { policy: {} });
+  const reopened = await request(port, 'open', { policy: { engine: 'precise' } });
   assert.equal(reopened.result.sessionId, 's3');
   assert.deepEqual(layer.closed, ['s1', 's2'], 'opening again closes the session before it');
 });
@@ -323,11 +323,11 @@ test('a layer that fails to start is reported and tried again next time', async 
   const { host } = setup({ layer });
   const port = fakePort();
   host.connect(port);
-  const failed = await request(port, 'open', { policy: {} });
+  const failed = await request(port, 'open', { policy: { engine: 'precise' } });
   assert.equal(failed.ok, false);
   assert.equal(failed.error.code, 'unavailable');
   assert.match(failed.error.message, /no debugger/);
-  const second = await request(port, 'open', { policy: {} });
+  const second = await request(port, 'open', { policy: { engine: 'precise' } });
   assert.equal(second.ok, true);
   assert.equal(layer.starts, 2);
 });
@@ -337,8 +337,8 @@ test('with two pages on one tab, the card goes to the page whose call is running
   const [first, second] = [fakePort(), fakePort({ ...PAGE, url: `${PAGE.url}&second` })];
   host.connect(first);
   host.connect(second);
-  await request(first, 'open', { policy: {}, startTabId: 7 });
-  await request(second, 'open', { policy: {}, startTabId: 7 });
+  await request(first, 'open', { policy: { engine: 'precise' }, startTabId: 7 });
+  await request(second, 'open', { policy: { engine: 'precise' }, startTabId: 7 });
   layer.sessions[1].handler = () => new Promise(() => {});
   second.send({ kind: 'request', id: ++requestId, method: 'call', params: { tool: 'click', args: {} } });
   await settle();

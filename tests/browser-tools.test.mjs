@@ -19,7 +19,7 @@ const ok = (text, extra = {}) => ({ ok: true, text, ...extra });
 const failed = (code, extra = {}) => ({ ok: false, text: `error ${code}`, error: { code, delivered: false, ...extra } });
 
 /** The provider on the real client and host, over a stand-in layer. `script(tool, args)` answers each layer call. */
-async function setup({ granted, vision = true, policy = { enabled: true, mode: 'ask' }, reveal = true, startTabId = 7, onPrompt = null, script = null } = {}) {
+async function setup({ granted, vision = true, policy = { enabled: true, engine: 'precise', mode: 'ask' }, reveal = true, startTabId = 7, onPrompt = null, script = null } = {}) {
   const layer = fakeLayer();
   const host = createBrowserHost({ api: fakeChrome({ granted }), loadLayer: layer.load, isContentSender: () => false });
   const pairs = [];
@@ -167,7 +167,7 @@ test('the activity note is Still\'s own line and marks what was not verified', (
 
 // ---------------------------------------------------------------------------------------------------- provider
 test('the session opens on the first call, with the person\'s rules and the tab they are on', async () => {
-  const { tools, layer, calls } = await setup({ policy: { enabled: true, mode: 'auto', sites: { 'blocked.example': 'block' } },
+  const { tools, layer, calls } = await setup({ policy: { engine: 'precise', enabled: true, mode: 'auto', sites: { 'blocked.example': 'block' } },
     script: () => ok(`ok snapshot\n${boundary('Hello')}`, { page: page(7, 2, 'full') }) });
   assert.equal(tools.usedBrowser, false);
   assert.equal(layer.sessions.length, 0, 'nothing is opened until a browser tool runs');
@@ -337,7 +337,7 @@ test('an action whose outcome was not seen is remembered until the tab is looked
 test('a submitted form is a write in the ledger, ends its step and leaves nothing to verify when the page moved on', async () => {
   const field = (ref, name) => ({ target: `[${ref}] textbox «${name}»`, dispatched: true, effect: { verdict: 'changed', signals: ['value'] }, postcondition: { status: 'met' } });
   const submit = { target: '[a3] button «Send message»', dispatched: true, sensitive: 'submit', allowedBy: 'auto', navigation: { kind: 'new-document', url: 'https://site7.example/sent' }, effect: { verdict: 'changed', signals: ['navigation'] } };
-  const { tools, calls } = await setup({ policy: { enabled: true, mode: 'auto' }, script: tool => (tool === 'fill_form'
+  const { tools, calls } = await setup({ policy: { engine: 'precise', enabled: true, mode: 'auto' }, script: tool => (tool === 'fill_form'
     ? ok('fill_form · 2 fields · submitted', { page: page(7, 2, 'full'), data: { receipts: [field('a1', 'Your name'), field('a2', 'Message'), submit], submitted: true } })
     : ok(`ok ${tool}`, { page: page(7, 3, 'full') })) });
   tools.beginStep();

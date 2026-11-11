@@ -366,8 +366,8 @@ Writes use the Web Lock `still.meta.v1`, and unknown keys are kept.
 - **AI (`still.ai.v2`, version 2):** connections, settings, overlays and model cache. API keys are in `still.ai.secrets.v1`.
   Four settings are device-only: `assistantPermissions` (`{ create, organize, edit, dashboard, delete }`, each `'ask'` or
   `'allow'`, all `'ask'` by default; `lib/ai/permissions.js`), `research` (`{ enabled, connectionId, github, depth,
-  maxSubpages, budgetUsd, allowOriginalEdits }`; `lib/ai/research/settings.js`), `browser` (`{ enabled, mode, sites,
-  maxSteps }`: off by default, `mode` `'ask'` or `'auto'`, `sites` a map of at most 500 sites to `'allow'`, `'ask'` or
+  maxSubpages, budgetUsd, allowOriginalEdits }`; `lib/ai/research/settings.js`), `browser` (`{ enabled, engine, mode, sites,
+  maxSteps }`: off by default, `engine` `'quiet'` (the default, no debugger) or `'precise'`, `mode` `'ask'` or `'auto'`, `sites` a map of at most 500 sites to `'allow'`, `'ask'` or
   `'block'`, `maxSteps` 10 to 200 with 60 by default; `lib/browser/settings.js`) and `webSearch` (`{ enabled, maxUses }`:
   off by default, `maxUses` 1 to 10 with 5 by default; `lib/ai/web-search.js`). A site key is a host as the address bar
   shows it, lower case, without `www.`, with its port when that is not the default. Reads normalize all four whatever

@@ -15,7 +15,7 @@ function setup({ granted, layer = fakeLayer(), pingMs = 0 } = {}) {
 
 test('status answers without opening a session or loading the layer', async () => {
   const { client, layer, pairs } = setup({ granted: ['tabs'] });
-  assert.deepEqual(await client.status(), { available: false, missing: ['webNavigation'] });
+  assert.deepEqual(await client.status('precise'), { available: false, missing: ['webNavigation'], engine: 'precise' });
   assert.equal(layer.loads, 0);
   assert.equal(client.isOpen, false);
   assert.equal(client.connected, true);
@@ -27,7 +27,7 @@ test('status answers without opening a session or loading the layer', async () =
 test('a call before open is refused; open then call returns the layer result and the tabs', async () => {
   const { client, layer } = setup();
   await assert.rejects(client.call('snapshot', {}), error => error instanceof BrowserClientError && error.code === 'not_open');
-  const opened = await client.open({ policy: { mode: 'ask' }, reveal: true, startTabId: 7 });
+  const opened = await client.open({ policy: { engine: 'precise', mode: 'ask' }, reveal: true, startTabId: 7 });
   assert.equal(opened.sessionId, 's1');
   assert.deepEqual(opened.startTab, { ok: true });
   assert.equal(opened.state.activeTabId, 7);
@@ -44,13 +44,13 @@ test('a call before open is refused; open then call returns the layer result and
 
 test('a refused open carries the permissions to ask for', async () => {
   const { client } = setup({ granted: [] });
-  await assert.rejects(client.open({ policy: {} }), error => error.code === 'needs_permission' && error.permissions.join() === 'tabs,webNavigation');
+  await assert.rejects(client.open({ policy: { engine: 'precise' } }), error => error.code === 'needs_permission' && error.permissions.join() === 'tabs,webNavigation');
   assert.equal(client.isOpen, false);
 });
 
 test('a confirmation goes to the handler and its answer back to the layer; no handler declines', async () => {
   const { client, layer } = setup();
-  await client.open({ policy: { mode: 'ask' }, startTabId: 7 });
+  await client.open({ policy: { engine: 'precise', mode: 'ask' }, startTabId: 7 });
   const session = layer.sessions[0];
   const seen = [];
   client.onPrompt(async prompt => { seen.push(prompt); return 'approve'; });
@@ -76,7 +76,7 @@ test('a confirmation goes to the handler and its answer back to the layer; no ha
 
 test('Stop reaches the worker as a cancel, and the open card is withdrawn', async () => {
   const { client, layer } = setup();
-  await client.open({ policy: { mode: 'ask' }, startTabId: 7 });
+  await client.open({ policy: { engine: 'precise', mode: 'ask' }, startTabId: 7 });
   const session = layer.sessions[0];
   const withdrawn = [];
   let shown = null;
@@ -99,7 +99,7 @@ test('Stop reaches the worker as a cancel, and the open card is withdrawn', asyn
 
 test('after the worker stops, the next call opens the session again, shares the tabs it held and says so', async () => {
   const { client, layer, pairs } = setup();
-  await client.open({ policy: { mode: 'auto', sites: { 'blocked.example': 'block' } }, reveal: true, startTabId: 7 });
+  await client.open({ policy: { engine: 'precise', mode: 'auto', sites: { 'blocked.example': 'block' } }, reveal: true, startTabId: 7 });
   await client.share(9);
   assert.deepEqual((await client.state()).tabs.map(tab => tab.tabId).sort(), [7, 9]);
   pairs[0].cut();
@@ -119,7 +119,7 @@ test('after the worker stops, the next call opens the session again, shares the 
 
 test('a call the worker died under is reported as interrupted, never retried', async () => {
   const { client, layer, pairs } = setup();
-  await client.open({ policy: {}, startTabId: 7 });
+  await client.open({ policy: { engine: 'precise' }, startTabId: 7 });
   const session = layer.sessions[0];
   let calls = 0;
   session.handler = () => { calls++; return new Promise(() => {}); };
@@ -134,8 +134,8 @@ test('a call the worker died under is reported as interrupted, never retried', a
 
 test('a policy change is kept for a reopened session and sent to an open one', async () => {
   const { client, layer, pairs } = setup();
-  await client.open({ policy: { mode: 'ask' }, startTabId: 7 });
-  await client.setPolicy({ mode: 'ask', sites: { 'shop.example': 'block' } });
+  await client.open({ policy: { engine: 'precise', mode: 'ask' }, startTabId: 7 });
+  await client.setPolicy({ engine: 'precise', mode: 'ask', sites: { 'shop.example': 'block' } });
   assert.deepEqual(layer.sessions[0].policies.at(-1).blocked, ['shop.example']);
   pairs[0].cut();
   await client.call('snapshot', {});
@@ -145,7 +145,7 @@ test('a policy change is kept for a reopened session and sent to an open one', a
 
 test('an open session keeps the worker awake with pings and stops when it closes', async () => {
   const { client, pairs } = setup({ pingMs: 5 });
-  await client.open({ policy: {} });
+  await client.open({ policy: { engine: 'precise' } });
   await new Promise(resolve => setTimeout(resolve, 40));
   const pings = pairs[0].page.sent.filter(message => message.kind === 'ping').length;
   assert.ok(pings >= 2, `pings sent: ${pings}`);

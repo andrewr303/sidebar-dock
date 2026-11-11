@@ -4,16 +4,34 @@ The Still assistant can work in browser tabs: open pages, read them, click, type
 
 This page describes what was built, the rules it keeps, how it was checked, and what it leaves out. The assistant's instructions are in [ai-prompts.md](ai-prompts.md), stored settings in [data-model.md](data-model.md), and the layer's own build in [`browser-control/README.md`](../browser-control/README.md).
 
+## Two engines: Quiet and Precise
+
+Chrome shows a bar that says an extension "started debugging this browser" whenever `chrome.debugger` is attached to a tab, and gives extensions no way to hide it (only a command-line flag or an installation by enterprise policy does). So Still has two ways to reach a page, chosen in **Settings → Browser automation → How Still controls a page**:
+
+| | Quiet (default) | Precise |
+| --- | --- | --- |
+| How | A script Still injects into the page (`content/automation.js`), with the site access the person granted | Chrome's debugger, through the browser control layer |
+| Chrome's debugging bar | Never: the debugger is not attached | Shown while the assistant works |
+| Input | Made by script; pages see events that are not marked as trusted | Real mouse and keyboard input |
+| Frames | The page and frames of the same site | Every frame |
+| A page's own `alert`, `confirm` and `prompt` dialogs | Cannot be seen or answered; the call times out and the model is told to ask the person | Seen; `prompt` is handed to the person |
+| Screenshot | The visible tab only | Any session tab, full page or one element |
+| Chrome asks for | Tabs, and access to web pages | Tabs, and following page loads |
+
+Both engines answer with the same results, so everything else on this page holds for both: the same tools, the same receipts, the same cards, the same rules. In Quiet mode a write is classified by the layer's own classifier before anything is sent, payments, access grants and secrets are handed to the person, page text reaches the model only inside the page-content boundary, and a ref fails once its element or its document is gone. A receipt names how the input was made (`script-click`, `set-value`, `script-keys`), so the model and the person can tell the two apart.
+
+What Quiet cannot do, beyond the table: CSS-only hover menus do not open (script cannot put the pointer over an element), a page that checks for trusted events may ignore a click, file pickers and other things Chrome reserves for a real gesture do not open, and frames of other sites are not read (shadow roots are). When a step needs one of these, switch to Precise.
+
 ## Turning it on
 
-Browser automation is off until the person turns it on in **Settings → Browser automation → Let the assistant work in browser tabs**. That click also asks Chrome for two optional permissions: `tabs` (see and open tabs) and `webNavigation` (follow page loads). Without them the section says what Chrome still has to allow and offers **Allow in Chrome**.
+Browser automation is off until the person turns it on in **Settings → Browser automation → Let the assistant work in browser tabs**. That click also asks Chrome for what the chosen engine needs: `tabs` (see and open tabs) and, for Quiet, access to web pages ("Read and change all your data on all websites"), or for Precise, `webNavigation` (follow page loads). Without them the section says what Chrome still has to allow and offers **Allow in Chrome**. Changing the engine asks for the other set in the same click.
 
 The manifest requires the `debugger` permission, because Chrome does not let an extension declare it as optional and ask for it later. Two consequences:
 
 - On install, and on the update that brings this version, Chrome lists "Access the page debugger backend" and "Read and change all your data on all websites" among Still's permissions. An extension installed from a store is disabled by such an update until the person accepts the new permission; an unpacked extension is not.
-- While the assistant is attached to a tab, Chrome shows a bar saying that Still started debugging this browser. Choosing **Cancel** on it detaches Still and ends the assistant's work in that tab.
+- In Precise mode, while the assistant is attached to a tab, Chrome shows a bar saying that Still started debugging this browser. Choosing **Cancel** on it detaches Still and ends the assistant's work in that tab. In Quiet mode the debugger is never attached and the permission is not used.
 
-Nothing attaches to a tab until the assistant is asked to do something that needs one.
+Nothing touches a tab until the assistant is asked to do something that needs one.
 
 ## What the person decides
 
@@ -74,6 +92,7 @@ Assistant page (side panel, full tab, new tab)            Service worker
 ```
 
 - **The layer** (`browser-control/`) is Still Agent's `src/browser-control` at a pinned commit, copied without changes with its unit tests (318 tests in 28 files). It is TypeScript with `puppeteer-core` (the frame manager) and `zod`; `npm run layer:build` bundles it into `extension/lib/browser-control/layer.js` and `catalogue.js`, which are committed, so loading the extension still needs no build step. `node scripts/check.mjs` fails when a built file does not match its source.
+- **The quiet engine** (`extension/lib/browser/quiet.js` in the service worker, `extension/content/automation.js` in the page) is Still's own code. It uses `chrome.scripting` and `chrome.tabs`, borrows the layer's pure functions for classifying actions and marking page text, and returns the layer's result shapes.
 - **The host** (`extension/lib/browser/host.js`) runs in the service worker, which has `chrome.debugger` and timers that are not slowed when a page is hidden. It loads the layer on first use, holds one session of the layer per connected page, applies the person's rules (`decideWrite`, blocked sites), and turns the layer's confirmations and questions into cards.
 - **The client and the tools** (`extension/lib/ai/browser-client.js`, `browser-tools.js`) run in the assistant's page. They build the model's tool definitions from the layer's catalogue, run a step's calls in order, keep the ledger of what was done, and show the cards.
 - **Settings** (`extension/lib/browser/settings.js`) are pure functions shared by the host, Settings and the assistant.
@@ -134,7 +153,7 @@ Gemini's Google Search grounding is not wired in. Google documents combining it 
 | The ledger, elide then compact then shorten | Simplified and Traditional Chinese catalogues |
 | Retries, overflow recovery, loop guards, unverified steps | Anonymous analytics |
 | The `<browser-state>` block after tool results | The companion, MCP connectors, the text tool-call protocol |
-| | The glowing border on pages the agent works on |
+| | The glowing border on pages the agent works on (Quiet mode could add it; not done) |
 | | The layer's test panel and its autorun checks |
 
 The glowing border needs a script in the page. Still declares no content scripts and no blanket host permission, and the assistant's sessions get no page script, so it was left out; Chrome's own debugging bar marks the tab instead.
@@ -156,7 +175,7 @@ This repository is meant to merge with the DayDock platform (web, mobile and thi
 | Static gate | `node scripts/check.mjs` | Modules, manifest, and that the built layer matches its source |
 | Real browser | `node scripts/e2e-browser.mjs` | The loaded extension in headless Chrome against local pages, with a scripted model |
 
-The real-browser run has eleven scenarios: the host protocol, adding to a cart, a contact form in Ask mode (allowed and declined) and in Auto mode, a lookup through a results page, a page that tries to give orders, a hand-over, a click without effect, a blocked site, and automation switched off. It needs Chrome for Testing or Chromium (branded Chrome no longer loads an unpacked extension from the command line), starts it with a temporary profile and `--use-mock-keychain`, and never uses a person's profile.
+The real-browser run has nineteen scenarios. Eight run on the quiet engine (adding to a cart, a form allowed and declined, a lookup, a password hand-over, a delete in Auto mode, a page that tries to give orders, a blocked site) and each checks that Chrome's debugger was never attached while the request ran. Eleven run on the precise engine: the host protocol, adding to a cart, a contact form in Ask mode (allowed and declined) and in Auto mode, a lookup through a results page, a page that tries to give orders, a hand-over, a click without effect, a blocked site, and automation switched off. It needs Chrome for Testing or Chromium (branded Chrome no longer loads an unpacked extension from the command line), starts it with a temporary profile and `--use-mock-keychain`, and never uses a person's profile.
 
 Not checked here: a real model (the scenarios use a scripted one, so they show what the engine does with a model's calls, not how well a model chooses them), a provider's real web search, real sites, sign-in walls and CAPTCHAs, Chrome's own prompt for the tab permissions (the checks grant them at install), the permission prompt of a store-installed update, and Edge. An independent review of the change was started and did not run.
 

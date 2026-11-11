@@ -60,8 +60,10 @@ async function prepareExtension(directory, serverOrigin) {
   manifest.permissions = [...new Set([...manifest.permissions, ...granted])];
   manifest.optional_permissions = manifest.optional_permissions.filter(permission => !granted.includes(permission));
   const loopback = ['http://127.0.0.1/*', 'http://localhost/*'];
-  manifest.host_permissions = loopback;
-  manifest.optional_host_permissions = manifest.optional_host_permissions.filter(host => !loopback.includes(host));
+  // The quiet engine needs access to web pages, which the product asks for in the same click as the tabs.
+  const sites = ['https://*/*', 'http://*/*'];
+  manifest.host_permissions = [...loopback, ...sites];
+  manifest.optional_host_permissions = manifest.optional_host_permissions.filter(host => !loopback.includes(host) && !sites.includes(host));
   manifest.name = 'Still (browser checks)';
   await writeFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
 

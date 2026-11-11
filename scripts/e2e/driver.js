@@ -92,7 +92,7 @@ function startEngine() {
   return engine;
 }
 
-const BROWSER_OFF = { enabled: false, mode: 'ask', sites: {}, maxSteps: 60 };
+const BROWSER_OFF = { enabled: false, engine: 'quiet', mode: 'ask', sites: {}, maxSteps: 60 };
 const ASK_ALL = { create: 'ask', organize: 'ask', edit: 'ask', dashboard: 'ask', delete: 'ask' };
 
 /**
@@ -113,6 +113,9 @@ async function runAssistant(scenario) {
   const proposals = [];
   const withdrawn = [];
   const status = await ai.browserStatus();
+  // Whether Chrome's debugger was attached to anything while the request ran: the quiet engine must never attach it.
+  let debugged = 0;
+  const watch = setInterval(() => { chrome.debugger.getTargets().then(targets => { debugged = Math.max(debugged, targets.filter(target => target.attached).length); }, () => undefined); }, 60);
   const { message } = await ai.runAssistant({
     input: scenario.input, context: scenario.context || { scope: 'library' }, browser: scenario.hint || { reveal: false },
     onEvent: event => {
@@ -127,8 +130,10 @@ async function runAssistant(scenario) {
     },
     onBrowserWithdrawn: id => withdrawn.push(id),
   });
+  clearInterval(watch);
   const library = await store.loadLibrary();
   return {
+    debugged,
     status, seeded, events, prompts, proposals, withdrawn,
     message: { text: message.text, error: message.error, tools: message.tools, browser: message.browser || null, usedThreads: message.usedThreads === true,
       proposals: (message.proposals || []).map(proposal => ({ status: proposal.status, autoApproved: proposal.autoApproved === true })) },

@@ -124,7 +124,7 @@ test('the composer control shows the mode and its menu names both, with what nev
 });
 
 // ------------------------------------------------------------------------------------------- with the panel
-function fakeCtx({ sidepanel = false, page = null, settings = { browser: { enabled: true, mode: 'ask', sites: {}, maxSteps: 60 } } } = {}) {
+function fakeCtx({ sidepanel = false, page = null, settings = { browser: { enabled: true, engine: 'precise', mode: 'ask', sites: {}, maxSteps: 60 } } } = {}) {
   const calls = { settings: [], run: [], toasts: [] };
   let stored = structuredClone(settings);
   const ctx = {
@@ -213,7 +213,7 @@ test('a card takes only its own answers, once', async () => {
 });
 
 test('"Always allow on this site" saves the rule, and only where the card offered it', async () => {
-  const { ctx, calls } = fakeCtx({ settings: { browser: { enabled: true, mode: 'ask', sites: { 'bank.example': 'block' }, maxSteps: 60 } } });
+  const { ctx, calls } = fakeCtx({ settings: { browser: { enabled: true, engine: 'precise', mode: 'ask', sites: { 'bank.example': 'block' }, maxSteps: 60 } } });
   const answers = fakeRun(ctx, calls, [
     { id: 'browser-p1', type: 'confirm', request: confirmRequest() },
     { id: 'browser-p2', type: 'confirm', request: confirmRequest({ canRemember: false, site: 'other.example' }) },

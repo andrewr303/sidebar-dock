@@ -55,12 +55,13 @@ All of these are optional host permissions in the manifest; Chrome lists the one
   needs none either: extensions can message each other by ID, and Still only answers the Threadkeeper you connected (web
   pages can never message Still).
 - **Browser automation** (Settings → Browser automation → **Let the assistant work in browser tabs**) asks for the
-  optional `tabs` and `webNavigation` permissions ("Read your browsing history") when you turn it on. Declining leaves
+  optional `tabs` permission ("Read your browsing history") and for access to web pages ("Read and change all your data
+  on all websites") when you turn it on. Precise mode asks for `webNavigation` in place of the page access. Declining leaves
   it off; the section then offers **Allow in Chrome**. Removing either permission on Still's details page stops the
   assistant from working in tabs until you allow it again.
 
 Still's manifest also requires the `debugger` permission, which Chrome does not let an extension ask for later. Chrome
-lists it at install as "Access the page debugger backend" and "Read and change all your data on all websites". Still uses it only for browser automation: nothing attaches
+lists it at install as "Access the page debugger backend" and "Read and change all your data on all websites". Still uses it only for browser automation in Precise mode; the default Quiet mode never attaches the debugger, so Chrome shows no debugging bar. In Precise mode nothing attaches
 to a tab until you have turned browser automation on and asked the assistant for something that needs a page. While it
 is attached, Chrome shows a bar saying that Still started debugging this browser; **Cancel** on that bar detaches it.
 An update from a version without this permission keeps an unpacked extension running; an extension installed from a

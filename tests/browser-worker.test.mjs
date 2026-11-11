@@ -58,9 +58,9 @@ test('starting the worker registers for the browser port and evaluates nothing o
 
 test('a Still page gets an answer; a content script and another port do not', async () => {
   const page = connect(stillPage);
-  const status = await ask(page, 'status');
-  assert.deepEqual(status.result, { available: false, missing: ['tabs', 'webNavigation'] });
-  const refused = await ask(page, 'open', { policy: { mode: 'auto' } });
+  const status = await ask(page, 'status', { engine: 'precise' });
+  assert.deepEqual(status.result, { available: false, missing: ['tabs', 'webNavigation'], engine: 'precise' });
+  const refused = await ask(page, 'open', { policy: { engine: 'precise', mode: 'auto' } });
   assert.equal(refused.error.code, 'needs_permission');
   assert.deepEqual(refused.error.permissions, ['tabs', 'webNavigation']);
   assert.deepEqual([...Object.keys(globalThis)].filter(key => key.startsWith('__zod')), [], 'a session that cannot start loads nothing');

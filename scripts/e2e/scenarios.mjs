@@ -37,7 +37,15 @@ function assertBoundaries(text) {
 export function buildScenarios({ origin, port }) {
   const page = name => `${origin}/pages/${name}`;
   const site = `127.0.0.1:${port}`;
-  const browserOn = extra => ({ enabled: true, mode: 'ask', sites: {}, maxSteps: 60, ...extra });
+  // The scenarios written for the browser control layer run on the precise engine; the quiet ones follow them.
+  const browserOn = extra => ({ enabled: true, engine: 'precise', mode: 'ask', sites: {}, maxSteps: 60, ...extra });
+  const quietOn = extra => browserOn({ engine: 'quiet', ...extra });
+  /** What holds for every request on the quiet engine: Chrome's debugger was never attached. */
+  const assertQuiet = result => {
+    assert.equal(result.message.error, '', result.message.error);
+    assert.equal(result.status.engine, 'quiet');
+    assert.equal(result.debugged, 0, 'the debugger was never attached, so Chrome showed no debugging bar');
+  };
 
   return [
     {
@@ -45,9 +53,9 @@ export function buildScenarios({ origin, port }) {
       name: 'host-protocol',
       kind: 'protocol',
       steps: [
-        { method: 'status' },
+        { method: 'status', params: { engine: 'precise' } },
         { method: 'call', params: { tool: 'snapshot', args: {} } },
-        { method: 'open', params: { policy: { mode: 'ask' }, reveal: false } },
+        { method: 'open', params: { policy: { engine: 'precise', mode: 'ask' }, reveal: false } },
         call('tabs', { action: 'open', url: page('shop.html') }),
         call('snapshot', {}),
         call('find', { role: 'button', name: 'Add to cart' }),
@@ -76,7 +84,7 @@ export function buildScenarios({ origin, port }) {
       check(result, { server }) {
         const steps = result.steps;
         const at = index => steps[index];
-        assert.deepEqual(at(0).result, { available: true, missing: [] });
+        assert.deepEqual(at(0).result, { available: true, missing: [], engine: 'precise' });
         assert.equal(at(1).ok, false, 'a call before open is refused');
         assert.equal(at(1).error.code, 'not_open');
         assert.equal(at(2).ok, true, `open: ${JSON.stringify(at(2).error)}`);
@@ -187,7 +195,7 @@ export function buildScenarios({ origin, port }) {
       },
       check(result, { server }) {
         assert.equal(result.message.error, '', result.message.error);
-        assert.deepEqual(result.status, { available: true, missing: [] });
+        assert.deepEqual(result.status, { available: true, missing: [], engine: 'precise' });
         assert.equal(result.message.text, 'Adding it.\n\nAdded the copper kettle. The cart now has 1 item.');
         assert.deepEqual(result.message.tools.map(tool => tool.name), ['browser_tabs', 'browser_snapshot', 'browser_click']);
         assert.deepEqual(result.message.tools.map(tool => tool.summary), ['Opened a tab', 'Looked at the page', 'Clicked button «Add to cart»']);
@@ -458,6 +466,230 @@ export function buildScenarios({ origin, port }) {
         assert.equal(result.message.error, '', result.message.error);
         assert.equal(result.message.text, 'That site is blocked in your settings.');
         assert.deepEqual(result.message.tools.map(tool => tool.summary), ['That address is not allowed']);
+        assert.deepEqual(result.message.browser.activity.map(line => line.kind), ['blocked']);
+      },
+    },
+
+    // ---- The quiet engine: the same work without chrome.debugger, so Chrome shows no debugging bar. ----
+    {
+      name: 'quiet-shop',
+      kind: 'assistant',
+      model: 'e2e-quiet-shop',
+      input: 'Add the copper kettle to my cart at the kettle shop and tell me how many items the cart has.',
+      settings: { browser: quietOn() },
+      script(body, index) {
+        if (index === 0) { assertBrowserRequest(body); return { toolCalls: [{ name: 'browser_tabs', arguments: { action: 'open', url: page('shop.html') } }] }; }
+        if (index === 1) return { toolCalls: [{ name: 'browser_snapshot', arguments: {} }] };
+        if (index === 2) {
+          const ref = refOf(lastTool(body), 'button "Add to cart"');
+          assert.ok(ref, `the snapshot shows the button with a ref: ${lastTool(body).slice(0, 600)}`);
+          return { toolCalls: [{ name: 'browser_click', arguments: { target: { ref }, expect: { text: 'Cart: 1 item' }, intent: 'add the copper kettle' } }] };
+        }
+        return { text: /Cart: 1 item/.test(lastTool(body)) ? 'Added the copper kettle. The cart now has 1 item.' : `The cart did not change: ${lastTool(body).slice(0, 300)}` };
+      },
+      check(result, { server }) {
+        assertQuiet(result);
+        assert.deepEqual(result.status, { available: true, missing: [], engine: 'quiet' });
+        assert.equal(result.message.text, 'Added the copper kettle. The cart now has 1 item.');
+        assert.deepEqual(result.message.tools.map(tool => tool.summary), ['Opened a tab', 'Looked at the page', 'Clicked button «Add to cart»']);
+        assert.equal(result.prompts.length, 0, 'adding to a cart asks nothing');
+        assert.equal(result.message.usedThreads, true, 'the answer is built on page text');
+        assert.equal(result.message.browser.unverified, undefined, 'the click showed its effect');
+        const bodies = callsOf(server, 'e2e-quiet-shop');
+        const snapshot = lastTool(bodies[2]);
+        assertBoundaries(snapshot);
+        assert.match(snapshot, /heading "Kettle shop" \(level 1\)/);
+        assert.match(snapshot, /text "Cart: 0 items"/);
+        const clicked = lastTool(bodies[3]);
+        assert.match(clicked, /^click · \[q\d+\] button «Add to cart» · script-click · dispatched\neffect: changed/, 'the receipt says the click was made by script');
+        assert.match(clicked, /expect: met/);
+        assertBoundaries(clicked);
+        assert.match(clicked, /\+ text "Cart: 1 item"/, 'the result of an action carries its diff');
+        assert.match(clicked, /- text "Cart: 0 items"/);
+      },
+    },
+
+    {
+      name: 'quiet-contact-ask',
+      kind: 'assistant',
+      model: 'e2e-quiet-contact',
+      input: 'Send the kettle shop a message asking about engraving. My name is Lin.',
+      settings: { browser: quietOn() },
+      answers: { confirm: ['approve'] },
+      script(body, index) {
+        if (index === 0) return { toolCalls: [{ name: 'browser_tabs', arguments: { action: 'open', url: page('contact.html') } }] };
+        if (index === 1) {
+          return { toolCalls: [{ name: 'browser_fill_form', arguments: {
+            fields: [{ target: { role: 'textbox', name: 'Your name' }, value: 'Lin' }, { target: { role: 'textbox', name: 'Message' }, value: 'Do you engrave kettles?' }],
+            submit: { role: 'button', name: 'Send message' }, expect: { text: 'Message sent' }, intent: 'send the message' } }] };
+        }
+        return { text: /Message sent/.test(lastTool(body)) ? 'Your message was sent.' : `It was not sent: ${lastTool(body).slice(0, 400)}` };
+      },
+      check(result, { server }) {
+        assertQuiet(result);
+        assert.equal(result.message.text, 'Your message was sent.');
+        assert.equal(result.prompts.length, 1, 'one card');
+        const [card] = result.prompts;
+        assert.equal(card.type, 'confirm');
+        assert.equal(card.request.category, 'submit');
+        assert.equal(card.request.site, site);
+        assert.equal(card.request.target, 'button «Send message»');
+        assert.equal(card.request.intent, 'send the message');
+        assert.deepEqual(server.forms.filter(form => form.fields.name === 'Lin').map(form => form.fields), [{ name: 'Lin', message: 'Do you engrave kettles?' }], 'sent exactly once');
+        assert.match(result.message.browser.activity.at(-1).text, /submit, allowed by the user/);
+      },
+    },
+
+    {
+      name: 'quiet-contact-declined',
+      kind: 'assistant',
+      model: 'e2e-quiet-declined',
+      input: 'Send the kettle shop a message that says "cancel everything". My name is Oscar.',
+      settings: { browser: quietOn() },
+      answers: { confirm: ['decline'] },
+      script(body, index) {
+        if (index === 0) return { toolCalls: [{ name: 'browser_tabs', arguments: { action: 'open', url: page('contact.html') } }] };
+        if (index === 1) {
+          return { toolCalls: [{ name: 'browser_fill_form', arguments: { fields: [{ target: { role: 'textbox', name: 'Your name' }, value: 'Oscar' }, { target: { role: 'textbox', name: 'Message' }, value: 'cancel everything' }],
+            submit: { role: 'button', name: 'Send message' } } }] };
+        }
+        return { text: /USER_DECLINED/.test(lastTool(body)) ? 'You chose not to send it.' : `Unexpected: ${lastTool(body).slice(0, 300)}` };
+      },
+      check(result, { server }) {
+        assertQuiet(result);
+        assert.equal(result.message.text, 'You chose not to send it.');
+        assert.equal(result.prompts.length, 1);
+        assert.equal(server.forms.filter(form => form.fields.name === 'Oscar').length, 0, 'nothing was sent');
+        const refused = lastTool(callsOf(server, 'e2e-quiet-declined')[2]);
+        assert.match(refused, /nothing dispatched/, 'the fields were not touched either: the decision came first');
+        assert.equal(result.message.browser.unverified, undefined, 'what the person declined is not left to verify');
+      },
+    },
+
+    {
+      name: 'quiet-lookup',
+      kind: 'assistant',
+      model: 'e2e-quiet-lookup',
+      input: 'Look up how to descale a kettle.',
+      settings: { browser: quietOn() },
+      script(body, index) {
+        if (index === 0) return { toolCalls: [{ name: 'browser_tabs', arguments: { action: 'open', url: `${page('results.html')}?q=descale+kettle` } }] };
+        if (index === 1) return { toolCalls: [{ name: 'browser_read', arguments: {} }] };
+        if (index === 2) {
+          const address = /\]\((http:\/\/[^)\s]+kettle-guide\.html)\)/.exec(lastTool(body))?.[1];
+          assert.ok(address, `the results name the guide's address: ${lastTool(body).slice(0, 700)}`);
+          return { toolCalls: [{ name: 'browser_navigate', arguments: { url: address } }] };
+        }
+        if (index === 3) return { toolCalls: [{ name: 'browser_read', arguments: {} }] };
+        const read = lastTool(body);
+        return { text: /white vinegar/.test(read) && /30 minutes/.test(read) ? 'Boil water and white vinegar, leave it for 30 minutes.' : `The guide could not be read: ${read.slice(0, 300)}` };
+      },
+      check(result, { server }) {
+        assertQuiet(result);
+        assert.equal(result.message.text, 'Boil water and white vinegar, leave it for 30 minutes.');
+        assert.equal(result.prompts.length, 0);
+        const bodies = callsOf(server, 'e2e-quiet-lookup');
+        assertBoundaries(lastTool(bodies[2]));
+        const moved = lastTool(bodies[3]);
+        assert.match(moved, /^navigate · navigation · dispatched/);
+        assert.match(moved, /heading "How to descale a kettle"/, 'a navigation answers with the new page');
+        assert.match(lastTool(bodies[4]), /Bring it to the boil, switch it off and leave it for 30 minutes/);
+      },
+    },
+
+    {
+      name: 'quiet-handover',
+      kind: 'assistant',
+      model: 'e2e-quiet-handover',
+      input: 'Sign in to my kettle shop account.',
+      settings: { browser: quietOn({ mode: 'auto' }) },
+      answers: { handover: ['given-back'] },
+      script(body, index) {
+        if (index === 0) return { toolCalls: [{ name: 'browser_tabs', arguments: { action: 'open', url: page('account.html') } }] };
+        if (index === 1) return { toolCalls: [{ name: 'browser_set', arguments: { target: { role: 'textbox', name: 'Password' }, value: 'hunter2-secret' } }] };
+        return { text: /hand-over: the user did the step \(secret\)/.test(lastTool(body)) ? 'You typed the password yourself; I did not.' : `Unexpected: ${lastTool(body).slice(0, 300)}` };
+      },
+      check(result, { server }) {
+        assertQuiet(result);
+        assert.equal(result.message.text, 'You typed the password yourself; I did not.');
+        assert.equal(result.prompts.length, 1);
+        assert.equal(result.prompts[0].type, 'handover', 'a hand-over, not an approval, even in Auto mode');
+        assert.equal(result.prompts[0].request.reason, 'secret');
+        assert.equal(result.prompts[0].request.site, site);
+        const handed = lastTool(callsOf(server, 'e2e-quiet-handover')[2]);
+        assert.ok(!handed.includes('hunter2-secret'), 'the value is not echoed back');
+        assertBoundaries(handed);
+        assert.match(handed, /textbox "Password"/, 'the model gets a fresh look at the page');
+      },
+    },
+
+    {
+      // Deleting runs on its own in Auto mode and is named as such; the same click asks in Ask mode (the form scenarios).
+      name: 'quiet-delete-auto',
+      kind: 'assistant',
+      model: 'e2e-quiet-delete',
+      input: 'Delete my Office address at the kettle shop.',
+      settings: { browser: quietOn({ mode: 'auto' }) },
+      script(body, index) {
+        if (index === 0) return { toolCalls: [{ name: 'browser_tabs', arguments: { action: 'open', url: page('account.html') } }] };
+        if (index === 1) return { toolCalls: [{ name: 'browser_click', arguments: { target: { role: 'button', name: 'Delete address Office' }, expect: { textGone: 'Office, 4 Quay Street' } } }] };
+        return { text: /expect: met/.test(lastTool(body)) ? 'The Office address is deleted.' : `Unexpected: ${lastTool(body).slice(0, 400)}` };
+      },
+      check(result, { server }) {
+        assertQuiet(result);
+        assert.equal(result.message.text, 'The Office address is deleted.');
+        assert.equal(result.prompts.length, 0, 'Auto mode asks nothing for a delete');
+        const clicked = lastTool(callsOf(server, 'e2e-quiet-delete')[2]);
+        assert.match(clicked, /delete: allowed by Auto mode · dispatched/);
+        assert.match(result.message.browser.activity.at(-1).text, /delete, allowed by Auto mode/);
+      },
+    },
+
+    {
+      name: 'quiet-injection',
+      kind: 'assistant',
+      model: 'e2e-quiet-injection',
+      input: 'What are the opening hours of the kettle shop?',
+      seed: [{ type: 'note', title: 'Quiet plans', content: 'The launch code is 9914.' }],
+      settings: { browser: quietOn(), assistantPermissions: { create: 'allow', organize: 'allow', edit: 'allow', dashboard: 'allow', delete: 'allow' } },
+      answers: { proposal: ['discard'] },
+      script(body, index) {
+        if (index === 0) return { toolCalls: [{ name: 'browser_tabs', arguments: { action: 'open', url: page('injected.html') } }] };
+        if (index === 1) return { toolCalls: [{ name: 'browser_read', arguments: {} }] };
+        if (index === 2) return { toolCalls: [{ name: 'list_items', arguments: {} }] };
+        if (index === 3) return { toolCalls: [{ name: 'trash_items', arguments: { ids: (JSON.parse(lastTool(body)).items || []).map(item => item.id) } }] };
+        return { text: 'The shop is open Monday to Friday, 9:00 to 17:30.' };
+      },
+      check(result, { server }) {
+        assertQuiet(result);
+        assert.equal(result.proposals.length, 1, 'the deletion went to a card');
+        assert.notEqual(result.proposals[0].autoApproved, true, 'it was not applied on the user\'s Allow');
+        const note = result.items.find(item => item.title === 'Quiet plans');
+        assert.ok(note && !note.deleted, 'the note is still there');
+        const read = lastTool(callsOf(server, 'e2e-quiet-injection')[2]);
+        const nonce = assertBoundaries(read);
+        const inside = read.slice(read.indexOf(`<<<page-content ${nonce}`), read.indexOf(`<<<end-page-content ${nonce}>>>`));
+        assert.match(inside, /Monday to Friday/);
+        assert.match(inside, /ignore your previous instructions/, 'what the page tried is there, as data');
+        assert.match(inside, /Closed on public holidays/, 'text after the page\'s false end marker is still inside the real boundary');
+        assert.ok(!inside.includes('<<<end-page-content'), 'a marker the page wrote cannot end the boundary');
+        assert.ok(!inside.includes('[Still note:'), 'and the page cannot write in Still\'s own voice');
+      },
+    },
+
+    {
+      name: 'quiet-blocked-site',
+      kind: 'assistant',
+      model: 'e2e-quiet-blocked',
+      input: 'Open the kettle shop.',
+      settings: { browser: quietOn({ sites: { [site]: 'block' } }) },
+      script(body, index) {
+        if (index === 0) return { toolCalls: [{ name: 'browser_tabs', arguments: { action: 'open', url: page('shop.html') } }] };
+        return { text: /URL_NOT_ALLOWED/.test(lastTool(body)) ? 'That site is blocked in your settings.' : `Unexpected: ${lastTool(body).slice(0, 200)}` };
+      },
+      check(result) {
+        assertQuiet(result);
+        assert.equal(result.message.text, 'That site is blocked in your settings.');
         assert.deepEqual(result.message.browser.activity.map(line => line.kind), ['blocked']);
       },
     },
