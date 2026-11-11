@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Contact the shop</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; margin: 2rem; max-width: 46rem; }
+    label { display: block; margin: 0.8rem 0 0.2rem; }
+    input, textarea, button { font: inherit; padding: 0.4rem 0.7rem; }
+    textarea { width: 100%; min-height: 6rem; }
+  </style>
+</head>
+<body>
+  <h1>Contact the shop</h1>
+  <form action="/sent" method="post">
+    <label for="name">Your name</label>
+    <input id="name" name="name" autocomplete="off">
+    <label for="message">Message</label>
+    <textarea id="message" name="message"></textarea>
+    <p><button type="submit">Send message</button></p>
+  </form>
+  <p><a href="shop.html">Back to the shop</a></p>
+</body>
+</html>

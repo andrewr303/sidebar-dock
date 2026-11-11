@@ -34,7 +34,12 @@ test('query syntax matches store.queryItems: tag:, #, type: and quoted phrases',
   assert.equal(parsed.type, 'article');
   assert.deepEqual(parsed.phrases, ['early in the morning']);
   assert.deepEqual(parsed.terms, ['best', 'kyoto']);
-  assert.equal(parsed.semanticText, 'the best kyoto early in the morning');
+  // What is embedded keeps the casing the person typed: "Kyoto" and "kyoto" are not the same text to a model.
+  assert.equal(parsed.semanticText, 'the best Kyoto early in the morning');
+  // Filters and keyword terms are case-insensitive as before.
+  assert.deepEqual(parseQuery('TAG:Design TYPE:Note Kyoto').tags, ['design']);
+  assert.equal(parseQuery('TAG:Design TYPE:Note Kyoto').type, 'note');
+  assert.equal(parseQuery('TAG:Design TYPE:Note Kyoto').semanticText, 'Kyoto');
   // Filter-only queries return the same set as the store's own filter, newest first.
   for (const query of ['tag:design', '#japan type:article', '"fewer colors"', 'type:note']) {
     const expected = queryItems(library, { query }).map(item => item.id).sort();
@@ -185,4 +190,29 @@ test('cached query vectors are dropped when the index is rebuilt for another mod
   for (const item of library.items.filter(entry => !entry.deletedAt)) await vectorStore.putItem(item.id, { hash: item.id, chunks: [{ n: 0, text: item.title, vector: embedText(item.title) }] });
   await search.searchLibrary('shrines trip');
   assert.deepEqual(models, ['fake', 'fake-2'], 'the query is embedded again with the new model');
+});
+
+test('a plain question is not a filter expression: with operators off, #, tag:, type: and quotes are words', () => {
+  const question = 'What did issue #42 decide about "early access" for type:enterprise customers?';
+  const filtered = parseQuery(question);
+  assert.deepEqual(filtered.tags, ['42'], 'read as operators, the question would require a tag named 42');
+  assert.equal(filtered.type, 'enterprise');
+  const plain = parseQuery(question, { operators: false });
+  assert.deepEqual(plain.tags, []);
+  assert.equal(plain.type, '');
+  assert.deepEqual(plain.phrases, []);
+  assert.ok(['issue', '42', 'decide', 'early', 'access', 'enterprise', 'customer'].every(term => plain.terms.includes(term)), plain.terms.join(' '));
+  assert.equal(plain.semanticText, question, 'the model that embeds the question reads it as typed');
+  // An unbalanced quote no longer swallows the rest of the question.
+  assert.ok(parseQuery('why is the "kettle so slow to boil', { operators: false }).terms.includes('boil'));
+  assert.ok(!parseQuery('why is the "kettle so slow to boil').terms.includes('boil'));
+});
+
+test('searchLibrary with operators off finds items a question names with a # or a quote', async () => {
+  const search = createSearch({ getLibrary: async () => library });
+  const asOperators = await search.searchLibrary('what does #design say about "whitespace and restraint in layouts"', { mode: 'lexical' });
+  const asQuestion = await search.searchLibrary('what does #design say about "whitespace and restraint in layouts"', { mode: 'lexical', operators: false });
+  assert.ok(asQuestion.length >= asOperators.length);
+  assert.ok(asQuestion.length > 0, 'the words still find items');
+  for (const row of asQuestion) assert.equal(typeof row.lexicalScore, 'number', 'each row carries the score of the ranking that found it');
 });

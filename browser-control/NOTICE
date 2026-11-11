@@ -1,0 +1,14 @@
+Still Agent browser control layer
+https://github.com/andrewr303/still-agent
+
+This folder holds the browser control layer of Still Agent (its
+src/browser-control folder at commit 5b4d161f99ba91c94651e6eac78e73ae1d4222ea),
+copied into this repository without changes. It is licensed under the
+Apache License, Version 2.0. See the LICENSE file in this folder.
+
+Portions of this software are derived from Nanobrowser
+(https://github.com/nanobrowser/nanobrowser), which is licensed under
+the Apache License, Version 2.0.
+
+This NOTICE retains that attribution. It is not a fork relationship
+and it does not grant any trademark in the upstream name.

@@ -54,6 +54,17 @@ All of these are optional host permissions in the manifest; Chrome lists the one
   permission again straight away. Pasting Threadkeeper's ID instead needs no permission at all. Talking to Threadkeeper
   needs none either: extensions can message each other by ID, and Still only answers the Threadkeeper you connected (web
   pages can never message Still).
+- **Browser automation** (Settings → Browser automation → **Let the assistant work in browser tabs**) asks for the
+  optional `tabs` and `webNavigation` permissions ("Read your browsing history") when you turn it on. Declining leaves
+  it off; the section then offers **Allow in Chrome**. Removing either permission on Still's details page stops the
+  assistant from working in tabs until you allow it again.
+
+Still's manifest also requires the `debugger` permission, which Chrome does not let an extension ask for later. Chrome
+lists it at install as "Access the page debugger backend" and "Read and change all your data on all websites". Still uses it only for browser automation: nothing attaches
+to a tab until you have turned browser automation on and asked the assistant for something that needs a page. While it
+is attached, Chrome shows a bar saying that Still started debugging this browser; **Cancel** on that bar detaches it.
+An update from a version without this permission keeps an unpacked extension running; an extension installed from a
+store is disabled until you accept the new permission. See [Browser automation](browser-automation.md).
 
 The sidebar screenshot control opens two choices. The page and extension-action context menus also expose screenshot actions:
 
@@ -136,7 +147,7 @@ node scripts/serve.mjs
 
 Open `http://127.0.0.1:4173/` for the full layout, or `http://127.0.0.1:4173/?view=sidepanel` for the sidebar layout. Preview metadata uses browser local storage and files use IndexedDB. Preview data is separate from installed-extension data.
 
-The preview cannot establish Chrome toolbar activation, actual context-menu capture, extension shortcuts, optional permission prompts or service-worker reminder delivery. **Save article** and **Select parts** are marked extension only there, and Research with AI says it is not available in the preview.
+The preview cannot establish Chrome toolbar activation, actual context-menu capture, extension shortcuts, optional permission prompts or service-worker reminder delivery. **Save article** and **Select parts** are marked extension only there, and Research with AI says it is not available in the preview. Browser automation needs the loaded extension too: in the preview its Settings section says Still cannot control the browser here.
 
 ## Check and package a source checkout
 
@@ -149,7 +160,7 @@ node scripts/package.mjs
 node scripts/package-runtime.mjs
 ```
 
-Static checks validate first-party JavaScript, local import/export edges, manifest permissions/CSP, icons and every supplied image. They also check that the scripts injected into web pages (`content/` and `lib/vendor/`) are classic scripts with no `import` or `export`, that the manifest declares no content scripts or web-accessible resources, and that the vendored Readability file still matches its size and SHA-256 pin. Tests exercise local behavior; reference extensions are not executed.
+Static checks validate first-party JavaScript, local import/export edges, manifest permissions/CSP, icons and every supplied image. They compare the built browser control layer (`extension/lib/browser-control/`) with its source and pins. They also check that the scripts injected into web pages (`content/` and `lib/vendor/`) are classic scripts with no `import` or `export`, that the manifest declares no content scripts or web-accessible resources, and that the vendored Readability file still matches its size and SHA-256 pin. Tests exercise local behavior; reference extensions are not executed.
 
 - `artifacts/still-extension.zip` contains the new extension with `manifest.json` at the ZIP root.
 - `artifacts/still-runtime.zip` contains the extension, optional companion, agent skills, public setup guides and an included **`START.md`**. Extract the bundle and follow that start guide.

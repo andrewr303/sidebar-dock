@@ -14,6 +14,8 @@ const URL_NOISE = new Set(['http', 'https', 'www', 'com', 'org', 'net', 'html', 
 // [field, weight, length normalization b]
 const FIELDS = [['title', 4, 0.3], ['tags', 3, 0], ['url', 1.5, 0.3], ['excerpt', 1.5, 0.75], ['highlights', 2, 0.75], ['content', 1.2, 0.75], ['article', 1, 0.75]];
 const PREFIX_FIELDS = ['title', 'tags', 'url'];
+/** How much of a captured article takes part in keyword scoring. */
+export const ARTICLE_SCORED = 60_000;
 const K1 = 1.2;
 
 const foldPlural = token => {
@@ -51,9 +53,24 @@ export function tokenize(value) {
   return tokens;
 }
 
-/** Splits a query into the store.queryItems filters (tags, type, phrases) and free terms. */
-export function parseQuery(query) {
-  let rest = text(query).toLowerCase().trim();
+const OPERATORS = /(?:^|\s)(?:tag:|#|type:)[^\s]+/gi;
+
+/**
+ * Splits a query into the store.queryItems filters (tags, type, phrases) and free terms.
+ * operators: false reads the whole text as words. A question a person asks ("what did issue #42 decide?", a sentence
+ * with a quotation in it) is not a filter expression; read as one, it would require a tag named 42.
+ * semanticText keeps the query's own casing: an embedding model reads "Apple" and "apple" differently.
+ */
+export function parseQuery(query, { operators = true } = {}) {
+  const original = text(query).trim();
+  let rest = original.toLowerCase();
+  if (!operators) {
+    const loose = rest.replace(/["“”]/g, ' ').replace(/\s+/g, ' ').trim();
+    const all = tokenize(loose);
+    const meaningful = all.filter(token => !STOP_WORDS.has(token));
+    return { tags: [], type: '', phrases: [], terms: [...new Set(meaningful.length ? meaningful : all)], words: (loose ? loose.split(' ') : []).filter(word => !STOP_WORDS.has(word)),
+      semanticText: original.replace(/\s+/g, ' ') };
+  }
   const tags = [...rest.matchAll(/(?:^|\s)(?:tag:|#)([^\s]+)/g)].map(match => match[1]);
   const type = rest.match(/(?:^|\s)type:([^\s]+)/)?.[1] || '';
   rest = rest.replace(/(?:^|\s)(?:tag:|#|type:)[^\s]+/g, ' ');
@@ -63,7 +80,9 @@ export function parseQuery(query) {
   const all = tokenize(loose);
   const meaningful = all.filter(token => !STOP_WORDS.has(token));
   const terms = [...new Set(meaningful.length ? meaningful : all)];
-  const semanticText = [loose, ...phrases].filter(Boolean).join(' ').trim();
+  // The same text without the operators, in the casing the person typed.
+  const typed = original.replace(OPERATORS, ' ');
+  const semanticText = [typed.replace(/"[^"]*"?/g, ' '), ...[...typed.matchAll(/"([^"]+)"/g)].map(match => match[1])].join(' ').replace(/\s+/g, ' ').trim();
   return { tags, type, phrases, terms, words: words.filter(word => !STOP_WORDS.has(word)), semanticText };
 }
 
@@ -119,8 +138,8 @@ function analyze(item) {
   const tf = {};
   const len = {};
   for (const [field] of FIELDS) {
-    // Long captured articles are scored on their first 20k characters; quoted phrases still match the full text.
-    const source = field === 'title' ? `${fields.title} ${fields.fileName}` : field === 'article' ? fields.article.slice(0, 20000) : fields[field];
+    // Long captured articles are scored on their first 60k characters; quoted phrases still match the full text.
+    const source = field === 'title' ? `${fields.title} ${fields.fileName}` : field === 'article' ? fields.article.slice(0, ARTICLE_SCORED) : fields[field];
     const tokens = tokenize(source).filter(token => field !== 'url' || !URL_NOISE.has(token));
     const map = new Map();
     for (const token of tokens) map.set(token, (map.get(token) || 0) + 1);
@@ -285,15 +304,20 @@ export function centroid(vectors) {
   return out;
 }
 
-/** Item score = its best chunk's similarity to the (unit) query vector. Returns [{ id, score, chunk }] best first. */
+/**
+ * Item score = its best chunk's similarity to the (unit) query vector. Returns [{ id, score, chunk, next? }] best
+ * first; `next` is the item's second-best chunk ({ score, chunk }), for callers that want more than one passage.
+ */
 export function semanticRank(queryVector, chunks, { allow = () => true } = {}) {
   const best = new Map();
+  const beats = (score, chunk, other) => !other || score > other.score || (score === other.score && chunk.n < other.chunk.n);
   for (const chunk of chunks || []) {
     if (!allow(chunk.itemId)) continue;
     const score = dot(queryVector, chunk.vector);
     if (Number.isNaN(score)) continue;
     const previous = best.get(chunk.itemId);
-    if (!previous || score > previous.score || (score === previous.score && chunk.n < previous.chunk.n)) best.set(chunk.itemId, { id: chunk.itemId, score, chunk });
+    if (beats(score, chunk, previous)) best.set(chunk.itemId, { id: chunk.itemId, score, chunk, ...(previous ? { next: { score: previous.score, chunk: previous.chunk } } : {}) });
+    else if (beats(score, chunk, previous.next)) previous.next = { score, chunk };
   }
   return [...best.values()].sort((a, b) => b.score - a.score || byId(a, b));
 }
@@ -323,7 +347,12 @@ export function semanticHead(list, { size = 30, relative = 0.7, floor = 0.05 } =
 
 /**
  * createSearch({ getLibrary, vectorStore, isSemanticReady, embedQuery }) -> { searchLibrary, relatedItems }
- * searchLibrary(query, { limit, mode: 'hybrid'|'semantic'|'lexical', filter, signal }) -> [{ id, score, snippet, source, title, type, url }]
+ * searchLibrary(query, { limit, mode: 'hybrid'|'semantic'|'lexical', filter, operators, chunks, signal })
+ *   -> [{ id, score, snippet, source, title, type, url, lexicalScore?, semanticScore?, chunks? }]
+ * score orders the list (in hybrid mode it is a rank fusion, so it says nothing about how good a match is);
+ * lexicalScore and semanticScore are the scores of each ranking, for callers that judge relevance.
+ * operators: false reads the query as a plain question (see parseQuery). chunks: n adds the texts of up to n
+ * (at most 2) of the item's best-matching indexed chunks.
  */
 export function createSearch({ getLibrary, vectorStore, isSemanticReady = async () => false, embedQuery } = {}) {
   const cache = createAnalysisCache();
@@ -351,12 +380,12 @@ export function createSearch({ getLibrary, vectorStore, isSemanticReady = async 
     return semanticRank(vector, chunks, { allow });
   }
 
-  async function searchLibrary(query, { limit = 20, mode = 'hybrid', filter = {}, signal } = {}) {
+  async function searchLibrary(query, { limit = 20, mode = 'hybrid', filter = {}, operators = true, chunks: wantChunks = 0, signal } = {}) {
     const library = await getLibrary();
     const items = Array.isArray(library?.items) ? library.items : [];
     if (library?.updatedAt && library.updatedAt !== pruneStamp) { pruneStamp = library.updatedAt; cache.prune(new Set(items.map(item => item.id))); }
     const size = Math.max(1, Math.min(200, Number.isFinite(limit) ? Math.floor(limit) : 20));
-    const parsed = parseQuery(query);
+    const parsed = parseQuery(query, { operators });
     const matchesFilter = itemMatcher(library, filter || {});
     const matchesQuery = queryMatcher(parsed, cache);
     const index = new Map(items.map(item => [item.id, item]));
@@ -366,16 +395,20 @@ export function createSearch({ getLibrary, vectorStore, isSemanticReady = async 
       try { semantic = await semanticCandidates(parsed, id => allowItem(index.get(id)), signal); }
       catch (error) { if (signal?.aborted) throw error; semantic = null; }
     }
-    const describe = (entry, source, score, snippet) => {
+    const round = value => Math.round(value * 1e6) / 1e6;
+    const chunkTexts = hit => (hit && wantChunks > 0 ? [hit.chunk, hit.next?.chunk].slice(0, Math.min(2, wantChunks)).map(chunk => text(chunk?.text)).filter(Boolean) : []);
+    const describe = (entry, source, score, snippet, { lexicalHit = null, semanticHit = null } = {}) => {
       const item = index.get(entry.id);
-      return { id: entry.id, score: Math.round(score * 1e6) / 1e6, snippet, source, title: text(item?.title), type: text(item?.type), url: text(item?.url) };
+      const passages = chunkTexts(semanticHit);
+      return { id: entry.id, score: round(score), snippet, source, title: text(item?.title), type: text(item?.type), url: text(item?.url),
+        ...(lexicalHit ? { lexicalScore: round(lexicalHit.score) } : {}), ...(semanticHit ? { semanticScore: round(semanticHit.score) } : {}), ...(passages.length ? { chunks: passages } : {}) };
     };
     const chunkSnippet = hit => makeSnippet(plainText(hit.chunk.text), parsed.words);
     if (mode === 'semantic' && semantic) {
-      return semanticHead(semantic, { size }).map(hit => describe(hit, 'semantic', hit.score, chunkSnippet(hit)));
+      return semanticHead(semantic, { size }).map(hit => describe(hit, 'semantic', hit.score, chunkSnippet(hit), { semanticHit: hit }));
     }
     const lexical = lexicalSearch(items, parsed, { allow: matchesFilter, cache, limit: semantic ? Math.max(size * 3, 60) : size });
-    if (!semantic || !semantic.length) return lexical.slice(0, size).map(hit => describe(hit, 'lexical', hit.score, hit.snippet));
+    if (!semantic || !semantic.length) return lexical.slice(0, size).map(hit => describe(hit, 'lexical', hit.score, hit.snippet, { lexicalHit: hit }));
     const head = semanticHead(semantic, { size: Math.max(size * 2, 30) });
     const lexicalById = new Map(lexical.map(hit => [hit.id, hit]));
     const semanticById = new Map(head.map(hit => [hit.id, hit]));
@@ -383,7 +416,7 @@ export function createSearch({ getLibrary, vectorStore, isSemanticReady = async 
       const lexicalHit = lexicalById.get(row.id);
       const semanticHit = semanticById.get(row.id);
       const source = lexicalHit && semanticHit ? 'both' : lexicalHit ? 'lexical' : 'semantic';
-      return describe(row, source, row.score, lexicalHit?.snippet || chunkSnippet(semanticHit));
+      return describe(row, source, row.score, lexicalHit?.snippet || chunkSnippet(semanticHit), { lexicalHit, semanticHit });
     });
   }
 

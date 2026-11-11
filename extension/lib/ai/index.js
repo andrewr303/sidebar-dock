@@ -19,6 +19,10 @@ import { createConversationStore } from './conversations.js';
 import { createImports } from './imports.js';
 import { getProvider as catalogProvider } from './catalog.js';
 import { createResearch } from './research/run.js';
+import { detectLocalWindow } from './local-context.js';
+import { createBrowserClient } from './browser-client.js';
+import { createBrowserTools } from './browser-tools.js';
+import { normalizeBrowserSettings } from '../browser/settings.js';
 
 export { CATALOG, EFFORT_LEVELS, ANTHROPIC_EFFORTS, EFFORT_LABELS, getProvider, chatProviders, embeddingProviders } from './catalog.js';
 export { listConnections, saveConnection, deleteConnection, testConnection, listModels, getAiSettings, onConnectionsChanged, ensureHostPermission,
@@ -28,7 +32,7 @@ export { streamChat } from './chat.js';
 export { handoffUrl, buildHandoffPrompt, handoffPlan, HANDOFF_TARGETS } from './handoff.js';
 
 // external: the assistant's read-only external tool providers; undefined means the default (Paperclip), built on first use.
-const runtime = { store: libraryStore, getLibrary: null, snapshot: null, requestBridge, dispose: null, dashboard: null, threadSources: null, external: undefined };
+const runtime = { store: libraryStore, getLibrary: null, snapshot: null, requestBridge, dispose: null, dashboard: null, threadSources: null, external: undefined, browserClient: null };
 const externalProviders = () => runtime.external === undefined ? (runtime.external = [createPaperclipToolProvider()]) : runtime.external;
 let services = null;
 
@@ -59,6 +63,36 @@ const chatsNow = () => runtime.threadSources?.chats || null;
 const threadsNow = async () => { try { return (await runtime.threadSources?.threads()) || null; } catch { return null; } };
 const aiSettings = () => connections.getAiSettings();
 
+// Browser automation (lib/browser/host.js in the service worker). A client is one port; tests swap the factory in init().
+const browserClient = () => (typeof runtime.browserClient === 'function' ? runtime.browserClient() : createBrowserClient());
+const insideExtension = () => typeof globalThis.chrome?.runtime?.connect === 'function' || typeof runtime.browserClient === 'function';
+/**
+ * Whether the assistant can work in browser tabs now: { available, missing: [Chrome permission], reason? }. Asks the
+ * service worker, which does not load the browser control layer for this.
+ */
+export async function browserStatus() {
+  if (!insideExtension()) return { available: false, missing: [], reason: 'Browser automation works in the installed extension.' };
+  const client = browserClient();
+  try { return await client.status(); }
+  catch (error) { return { available: false, missing: [], reason: String(error?.message || error) }; }
+  finally { await client.close().catch(() => undefined); }
+}
+// The turn's browser tools, or null: automation is off, this page is not inside the extension, or Chrome has not been
+// given the tab permissions (the UI is told, so it can ask in a click).
+async function browserFor({ settings, vision, hint, onPrompt, onWithdrawn, emit }) {
+  const policy = normalizeBrowserSettings(settings);
+  if (!policy.enabled || !insideExtension()) return null;
+  const client = browserClient();
+  let status = null;
+  try { status = await client.status(); } catch { status = null; }
+  if (!status?.available) {
+    await client.close().catch(() => undefined);
+    if (status?.missing?.length) emit({ type: 'browser_permission', permissions: status.missing });
+    return null;
+  }
+  return createBrowserTools({ client, policy, vision, reveal: hint?.reveal === true, startTabId: Number.isInteger(hint?.tabId) ? hint.tabId : null, onPrompt, onWithdrawn, emit });
+}
+
 function engine() {
   if (services) return services;
   const conversations = createConversationStore();
@@ -69,7 +103,7 @@ function engine() {
   const search = createSearch({ getLibrary: currentLibrary, vectorStore, isSemanticReady: () => indexer.isReady(), embedQuery: (query, options) => indexer.embedQuery(query, options) });
   const assistant = createAssistant({ streamChat: chatStream, resolveConnection: connections.resolveConnection, resolveChatTarget: connections.resolveChatTarget, modelInfo: connections.modelInfo,
     getAiSettings: aiSettings, getLibrary: currentLibrary, store, searchLibrary: search.searchLibrary, conversations, dashboard: () => runtime.dashboard, threads: threadsNow, chats: chatsNow,
-    external: externalProviders });
+    external: externalProviders, browser: browserFor, detectWindow: detectLocalWindow });
   const transforms = createTransforms({ streamChat: chatStream, resolveConnection: connections.resolveConnection, resolveChatTarget: connections.resolveChatTarget,
     getAiSettings: aiSettings, getLibrary: currentLibrary });
   const imports = createImports({ streamChat: chatStream, resolveChatTarget: connections.resolveChatTarget, resolveConnection: connections.resolveConnection, getProvider: catalogProvider });
@@ -193,7 +227,7 @@ export async function semanticSearchAvailable() {
 }
 
 /**
- * Called once from app.js: init({ store, getLibrary, integrations, onLibraryChange, dashboard, threads, external }).
+ * Called once from app.js: init({ store, getLibrary, integrations, onLibraryChange, dashboard, threads, external, browser }).
  * threads (optional): lib/ai/threads.js threadSources(); it gives the assistant the chats saved in Still and, while Still is
  * paired with Threadkeeper, the thread tools and automatic thread context.
  * onLibraryChange(listener) -> unsubscribe defaults to store.subscribe. Indexing starts shortly after boot when enabled.
@@ -201,10 +235,13 @@ export async function semanticSearchAvailable() {
  * assistant see the dashboard and show a collection on it. Without it those tools are not offered.
  * external (optional): the assistant's read-only external tool providers (see tools.js createToolSession); the default is
  * Paperclip (paperclip-tools.js), offered only while Paperclip is connected. Pass [] or null to offer none.
+ * browser (optional): () -> a browser client (browser-client.js createBrowserClient) for one turn; the default connects
+ * to the service worker's browser host. Pass null to go back to the default.
  */
-export function init({ store: appStore, getLibrary, integrations, onLibraryChange, dashboard, threads, external } = {}) {
+export function init({ store: appStore, getLibrary, integrations, onLibraryChange, dashboard, threads, external, browser } = {}) {
   runtime.dispose?.();
   if (external !== undefined) runtime.external = Array.isArray(external) ? external.filter(Boolean) : [];
+  if (browser !== undefined) runtime.browserClient = typeof browser === 'function' ? browser : null;
   if (appStore) runtime.store = appStore;
   if (dashboard !== undefined) runtime.dashboard = dashboardAdapter(dashboard);
   if (threads !== undefined) runtime.threadSources = threadSourcesAdapter(threads);

@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { VENDORED_FILES } from './vendored.mjs';
+import { GENERATED_FILES } from './generated.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 await import('./check.mjs');
@@ -35,7 +36,7 @@ with zipfile.ZipFile(temporary) as archive:
     for pin in pins:
         data = archive.read(pin['path'])
         if len(data) != pin['bytes'] or hashlib.sha256(data).hexdigest() != pin['sha256']:
-            raise ValueError('Vendored file changed in the package: ' + pin['path'])
+            raise ValueError('Pinned file changed in the package: ' + pin['path'])
     if any(name.startswith('/') or '..' in pathlib.PurePosixPath(name).parts for name in names):
         raise ValueError('Unsafe archive entry')
     manifest = json.loads(archive.read('manifest.json'))
@@ -49,7 +50,8 @@ temporary.replace(target)
 print(json.dumps({'entries': len(names), 'manifest_version': manifest['manifest_version'], 'version': manifest['version'], 'entrypoints': required}))
 `;
 const runPython = python => new Promise((resolveRun, rejectRun) => {
-  const child = spawn(python, ['-c', program, resolve(root, 'extension'), target, JSON.stringify(VENDORED_FILES)], {
+  // Vendored third-party files and the generated browser control layer are both held to their pins inside the ZIP.
+  const child = spawn(python, ['-c', program, resolve(root, 'extension'), target, JSON.stringify([...VENDORED_FILES, ...GENERATED_FILES])], {
     cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '', stderr = '';

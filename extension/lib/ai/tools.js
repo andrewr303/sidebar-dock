@@ -10,6 +10,7 @@
 import { getDescendantCollectionIds } from '../library-views.js';
 import { canonicalUrl, safeUrl, STICKY_COLORS, ITEM_TYPES } from '../store.js';
 import { plainText } from './search.js';
+import { fitText, readFrom } from './passages.js';
 import { allowedCategories, autoApproves, normalizePermissions, toolAutoApplies, MAX_AUTO_ITEMS } from './permissions.js';
 import { pageIndex, descendantIds } from '../pages.js';
 import { chatItemId } from '../threadkeeper/protocol.js';
@@ -84,8 +85,12 @@ export const LIBRARY_TOOLS = Object.freeze([
       tag: { type: 'string', description: 'Only items with this tag.' },
       limit: { type: 'integer', description: 'Maximum results, 1 to 50. Default 12.' },
     }, ['query']) },
-  { name: 'get_items', access: 'read', description: 'Read saved items in full by id: description, the user’s note, captured article text, highlights, tags, collection, pinned, read and reminder state, and linked item ids. Up to 20 ids per call.',
-    inputSchema: schema({ ids: ids('Item ids from search results or earlier tool results.') }, ['ids']) },
+  { name: 'get_items', access: 'read', description: 'Read saved items in full by id: description, the user’s note, captured article text, highlights, tags, collection, pinned, read and reminder state, and linked item ids. Up to 20 ids per call. A text too long to return whole comes back as its opening (truncated: true); pass query to get the passages that match it, or offset to read on from a character position.',
+    inputSchema: schema({
+      ids: ids('Item ids from search results or earlier tool results.'),
+      query: { type: 'string', description: 'What you are looking for in these items. Long notes and articles are then returned as their opening plus the passages that match (passages, notePassages: [{ at, text }]).' },
+      offset: { type: 'integer', description: 'With exactly one id: the character position in its article to read from, such as a passage’s at or the nextOffset of an earlier read.' },
+    }, ['ids']) },
   { name: 'list_items', access: 'read', description: 'Browse saved items without a search query. Filter by collection, type, tag, favorite, pinned and state: active (default), archived, trash or all. Returns total and nextOffset for the next page.',
     inputSchema: schema({
       collectionId: str('Only items in this collection and its sub-collections. Use "inbox" for unsorted items.'),
@@ -663,8 +668,13 @@ export function externalToolMap(external) {
  * saved in Still. threadTools: offer the AI thread reads (default: when threads is set). threadContext: this turn's reference
  * data already holds thread text. knownThreads: [{ id, title, threadKey }] cited earlier, so their ids resolve. A turn that read thread text (here or in its context) never applies a proposal
  * without review: thread text is untrusted and may carry instructions.
+ * actions (optional): tool providers that act outside the library, such as the browser tools (lib/ai/browser-tools.js):
+ * [{ id, label?, definitions(), beginStep?(), call(name, input, { signal, id }) -> { content, isError?, summary?, result?,
+ * images?: [{ mediaType, data, note }], untrusted? } }]. Their content reaches the model as they return it (they mark
+ * untrusted text themselves), they ask the person through their own cards, and a result they flag as untrusted makes
+ * the turn's library proposals ask, exactly as thread text does. execute() returns their images beside the result.
  */
-export function createToolSession({ getLibrary, searchLibrary, store, page = null, dashboard = null, permissions = null, external = [], onProposal, onEvent = () => {}, signal, uid = uidDefault,
+export function createToolSession({ getLibrary, searchLibrary, store, page = null, dashboard = null, permissions = null, external = [], actions = [], onProposal, onEvent = () => {}, signal, uid = uidDefault,
   now = () => new Date().toISOString(), threads = null, chats = null, threadTools, threadContext = false, knownThreads = [] } = {}) {
   const board = dashboard && typeof dashboard.describe === 'function' && typeof dashboard.addCollectionWidget === 'function' ? dashboard : null;
   const policy = normalizePermissions(permissions);
@@ -678,6 +688,9 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
   const sources = new Map();
   const proposals = [];
   const externalTools = externalToolMap(external);
+  // Action tools are named apart from the library's and the external sources' tools; a clash drops the action tool.
+  const actionProviders = (Array.isArray(actions) ? actions : []).filter(provider => provider && typeof provider.definitions === 'function' && typeof provider.call === 'function');
+  const actionTools = new Map([...externalToolMap(actionProviders)].filter(([name]) => !externalTools.has(name)));
   let declined = false;
   // The library's updatedAt right after this session's last apply. Until the app's snapshot (getLibrary) reaches it, reads
   // and staging use the store's own copy so a later step sees what an earlier proposal created.
@@ -815,10 +828,17 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       const library = await readLibrary();
       const index = new Map((library?.items || []).map(item => [item.id, item]));
       // Pair each hit with its item before dropping ids that vanished, so snippets stay with the right item.
+      // A list always has a last place: `match` says whether a row is close to the best match or far behind it, by
+      // the score of the ranking that found it (keyword or meaning), so the model does not read a weak row as an answer.
+      const top = key => Math.max(0, ...results.map(result => (Number.isFinite(result?.[key]) ? result[key] : 0)));
+      const [topLexical, topSemantic] = [top('lexicalScore'), top('semanticScore')];
+      const strength = result => (!topLexical && !topSemantic ? undefined
+        : (topLexical > 0 && (result.lexicalScore || 0) >= topLexical * 0.5) || (topSemantic > 0 && (result.semanticScore || 0) >= topSemantic * 0.9) ? 'strong' : 'weak');
       const items = results.map(result => ({ result, item: index.get(result.id) })).filter(entry => entry.item && !hiddenChat(entry.item)).map(({ result, item }) => {
         remember(item, library);
+        const match = strength(result);
         return { id: item.id, title: text(item.title), type: item.type, url: text(item.url), collection: collectionPath(library, text(item.collectionId)),
-          tags: item.tags || [], updatedAt: text(item.updatedAt), snippet: text(result.snippet) };
+          tags: item.tags || [], updatedAt: text(item.updatedAt), snippet: text(result.snippet), ...(match ? { match } : {}) };
       });
       // A chat's title and snippet (its Threadkeeper summary, gist) are thread text: untrusted, and the turn asks before applying.
       const chatHits = items.some(item => item.type === 'chat');
@@ -833,6 +853,10 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       const index = new Map((library?.items || []).map(item => [item.id, item]));
       const chosen = wanted.slice(0, 20);
       const budget = Math.max(4000, Math.floor(60000 / chosen.length));
+      // query: long texts come back as their opening and the passages that match it. offset: read one item's article on
+      // from a character position.
+      const query = text(input.query).trim().slice(0, 500);
+      const offset = chosen.length === 1 && Number.isInteger(input.offset) && input.offset > 0 ? input.offset : 0;
       const items = [];
       const missing = [];
       for (const id of chosen) {
@@ -846,15 +870,24 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
         const article = item.type === 'chat' ? (stored?.record ? text(local.summaryMarkdown(stored.record, item)) : text(item.excerpt)) : text(item.articleContent);
         const noteBudget = article ? Math.min(note.length, Math.floor(budget / 2)) : budget;
         const articleBudget = Math.max(0, budget - Math.min(note.length, noteBudget));
+        const head = (value, room) => ({ text: value.slice(0, room), truncated: value.length > room });
+        const shownNote = query ? fitText(note, query, { budget: noteBudget }) : head(note, noteBudget);
+        // Reading on: the article from the offset, and where the next part begins.
+        const part = offset ? readFrom(article, offset, articleBudget) : null;
+        const shownArticle = part ? { text: part.text, truncated: part.next !== undefined } : query ? fitText(article, query, { budget: articleBudget }) : head(article, articleBudget);
+        // Where to read on from: after this part, or after the opening when the rest was cut.
+        const nextOffset = part ? part.next : shownArticle.truncated ? shownArticle.text.length : undefined;
         items.push({ id: item.id, title: text(item.title), type: item.type, url: text(item.url), collection: collectionPath(library, text(item.collectionId)), collectionId: text(item.collectionId),
           tags: item.tags || [], favorite: !!item.favorite, pinned: !!item.pinned, read: !!item.read, reminderAt: text(item.reminderAt) || null,
           archived: !!item.archived, inTrash: !!item.deletedAt, createdAt: text(item.createdAt), updatedAt: text(item.updatedAt),
           ...(item.sticky ? { sticky: text(item.sticky.color) || true } : {}),
-          description: text(item.excerpt).slice(0, 2000), note: note.slice(0, noteBudget), article: article.slice(0, articleBudget),
+          description: text(item.excerpt).slice(0, 2000), note: shownNote.text, ...(shownNote.passages ? { notePassages: shownNote.passages } : {}),
+          article: shownArticle.text, ...(shownArticle.passages ? { passages: shownArticle.passages } : {}),
+          ...(part ? { articleOffset: part.at } : {}), ...(article.length > articleBudget ? { articleLength: article.length } : {}), ...(nextOffset !== undefined ? { nextOffset } : {}),
           highlights: (item.highlights || []).slice(0, 40).map(h => ({ text: text(h.text).slice(0, 800), note: text(h.note).slice(0, 400) })),
           relatedIds: (item.relatedIds || []).slice(0, 50), fileName: text(item.fileName) || undefined, parentId: text(item.parentId) || undefined,
           ...(item.type === 'chat' ? { chat: chatFields(item, stored) } : {}),
-          truncated: note.length > noteBudget || article.length > articleBudget });
+          truncated: !!shownNote.truncated || !!shownArticle.truncated });
       }
       const chatNote = items.some(item => item.type === 'chat') ? { chatNote: `For chats, article is the chat’s summary and note is the user’s own notes; read the conversation with get_ai_threads. ${THREAD_NOTE}` } : {};
       return { summary: `Read ${plural(items.length, 'item')}`, data: { items, missing, ...(wanted.length > 20 ? { note: 'Only the first 20 ids were read.' } : {}), ...chatNote }, result: { count: items.length } };
@@ -1903,19 +1936,44 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
     }
   }
 
-  /** Runs one model step's tool calls; returns [{ toolUseId, content, isError }] in call order. */
+  // An action provider's call (the browser tools). The provider frames its own content; here its result only switches
+  // on the turn's untrusted latch and travels on, with any images it took.
+  async function runAction(call, input, done) {
+    const { provider, definition } = actionTools.get(call.name);
+    if (signal?.aborted) throw signal.reason || new DOMException('Stopped', 'AbortError');
+    try {
+      const output = (await provider.call(definition.name, input, { signal, id: call.id })) || {};
+      // Text from outside the library entered the turn: from now on its proposals ask and its answer loads no remote images.
+      if (output.untrusted) usedThreads = true;
+      const images = (Array.isArray(output.images) ? output.images : []).filter(image => image && typeof image.data === 'string' && image.data);
+      done(call, text(output.content) || (output.isError ? 'error' : 'ok'), { isError: output.isError === true, summary: text(output.summary).slice(0, 200), result: output.result, images, action: true });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      const message = text(error?.message).split('\n')[0].slice(0, 300) || 'the tool failed';
+      done(call, `error: ${message}`, { isError: true, summary: `${call.name.replace(/_/g, ' ')} failed`, action: true });
+    }
+  }
+
+  /**
+   * Runs one model step's tool calls; returns [{ toolUseId, content, isError, images?, result? }] in call order. `images`
+   * and `result` (the provider's small structured result) are only on an action tool's entry.
+   */
   async function execute(calls) {
     const results = new Map();
-    const done = (call, data, { isError = false, summary = '', result } = {}) => {
-      results.set(call.id, { toolUseId: call.id, content: typeof data === 'string' ? data : JSON.stringify(data), isError });
+    const done = (call, data, { isError = false, summary = '', result, images = [], action = false } = {}) => {
+      results.set(call.id, { toolUseId: call.id, content: typeof data === 'string' ? data : JSON.stringify(data), isError,
+        ...(action ? { action: true, result: result ?? null } : {}), ...(images.length ? { images } : {}) });
       // usedThreads: from now on this turn holds thread text (the panel renders the streaming answer without images).
       onEvent({ type: 'tool', id: call.id, name: call.name, summary: summary || (isError ? `${call.name} failed` : call.name), result, isError, ...(usedThreads ? { usedThreads: true } : {}) });
     };
     const writes = [];
+    // A new model step: an action provider's batch rules start over (the rest of a step is not run on a changed page).
+    for (const provider of actionProviders) { try { provider.beginStep?.(); } catch (error) { console.error(error); } }
     for (const call of calls) {
       const tool = TOOL_BY_NAME.get(call.name);
       const input = call.input && typeof call.input === 'object' && !Array.isArray(call.input) ? call.input : {};
       if (!tool && externalTools.has(call.name)) { await runExternal(call, input, done); continue; }
+      if (!tool && actionTools.has(call.name)) { await runAction(call, input, done); continue; }
       if (!tool || !offered(call.name)) { done(call, { error: `Unknown tool ${call.name}.` }, { isError: true }); continue; }
       if (tool.access === 'write') { writes.push({ call, input }); continue; }
       if (signal?.aborted) throw signal.reason || new DOMException('Stopped', 'AbortError');
@@ -1932,8 +1990,10 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
   }
 
   const definitions = options => [...toolDefinitions({ page: !!page, dashboard: !!board, permissions: policy, threads: threadReads, threadImport: !!tk, ...options }),
-    ...[...externalTools.values()].map(({ definition }) => ({ ...definition, inputSchema: structuredClone(definition.inputSchema) }))];
+    ...[...externalTools.values(), ...actionTools.values()].map(({ definition }) => ({ ...definition, inputSchema: structuredClone(definition.inputSchema) }))];
   return { definitions, execute, sources, proposals,
-    /** True once this turn read AI thread text (its context or a thread tool): its proposals always ask. */
-    get usedThreads() { return usedThreads; } };
+    /** True once this turn read untrusted text (AI thread text in its context or from a thread tool, or page text from an action tool): its proposals always ask. */
+    get usedThreads() { return usedThreads; },
+    /** Untrusted text entered the turn another way (web search results the provider ran): from now on its proposals ask. */
+    markUntrusted() { usedThreads = true; } };
 }

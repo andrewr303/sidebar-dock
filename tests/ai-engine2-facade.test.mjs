@@ -11,8 +11,9 @@ test('the facade exposes the SPEC 7.2 API (plus pauseIndexing and the semanticSe
   for (const name of SPEC_EXPORTS) assert.ok(name in ai, name);
   // Beyond SPEC 7.2: indexing control, the bridge search adapter, file imports, and helpers the settings and assistant UIs need.
   // The research agent's run API (build contracts §6) is part of the facade too, and so is AI auto-tagging (autotag.js).
+  // browserStatus tells Settings and the composer whether the assistant can work in browser tabs (lib/browser/host.js).
   assert.deepEqual(Object.keys(ai).filter(name => !SPEC_EXPORTS.includes(name)).sort(), ['ANTHROPIC_EFFORTS', 'DEFAULT_AI_SETTINGS', 'EFFORT_LABELS', 'EFFORT_LEVELS',
-    'HANDOFF_TARGETS', 'cancelChatGptSignIn', 'chatGptSignInStatus', 'chatProviders', 'cliSignInStatus', 'continueResearch', 'embeddingProviders', 'ensureHostPermission', 'finalizeAutoTags',
+    'HANDOFF_TARGETS', 'browserStatus', 'cancelChatGptSignIn', 'chatGptSignInStatus', 'chatProviders', 'cliSignInStatus', 'continueResearch', 'embeddingProviders', 'ensureHostPermission', 'finalizeAutoTags',
     'getBridgeStatus', 'getProvider', 'handoffPlan', 'hostPermissionOrigins', 'importDocument', 'importTarget', 'importThreadCitation', 'onConnectionsChanged', 'openThreadInThreadkeeper',
     'pairBridge', 'pauseIndexing', 'planAutoTags', 'raiseResearchBudget', 'researchAvailability', 'resetResearchProvisioning', 'resolveChatTarget', 'resolveThreadCitation', 'resumeResearch',
     'semanticSearch', 'semanticSearchAvailable', 'startChatGptSignIn', 'startResearch', 'stopResearch', 'subscribeResearch', 'threadStatus', 'undoProposal', 'undoResearch', 'warmThreads']);
@@ -107,4 +108,29 @@ test('undoProposal undoes a saved proposal record through the app store and the 
   ]);
   await ai.undoProposal(null);
   handle.dispose();
+});
+
+test('browserStatus asks the browser host and closes its connection; outside the extension it says so', async () => {
+  const library = { updatedAt: '1', collections: [], items: [] };
+  // No chrome.runtime here and no client factory: the facade does not try to connect.
+  const outside = ai.init({ store: { loadLibrary: async () => library }, getLibrary: () => library, browser: null });
+  assert.deepEqual(await ai.browserStatus(), { available: false, missing: [], reason: 'Browser automation works in the installed extension.' });
+  outside.dispose();
+
+  const clients = [];
+  const fakeClient = answer => () => {
+    const client = { closed: false, status: async () => { if (answer instanceof Error) throw answer; return answer; }, close: async () => { client.closed = true; } };
+    clients.push(client);
+    return client;
+  };
+  let handle = ai.init({ store: { loadLibrary: async () => library }, getLibrary: () => library, browser: fakeClient({ available: false, missing: ['tabs', 'webNavigation'] }) });
+  assert.deepEqual(await ai.browserStatus(), { available: false, missing: ['tabs', 'webNavigation'] });
+  assert.equal(clients[0].closed, true, 'a status question leaves no port open');
+  handle.dispose();
+
+  handle = ai.init({ store: { loadLibrary: async () => library }, getLibrary: () => library, browser: fakeClient(new Error('The worker is not running')) });
+  assert.deepEqual(await ai.browserStatus(), { available: false, missing: [], reason: 'The worker is not running' });
+  assert.equal(clients[1].closed, true);
+  handle.dispose();
+  ai.init({ store: { loadLibrary: async () => library }, getLibrary: () => library, browser: null }).dispose();
 });

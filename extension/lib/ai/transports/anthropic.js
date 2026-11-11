@@ -4,6 +4,7 @@ import { ANTHROPIC_COMPAT_VERSION, ANTHROPIC_EFFORTS, ANTHROPIC_FALLBACK_BETA, A
 import { providerFetch, readJsonBody, streamError } from '../http.js';
 import { parseEventData, readSse } from '../stream.js';
 import { STOP_NOTICES, compactUsage, documentSource, imageSource, incompleteError, isStrictSchema, parseToolInput, partsOf, refusalError, toolResultText, toolSchema } from './shared.js';
+import { anthropicWebSearchTool, mergeWebSources, webSource } from '../web-search.js';
 
 export const isOfficialHost = baseUrl => { try { return new URL(baseUrl).hostname === 'api.anthropic.com'; } catch { return false; } };
 
@@ -60,7 +61,7 @@ export function toAnthropicTools(tools = []) {
   });
 }
 
-export function buildRequest({ baseUrl, apiKey, connection, model, modelInfo, system, messages, tools, effort, maxTokens }) {
+export function buildRequest({ baseUrl, apiKey, connection, model, modelInfo, system, messages, tools, effort, maxTokens, webSearch = null }) {
   const official = isOfficialHost(baseUrl);
   const limit = Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : DEFAULT_MAX_TOKENS;
   const ceiling = Number.isInteger(modelInfo?.maxOutput) && modelInfo.maxOutput > 0 ? modelInfo.maxOutput : Infinity;
@@ -80,11 +81,15 @@ export function buildRequest({ baseUrl, apiKey, connection, model, modelInfo, sy
     cache_control: { type: 'ephemeral' },
   };
   if (tools?.length) { body.tools = toAnthropicTools(tools); body.tool_choice = { type: 'auto' }; }
+  // Web search runs on Anthropic's side (lib/ai/web-search.js). Only on the official host: a compatible server may not
+  // know the tool. It goes after the client tools, so their part of the request stays a cached prefix.
+  if (webSearch && official) body.tools = [...(body.tools || []), anthropicWebSearchTool(model, webSearch)];
   if (official && supportsFallbacks(model)) body.fallbacks = 'default';
   return { url: `${baseUrl}/messages`, method: 'POST', headers: { ...headersFor({ baseUrl, apiKey, connection, model }), accept: 'text/event-stream' }, body };
 }
 
-const usageOf = raw => compactUsage({ inputTokens: raw.input_tokens, outputTokens: raw.output_tokens, cacheReadTokens: raw.cache_read_input_tokens, cacheWriteTokens: raw.cache_creation_input_tokens });
+const usageOf = raw => compactUsage({ inputTokens: raw.input_tokens, outputTokens: raw.output_tokens, cacheReadTokens: raw.cache_read_input_tokens, cacheWriteTokens: raw.cache_creation_input_tokens,
+  webSearchRequests: raw.server_tool_use?.web_search_requests || undefined });
 
 // Server-side fallback marks each switch with a `fallback` content block. When the turn is echoed back, blocks the
 // declined model produced before the last switch are dropped except text and paired server-tool blocks; the marker
@@ -110,6 +115,12 @@ export async function stream(ctx) {
   const rawUsage = {};
   let text = '', thinking = '', stopReason = null, stopDetails = null, completed = false, actualModel = model, fallback = null;
   let toolCalls = [];
+  // Web search: the addresses the results and the citations name, in the order they were used.
+  const found = [];
+  const cited = [];
+  // True once the provider ran a tool of its own: from then on text from the web may be in the model's context,
+  // whether or not the answer cites it.
+  let searched = false;
   for await (const { data } of readSse(response, { signal })) {
     const event = parseEventData(data);
     switch (event.type) {
@@ -130,6 +141,16 @@ export async function stream(ctx) {
           if (fallback.to) actualModel = fallback.to;
         }
         if (block.type === 'text' && block.text) { text += block.text; emit({ type: 'text', delta: block.text }); }
+        // The provider's own tool is starting, or its result is here. Said at once, before the model writes on.
+        if (block.type === 'server_tool_use' || (typeof block.type === 'string' && block.type.endsWith('_tool_result'))) {
+          if (!searched) emit({ type: 'web_search', started: true });
+          searched = true;
+        }
+        // A search's results arrive whole with the block. An error is an object, not a list (the request still succeeds).
+        if (block.type === 'web_search_tool_result') {
+          if (Array.isArray(block.content)) for (const result of block.content) { const source = result?.type === 'web_search_result' ? webSource(result.url, result.title) : null; if (source) found.push(source); }
+          else if (block.content?.error_code) emit({ type: 'web_search', error: String(block.content.error_code) });
+        }
         break;
       }
       case 'content_block_delta': {
@@ -158,6 +179,23 @@ export async function stream(ctx) {
             const call = { id: block.id, name: block.name, input: block.input };
             toolCalls.push(call);
             emit({ type: 'tool_call', ...call });
+          } else if (block.type === 'server_tool_use' && block.name === 'web_search' && typeof block.input?.query === 'string') {
+            emit({ type: 'web_search', query: block.input.query.slice(0, 300) });
+          }
+        }
+        // Text the model took from a search result carries where it came from: the address follows the sentence as a
+        // link, so the person can check it. (The copy sent back to the model keeps the provider's own citation data.)
+        if (block?.type === 'text' && Array.isArray(block.citations)) {
+          const sources = mergeWebSources(block.citations.filter(citation => citation?.type === 'web_search_result_location').map(citation => ({ url: citation.url, title: citation.title })));
+          // A source is linked where the answer first rests on it; every source is listed with the answer as well.
+          const fresh = sources.filter(source => !cited.some(entry => entry.url === source.url)).slice(0, 2);
+          for (const source of sources) if (!cited.some(entry => entry.url === source.url)) cited.push(source);
+          if (fresh.length) {
+            // Parentheses in an address would end the Markdown link early.
+            const address = url => url.replace(/\(/g, '%28').replace(/\)/g, '%29');
+            const links = ` (${fresh.map(source => `[${source.url.replace(/^https?:\/\/(?:www\.)?/, '').split(/[/?#]/)[0]}](${address(source.url)})`).join(', ')})`;
+            text += links;
+            emit({ type: 'text', delta: links });
           }
         }
         break;
@@ -200,6 +238,9 @@ export async function stream(ctx) {
     stopReason: stopReason === 'tool_use' ? 'tool_use' : stopReason === 'max_tokens' ? 'max_tokens' : stopReason === 'pause_turn' ? 'pause_turn' : stopReason === 'stop_sequence' ? 'stop_sequence' : 'end_turn',
     rawStopReason: stopReason,
     notice: STOP_NOTICES[stopReason] || null, fallback,
+    // Cited addresses first: they are what the answer rests on.
+    ...(found.length || cited.length ? { webSources: mergeWebSources(cited, found) } : {}),
+    ...(searched || found.length || cited.length || usage.webSearchRequests ? { webSearched: true } : {}),
     assistantMessage: { role: 'assistant', content, native: { transport: 'anthropic', content: native } },
   };
 }

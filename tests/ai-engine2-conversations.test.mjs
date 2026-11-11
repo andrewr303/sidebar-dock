@@ -86,3 +86,26 @@ test('titles come from the first question', () => {
   assert.ok(long.length <= 61 && long.endsWith('…'));
   assert.ok(!/\s…$/.test(long));
 });
+
+test('an answer keeps what it did in browser tabs as bounded plain text', () => {
+  const lines = Array.from({ length: 90 }, (_, index) => ({ step: index + 1, kind: index % 2 ? 'write' : 'read', text: `tab 7 · line ${index + 1}`, id: `b${index}`, extra: { nested: true } }));
+  const conversation = normalizeConversation({ id: 'c1', messages: [
+    { id: 'u1', role: 'user', text: 'Send the form' },
+    { id: 'a1', role: 'assistant', text: 'Sent.', browser: { activity: [...lines, { step: 'x', kind: 7, text: 'y'.repeat(900) }, { text: '' }, null, 'not a line'],
+      unverified: ['click button «Send» on tab 7: the page showed no effect', 5, '', ...Array.from({ length: 30 }, (_, index) => `step ${index}`)], secret: 'dropped' } },
+    { id: 'a2', role: 'assistant', text: 'Nothing done in the browser.', browser: { activity: [], unverified: [] } },
+    { id: 'a3', role: 'assistant', text: 'Damaged record.', browser: 'yes' },
+  ] });
+  const [, first, second, third] = conversation.messages;
+  assert.equal(first.browser.activity.length, 60, 'the newest lines are kept');
+  assert.deepEqual(first.browser.activity.at(-2), { step: 90, kind: 'write', text: 'tab 7 · line 90' }, 'only step, kind and text are stored');
+  assert.deepEqual(Object.keys(first.browser.activity.at(-1)), ['step', 'kind', 'text']);
+  assert.equal(first.browser.activity.at(-1).step, 0);
+  assert.equal(first.browser.activity.at(-1).kind, 'action');
+  assert.equal(first.browser.activity.at(-1).text.length, 400);
+  assert.equal(first.browser.unverified.length, 20);
+  assert.equal(first.browser.unverified[0], 'click button «Send» on tab 7: the page showed no effect');
+  assert.deepEqual(Object.keys(first.browser), ['activity', 'unverified']);
+  assert.equal('browser' in second, false, 'an empty record is not stored');
+  assert.equal('browser' in third, false);
+});

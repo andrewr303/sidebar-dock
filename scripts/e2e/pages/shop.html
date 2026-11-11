@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Kettle shop</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; margin: 2rem; max-width: 46rem; }
+    .product { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+    button, input, select { font: inherit; padding: 0.4rem 0.7rem; }
+    #cart { font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>Kettle shop</h1>
+  <p>Cart: <span id="cart">0 items</span></p>
+  <div class="product">
+    <h2>Copper kettle</h2>
+    <p>Price: <span class="price">49.90 euros</span>. Holds 1.7 litres.</p>
+    <button type="button" id="add-copper">Add to cart</button>
+  </div>
+  <div class="product">
+    <h2>Steel kettle</h2>
+    <p>Price: <span class="price">29.50 euros</span>. Holds 1.2 litres.</p>
+    <button type="button" id="add-steel">Add to cart</button>
+  </div>
+  <p><a href="contact.html">Contact the shop</a></p>
+  <script>
+    let count = 0;
+    for (const button of document.querySelectorAll('.product button')) {
+      button.addEventListener('click', () => {
+        count += 1;
+        document.getElementById('cart').textContent = count === 1 ? '1 item' : count + ' items';
+      });
+    }
+  </script>
+</body>
+</html>

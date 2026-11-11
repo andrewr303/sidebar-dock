@@ -4,6 +4,7 @@ import { DEFAULT_MAX_TOKENS, clampEffort } from '../catalog.js';
 import { authHeaders, providerFetch, readJsonBody, streamError } from '../http.js';
 import { parseEventData, readSse } from '../stream.js';
 import { STOP_NOTICES, compactUsage, dataUrlOf, documentSource, incompleteError, isStrictSchema, parseToolInput, partsOf, textOf, toolResultText, toolSchema } from './shared.js';
+import { mergeWebSources, openAiWebSearchTool, webSource } from '../web-search.js';
 
 // Reasoning models accept reasoning.effort; older chat models reject it.
 const REASONING_MODEL = /^(?:gpt-(?:[5-9]|\d{2})|o\d)/;
@@ -44,7 +45,7 @@ export function toResponsesTools(tools = []) {
   });
 }
 
-export function buildRequest({ provider, baseUrl, apiKey, model, modelInfo, system, messages, tools, effort, maxTokens }) {
+export function buildRequest({ provider, baseUrl, apiKey, model, modelInfo, system, messages, tools, effort, maxTokens, webSearch = null }) {
   const headers = { 'content-type': 'application/json', accept: 'text/event-stream', ...authHeaders({ provider, apiKey }) };
   const input = toResponsesInput(messages);
   if (provider?.responsesOptions?.presets && model.startsWith('preset:')) {
@@ -61,6 +62,8 @@ export function buildRequest({ provider, baseUrl, apiKey, model, modelInfo, syst
   if (Number.isInteger(maxTokens) && maxTokens > 0) body.max_output_tokens = Math.min(maxTokens, ceiling);
   else if (reasoningModel) body.max_output_tokens = Math.min(DEFAULT_MAX_TOKENS, ceiling);
   if (tools?.length) { body.tools = toResponsesTools(tools); body.tool_choice = 'auto'; }
+  // Web search runs on OpenAI's side (lib/ai/web-search.js); the caller offers it only on OpenAI's own host.
+  if (webSearch) { body.tools = [...(body.tools || []), openAiWebSearchTool()]; body.tool_choice = 'auto'; }
   return { url: `${baseUrl}/responses`, method: 'POST', headers, body };
 }
 
@@ -74,6 +77,13 @@ export async function stream(ctx) {
   const calls = new Map();
   const outputs = [];
   const toolCalls = [];
+  // Web search: the addresses the answer's citations name, then the pages the provider opened.
+  const cited = [];
+  const opened = [];
+  // True once the provider started a search: from then on text from the web may be in the model's context, whether
+  // or not the answer cites it.
+  let searched = false;
+  const searching = () => { if (!searched) emit({ type: 'web_search', started: true }); searched = true; };
   const finishCall = call => {
     if (call.emitted) return;
     call.emitted = true;
@@ -91,6 +101,7 @@ export async function stream(ctx) {
         if (event.response?.model) actualModel = event.response.model;
         break;
       case 'response.output_item.added':
+        if (event.item?.type === 'web_search_call') searching();
         if (event.item?.type === 'function_call') {
           const call = { callId: event.item.call_id, name: event.item.name, arguments: event.item.arguments || '' };
           calls.set(event.item.id || `#${event.output_index}`, call);
@@ -120,8 +131,27 @@ export async function stream(ctx) {
         if (call && typeof event.arguments === 'string') call.arguments = event.arguments;
         break;
       }
+      case 'response.output_text.annotation.added':
+        if (event.annotation?.type === 'url_citation') { searching(); const source = webSource(event.annotation.url, event.annotation.title); if (source) cited.push(source); }
+        break;
       case 'response.output_item.done':
         if (event.item) outputs[event.output_index ?? outputs.length] = event.item;
+        // A finished search: what was searched for, when the provider says.
+        if (event.item?.type === 'web_search_call') {
+          searching();
+          const action = event.item.action || {};
+          // A page the provider opened to read is a source too.
+          const page = action.type === 'open_page' || action.type === 'find_in_page' ? webSource(action.url) : null;
+          if (page) opened.push(page);
+          const query = typeof action.query === 'string' ? action.query : Array.isArray(action.queries) ? action.queries.filter(entry => typeof entry === 'string').join(' · ') : '';
+          if (action.type === 'search' || query) emit({ type: 'web_search', query: query.slice(0, 300) });
+        }
+        // Citations also arrive with the finished message, for a stream that sent no annotation events.
+        if (event.item?.type === 'message') for (const part of Array.isArray(event.item.content) ? event.item.content : []) {
+          for (const annotation of Array.isArray(part?.annotations) ? part.annotations : []) {
+            if (annotation?.type === 'url_citation') { searching(); const source = webSource(annotation.url, annotation.title); if (source) cited.push(source); }
+          }
+        }
         if (event.item?.type === 'function_call') {
           const call = calls.get(event.item.id) || calls.get(`#${event.output_index}`) || { callId: event.item.call_id, name: event.item.name, arguments: '' };
           call.callId = event.item.call_id || call.callId;
@@ -157,6 +187,8 @@ export async function stream(ctx) {
   return {
     text, thinking, toolCalls, usage: usageOf(finalResponse?.usage), model: actualModel, stopReason, rawStopReason: incomplete || finalResponse?.status || null,
     notice: STOP_NOTICES[stopReason] || null,
+    ...(cited.length || opened.length ? { webSources: mergeWebSources(cited, opened) } : {}),
+    ...(searched ? { webSearched: true } : {}),
     assistantMessage: { role: 'assistant', content, native: { transport: 'openai-responses', output } },
   };
 }

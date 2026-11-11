@@ -1,5 +1,7 @@
 bridge/.local/
 artifacts/
+# The browser control layer's build dependencies (npm ci in browser-control). Its build output is committed.
+browser-control/node_modules/
 *.log
 .DS_Store
 
