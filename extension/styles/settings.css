@@ -458,6 +458,13 @@
 .settings-inline-form { display: flex; flex-direction: column; gap: var(--space-5); padding-inline-start: calc(32px + var(--space-6)); }
 .settings-inline-form .field { max-width: 440px; }
 .settings-job { display: flex; flex-direction: column; gap: var(--space-4); }
+
+/* Browser automation: a site keeps its rule and Remove on one line; the form that adds one is a single wrapping row. */
+.settings-browser-site > .settings-row-control { flex-wrap: nowrap; }
+.settings-browser-site .settings-row-label { overflow-wrap: anywhere; }
+.settings-browser-add { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--space-4); padding-inline-start: 0; }
+.settings-browser-add > .input { flex: 1 1 200px; min-width: 0; max-width: 360px; }
+.settings-browser-add > .field-error { flex-basis: 100%; margin: 0; }
 .settings-raindrop .settings-job { padding-inline-start: calc(32px + var(--space-6)); }
 
 /* Automatic snapshots (Library & backup): date and kind, what it holds, Restore and Delete. */

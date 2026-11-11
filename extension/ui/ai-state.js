@@ -8,7 +8,7 @@ export function aiState(ctx) {
   if (!s.init) {
     Object.assign(s, { init: true, conversation: null, draft: '', editing: null, run: null, explicit: null, added: [], dismissed: new Set(),
       target: undefined, connections: [], settings: null, history: null, historyQuery: '', ctxQuery: '', ctxActive: 0, ctxOptions: [],
-      modelView: 'models', open: new Set(), pagePermission: null, modelNotice: false, suggestions: [], version: 0, announce: '' });
+      modelView: 'models', open: new Set(), pagePermission: null, browserNotice: null, modelNotice: false, suggestions: [], version: 0, announce: '' });
   }
   return s;
 }

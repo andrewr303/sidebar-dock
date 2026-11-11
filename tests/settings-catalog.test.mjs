@@ -17,7 +17,7 @@ test('every section has a known group, an icon and copy, and ids are unique', ()
   assert.deepEqual(groupSections().map(group => [group.label, group.sections.map(s => s.id)]), [
     ['Personalize', ['appearance', 'newtab']],
     ['Library', ['general', 'library']],
-    ['AI', ['ai', 'assistant', 'research', 'search', 'agents']],
+    ['AI', ['ai', 'assistant', 'research', 'browser', 'search', 'agents']],
     ['Connections', ['accounts', 'integrations']],
     ['Help', ['shortcuts', 'about', 'help']],
   ]);
@@ -38,6 +38,9 @@ test('sections normalize from ids, aliases and views', () => {
   assert.equal(sectionById('assistant').label, 'Assistant permissions');
   assert.equal(sectionById('research').label, 'Research agent');
   assert.equal(sectionFromView('settings:research'), 'research');
+  assert.equal(sectionById('browser').label, 'Browser automation');
+  assert.equal(normalizeSection('automation'), 'browser');
+  assert.equal(sectionFromView('settings:browser-automation'), 'browser');
   assert.equal(sectionById('missing'), null);
 
   assert.equal(sectionFromView('settings:newtab'), 'newtab');
@@ -95,6 +98,8 @@ test('matchSections finds sections by name, summary and keywords', () => {
   // Assistant permissions and the research agent (contracts §8).
   for (const query of ['permissions', 'approval', 'auto apply', 'trusted', 'full access', 'links folders']) assert.ok(matchSections(query).some(s => s.id === 'assistant'), query);
   for (const query of ['research', 'managed agents', 'spending cap', 'subpages', 'sonnet']) assert.ok(matchSections(query).some(s => s.id === 'research'), query);
+  // Browser automation: found by what it does and by the words on its cards.
+  for (const query of ['browser', 'automation', 'click', 'site rules', 'auto mode', 'debugger', 'password']) assert.ok(matchSections(query).some(s => s.id === 'browser'), query);
   assert.equal(matchSections('').length, SETTINGS_SECTIONS.length);
   assert.deepEqual(matchSections('qqqzzz'), []);
 });

@@ -219,8 +219,8 @@ test('an action whose outcome was never seen is reported with the answer', async
     layerScript: () => ok('ok click [a1] button «Send» · effect: none', { page: page(7, 3, 'none'), receipt: receipt({ effect: { verdict: 'none', signals: [] } }) }),
     model: async ({ onEvent }, n) => (n === 1 ? callTool('b1', 'browser_click', { target: { ref: 'a1' } }) : say(onEvent, 'Sent.')) });
   const { message, events } = await run(context.assistant);
-  assert.deepEqual(message.browser.unverified, ['click button «Send» on tab 7: the page showed no effect']);
-  assert.deepEqual(events.find(event => event.type === 'browser').unverified, ['click button «Send» on tab 7: the page showed no effect']);
+  assert.deepEqual(message.browser.unverified, ['Clicked button «Send» on site7.example: the page showed no effect']);
+  assert.deepEqual(events.find(event => event.type === 'browser').unverified, ['Clicked button «Send» on site7.example: the page showed no effect']);
 });
 
 test('a browser card reaches the caller, and its answer the layer', async () => {

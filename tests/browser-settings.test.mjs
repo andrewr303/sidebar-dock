@@ -54,6 +54,23 @@ test('a site is the host as the address bar shows it', () => {
   assert.equal(siteKey(undefined), '');
 });
 
+test('a rule can only name a web site: what a URL parser happens to accept is not enough', () => {
+  // Chrome escapes a space in a host where other parsers refuse it, so the shape of the host is checked.
+  for (const entry of ['not a site !!', 'not%20a%20site%20!!', 'exa mple.com', 'foo!!', '!!', '*.example.com', '-bad.example', 'bad-.example', 'a..b', 'example.com:99999999',
+    'http://', 'javascript:alert(1)', 'data:text/html,hi', 'x'.repeat(3000)]) assert.equal(siteKey(entry), '', entry.slice(0, 40));
+  // Other schemes are not web sites, even though they have a host of sorts.
+  for (const entry of ['chrome://settings', 'chrome-extension://abcdefghijklmnop/index.html', 'file:///etc/passwd', 'ftp://files.example', 'about://blank']) assert.equal(siteKey(entry), '', entry);
+  assert.equal(siteKey('user:secret@host.example/path?x=1'), 'host.example', 'only the host is kept');
+  assert.equal(siteKey('bücher.example'), 'xn--bcher-kva.example', 'an international name is stored as the address bar writes it');
+  assert.equal(siteKey('a_b.example'), 'a_b.example');
+  assert.equal(siteKey('192.168.1.5:3000'), '192.168.1.5:3000');
+  assert.equal(siteKey('[::1]:8080'), '[::1]:8080');
+  assert.equal(siteKey('intranet'), 'intranet');
+  assert.deepEqual(normalizeBrowserSettings({ sites: { 'not%20a%20site': 'allow', 'chrome://settings': 'allow', 'ok.example': 'block' } }).sites, { 'ok.example': 'block' });
+  assert.equal(isNormalBrowserSettings({ ...normalizeBrowserSettings({}), sites: { 'not%20a%20site': 'allow' } }), false);
+  assert.deepEqual(withSiteRule({}, 'not a site', 'allow').sites, {}, 'nothing is added for a name that is not a site');
+});
+
 test('the site key is the browser control layer\'s own', async () => {
   globalThis.chrome ??= {};
   const { loadBrowserControl } = await import('../extension/lib/browser-control/layer.js');

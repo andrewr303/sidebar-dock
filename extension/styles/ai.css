@@ -416,6 +416,29 @@ button.ai-thought-toggle:hover:not(:disabled), button.ai-tool-row:hover { backgr
 .ai-receipt-lines { display: flex; flex-direction: column; gap: var(--space-1); color: var(--fg-muted); font-size: var(--text-xs); line-height: var(--lh-xs); }
 .ai-receipt .btn { flex: none; margin-block: calc(var(--space-1) * -1); }
 
+/* ---------- Browser cards: a change to allow, a step that is the person's, a question from the assistant ---------- */
+.ai-browser-body { display: flex; flex-direction: column; gap: var(--space-3); padding: 0 var(--space-6) var(--space-5); }
+.ai-browser-subject { font-size: var(--text-sm); font-weight: var(--weight-medium); line-height: var(--lh-sm); overflow-wrap: anywhere; }
+.ai-browser-message { font-size: var(--text-sm); line-height: var(--lh-sm); overflow-wrap: anywhere; white-space: pre-wrap; }
+.ai-browser-line { display: flex; align-items: flex-start; gap: var(--space-3); color: var(--fg-muted); font-size: var(--text-xs); line-height: var(--lh-xs); overflow-wrap: anywhere; }
+.ai-browser-line > .icon { flex: none; margin-block-start: 1px; color: var(--fg-subtle); }
+.ai-browser-line > span { min-width: 0; }
+.ai-browser-line.is-warning, .ai-browser-line.is-warning > .icon { color: var(--warning); }
+.ai-browser-card > .ai-proposal-foot { flex-wrap: wrap; }
+.ai-browser-form > .ai-browser-input { flex: 1 1 160px; min-width: 0; }
+/* Steps the assistant could not confirm, under its answer. */
+.ai-unverified {
+  display: flex; align-items: flex-start; gap: var(--space-4);
+  padding: var(--space-5) var(--space-6);
+  border-radius: var(--radius-md);
+  background: var(--warning-soft);
+  font-size: var(--text-sm); line-height: var(--lh-sm);
+}
+.ai-unverified > .icon { flex: none; margin-block-start: 2px; color: var(--warning); }
+.ai-unverified-text { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; color: var(--fg-muted); }
+.ai-unverified-title { color: var(--fg-default); font-weight: var(--weight-semibold); }
+.ai-unverified-list { display: flex; flex-direction: column; gap: var(--space-1); padding-inline-start: var(--space-6); list-style: disc; font-size: var(--text-xs); line-height: var(--lh-xs); overflow-wrap: anywhere; }
+
 /* ---------- Composer dock ---------- */
 .ai-dock { flex: none; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-2) var(--ai-gutter) var(--space-4); }
 .ai-panel[data-surface="full"] .ai-dock { padding-block-end: var(--space-6); }
@@ -496,6 +519,12 @@ button.ai-thought-toggle:hover:not(:disabled), button.ai-tool-row:hover { backgr
 .ai-model-btn > .icon { flex: none; color: var(--fg-subtle); }
 .ai-model-btn:hover { background: var(--bg-hover); color: var(--fg-default); }
 .ai-model-btn[aria-expanded="true"] { background: var(--bg-active); color: var(--fg-default); }
+/* The Ask first / Auto control sits beside the model; Auto is tinted, because it lets changes through. */
+.ai-mode-btn { padding-inline: var(--space-3); }
+.ai-mode-btn.is-auto, .ai-mode-btn.is-auto > .icon { color: var(--warning); }
+.ai-mode-btn:disabled { opacity: 0.6; cursor: default; }
+.ai-mode-btn:disabled:hover { background: none; color: var(--fg-muted); }
+.ai-mode-note { padding: var(--space-2) var(--space-5) var(--space-3); color: var(--fg-subtle); font-size: var(--text-xs); line-height: var(--lh-xs); }
 .ai-count { color: var(--fg-subtle); font-size: var(--text-xs); font-variant-numeric: tabular-nums; margin-inline-end: var(--space-3); }
 .ai-count.is-over { color: var(--danger); font-weight: var(--weight-medium); }
 .ai-send {

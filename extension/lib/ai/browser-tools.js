@@ -171,7 +171,8 @@ export function callSummary(tool, args, result, { handover = '', skipped = false
     case 'screenshot': return done('Took a screenshot', 'Could not take a screenshot');
     case 'click': return done(`Clicked ${target || 'an element'}`, 'Could not click');
     case 'set': return done(`Filled in ${target || 'a field'}`, 'Could not fill in the field');
-    case 'fill_form': return done('Filled in a form', 'Could not fill in the form');
+    // A form whose submit control was activated was sent; without one it was only filled in.
+    case 'fill_form': return done(result?.receipt?.sensitive === 'submit' || result?.data?.submitted === true ? 'Filled in and sent a form' : 'Filled in a form', 'Could not fill in the form');
     case 'type': return done(`Typed${target ? ` into ${target}` : ''}`, 'Could not type');
     case 'press': return done(`Pressed ${quote(args?.keys, 40)}`, 'Could not press the key');
     case 'hover': return done(`Pointed at ${target || 'an element'}`, 'Could not point at the element');
@@ -360,7 +361,9 @@ export function createBrowserTools({ client, policy, vision = false, reveal = fa
     const { tool, args, result } = outcome;
     const tabId = result?.page?.tabId ?? (Number.isInteger(args.tabId) ? args.tabId : activeTab() ?? -1);
     if (result) debt = debt.filter(item => !clearsDebt(tool, result, item));
-    if (createsDebt(tool, result)) debt.push({ id: outcome.lineId, tabId, label: debtLabel(tool, result, tabId), rev: result?.page?.rev ?? tabOf(tabId)?.rev ?? 0 });
+    // The person reads the site, not a tab number.
+    const where = siteOf(result?.page?.url || tabOf(tabId)?.url || '') || (tabId >= 0 ? `tab ${tabId}` : '');
+    if (createsDebt(tool, result)) debt.push({ id: outcome.lineId, tabId, label: debtLabel(tool, result, where), rev: result?.page?.rev ?? tabOf(tabId)?.rev ?? 0 });
   }
 
   const fail = (text, summary) => ({ content: text, isError: true, summary });

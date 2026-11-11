@@ -65,12 +65,22 @@ export function debtReason(tool, result) {
 /** Whether a page action's result leaves its outcome unseen. */
 export const createsDebt = (tool, result) => debtReason(tool, result) !== '';
 
-/** A label for an unverified action: "click button «Send» on tab 12: the page showed no effect". */
-export function debtLabel(tool, result, tabId) {
+// What each action did, in words for the person; `target` is the element as the layer names it, without its ref.
+const DID = {
+  click: target => `Clicked ${target || 'an element'}`, set: target => `Filled in ${target || 'a field'}`, fill_form: () => 'Filled in a form',
+  type: target => (target ? `Typed into ${target}` : 'Typed'), press: target => (target ? `Pressed a key in ${target}` : 'Pressed a key'),
+  hover: target => `Pointed at ${target || 'an element'}`, scroll: () => 'Scrolled', navigate: () => 'Opened a page', handle_dialog: () => 'Answered a dialog',
+};
+
+/**
+ * A label for an unverified action, for the person: "Clicked button «Send» on shop.example: the page showed no
+ * effect". `where` is the page's site, or what stands for it when the address is not known.
+ */
+export function debtLabel(tool, result, where = '') {
   // The ref is the model's handle, not something a person reads.
   const target = String(result?.receipt?.target ?? '').replace(/^\[\w+\]\s*/, '');
   const reason = debtReason(tool, result);
-  return `${tool}${target ? ` ${target}` : ''} on tab ${tabId}${reason ? `: ${reason}` : ''}`;
+  return `${(DID[tool] || (() => tool))(target)}${where ? ` on ${where}` : ''}${reason ? `: ${reason}` : ''}`;
 }
 
 /** Whether a later result is evidence of the tab's state after the action in `item` ({ tabId, rev }). */

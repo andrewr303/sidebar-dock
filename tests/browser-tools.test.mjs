@@ -115,6 +115,8 @@ test('callSummary says what a call did in words a person reads', () => {
   assert.equal(callSummary('set', {}, null, { handover: 'cancelled' }), 'You cancelled this step');
   assert.equal(callSummary('click', {}, null, { skipped: true }), 'Skipped: the page changed');
   assert.equal(callSummary('tabs', { action: 'open' }, ok('')), 'Opened a tab');
+  assert.equal(callSummary('fill_form', {}, ok('', { data: { receipts: [], submitted: false } })), 'Filled in a form');
+  assert.equal(callSummary('fill_form', {}, ok('', { data: { receipts: [], submitted: true } })), 'Filled in and sent a form');
   assert.equal(callSummary('press', { keys: 'Enter' }, ok('')), 'Pressed «Enter»');
 });
 
@@ -321,7 +323,7 @@ test('an action whose outcome was not seen is remembered until the tab is looked
     : ok(`ok ${tool}`, { page: page(7, 4, 'full') })) });
   tools.beginStep();
   await tools.call('browser_click', { target: { ref: 'a1' } });
-  assert.deepEqual(tools.openDebt().map(item => item.label), ['click button «Send» on tab 7: the page showed no effect']);
+  assert.deepEqual(tools.openDebt().map(item => item.label), ['Clicked button «Send» on site7.example: the page showed no effect']);
   tools.beginStep();
   const refused = await tools.call('browser_tabs', { action: 'close', tabId: 7 });
   assert.equal(refused.isError, true);
@@ -341,7 +343,7 @@ test('a submitted form is a write in the ledger, ends its step and leaves nothin
   tools.beginStep();
   const result = await tools.call('browser_fill_form', { fields: [{ target: { ref: 'a1' }, value: 'Ada' }, { target: { ref: 'a2' }, value: 'Hello' }], submit: { ref: 'a3' } });
   assert.equal(result.isError, false);
-  assert.equal(result.summary, 'Filled in a form');
+  assert.equal(result.summary, 'Filled in and sent a form');
   assert.deepEqual(tools.activity().map(line => [line.kind, line.text]), [['write', 'tab 7 · fill_form [a3] button «Send message»: submit, allowed by Auto mode · changed']]);
   assert.deepEqual(tools.openDebt(), []);
   assert.equal((await tools.call('browser_click', { target: { ref: 'a9' } })).content, SKIP_CHANGED, 'the form navigated: the rest of the step waits for a look');

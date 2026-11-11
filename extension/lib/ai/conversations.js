@@ -12,12 +12,15 @@ export const CONVERSATIONS_VERSION = 2;
 export const CONVERSATION_LIMITS = Object.freeze({ conversations: 300, messages: 400, messageChars: 200000, bytes: 4 * 1024 * 1024 });
 const ROLES = ['user', 'assistant'];
 const SCOPES = ['page', 'item', 'items', 'collection', 'library'];
-const MESSAGE_KEYS = ['id', 'role', 'text', 'thinking', 'citations', 'tools', 'proposals', 'error', 'createdAt', 'model', 'connectionId', 'stopReason', 'thinkingMs', 'usage', 'context'];
+const MESSAGE_KEYS = ['id', 'role', 'text', 'thinking', 'citations', 'tools', 'proposals', 'error', 'createdAt', 'model', 'connectionId', 'stopReason', 'thinkingMs', 'usage', 'context', 'browser'];
 const CONVERSATION_KEYS = ['id', 'title', 'createdAt', 'updatedAt', 'connectionId', 'model', 'scope', 'messages'];
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 // Research conversations (kind 'research', lib/ai/research/run.js) keep a run record on the conversation and progress on
 // each assistant message. Both are plain data that survive as unknown fields; these caps keep them bounded.
 export const RESEARCH_RECORD_LIMITS = Object.freeze({ handled: 300, steps: 200 });
+// What an answer did in browser tabs (lib/ai/browser-tools.js): the ledger the next turn reads, and the steps the
+// assistant could not confirm. Bounded, and plain text only.
+export const BROWSER_RECORD_LIMITS = Object.freeze({ activity: 60, line: 400, unverified: 20 });
 // Bodies written per storage call when importing many conversations; an interrupted import leaves bodies the index
 // lacks, which the next load recovers.
 const IMPORT_BATCH = 20;
@@ -100,6 +103,16 @@ function normalizeScope(scope) {
 }
 
 /** Repairs one message. `now` is the timestamp used when the message has none (a conversation passes its own). */
+// A message's browser record as stored: { activity: [{ step, kind, text }], unverified?: [label] }, or null without one.
+function browserRecord(value) {
+  if (!isObject(value)) return null;
+  const activity = (Array.isArray(value.activity) ? value.activity : []).filter(line => isObject(line) && typeof line.text === 'string' && line.text)
+    .slice(-BROWSER_RECORD_LIMITS.activity).map(line => ({ step: Number.isSafeInteger(line.step) && line.step >= 0 ? line.step : 0, kind: text(line.kind, 20) || 'action', text: text(line.text, BROWSER_RECORD_LIMITS.line) }));
+  const unverified = (Array.isArray(value.unverified) ? value.unverified : []).filter(label => typeof label === 'string' && label).slice(0, BROWSER_RECORD_LIMITS.unverified)
+    .map(label => text(label, BROWSER_RECORD_LIMITS.line));
+  return activity.length || unverified.length ? { activity, ...(unverified.length ? { unverified } : {}) } : null;
+}
+
 export function normalizeMessage(input = {}, now = new Date().toISOString()) {
   const message = {
     ...unknownFields(input, MESSAGE_KEYS),
@@ -122,6 +135,8 @@ export function normalizeMessage(input = {}, now = new Date().toISOString()) {
   if (input.usage && typeof input.usage === 'object') message.usage = plain(input.usage);
   if (input.context && typeof input.context === 'object') message.context = normalizeScope(input.context) || undefined;
   if (!message.context) delete message.context;
+  const browser = browserRecord(input.browser);
+  if (browser) message.browser = browser;
   if ('research' in message) {
     if (!isObject(message.research)) delete message.research;
     else if (Array.isArray(message.research.steps) && message.research.steps.length > RESEARCH_RECORD_LIMITS.steps) message.research.steps = message.research.steps.slice(-RESEARCH_RECORD_LIMITS.steps);

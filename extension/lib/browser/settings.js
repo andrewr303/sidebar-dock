@@ -44,11 +44,24 @@ export function siteOf(address) {
   }
 }
 
-/** A site as a person may type it ("Example.com", "https://www.example.com/x", "localhost:3000"), as siteOf keys it. */
+// What a rule may name: a domain as the address bar writes it (labels of letters, digits, hyphens and underscores; an
+// international name in its xn-- form), an IPv4 address or a bracketed IPv6 address, with a port when it is not the
+// default. URL parsers disagree about what else is a host (Chrome escapes a space where others refuse it), so the shape
+// is checked here and not left to them.
+const LABEL = '[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?';
+const SITE_SHAPE = new RegExp(`^(?:\\[[0-9a-f:.]{2,45}\\]|${LABEL}(?:\\.${LABEL})*)(?::\\d{1,5})?$`);
+
+/**
+ * A site as a person may type it ("Example.com", "https://www.example.com/x", "localhost:3000"), as siteOf keys it, or
+ * '' for anything that is not a web site: another scheme (chrome://, file:), or text that is not a host.
+ */
 export function siteKey(entry) {
   const text = typeof entry === 'string' ? entry.trim() : '';
-  if (!text) return '';
-  return siteOf(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `http://${text}`);
+  if (!text || text.length > 2048) return '';
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(text)?.[1].toLowerCase();
+  if (scheme && scheme !== 'http' && scheme !== 'https') return '';
+  const site = siteOf(scheme ? text : `http://${text}`);
+  return SITE_SHAPE.test(site) ? site : '';
 }
 
 function normalizeSites(value) {

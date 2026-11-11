@@ -16,6 +16,8 @@ import { openAddForPage } from './quick-add.js';
 import { CONVERSATIONS_KEY } from '../lib/ai/conversations.js';
 import { allowedCategories } from '../lib/ai/permissions.js';
 import { aiState, assistantUrl } from './ai-state.js';
+import { browserLine, renderBrowserCard, renderBrowserModeButton, renderBrowserModeMenu, renderBrowserNotice, renderUnverified } from './ai-browser.js';
+import { BROWSER_MODES, BROWSER_PERMISSIONS, withSiteRule } from '../lib/browser/settings.js';
 // The research view, not research.js: research.js (the research actions) imports this module.
 import {
   isResearchConversation, isResearchRunning, researchState, requestResearchAccess, handleResearchError, renderResearchBar, renderResearchSteps,
@@ -557,6 +559,7 @@ function submit(ctx, { question, scope, replace } = {}) {
   if (fromDraft) { s.draft = ''; const input = composer(); if (input) input.value = ''; }
   s.editing = null;
   s.pagePermission = null;
+  s.browserNotice = null;
   return startRun(ctx, { question: value, scope: scope || contextFor(ctx).scope, replaceFrom, access, fromDraft });
 }
 
@@ -635,6 +638,7 @@ async function startRun(ctx, { question, scope, replaceFrom, access, fromDraft }
       conversationId: run.conversationId, input: question, context: prepared.context, signal: run.controller.signal,
       connectionId: t.connectionId, model: t.model, effort: t.efforts?.length ? t.effort : undefined,
       onEvent: event => onEvent(ctx, run, event), onProposal: proposal => onProposal(ctx, run, proposal),
+      browser: browserHint(ctx), onBrowserPrompt: prompt => onBrowserPrompt(ctx, run, prompt), onBrowserWithdrawn: id => onBrowserWithdrawn(ctx, run, id),
     });
     for (const proposal of result?.message?.proposals || []) { const ui = proposalUi.get(proposal.id); if (ui) ui.resolve = null; }
     if (s.run !== run) return;
@@ -717,6 +721,16 @@ function onEvent(ctx, run, event) {
       m.threadSources = (Array.isArray(event.items) ? event.items : []).filter(source => source && typeof source.id === 'string');
       m.usedThreads = true;
       break;
+    case 'browser':
+      // What the assistant did in browser tabs, and the steps it could not confirm (lib/ai/browser-tools.js).
+      m.browser = { activity: Array.isArray(event.activity) ? event.activity : [], ...(Array.isArray(event.unverified) && event.unverified.length ? { unverified: event.unverified } : {}) };
+      render = true;
+      break;
+    case 'browser_permission':
+      // Browser automation is on, but Chrome has not given Still the tab permissions: the composer offers to ask.
+      st(ctx).browserNotice = { permissions: (Array.isArray(event.permissions) ? event.permissions : []).filter(name => BROWSER_PERMISSIONS.includes(name)) };
+      render = true;
+      break;
     case 'error':
       m.error = text(event.message) || 'The assistant could not answer.';
       m.errorCode = text(event.code) || (event.aborted ? 'aborted' : '');
@@ -769,6 +783,74 @@ function proposalResult(ctx, run, event) {
     }
     announce(ctx, event.autoApproved || record?.autoApproved ? 'Changes applied automatically. You can undo them.' : 'Changes applied.');
   } else if (event.status === 'failed') announce(ctx, `Changes failed: ${ui.error || 'nothing was changed.'}`);
+}
+
+// ---- browser cards (ui/ai-browser.js draws them) ----
+
+/**
+ * The tab the assistant starts from and whether the view follows it. Beside a web page (the side panel) the assistant
+ * works in that tab and the browser shows what it does; in a full tab it opens its own tabs behind this one.
+ */
+function browserHint(ctx) {
+  const page = ctx.state.page;
+  const beside = !!ctx.env?.isSidepanel && !!ctx.env?.isExtension;
+  const web = /^https?:\/\//i.test(text(page?.url));
+  return { tabId: beside && web && Number.isInteger(page?.tabId) ? page.tabId : null, reveal: beside };
+}
+
+// The answers each kind of card takes, and what each leaves on the card.
+const CARD_ANSWERS = { confirm: ['approve', 'approve-remember', 'decline'], handover: ['given-back', 'cancelled'], ask: ['continue', 'cancel'] };
+const CARD_STATUS = { approve: 'approved', 'approve-remember': 'remembered', decline: 'declined', continue: 'continued', cancel: 'cancelled', 'given-back': 'done', cancelled: 'cancelled' };
+
+/** A card the browser tools wait on. Resolves with the person's answer; a card nobody answers is withdrawn by the engine. */
+function onBrowserPrompt(ctx, run, prompt) {
+  return new Promise(resolve => {
+    const type = ['confirm', 'ask', 'handover'].includes(prompt?.type) ? prompt.type : 'confirm';
+    const card = { id: text(prompt?.id) || `card-${Date.now()}`, type, request: prompt?.request && typeof prompt.request === 'object' ? prompt.request : {}, status: 'pending', resolve };
+    run.message.browserCards = [...(run.message.browserCards || []).filter(entry => entry.id !== card.id), card];
+    if (transcript) transcript.stick = true;
+    announce(ctx, type === 'confirm' ? 'The assistant is waiting for your approval.' : 'The assistant is waiting for you.');
+    bump(ctx, { render: true });
+  });
+}
+
+function onBrowserWithdrawn(ctx, run, id) {
+  const card = (run.message.browserCards || []).find(entry => entry.id === id);
+  if (!card || card.status !== 'pending') return;
+  card.status = 'withdrawn';
+  card.resolve = null;
+  bump(ctx, { render: true });
+}
+
+/** Answers a waiting card. "Always allow on this site" also saves the rule: the running session already has it. */
+function answerBrowserCard(ctx, id, answer) {
+  const s = st(ctx);
+  const card = (s.run?.message?.browserCards || []).find(entry => entry.id === id);
+  if (!card?.resolve) return;
+  let value = card.type === 'ask' ? (answer && typeof answer === 'object' ? answer : { outcome: answer === 'continue' ? 'continue' : 'cancel' }) : answer;
+  // "Always allow" is only an answer where the card offered it.
+  if (value === 'approve-remember' && !(card.request?.canRemember === true && text(card.request?.site))) value = 'approve';
+  const key = card.type === 'ask' ? value.outcome : value;
+  if (!CARD_ANSWERS[card.type]?.includes(key)) return;
+  const resolve = card.resolve;
+  card.resolve = null;
+  card.status = CARD_STATUS[key];
+  resolve(value);
+  if (card.type === 'confirm' && value === 'approve-remember') rememberSite(ctx, text(card.request?.site));
+  announce(ctx, { approved: 'Allowed.', remembered: 'Allowed, and remembered for this site.', declined: 'Not allowed.', continued: 'Continuing.', done: 'Continuing.', cancelled: 'Cancelled.' }[card.status] || '');
+  bump(ctx, { render: true });
+}
+
+async function rememberSite(ctx, site) {
+  const s = st(ctx);
+  if (!site || typeof ctx.ai?.setAiSettings !== 'function') return;
+  try {
+    const current = (await ctx.ai.getAiSettings())?.browser;
+    s.settings = await ctx.ai.setAiSettings({ browser: { sites: withSiteRule(current, site, 'allow').sites } });
+  } catch (error) {
+    console.error(error);
+    ctx.toast('The rule for this site could not be saved, so it will ask again next time.', { tone: 'warning' });
+  }
 }
 
 function stopRun(ctx) {
@@ -1176,6 +1258,7 @@ function renderDock(ctx, resolved) {
   return html`<div class="ai-dock">
     ${s.researchAccess ? renderResearchNotice(ctx) : ''}
     ${s.pagePermission ? renderPageNotice(ctx) : ''}
+    ${s.browserNotice && !research ? renderBrowserNotice(s.browserNotice) : ''}
     ${s.modelNotice && s.target === null && !research ? renderModelNotice({ handoffs: !!(s.conversation?.messages?.length || s.run) }) : ''}
     <form class="${cx('ai-composer', running && 'is-running', research && 'is-research')}" data-submit="ai.send" aria-label="${research ? 'Ask the research agent' : 'Ask the assistant'}">
       <div class="ai-chips" role="list" aria-label="Context">${research ? renderResearchChip(ctx, research) : resolved.chips.map(chip => renderChip(ctx, chip))}</div>
@@ -1186,7 +1269,7 @@ function renderDock(ctx, resolved) {
         data-input="ai.draft" data-keydown="ai.key" spellcheck="true">${s.draft}</textarea>
       <div class="ai-composer-foot">
         ${research ? html`<span class="ai-model-btn is-static" data-tooltip="Claude Sonnet 5.5 with web search">${icon('telescope', { size: 12 })}<span class="ai-model-label">Research agent</span></span>`
-          : html`${iconButton({ icon: 'plus', label: 'Add context', action: 'ai.add-context', size: 'sm', expanded: popoverOpen(ctx, 'ai.context') })}${renderModelButton(ctx)}`}
+          : html`${iconButton({ icon: 'plus', label: 'Add context', action: 'ai.add-context', size: 'sm', expanded: popoverOpen(ctx, 'ai.context') })}${renderModelButton(ctx)}${renderBrowserMode(ctx)}`}
         <span class="spacer"></span>
         ${length >= COUNT_FROM ? html`<span class="${cx('ai-count', over && 'is-over')}">${length.toLocaleString()} / ${MAX_QUESTION.toLocaleString()}</span>` : ''}
         ${running ? stop
@@ -1205,6 +1288,14 @@ function footnote(ctx) {
   if (t.via === 'agent' || t.via === 'bridge') return `Sent to ${t.label || t.providerName} through the local bridge${model ? ` · ${model}` : ''}. Retrieved items are included as context.`;
   if (t.local) return `Runs on this computer with ${t.providerName}${model ? ` · ${model}` : ''}. Retrieved items are included as context.`;
   return `Sent to ${t.providerName}${model ? ` · ${model}` : ''}. Retrieved items are included as context.`;
+}
+
+// Shown only while browser automation is on (Settings > Browser automation) and the chosen model can use tools.
+function renderBrowserMode(ctx) {
+  const s = st(ctx);
+  const browser = s.settings?.browser;
+  if (!browser?.enabled || !s.target || (s.target.via && s.target.via !== 'direct')) return '';
+  return renderBrowserModeButton({ mode: browser.mode, open: popoverOpen(ctx, 'ai.browser-mode'), disabled: !!s.run });
 }
 
 function renderModelButton(ctx) {
@@ -1364,6 +1455,8 @@ function renderAnswer(ctx, view, message, { last }) {
     ${renderThought(ctx, message, run)}
     ${renderTools(ctx, message)}
     ${blocks}
+    ${(message.browserCards || []).map(card => renderBrowserCard(card))}
+    ${live ? '' : renderUnverified(message.browser?.unverified)}
     ${(run?.notes || []).map(note => html`<p class="ai-note">${icon('info', { size: 14 })}<span>${note}</span></p>`)}
     ${showStatus ? html`<p class="ai-status"><span class="ai-shimmer">${statusLabel(message, run)}</span></p>` : ''}
     ${renderError(ctx, message, { last })}
@@ -1402,6 +1495,8 @@ function renderResearchAnswer(ctx, view, message, conversation, { last }) {
 export const renderResearchMessage = (ctx, message, conversation, { last = true } = {}) => renderResearchAnswer(ctx, null, message, conversation, { last });
 
 function statusLabel(message, run) {
+  // A browser card is open: the answer goes on when the person has chosen.
+  if ((message.browserCards || []).some(card => card.status === 'pending')) return 'Waiting for you…';
   const label = text(message.status);
   if (!label || label === 'Thinking') return message.thinking && !message.text ? 'Thinking…' : run?.lastEvent === 'tool' ? 'Working…' : 'Thinking…';
   return `${label}…`;
@@ -1428,6 +1523,8 @@ function toolLabel(tool) {
   const count = tool.result?.count;
   if (tool.name === 'search_library' && query) return `Searched library for “${query}”${Number.isFinite(count) ? ` · ${plural(count, 'result')}` : ''}`;
   if (tool.name === 'search_ai_threads' && query) return `Searched AI threads for “${query}”${Number.isFinite(count) ? ` · ${plural(count, 'result')}` : ''}`;
+  // A browser step names page elements; they read as quotations.
+  if (/^browser_/.test(tool.name) || tool.name === 'ask_user') return browserLine(tool.summary) || tool.name.replace(/_/g, ' ');
   return tool.summary || tool.name.replace(/_/g, ' ');
 }
 
@@ -1946,6 +2043,7 @@ function renderContextPopover(ctx) {
 
 registerPopover('ai.history', renderHistoryPopover, { role: 'dialog', className: 'ai-pop ai-history-pop' });
 registerPopover('ai.model', renderModelPopover, { role: 'menu', className: 'popover-menu ai-model-pop' });
+registerPopover('ai.browser-mode', ctx => renderBrowserModeMenu({ mode: st(ctx).settings?.browser?.mode }), { role: 'menu', className: 'popover-menu ai-model-pop ai-mode-pop' });
 registerPopover('ai.context', renderContextPopover, { role: 'dialog', className: 'ai-pop ai-context-pop' });
 
 // ------------------------------------------------------------------------------------------------ export, notes, hand-off
@@ -2320,6 +2418,49 @@ registerActions({
     submit(ctx, { question: notice.question, scope: { ...notice.scope, page: { ...notice.scope.page, text: '' } }, replace: notice.replaceFrom });
   },
   'ai.page-dismiss': ({ ctx }) => { st(ctx).pagePermission = null; ctx.render(); },
+  // Browser cards and the composer's Ask first / Auto control.
+  'ai.browser-answer': ({ ctx, data }) => answerBrowserCard(ctx, data.id, data.answer),
+  'ai.browser-input': ({ ctx, el, data }) => {
+    const value = text(el.elements?.answer?.value).trim().slice(0, 2000);
+    answerBrowserCard(ctx, data.id, { outcome: 'continue', ...(value ? { data: value } : {}) });
+  },
+  'ai.browser-show': ({ data }) => {
+    const tabId = Number(data.tab);
+    const tabs = globalThis.chrome?.tabs;
+    if (!Number.isInteger(tabId) || typeof tabs?.update !== 'function') return undefined;
+    // The tab comes to the front in its own window; the card stays here for the answer.
+    return Promise.resolve(tabs.update(tabId, { active: true }))
+      .then(tab => (Number.isInteger(tab?.windowId) ? globalThis.chrome?.windows?.update?.(tab.windowId, { focused: true }) : undefined)).catch(() => undefined);
+  },
+  'ai.browser-mode': ({ ctx, el }) => {
+    if (popoverOpen(ctx, 'ai.browser-mode')) { ctx.closePopover(); return; }
+    ctx.openPopover('ai.browser-mode', el, {}, { placement: el.dataset.placement || 'top-start' });
+  },
+  'ai.browser-pick-mode': async ({ ctx, data }) => {
+    const s = st(ctx);
+    ctx.closePopover?.();
+    if (!BROWSER_MODES.includes(data.mode) || typeof ctx.ai?.setAiSettings !== 'function') return;
+    try {
+      s.settings = await ctx.ai.setAiSettings({ browser: { mode: data.mode } });
+      announce(ctx, data.mode === 'auto' ? 'Auto: changes on pages go ahead without a card.' : 'Ask first: changes on pages wait for you.');
+    } catch (error) { ctx.toast(error?.message || 'The setting could not be saved.', { tone: 'danger' }); }
+    ctx.render();
+  },
+  'ai.browser-settings': ({ ctx }) => { ctx.closePopover?.({ restore: false }); openSettings(ctx, 'browser'); },
+  'ai.browser-allow': ({ ctx }) => {
+    const s = st(ctx);
+    const permissions = s.browserNotice?.permissions?.length ? s.browserNotice.permissions : [...BROWSER_PERMISSIONS];
+    // Called before any await so Chrome treats it as part of the click.
+    let pending;
+    try { pending = globalThis.chrome?.permissions?.request?.({ permissions }); } catch { pending = false; }
+    return Promise.resolve(pending).then(granted => {
+      if (!granted) { ctx.toast('Chrome did not allow it. The assistant cannot work in the browser until it does.', { tone: 'warning' }); return; }
+      s.browserNotice = null;
+      ctx.toast('Allowed. Ask again and the assistant can work in the browser.', { tone: 'success' });
+      ctx.render();
+    }, () => ctx.toast('Chrome did not allow it. The assistant cannot work in the browser until it does.', { tone: 'warning' }));
+  },
+  'ai.browser-notice-dismiss': ({ ctx }) => { st(ctx).browserNotice = null; ctx.render(); },
   'ai.model-notice-dismiss': ({ ctx }) => { st(ctx).modelNotice = false; ctx.render(); ctx.nextFrame(() => composer()?.focus({ preventScroll: true })); },
   'ai.proposal-review': ({ ctx, data }) => {
     const ui = proposalUi.get(data.id);

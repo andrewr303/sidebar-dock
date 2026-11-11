@@ -98,12 +98,13 @@ test('an action leaves something to verify when its result does not show what it
 
 test('an unverified action is named for a person: what was done, where, and why it is not confirmed', () => {
   assert.equal(debtReason('click', { ok: true, receipt: receipt() }), '');
-  assert.equal(debtLabel('click', { ok: true, receipt: receipt({ effect: { verdict: 'none', signals: [] } }) }, 12), 'click button «Send» on tab 12: the page showed no effect');
-  assert.equal(debtLabel('click', { ok: true, receipt: receipt({ postcondition: { status: 'unmet' } }) }, 12), 'click button «Send» on tab 12: the expected result was not seen');
-  assert.equal(debtLabel('click', { ok: true, receipt: receipt({ dispatched: 'unknown' }) }, 12), 'click button «Send» on tab 12: it is not known whether the input reached the page');
-  assert.equal(debtLabel('click', { ok: true, receipt: receipt(), pending: [{ kind: 'dialog', detail: 'alert hi' }] }, 12), 'click button «Send» on tab 12: a dialog opened and was not answered');
-  assert.equal(debtLabel('click', { ok: true, receipt: receipt(), pageError: { code: 'TIMEOUT' } }, 12), 'click button «Send» on tab 12: the page could not be read afterwards');
-  assert.equal(debtLabel('press', { ok: false, error: { code: 'TIMEOUT', delivered: 'unknown' } }, 3), 'press on tab 3: it failed after input may have reached the page');
+  assert.equal(debtLabel('click', { ok: true, receipt: receipt({ effect: { verdict: 'none', signals: [] } }) }, 'shop.example'), 'Clicked button «Send» on shop.example: the page showed no effect');
+  assert.equal(debtLabel('click', { ok: true, receipt: receipt({ postcondition: { status: 'unmet' } }) }, 'shop.example'), 'Clicked button «Send» on shop.example: the expected result was not seen');
+  assert.equal(debtLabel('click', { ok: true, receipt: receipt({ dispatched: 'unknown' }) }, 'shop.example'), 'Clicked button «Send» on shop.example: it is not known whether the input reached the page');
+  assert.equal(debtLabel('click', { ok: true, receipt: receipt(), pending: [{ kind: 'dialog', detail: 'alert hi' }] }, 'shop.example'), 'Clicked button «Send» on shop.example: a dialog opened and was not answered');
+  assert.equal(debtLabel('click', { ok: true, receipt: receipt(), pageError: { code: 'TIMEOUT' } }, 'shop.example'), 'Clicked button «Send» on shop.example: the page could not be read afterwards');
+  assert.equal(debtLabel('press', { ok: false, error: { code: 'TIMEOUT', delivered: 'unknown' } }, 'tab 3'), 'Pressed a key on tab 3: it failed after input may have reached the page');
+  assert.equal(debtLabel('navigate', { ok: true, receipt: { dispatched: 'unknown' } }), 'Opened a page: it is not known whether the input reached the page', 'without a site the label still reads');
 });
 
 test('a form\'s result is read through the receipt that counts: its submit, else its last field', () => {
@@ -123,7 +124,7 @@ test('a form\'s result is read through the receipt that counts: its submit, else
   assert.equal(stopsBatch({ tool: 'fill_form', result: seen }), true);
   assert.equal(createsDebt('fill_form', seen), false);
   const noEffect = withReceipt('fill_form', { ok: true, data: { receipts: [field, { ...submit, navigation: undefined, effect: { verdict: 'none', signals: [] } }], submitted: true } });
-  assert.equal(debtLabel('fill_form', noEffect, 7), 'fill_form button «Send message» on tab 7: the page showed no effect');
+  assert.equal(debtLabel('fill_form', noEffect, 'shop.example'), 'Filled in a form on shop.example: the page showed no effect');
 });
 
 test('a later look at the same tab clears the debt; a look at another tab, a failed look or a timed wait does not', () => {

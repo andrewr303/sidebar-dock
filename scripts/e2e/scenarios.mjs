@@ -375,6 +375,27 @@ export function buildScenarios({ origin, port }) {
     },
 
     {
+      // A click that shows no effect is not reported as done: the answer carries it as a step that could not be confirmed.
+      name: 'assistant-unverified',
+      kind: 'assistant',
+      model: 'e2e-unverified',
+      input: 'Show me the details of the kettle shop newsletter.',
+      settings: { browser: browserOn() },
+      script(body, index) {
+        if (index === 0) return { toolCalls: [{ name: 'browser_tabs', arguments: { action: 'open', url: page('newsletter.html') } }] };
+        if (index === 1) return { toolCalls: [{ name: 'browser_click', arguments: { target: { role: 'button', name: 'Show details' } } }] };
+        return { text: `I clicked Show details. Result: ${lastTool(body).split('\n').slice(0, 2).join(' / ')}` };
+      },
+      check(result) {
+        assert.equal(result.message.error, '', result.message.error);
+        assert.match(result.message.text, /effect: none/, `the layer reports that nothing happened: ${result.message.text}`);
+        assert.deepEqual(result.message.browser.unverified?.length, 1, JSON.stringify(result.message.browser));
+        assert.match(result.message.browser.unverified[0], /^Clicked button «Show details» on 127\.0\.0\.1:\d+: the page showed no effect$/);
+        assert.ok(result.events.some(event => event.type === 'browser' && event.unverified.length === 1), 'the panel is told');
+      },
+    },
+
+    {
       // A site the person blocked is closed to the assistant, and the answer says so instead of working around it.
       name: 'assistant-blocked-site',
       kind: 'assistant',

@@ -23,8 +23,10 @@ import { renderAppearance, ACCENTS } from './settings/appearance.js';
 import { renderNewTab, attachNewTab, detachNewTab } from './settings/newtab.js';
 import { renderAccounts, attachAccounts, detachAccounts } from './settings/accounts.js';
 import { renderAssistantPermissions, renderResearch, researchPatch } from './settings/assistant.js';
+import { renderBrowserAutomation } from './settings/browser.js';
 import { renderThreadkeeper, attachThreadkeeper, detachThreadkeeper } from './settings/threadkeeper.js';
 import { PERMISSION_CATEGORIES, PERMISSION_LEVELS, PERMISSION_PRESETS } from '../lib/ai/permissions.js';
+import { BROWSER_LIMITS, BROWSER_MODES, BROWSER_PERMISSIONS, SITE_RULES, siteKey, withSiteRule } from '../lib/browser/settings.js';
 import { MCP_TOOLS, MCP_SCOPES } from '../lib/mcp-tools.js';
 
 export { SETTINGS_SECTIONS, normalizeSection, ACCENTS };
@@ -282,6 +284,8 @@ export function clientStatus(client) {
 const data = {
   integration: null, storage: null, commands: null,
   connections: null, aiSettings: null, bridge: null, aiError: '', index: null,
+  // What the service worker says about working in browser tabs: { available, missing: [Chrome permission], reason? }.
+  browserStatus: null,
   clients: null, clientsError: '',
   // Paperclip → Still: the scope picked here and the bridge's setup result (holds the client token; memory only, never stored).
   // scopeChosen: the scope is sent only after the user picks one, so Connect never changes an existing token's access.
@@ -290,7 +294,7 @@ const data = {
   // snapshots: { list, error } once loaded; backupJob: { warnings } after a backup that left something out.
   snapshots: null, backupJob: null,
 };
-const drafts = { bridgeUrl: null, bridgeToken: '', raindropToken: '' };
+const drafts = { bridgeUrl: null, bridgeToken: '', raindropToken: '', browserSite: '', browserRule: 'ask', browserError: '' };
 let connectDraft = { apiKey: '', baseUrl: '', label: '', workspaceId: '', defaultModel: '' };
 // mounted: a Settings page is on screen. pausedHere: sync was paused in this window without a stored setting
 // (integrations.setBridgeEnabled is missing). pending: work to do once the page has loaded (open a provider, scroll to a row).
@@ -353,6 +357,14 @@ async function loadAi(ctx, { refresh = false } = {}) {
   try { data.index = ai.getIndexStatus(); } catch { /* the index reports through subscribeIndex */ }
   ctx.render();
   openPendingConnect(ctx);
+  loadBrowserStatus(ctx);
+}
+
+// Asked apart from the rest: it wakes the service worker, and no other section waits for it.
+async function loadBrowserStatus(ctx) {
+  if (typeof ctx.ai?.browserStatus !== 'function') return;
+  try { data.browserStatus = await ctx.ai.browserStatus(); } catch { data.browserStatus = null; }
+  ctx.render();
 }
 
 async function loadClients(ctx) {
@@ -628,6 +640,7 @@ function renderSection(ctx, id) {
     case 'ai': return renderAi(ctx);
     case 'assistant': return renderAssistantSection(ctx);
     case 'research': return renderResearchSection(ctx);
+    case 'browser': return renderBrowserSection(ctx);
     case 'search': return renderSearch(ctx);
     case 'agents': return renderAgents(ctx);
     case 'accounts': return renderAccounts(ctx);
@@ -956,6 +969,14 @@ function renderResearchSection(ctx) {
   const research = { ...(ctx.ai.DEFAULT_AI_SETTINGS?.research || {}), ...(aiSettings(ctx).research || {}) };
   return renderResearch(ctx, { research, connections: data.connections, canReset: typeof ctx.ai.resetResearchProvisioning === 'function' });
 }
+
+function renderBrowserSection(ctx) {
+  return aiSettingsPending(ctx, 'Loading browser automation settings')
+    ?? renderBrowserAutomation(ctx, { browser: aiSettings(ctx).browser, status: data.browserStatus, draft: { site: drafts.browserSite, rule: drafts.browserRule, error: drafts.browserError } });
+}
+
+// Exported for tests (tests/settings-browser.test.mjs renders the section with a stub ctx).
+export function renderBrowserSettingsSection(ctx) { return renderBrowserSection(ctx); }
 
 /* ------------------------------------------------------------------ Local bridge (AI models and Agents & MCP) */
 
@@ -1842,6 +1863,56 @@ registerActions({
     if (!Object.hasOwn(PERMISSION_PRESETS, payload.value)) return undefined;
     return setAi(ctx, { assistantPermissions: { ...PERMISSION_PRESETS[payload.value] } });
   },
+
+  // Browser automation
+  'settings.browser-enable': ({ ctx, el }) => {
+    if (!el.checked) return setAi(ctx, { browser: { enabled: false } });
+    // Chrome asks only inside the click, so the request goes out before anything is awaited.
+    const granted = requestAccess({ permissions: [...BROWSER_PERMISSIONS] });
+    return withBusy(ctx, 'browser-allow', async () => {
+      if (!(await granted)) {
+        // The switch goes back to off: nothing was turned on.
+        ctx.toast('Chrome did not allow Still to see your tabs, so browser automation stays off.', { tone: 'warning' });
+        return;
+      }
+      await setAi(ctx, { browser: { enabled: true } });
+      await loadBrowserStatus(ctx);
+    });
+  },
+  'settings.browser-allow': ({ ctx }) => {
+    const granted = requestAccess({ permissions: [...BROWSER_PERMISSIONS] });
+    return withBusy(ctx, 'browser-allow', async () => {
+      if (!(await granted)) ctx.toast('Chrome did not allow it. The assistant cannot work in the browser until it does.', { tone: 'warning' });
+      await loadBrowserStatus(ctx);
+    });
+  },
+  'settings.browser-mode': ({ ctx, data: payload }) => (BROWSER_MODES.includes(payload.value) ? setAi(ctx, { browser: { mode: payload.value } }) : undefined),
+  'settings.browser-steps': ({ ctx, el }) => {
+    const steps = Number(el.value);
+    return Number.isInteger(steps) && steps >= BROWSER_LIMITS.minSteps && steps <= BROWSER_LIMITS.maxSteps ? setAi(ctx, { browser: { maxSteps: steps } }) : undefined;
+  },
+  'settings.browser-site-field': ({ ctx, el }) => {
+    drafts.browserSite = el.value;
+    if (drafts.browserError) { drafts.browserError = ''; ctx.render(); }
+  },
+  'settings.browser-site-draft-rule': ({ el }) => { if (SITE_RULES.includes(el.value)) drafts.browserRule = el.value; },
+  'settings.browser-site-add': ({ ctx }) => {
+    const site = siteKey(drafts.browserSite);
+    if (!site) { drafts.browserError = 'Enter a site, such as example.com.'; ctx.render(); focusSoon(ctx, '#settings-browser-site'); return undefined; }
+    const current = aiSettings(ctx).browser;
+    if (!Object.hasOwn(current?.sites || {}, site) && Object.keys(current?.sites || {}).length >= BROWSER_LIMITS.maxSites) {
+      drafts.browserError = `Still keeps up to ${BROWSER_LIMITS.maxSites} site rules. Remove one first.`;
+      ctx.render();
+      return undefined;
+    }
+    const next = withSiteRule(current, site, drafts.browserRule);
+    drafts.browserSite = '';
+    drafts.browserError = '';
+    return setAi(ctx, { browser: { sites: next.sites } });
+  },
+  // The select's name is the site it belongs to.
+  'settings.browser-site-rule': ({ ctx, el }) => (SITE_RULES.includes(el.value) && siteKey(el.name) ? setAi(ctx, { browser: { sites: withSiteRule(aiSettings(ctx).browser, el.name, el.value).sites } }) : undefined),
+  'settings.browser-site-remove': ({ ctx, data: payload }) => (siteKey(payload.site) ? setAi(ctx, { browser: { sites: withSiteRule(aiSettings(ctx).browser, payload.site, null).sites } }) : undefined),
 
   // Research agent
   'settings.research': ({ ctx, el, data: payload }) => {
