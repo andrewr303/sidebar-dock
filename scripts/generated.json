@@ -1,0 +1,27 @@
+{
+  "about": "Written by browser-control/build.mjs and read by scripts/check.mjs. Do not edit: run \"npm run build\" in browser-control.",
+  "sourceHash": "7d22cbdc2e7206d190945a201d9d5e1eb6b0fadf111453134b6a84c039376ceb",
+  "packages": {
+    "puppeteer-core": "25.16.0",
+    "ws": "8.22.2",
+    "zod": "4.6.7"
+  },
+  "files": [
+    {
+      "path": "lib/browser-control/layer.js",
+      "bytes": 792566,
+      "sha256": "79a70d6e90218faa324691e3891392ef5c33e48b9ea8c5b4bdf555dba2d40548",
+      "license": "assets/licenses/browser-control.txt"
+    },
+    {
+      "path": "lib/browser-control/catalogue.js",
+      "bytes": 65235,
+      "sha256": "dc9dd3424e3b9948f054322aba09384aaf278adccd349143a82387f8bee83791"
+    },
+    {
+      "path": "assets/licenses/browser-control.txt",
+      "bytes": 21550,
+      "sha256": "b002df0b8eb8d8439cf16ab765a3d91ad7999019ce1aa3f5192762e421f84fad"
+    }
+  ]
+}

@@ -26,6 +26,9 @@
     "check": "node scripts/check.mjs",
     "package": "node scripts/package.mjs",
     "package:runtime": "node scripts/package-runtime.mjs",
+    "layer:build": "npm --prefix browser-control run build",
+    "layer:check": "npm --prefix browser-control run check",
+    "layer:test": "npm --prefix browser-control test",
     "bridge": "node bridge/server.mjs",
     "connect": "node bridge/setup.mjs",
     "mcp": "node bridge/mcp.mjs"

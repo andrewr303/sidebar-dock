@@ -4,6 +4,7 @@ import {createHash} from 'node:crypto';
 import {dirname,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {VENDORED_FILES} from './vendored.mjs';
+import {GENERATED_FILES} from './generated.mjs';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 await import('./check.mjs');if(process.exitCode)process.exit(process.exitCode);
 const folder=resolve(root,'artifacts');await mkdir(folder,{recursive:true});const target=resolve(folder,'still-runtime.zip');
@@ -34,13 +35,13 @@ with zipfile.ZipFile(temporary) as z:
         if required not in names: raise ValueError('Missing runtime entry '+required)
     for pin in pins:
         data=z.read('extension/'+pin['path'])
-        if len(data)!=pin['bytes'] or hashlib.sha256(data).hexdigest()!=pin['sha256']: raise ValueError('Vendored file changed in the runtime package: '+pin['path'])
+        if len(data)!=pin['bytes'] or hashlib.sha256(data).hexdigest()!=pin['sha256']: raise ValueError('Pinned file changed in the runtime package: '+pin['path'])
     if any('/.local/' in n or '..' in pathlib.PurePosixPath(n).parts for n in names): raise ValueError('Unsafe runtime entry')
     if z.testzip() is not None: raise ValueError('Runtime ZIP integrity failure')
 temporary.replace(target)
 print(json.dumps({'entries':len(names),'credentialsIncluded':False,'crcVerified':True}))
 `;
-const runPython=python=>new Promise((done,reject)=>{const child=spawn(python,['-c',program,root,target,JSON.stringify(VENDORED_FILES)],{cwd:root,windowsHide:true,stdio:['ignore','pipe','pipe']});let out='',err='';child.stdout.on('data',b=>out+=b);child.stderr.on('data',b=>err+=b);child.once('error',reject);child.once('close',code=>code===0?(process.stdout.write(out),done()):reject(new Error(err)));});
+const runPython=python=>new Promise((done,reject)=>{const child=spawn(python,['-c',program,root,target,JSON.stringify([...VENDORED_FILES,...GENERATED_FILES])],{cwd:root,windowsHide:true,stdio:['ignore','pipe','pipe']});let out='',err='';child.stdout.on('data',b=>out+=b);child.stderr.on('data',b=>err+=b);child.once('error',reject);child.once('close',code=>code===0?(process.stdout.write(out),done()):reject(new Error(err)));});
 // PYTHON wins; otherwise 'python', then 'python3' where only that name exists (macOS).
 try{await runPython(process.env.PYTHON||'python');}catch(error){if(process.env.PYTHON||error.code!=='ENOENT')throw error;await runPython('python3');}
 const data=await readFile(target);process.stdout.write(`Created ${target}\n${(await stat(target)).size} bytes · SHA-256 ${createHash('sha256').update(data).digest('hex')}\n`);
