@@ -84,6 +84,23 @@ Codex device sign-in is delegated to the supported installed Codex app-server fl
 
 The exact agent flags, supported-version checks and isolation limits are defined and tested in the CLI adapter. No universal inability to use tools is implied merely by a prompt. An unsupported CLI is reported as unsupported instead of being launched with guessed flags.
 
+### Web search and context windows on direct connections
+
+A connection with an API key added in Still talks to the provider from the extension (`extension/lib/ai/transports/`), not through the bridge. Two things apply only there.
+
+**Web search.** With **Let the assistant search the web** on, the assistant's requests add the provider's own search tool beside Still's tools, and the provider runs the searches:
+
+| Provider | Offered when | Tool in the request |
+| --- | --- | --- |
+| Anthropic | provider `anthropic` on `api.anthropic.com` | `{"type": "web_search_20260209", "name": "web_search", "max_uses": N}` for Claude Fable and Mythos, Opus 4.6 and later and Sonnet 4.6 and later; `web_search_20250305` for older models. It is placed after Still's tools, so their part of the request stays a cached prefix. No beta header is needed. |
+| OpenAI | provider `openai` on `api.openai.com` (Responses API) | `{"type": "web_search"}` |
+
+A compatible endpoint at another address, a local server and every other provider are never sent the tool, because a server that does not know it refuses the whole request. If a model answers 400 for the tool, the request is sent once more without it. The provider's search blocks are kept as they came and sent back unchanged on the next request of the turn, including a turn Anthropic pauses (`pause_turn`). The stream reports a search as it starts, its query, the cited pages (`web_search_result_location` citations, `url_citation` annotations) and the pages a search returned or opened. Gemini's Google Search grounding is not wired in.
+
+**The window a local server loaded.** A model's listing gives its window for cloud providers. Ollama and LM Studio decide it when they load a model, so before sizing a request Still asks the server: Ollama `GET /api/ps` (the running model's `context_length`), else `POST /api/show` and a `num_ctx` in its parameters; LM Studio `GET /api/v0/models` (`loaded_context_length`). The model's maximum is not used, because it says what could be loaded, not what is. An answer is kept for 30 seconds. When the server does not say, the assistant assumes a small window (16,384 tokens) for a local server and asks again after the first response, when the model is loaded.
+
+See [Browser automation and the assistant's engine](browser-automation.md).
+
 ## Streaming and failures
 
 The editor receives newline-delimited JSON from the authenticated local bridge:

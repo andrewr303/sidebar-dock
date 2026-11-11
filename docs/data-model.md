@@ -12,7 +12,7 @@ local-first: nothing leaves the device unless the user exports a file or connect
 | --- | --- | --- | --- | --- | --- |
 | `still.library.v1` | `lib/store.js` | Library: items, collections, settings, tombstones | yes | yes (settings without secrets) | secret-like settings keys |
 | `still.dashboard.v1` | `lib/dashboard-store.js` | New-tab boards, widgets, widget config (kanban, quick links, notes draft) | yes | yes (secret-like config keys stripped) | no |
-| `still.ai.v2` | `lib/ai/connections.js` | AI connections (non-secret fields), AI settings, overlays, model cache | yes | non-secret part, without the device-only settings | bridge auth; the `assistantPermissions` and `research` settings |
+| `still.ai.v2` | `lib/ai/connections.js` | AI connections (non-secret fields), AI settings, overlays, model cache | yes | non-secret part, without the device-only settings | bridge auth; the `assistantPermissions`, `research`, `browser` and `webSearch` settings |
 | `still.ai.secrets.v1` | `lib/ai/secrets.js` | `{ <connectionId>: { apiKey, updatedAt } }` | yes | **never** | **yes** |
 | `still.ai.conversations.v2` | `lib/ai/conversations.js` | Conversation index `{ version: 2, migratedLegacy, items: [summary] }` | yes | yes | no |
 | `still.ai.conversation.v2:<id>` | `lib/ai/conversations.js` | One conversation body (messages; research runs also keep their run record) | yes | yes | no |
@@ -364,14 +364,26 @@ Writes use the Web Lock `still.meta.v1`, and unknown keys are kept.
   type, x, y, w, h, title, style, config }] }], prefs, updatedAt }`. Widget data such as kanban boards and quick links
   lives in `widget.config`.
 - **AI (`still.ai.v2`, version 2):** connections, settings, overlays and model cache. API keys are in `still.ai.secrets.v1`.
-  Two settings are device-only: `assistantPermissions` (`{ create, organize, edit, dashboard, delete }`, each `'ask'` or
-  `'allow'`, all `'ask'` by default; `lib/ai/permissions.js`) and `research` (`{ enabled, connectionId, github, depth,
-  maxSubpages, budgetUsd, allowOriginalEdits }`; `lib/ai/research/settings.js`). Reads normalize both whatever was stored,
-  and writes refuse values outside their ranges. `exportAiConfig` leaves them out and `importAiConfig` never applies
-  them, so a crafted backup cannot turn on automatic assistant changes, let research edit originals or raise its cap.
+  Four settings are device-only: `assistantPermissions` (`{ create, organize, edit, dashboard, delete }`, each `'ask'` or
+  `'allow'`, all `'ask'` by default; `lib/ai/permissions.js`), `research` (`{ enabled, connectionId, github, depth,
+  maxSubpages, budgetUsd, allowOriginalEdits }`; `lib/ai/research/settings.js`), `browser` (`{ enabled, mode, sites,
+  maxSteps }`: off by default, `mode` `'ask'` or `'auto'`, `sites` a map of at most 500 sites to `'allow'`, `'ask'` or
+  `'block'`, `maxSteps` 10 to 200 with 60 by default; `lib/browser/settings.js`) and `webSearch` (`{ enabled, maxUses }`:
+  off by default, `maxUses` 1 to 10 with 5 by default; `lib/ai/web-search.js`). A site key is a host as the address bar
+  shows it, lower case, without `www.`, with its port when that is not the default. Reads normalize all four whatever
+  was stored, and writes refuse values outside their ranges. `exportAiConfig` leaves them out and `importAiConfig` never
+  applies them, so a crafted backup cannot turn on automatic assistant changes, let research edit originals or raise its
+  cap, turn on browser automation, allow writes on a site or turn on web search.
   Deleting a connection that research was set to use resets `research.connectionId` to automatic.
 - **Conversations:** an index (version 2) plus one body key per conversation. Caps: 300 conversations, 400 messages,
   200k characters per message, 4 MB per conversation.
+  - An assistant message that worked in browser tabs carries `browser: { activity: [{ step, kind, text }],
+    unverified?: [text] }`: the ledger of what it did (at most 60 lines of 400 characters; `kind` is `read`, `action`,
+    `write`, `visit`, `handover`, `declined`, `blocked` or `merged`; a failed call keeps its kind and names the error code) and the steps it could not confirm (at most 20). The next turn of the conversation reads the ledger,
+    and the panel shows the unconfirmed steps. Both are text Still wrote; page fragments in them are quoted.
+  - An assistant message whose provider searched the web carries `webSources: [{ url, title }]` (at most 40, `http` and
+    `https` addresses only). A message that read a web page, a web search result or an AI thread has
+    `usedThreads: true`; such an answer is shown without loading remote images, also after a reload.
   - A research conversation has `kind: 'research'` and a run record `research: { itemId, sessionId, agentId,
     agentVersion, connectionId, status ('starting' | 'running' | 'waiting' | 'done' | 'stopped' | 'failed'), reason?,
     error, errorCode?, startedAt, finishedAt, ownerId, heartbeatAt, allowOriginalEdits, settings: { depth, maxSubpages,
