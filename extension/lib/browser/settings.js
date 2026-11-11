@@ -10,20 +10,35 @@
 //     every mode. The layer hands them over; these settings have no say in it.
 
 export const BROWSER_MODES = Object.freeze(['ask', 'auto']);
+// How Still reaches a page. quiet: a script Still puts into the page, with the person's access to the site; Chrome shows
+// nothing. precise: Chrome's debugger (the browser control layer), which sends real input and reads every frame, and
+// makes Chrome show its "started debugging this browser" bar.
+export const BROWSER_ENGINES = Object.freeze(['quiet', 'precise']);
 export const SITE_RULES = Object.freeze(['allow', 'ask', 'block']);
 export const BROWSER_LIMITS = Object.freeze({ minSteps: 10, maxSteps: 200, maxSites: 500, maxSiteLength: 253 + 6 });
 
 export const BROWSER_DEFAULTS = Object.freeze({
   // Off until the person turns it on in Settings, which is also when Chrome is asked for the tab permissions.
   enabled: false,
+  engine: 'quiet',
   mode: 'ask',
   sites: Object.freeze({}),
   // The most model steps one request may take while it works in the browser.
   maxSteps: 60,
 });
 
-/** The optional Chrome permissions the layer needs besides `debugger` (which the manifest requires). */
-export const BROWSER_PERMISSIONS = Object.freeze(['tabs', 'webNavigation']);
+/**
+ * What Chrome has to allow, by name. `tabs` and `webNavigation` are optional permissions; `sites` stands for access to
+ * web pages (the optional host permissions below), which the quiet engine needs to put its script into a page.
+ */
+export const BROWSER_PERMISSIONS = Object.freeze(['tabs', 'webNavigation', 'sites']);
+export const BROWSER_SITE_ORIGINS = Object.freeze(['https://*/*', 'http://*/*']);
+
+/** What an engine needs from Chrome: { names, permissions, origins }, the last two as chrome.permissions takes them. */
+export function browserAccess(engine) {
+  const names = engine === 'precise' ? ['tabs', 'webNavigation'] : ['tabs', 'sites'];
+  return { names, permissions: names.filter(name => name !== 'sites'), origins: names.includes('sites') ? [...BROWSER_SITE_ORIGINS] : [] };
+}
 
 const isObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
 
@@ -82,6 +97,7 @@ export function normalizeBrowserSettings(value) {
   const steps = typeof input.maxSteps === 'string' && input.maxSteps.trim() ? Number(input.maxSteps) : input.maxSteps;
   return {
     enabled: input.enabled === true,
+    engine: BROWSER_ENGINES.includes(input.engine) ? input.engine : BROWSER_DEFAULTS.engine,
     mode: BROWSER_MODES.includes(input.mode) ? input.mode : BROWSER_DEFAULTS.mode,
     sites: normalizeSites(input.sites),
     maxSteps: Number.isFinite(steps) ? Math.min(BROWSER_LIMITS.maxSteps, Math.max(BROWSER_LIMITS.minSteps, Math.round(steps))) : BROWSER_DEFAULTS.maxSteps,
@@ -96,7 +112,7 @@ export function isNormalBrowserSettings(value) {
   if (!isObject(value.sites)) return false;
   const [given, kept] = [Object.entries(value.sites), Object.entries(normal.sites)];
   if (given.length !== kept.length || given.some(([site, rule]) => normal.sites[site] !== rule)) return false;
-  return ['enabled', 'mode', 'maxSteps'].every(key => Object.is(value[key], normal[key]));
+  return ['enabled', 'engine', 'mode', 'maxSteps'].every(key => Object.is(value[key], normal[key]));
 }
 
 /** The sites the assistant may not use at all. */

@@ -27,8 +27,11 @@ test('by default browser automation is off, asks first and has no site rules', (
   assert.match(out, /data-submit="settings\.browser-site-add"/);
   assert.equal(selected(out, 'rule'), 'ask', 'a new rule starts as Ask');
   // What the person is told before turning it on.
-  assert.match(out, /Off by default\. Turning it on asks Chrome to let Still see and open your tabs/);
-  assert.match(out, /Chrome shows a bar that says Still is debugging this browser/);
+  assert.match(out, /Off by default\. Turning it on asks Chrome to let Still see your tabs and work on the pages in them/);
+  assert.deepEqual(checked(out, 'engine'), ['quiet']);
+  assert.match(out, /Chrome shows nothing while it does/, 'the quiet engine is the default, and says what it is');
+  assert.doesNotMatch(out, /Still started debugging this browser/);
+  assert.match(render({ enabled: true, engine: 'precise' }), /Chrome shows a bar that says Still started debugging this browser/);
   assert.match(out, /Paying, granting access to an account, typing a password, a card number or a code, and answering a question a page asks are always yours/);
   assert.match(out, /once it has read a page, changes to your library always wait for your review/);
   assert.match(out, /Access the page debugger backend/);

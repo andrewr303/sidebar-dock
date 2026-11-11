@@ -33,7 +33,7 @@ const seed = () => ({ schemaVersion: 1, collections: [], items: [{ id: 'kyoto', 
  * The assistant over a scripted model and a scripted layer. model(request, n) answers the n-th model request;
  * layerScript(tool, args, { layer, session }) answers each layer call. The browser stack is the real client and host.
  */
-async function harness({ model, layerScript = null, browser = { enabled: true, mode: 'ask' }, permissions, modelInfo, provider = {}, via = 'direct', maxSteps, retry, granted, images = true, detectWindow } = {}) {
+async function harness({ model, layerScript = null, browser = { enabled: true, engine: 'precise', mode: 'ask' }, permissions, modelInfo, provider = {}, via = 'direct', maxSteps, retry, granted, images = true, detectWindow } = {}) {
   const store = memoryStore(seed());
   await store.ready;
   const getLibrary = () => store.loadLibrary();
@@ -103,7 +103,7 @@ test('with browser automation on, the model gets the browser tools and rules, an
   const { message, events, conversation } = await run(context.assistant, { browser: { tabId: 7, reveal: true } });
   assert.equal(message.error, '');
   assert.equal(message.text, 'The price is 42 EUR.');
-  assert.deepEqual(context.factoryCalls, [{ settings: { enabled: true, mode: 'ask' }, vision: true, hint: { tabId: 7, reveal: true } }]);
+  assert.deepEqual(context.factoryCalls, [{ settings: { enabled: true, engine: 'precise', mode: 'ask' }, vision: true, hint: { tabId: 7, reveal: true } }]);
   assert.deepEqual(context.layerCalls, [{ tool: 'snapshot', args: {} }]);
   assert.deepEqual(message.tools, [{ name: 'browser_snapshot', summary: 'Looked at the page' }]);
   assert.deepEqual(message.browser, { activity: [{ step: 1, kind: 'read', text: 'tab 7 · snapshot' }] });
@@ -185,13 +185,13 @@ test('a browser request may take more steps than a library request, up to the se
   const library = await stepsFor({ enabled: false });
   assert.equal(library.requests, MAX_TOOL_STEPS);
   assert.ok(library.events.some(event => event.type === 'status' && event.label === `Stopped after ${MAX_TOOL_STEPS} tool steps.`));
-  const browser = await stepsFor({ enabled: true, mode: 'ask', maxSteps: 20 });
+  const browser = await stepsFor({ enabled: true, engine: 'precise', mode: 'ask', maxSteps: 20 });
   assert.equal(browser.requests, 20);
   assert.ok(browser.events.some(event => event.type === 'status' && event.label === 'Stopped after 20 tool steps.'));
 });
 
 test('the last allowed step tells the model to answer with what it has', async () => {
-  const context = await harness({ browser: { enabled: true, maxSteps: 10 }, model: async ({ messages }, n) => {
+  const context = await harness({ browser: { enabled: true, engine: 'precise', maxSteps: 10 }, model: async ({ messages }, n) => {
     if (n === 10) assert.match(messages.at(-1).content.at(-1).text, /^Tool step limit reached\. Answer now/);
     return callTool(`b${n}`, 'browser_snapshot', {});
   } });

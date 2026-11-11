@@ -185,7 +185,7 @@ export function createBrowserClient({ connect = () => globalThis.chrome.runtime.
   }
 
   return {
-    status: () => request('status'),
+    status: engine => request('status', { engine: engine === 'precise' ? 'precise' : 'quiet' }),
     open, call, state, share, setPolicy, close,
     onPrompt(handler) { handlers.prompt = handler; },
     onWithdrawn(handler) { handlers.withdrawn = handler; },

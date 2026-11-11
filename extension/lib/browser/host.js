@@ -29,7 +29,8 @@
 //   policy({ policy })                      -> { ok: true }
 //   close()                                 -> { ok: true }
 // Closing the port closes the session: calls are aborted, open prompts are withdrawn and the debugger leaves the tabs.
-import { BROWSER_PERMISSIONS, blockedSites, decideWrite, normalizeBrowserSettings, withSiteRule } from './settings.js';
+import { blockedSites, browserAccess, decideWrite, normalizeBrowserSettings, withSiteRule } from './settings.js';
+import { createQuietController } from './quiet.js';
 import { ASK_TIMEOUT_MS, BROWSER_PORT, HOST_TOOLS, NOTE_LABELS, RESULT_BUDGET } from './protocol.js';
 
 export { ASK_TIMEOUT_MS, BROWSER_PORT, HOST_TOOLS, NOTE_LABELS, RESULT_BUDGET };
@@ -56,8 +57,15 @@ export function createBrowserHost({ api = globalThis.chrome, loadLayer, isConten
   const sessions = new Set();
   let promptCount = 0;
 
-  async function missingPermissions() {
+  async function missingPermissions(engine) {
     const missing = [];
+    const access = browserAccess(engine);
+    if (access.origins.length) {
+      let granted = false;
+      try { granted = (await api.permissions?.contains?.({ origins: access.origins })) === true; } catch { granted = false; }
+      if (!granted) missing.push('sites');
+    }
+    const BROWSER_PERMISSIONS = access.permissions;
     for (const permission of BROWSER_PERMISSIONS) {
       let granted = false;
       try { granted = (await api.permissions?.contains?.({ permissions: [permission] })) === true; } catch { granted = false; }
@@ -66,10 +74,23 @@ export function createBrowserHost({ api = globalThis.chrome, loadLayer, isConten
     return missing;
   }
 
-  async function status() {
-    if (!api?.debugger?.sendCommand) return { available: false, missing: [], reason: 'This build of Still cannot control the browser.' };
-    const missing = await missingPermissions();
-    return { available: missing.length === 0, missing };
+  // engine: 'quiet' (the default) or 'precise'; each needs something different from Chrome (settings.js browserAccess).
+  async function status(engine = 'quiet') {
+    const precise = engine === 'precise';
+    if (precise ? !api?.debugger?.sendCommand : !api?.scripting?.executeScript) return { available: false, missing: [], reason: 'This build of Still cannot control the browser.' };
+    const missing = await missingPermissions(precise ? 'precise' : 'quiet');
+    return { available: missing.length === 0, missing, engine: precise ? 'precise' : 'quiet' };
+  }
+
+  // The quiet engine (quiet.js): no debugger. It borrows the layer's pure rules, so both engines classify alike.
+  let quietReady = null;
+  function quietController() {
+    quietReady ||= (async () => {
+      const layer = await loadLayer();
+      return { layer, controller: createQuietController({ api, prompt, helpers: { untrusted: layer.untrusted, quote: layer.quote, cutText: layer.cutText, classify: layer.classify, siteOf: layer.siteOf, isBlockedSite: layer.isBlockedSite } }) };
+    })();
+    quietReady.catch(() => { quietReady = null; });
+    return quietReady;
   }
 
   function controller() {
@@ -128,7 +149,7 @@ export function createBrowserHost({ api = globalThis.chrome, loadLayer, isConten
     ask: (request, signal) => openPrompt('ask', request, signal, { outcome: 'cancel' }, async value => {
       // The site a hand-over card names is read from the tab by the extension, never taken from page text.
       let site = '';
-      try { site = (await ready)?.layer?.siteOf?.((await api.tabs.get(value.tabId))?.url || '') || ''; } catch { site = ''; }
+      try { site = (await (ready || quietReady))?.layer?.siteOf?.((await api.tabs.get(value.tabId))?.url || '') || ''; } catch { site = ''; }
       return { id: value.id, tabId: value.tabId, kind: value.kind === 'input' ? 'input' : 'takeover', message: String(value.message || ''), site };
     }),
   };
@@ -184,17 +205,18 @@ export function createBrowserHost({ api = globalThis.chrome, loadLayer, isConten
   };
 
   const methods = {
-    status: () => status(),
+    status: (state, params) => status(params?.engine === 'precise' ? 'precise' : 'quiet'),
 
     async open(state, params) {
-      const check = await status();
+      const engine = normalizeBrowserSettings(params?.policy).engine;
+      const check = await status(engine);
       if (!check.available) {
         if (check.missing.length) throw new HostError('needs_permission', 'Still needs to see your tabs to work in them.', { permissions: check.missing });
         throw new HostError('unavailable', check.reason);
       }
       await closeSession(state);
       let loaded;
-      try { loaded = await controller(); } catch (error) { throw new HostError('unavailable', `The browser control layer did not start: ${error?.message || error}`); }
+      try { loaded = await (engine === 'precise' ? controller() : quietController()); } catch (error) { throw new HostError('unavailable', `The browser control layer did not start: ${error?.message || error}`); }
       state.controller = loaded.controller;
       state.policy = normalizeBrowserSettings(params?.policy);
       state.reveal = params?.reveal === true;
@@ -295,5 +317,5 @@ export function createBrowserHost({ api = globalThis.chrome, loadLayer, isConten
     return true;
   }
 
-  return { connect, status, get sessionCount() { return sessions.size; } };
+  return { connect, status: engine => status(engine), get sessionCount() { return sessions.size; } };
 }

@@ -1,23 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  BROWSER_DEFAULTS, BROWSER_LIMITS, BROWSER_MODES, BROWSER_PERMISSIONS, SITE_RULES, blockedSites, decideWrite, isNormalBrowserSettings, normalizeBrowserSettings,
+  BROWSER_DEFAULTS, BROWSER_LIMITS, BROWSER_MODES, BROWSER_PERMISSIONS, SITE_RULES, blockedSites, browserAccess, decideWrite, isNormalBrowserSettings, normalizeBrowserSettings,
   siteKey, siteOf, withSiteRule,
 } from '../extension/lib/browser/settings.js';
 
 test('browser automation is off by default and asks before it changes anything', () => {
-  assert.deepEqual(normalizeBrowserSettings(undefined), { enabled: false, mode: 'ask', sites: {}, maxSteps: 60 });
+  assert.deepEqual(normalizeBrowserSettings(undefined), { enabled: false, engine: 'quiet', mode: 'ask', sites: {}, maxSteps: 60 });
   assert.deepEqual(normalizeBrowserSettings(null), normalizeBrowserSettings({}));
   assert.deepEqual({ ...BROWSER_DEFAULTS, sites: {} }, normalizeBrowserSettings('nonsense'));
   assert.deepEqual([...BROWSER_MODES], ['ask', 'auto']);
   assert.deepEqual([...SITE_RULES], ['allow', 'ask', 'block']);
-  assert.deepEqual([...BROWSER_PERMISSIONS], ['tabs', 'webNavigation']);
+  assert.deepEqual([...BROWSER_PERMISSIONS], ['tabs', 'webNavigation', 'sites']);
+  // Each engine asks Chrome for what it needs and no more: the quiet one for the pages, the precise one for page loads.
+  assert.deepEqual(browserAccess('quiet'), { names: ['tabs', 'sites'], permissions: ['tabs'], origins: ['https://*/*', 'http://*/*'] });
+  assert.deepEqual(browserAccess('precise'), { names: ['tabs', 'webNavigation'], permissions: ['tabs', 'webNavigation'], origins: [] });
+  assert.deepEqual(browserAccess(undefined), browserAccess('quiet'));
+  assert.equal(normalizeBrowserSettings({ engine: 'loud' }).engine, 'quiet');
+  assert.equal(normalizeBrowserSettings({ engine: 'precise' }).engine, 'precise');
 });
 
 test('normalizing keeps valid values and replaces the rest', () => {
   const settings = normalizeBrowserSettings({ enabled: true, mode: 'auto', maxSteps: '120', extra: 1,
     sites: { 'https://www.Shop.example/cart': 'allow', 'bank.example.': 'ask', 'localhost:3000': 'block', 'bad rule.example': 'maybe', '': 'allow', 'not a host !!': 'allow' } });
-  assert.deepEqual(settings, { enabled: true, mode: 'auto', maxSteps: 120, sites: { 'shop.example': 'allow', 'bank.example': 'ask', 'localhost:3000': 'block' } });
+  assert.deepEqual(settings, { enabled: true, engine: 'quiet', mode: 'auto', maxSteps: 120, sites: { 'shop.example': 'allow', 'bank.example': 'ask', 'localhost:3000': 'block' } });
   assert.equal(normalizeBrowserSettings({ enabled: 'yes' }).enabled, false, 'only true turns it on');
   assert.equal(normalizeBrowserSettings({ mode: 'AUTO' }).mode, 'ask');
   assert.equal(normalizeBrowserSettings({ maxSteps: 3 }).maxSteps, BROWSER_LIMITS.minSteps);
@@ -31,7 +37,7 @@ test('normalizing keeps valid values and replaces the rest', () => {
 
 test('a value is normal only when nothing would be changed', () => {
   assert.equal(isNormalBrowserSettings(normalizeBrowserSettings({})), true);
-  assert.equal(isNormalBrowserSettings({ enabled: true, mode: 'auto', sites: { 'shop.example': 'allow' }, maxSteps: 80 }), true);
+  assert.equal(isNormalBrowserSettings({ enabled: true, engine: 'precise', mode: 'auto', sites: { 'shop.example': 'allow' }, maxSteps: 80 }), true);
   for (const value of [null, [], { enabled: true }, { ...normalizeBrowserSettings({}), extra: true }, { ...normalizeBrowserSettings({}), mode: 'always' },
     { ...normalizeBrowserSettings({}), maxSteps: 9999 }, { ...normalizeBrowserSettings({}), sites: { 'www.shop.example': 'allow' } },
     { ...normalizeBrowserSettings({}), sites: { 'shop.example': 'yes' } }, { ...normalizeBrowserSettings({}), sites: [] }, { ...normalizeBrowserSettings({}), enabled: 'true' }]) {

@@ -17,7 +17,7 @@ import { CONVERSATIONS_KEY } from '../lib/ai/conversations.js';
 import { allowedCategories } from '../lib/ai/permissions.js';
 import { aiState, assistantUrl } from './ai-state.js';
 import { browserLine, renderBrowserCard, renderBrowserModeButton, renderBrowserModeMenu, renderBrowserNotice, renderUnverified } from './ai-browser.js';
-import { BROWSER_MODES, BROWSER_PERMISSIONS, withSiteRule } from '../lib/browser/settings.js';
+import { BROWSER_MODES, BROWSER_PERMISSIONS, BROWSER_SITE_ORIGINS, browserAccess, withSiteRule } from '../lib/browser/settings.js';
 import { mergeWebSources, webSearchKind } from '../lib/ai/web-search.js';
 // The research view, not research.js: research.js (the research actions) imports this module.
 import {
@@ -2488,10 +2488,13 @@ registerActions({
   'ai.browser-settings': ({ ctx }) => { ctx.closePopover?.({ restore: false }); openSettings(ctx, 'browser'); },
   'ai.browser-allow': ({ ctx }) => {
     const s = st(ctx);
-    const permissions = s.browserNotice?.permissions?.length ? s.browserNotice.permissions : [...BROWSER_PERMISSIONS];
+    const names = s.browserNotice?.permissions?.length ? s.browserNotice.permissions : browserAccess(s.settings?.browser?.engine).names;
+    // "sites" stands for access to web pages, which Chrome takes as origins.
+    const permissions = names.filter(name => name !== 'sites');
+    const request = { ...(permissions.length ? { permissions } : {}), ...(names.includes('sites') ? { origins: [...BROWSER_SITE_ORIGINS] } : {}) };
     // Called before any await so Chrome treats it as part of the click.
     let pending;
-    try { pending = globalThis.chrome?.permissions?.request?.({ permissions }); } catch { pending = false; }
+    try { pending = globalThis.chrome?.permissions?.request?.(request); } catch { pending = false; }
     return Promise.resolve(pending).then(granted => {
       if (!granted) { ctx.toast('Chrome did not allow it. The assistant cannot work in the browser until it does.', { tone: 'warning' }); return; }
       s.browserNotice = null;

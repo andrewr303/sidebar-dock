@@ -73,7 +73,10 @@ const insideExtension = () => typeof globalThis.chrome?.runtime?.connect === 'fu
 export async function browserStatus() {
   if (!insideExtension()) return { available: false, missing: [], reason: 'Browser automation works in the installed extension.' };
   const client = browserClient();
-  try { return await client.status(); }
+  // What Chrome has to allow depends on the engine the person chose (lib/browser/settings.js browserAccess).
+  let chosen = 'quiet';
+  try { chosen = normalizeBrowserSettings((await aiSettings())?.browser).engine; } catch { chosen = 'quiet'; }
+  try { return await client.status(chosen); }
   catch (error) { return { available: false, missing: [], reason: String(error?.message || error) }; }
   finally { await client.close().catch(() => undefined); }
 }
@@ -84,7 +87,7 @@ async function browserFor({ settings, vision, hint, onPrompt, onWithdrawn, emit 
   if (!policy.enabled || !insideExtension()) return null;
   const client = browserClient();
   let status = null;
-  try { status = await client.status(); } catch { status = null; }
+  try { status = await client.status(policy.engine); } catch { status = null; }
   if (!status?.available) {
     await client.close().catch(() => undefined);
     if (status?.missing?.length) emit({ type: 'browser_permission', permissions: status.missing });

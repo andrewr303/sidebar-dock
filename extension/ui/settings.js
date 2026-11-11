@@ -26,7 +26,7 @@ import { renderAssistantPermissions, renderResearch, researchPatch } from './set
 import { renderBrowserAutomation } from './settings/browser.js';
 import { renderThreadkeeper, attachThreadkeeper, detachThreadkeeper } from './settings/threadkeeper.js';
 import { PERMISSION_CATEGORIES, PERMISSION_LEVELS, PERMISSION_PRESETS } from '../lib/ai/permissions.js';
-import { BROWSER_LIMITS, BROWSER_MODES, BROWSER_PERMISSIONS, SITE_RULES, siteKey, withSiteRule } from '../lib/browser/settings.js';
+import { BROWSER_ENGINES, BROWSER_LIMITS, BROWSER_MODES, SITE_RULES, browserAccess, siteKey, withSiteRule } from '../lib/browser/settings.js';
 import { WEB_SEARCH_DEFAULTS, WEB_SEARCH_LIMITS } from '../lib/ai/web-search.js';
 import { MCP_TOOLS, MCP_SCOPES } from '../lib/mcp-tools.js';
 
@@ -313,6 +313,12 @@ const bridgeSettings = () => (data.integration && live.pausedHere ? { ...data.in
 
 // Chrome shows a permission prompt only during a user gesture, so callers start this before their first await.
 // Without the permissions API (preview mode) there is nothing to grant.
+// What Chrome is asked for, for an engine: chrome.permissions.request takes only the lists that are not empty.
+function chromeAccess(engine) {
+  const { permissions, origins } = browserAccess(engine);
+  return { ...(permissions.length ? { permissions } : {}), ...(origins.length ? { origins } : {}) };
+}
+
 function requestAccess(request) {
   const api = globalThis.chrome?.permissions;
   if (typeof api?.request !== 'function') return Promise.resolve(true);
@@ -1882,11 +1888,11 @@ registerActions({
   'settings.browser-enable': ({ ctx, el }) => {
     if (!el.checked) return setAi(ctx, { browser: { enabled: false } });
     // Chrome asks only inside the click, so the request goes out before anything is awaited.
-    const granted = requestAccess({ permissions: [...BROWSER_PERMISSIONS] });
+    const granted = requestAccess(chromeAccess(aiSettings(ctx).browser?.engine));
     return withBusy(ctx, 'browser-allow', async () => {
       if (!(await granted)) {
         // The switch goes back to off: nothing was turned on.
-        ctx.toast('Chrome did not allow Still to see your tabs, so browser automation stays off.', { tone: 'warning' });
+        ctx.toast('Chrome did not allow it, so browser automation stays off.', { tone: 'warning' });
         return;
       }
       await setAi(ctx, { browser: { enabled: true } });
@@ -1894,9 +1900,20 @@ registerActions({
     });
   },
   'settings.browser-allow': ({ ctx }) => {
-    const granted = requestAccess({ permissions: [...BROWSER_PERMISSIONS] });
+    const granted = requestAccess(chromeAccess(aiSettings(ctx).browser?.engine));
     return withBusy(ctx, 'browser-allow', async () => {
       if (!(await granted)) ctx.toast('Chrome did not allow it. The assistant cannot work in the browser until it does.', { tone: 'warning' });
+      await loadBrowserStatus(ctx);
+    });
+  },
+  // The engines need different things from Chrome, so a change asks for them in the same click. A refusal still saves
+  // the choice: the section then says what Chrome has to allow.
+  'settings.browser-engine': ({ ctx, data: payload }) => {
+    if (!BROWSER_ENGINES.includes(payload.value)) return undefined;
+    const granted = aiSettings(ctx).browser?.enabled ? requestAccess(chromeAccess(payload.value)) : Promise.resolve(true);
+    return withBusy(ctx, 'browser-allow', async () => {
+      await granted;
+      await setAi(ctx, { browser: { engine: payload.value } });
       await loadBrowserStatus(ctx);
     });
   },

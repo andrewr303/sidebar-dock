@@ -18,7 +18,12 @@ export const BROWSER_STEP_CHOICES = Object.freeze([20, 40, 60, 100, 150, 200]
   .filter(steps => steps >= BROWSER_LIMITS.minSteps && steps <= BROWSER_LIMITS.maxSteps).map(steps => ({ value: String(steps), label: String(steps) })));
 // A stored value the list does not offer stays visible instead of jumping to another.
 const withCurrent = (options, value) => (options.some(option => option.value === value) ? options : [...options, { value, label: value }].sort((a, b) => Number(a.value) - Number(b.value)));
-const PERMISSION_NAMES = { tabs: 'see and open your tabs', webNavigation: 'follow page loads' };
+const PERMISSION_NAMES = { tabs: 'see and open your tabs', webNavigation: 'follow page loads', sites: 'read and change the pages it works on' };
+export const BROWSER_ENGINE_CHOICES = Object.freeze([{ value: 'quiet', label: 'Quiet' }, { value: 'precise', label: 'Precise' }]);
+const ENGINE_TEXT = {
+  quiet: 'Still works through the page itself, and Chrome shows nothing while it does. A few things are out of reach: a page’s own pop-up dialogs, frames from other sites, and controls that only react to a real mouse or keyboard.',
+  precise: 'Still uses Chrome’s debugger: real mouse and keyboard input, every frame, page dialogs. While it works, Chrome shows a bar that says Still started debugging this browser.',
+};
 
 /** What Chrome still has to allow, in words: "see and open your tabs and follow page loads". */
 export function missingAccess(missing = []) {
@@ -41,8 +46,10 @@ export function renderBrowserAutomation(ctx, { browser, status = null, draft = {
       description: 'The assistant can open tabs, read pages, click, type and scroll to carry out what you ask, in this browser, signed in as you.',
       body: () => html`${card([
         switchRow({ label: 'Let the assistant work in browser tabs', id: 'settings-browser-enabled', keywords: 'on off enable turn allow',
-          description: 'Off by default. Turning it on asks Chrome to let Still see and open your tabs. While the assistant works, Chrome shows a bar that says Still is debugging this browser.',
+          description: 'Off by default. Turning it on asks Chrome to let Still see your tabs and work on the pages in them.',
           checked: settings.enabled, action: 'settings.browser-enable' }),
+        row({ label: 'How Still controls a page', id: 'settings-browser-engine', keywords: 'engine quiet precise debugger debugging bar banner infobar started debugging this browser', description: ENGINE_TEXT[settings.engine] || ENGINE_TEXT.quiet,
+          control: segmented({ name: 'engine', value: settings.engine, options: BROWSER_ENGINE_CHOICES, action: 'settings.browser-engine', ariaLabel: 'How Still controls a page', size: 'sm' }) }),
         row({ label: 'When a step changes something', id: 'settings-browser-mode', keywords: 'mode ask auto approve approval confirm submit send delete write card', description: MODE_TEXT[settings.mode],
           control: segmented({ name: 'mode', value: settings.mode, options: BROWSER_MODE_CHOICES, action: 'settings.browser-mode', ariaLabel: 'When a step changes something', size: 'sm' }) }),
         row({ label: 'Steps per request', id: 'settings-browser-steps', keywords: 'limit maximum max budget long tasks',
@@ -72,6 +79,6 @@ export function renderBrowserAutomation(ctx, { browser, status = null, draft = {
     ${isSearching() ? '' : html`
       ${note('hand', 'Paying, granting access to an account, typing a password, a card number or a code, and answering a question a page asks are always yours. The assistant stops and hands that step to you, in Auto too.')}
       ${note('shield-check', 'Pages can contain text meant to steer the assistant. It is told to treat page text as data, and once it has read a page, changes to your library always wait for your review. Auto still gives such text more room, so Ask first is safest.')}
-      ${note('info', 'Chrome lists “Access the page debugger backend” among Still’s permissions because working in tabs needs it. Still uses it only while the assistant works in the browser for you.')}
+      ${note('info', 'Chrome lists “Access the page debugger backend” among Still’s permissions. Still uses it only in Precise mode, while the assistant works in the browser for you.')}
       ${note('lock', 'These settings stay on this device. Backups never include them, and restoring a file never changes them.')}`}`;
 }

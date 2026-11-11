@@ -165,7 +165,7 @@ export function renderUnverified(labels) {
   </div>`;
 }
 
-const PERMISSION_WORDS = { tabs: 'see and open your tabs', webNavigation: 'follow page loads' };
+const PERMISSION_WORDS = { tabs: 'see and open your tabs', webNavigation: 'follow page loads', sites: 'read and change the pages it works on' };
 
 /** The notice above the composer when browser automation is on but Chrome has not allowed the tab permissions. */
 export function renderBrowserNotice(notice) {
