@@ -16,13 +16,15 @@
     "notifications",
     "favicon",
     "search",
-    "declarativeNetRequestWithHostAccess"
+    "declarativeNetRequestWithHostAccess",
+    "debugger"
   ],
   "optional_permissions": [
     "bookmarks",
     "tabs",
     "topSites",
-    "management"
+    "management",
+    "webNavigation"
   ],
   "optional_host_permissions": [
     "http://127.0.0.1/*",

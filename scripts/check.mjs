@@ -66,16 +66,21 @@ if (manifest.background?.type !== 'module') fail('Background must be a module se
 if (manifest.action?.default_popup) fail('Toolbar action must open the side panel.');
 // favicon (site icons), search (the browser's default engine) and declarativeNetRequestWithHostAccess (the embed widget's
 // per-site session rules, only effective on origins the user grants) add no install warning.
+// debugger is how the assistant works in a tab (lib/browser/host.js): Chrome does not let it be optional, and it adds the
+// install warnings "Access the page debugger backend" and "Read and change all your data on all websites". Nothing
+// attaches to a tab until the person turns browser automation on and the assistant uses a browser tool.
 const expectedPermissions = new Set(['storage', 'unlimitedStorage', 'sidePanel', 'activeTab', 'contextMenus', 'scripting', 'alarms', 'notifications',
-  'favicon', 'search', 'declarativeNetRequestWithHostAccess']);
+  'favicon', 'search', 'declarativeNetRequestWithHostAccess', 'debugger']);
 const actualPermissions = new Set(manifest.permissions || []);
 for (const permission of expectedPermissions) if (!actualPermissions.has(permission)) fail(`Manifest is missing ${permission} permission.`);
 for (const permission of actualPermissions) if (!expectedPermissions.has(permission)) fail(`Review unexpected required permission: ${permission}`);
 if ((manifest.host_permissions || []).length) fail('Host permissions must remain optional.');
 // Optional grants requested at the moment of use: bookmarks import, the active tab's address for "This page",
 // most visited sites for the dashboard, finding an installed Threadkeeper (management, removed again right after the
-// lookup), and per-origin host access for reading saved pages and calling services the user connects.
-const allowedOptionalPermissions = new Set(['bookmarks', 'tabs', 'topSites', 'management']);
+// lookup), and per-origin host access for reading saved pages and calling services the user connects. Browser automation
+// asks for tabs and webNavigation when the person turns it on: the layer needs each tab's address for the site rules and
+// must hear of tabs that pages open.
+const allowedOptionalPermissions = new Set(['bookmarks', 'tabs', 'topSites', 'management', 'webNavigation']);
 if ((manifest.optional_permissions || []).some(permission => !allowedOptionalPermissions.has(permission))) fail('Unexpected optional permission.');
 const allowedHosts = new Set(['http://127.0.0.1/*', 'http://localhost/*', 'https://api.raindrop.io/*', 'https://*/*', 'http://*/*']);
 for (const host of manifest.optional_host_permissions || []) if (!allowedHosts.has(host)) fail(`Review unexpected optional host: ${host}`);

@@ -86,6 +86,8 @@ import { LIBRARY_SCHEMA_VERSION, libraryVersion } from './lib/storage/migrations
 import { configureThreadkeeperWorker, handleExternalMessage, handleThreadkeeperRequest, THREADKEEPER_MESSAGE } from './lib/threadkeeper/worker.js';
 import { STATE_KEY as THREADKEEPER_STATE_KEY } from './lib/threadkeeper/state.js';
 import { chatDataStore } from './lib/chat-data.js';
+import { createBrowserHost } from './lib/browser/host.js';
+import { loadBrowserControl } from './lib/browser-control/layer.js';
 
 // The worker owns snapshots and the library. Store operations wait for the startup snapshot gate (set below once the
 // extension APIs exist); a failed snapshot is logged and never blocks the library.
@@ -110,6 +112,9 @@ const threadkeeper = configureThreadkeeperWorker({
   readLibrary: freshLibrary,
 });
 const warnThreadkeeper = error => console.warn('Still Threadkeeper:', error?.message || String(error));
+// Browser automation for the assistant: the worker holds the browser control layer and the assistant's pages reach it
+// over a port (lib/browser/host.js). Importing the layer runs nothing; it is evaluated when a page first opens a session.
+const browserHost = createBrowserHost({ api, loadLayer: loadBrowserControl, isContentSender });
 let visibleScreenshotJobs = 0;
 const REMINDER_PREFIX = 'still:reminder:';
 const RECENT_COLLECTIONS_KEY = 'still.ui.recent.v1';
@@ -1000,6 +1005,8 @@ if (api?.runtime?.onMessage) {
     handleExternalMessage(message, sender).then(respond, () => respond({ ok: false, proto: 'still-threadkeeper/1', error: { code: 'internal', message: 'Still could not handle that message.' } }));
     return true;
   });
+  // The assistant's pages open a port to work in browser tabs. Registered synchronously, so a connection wakes the worker.
+  api.runtime.onConnect?.addListener(port => { browserHost.connect(port); });
   // Snapshot gate first: nothing below may change data before an update snapshot exists. Bounded, so a stalled
   // IndexedDB can delay the library by at most STARTUP_GATE_MS, never lock it.
   startupGate = Promise.race([snapshots.startup(), new Promise((resolve, reject) => {
@@ -1047,4 +1054,4 @@ if (api?.runtime?.onMessage) {
   hasPermission({ permissions: ['tabs'] }).then(granted => { if (granted) startTabTracking(); });
 }
 
-export { MENU_ITEMS, MESSAGE_TYPES, STORAGE_KEY, PANEL_DRAFTS_KEY, handleExternalMessage, threadkeeper };
+export { MENU_ITEMS, MESSAGE_TYPES, STORAGE_KEY, PANEL_DRAFTS_KEY, handleExternalMessage, threadkeeper, browserHost };

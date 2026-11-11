@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Your account</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; margin: 2rem; max-width: 46rem; }
+    li { margin: 0.5rem 0; }
+    button, input { font: inherit; padding: 0.3rem 0.6rem; }
+    label { display: block; margin: 0.8rem 0 0.2rem; }
+  </style>
+</head>
+<body>
+  <h1>Your account</h1>
+  <ul id="addresses">
+    <li>Home, 12 Mill Lane <button type="button" class="delete" aria-label="Delete address Home">Delete</button></li>
+    <li>Office, 4 Quay Street <button type="button" class="delete" aria-label="Delete address Office">Delete</button></li>
+  </ul>
+  <p id="status" role="status"></p>
+  <form id="signin" action="/signed-in" method="post">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="username">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password">
+    <p><button type="submit">Sign in</button></p>
+  </form>
+  <script>
+    for (const button of document.querySelectorAll('.delete')) {
+      button.addEventListener('click', () => {
+        button.closest('li').remove();
+        document.getElementById('status').textContent = 'Address deleted.';
+      });
+    }
+  </script>
+</body>
+</html>
