@@ -2,7 +2,7 @@
 // "Always allow on this site", withdrawn cards, the tab hint, the Chrome permission notice and the Ask first / Auto control.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aiState } from '../extension/ui/ai-panel.js';
+import { aiState, renderWebSourceList } from '../extension/ui/ai-panel.js';
 import { dispatch } from '../extension/ui/runtime.js';
 import {
   BROWSER_MODES, cardOutcome, cardSubject, renderBrowserCard, renderBrowserModeButton, renderBrowserModeMenu, renderBrowserNotice, renderUnverified, targetText,
@@ -309,4 +309,43 @@ test('picking Auto or Ask first in the composer saves the mode', async () => {
   assert.equal(aiState(ctx).settings.browser.mode, 'auto');
   await dispatch('ai.browser-pick-mode', { ctx, data: { mode: 'always' } });
   assert.equal(calls.settings.length, 1, 'an unknown mode is not saved');
+});
+
+test('the web pages an answer used are listed under it as links to web addresses only', async () => {
+  const { ctx, calls } = fakeCtx();
+  const sources = [{ url: 'https://kettle.example/hours', title: 'Opening <b>hours</b>' }, { url: 'https://maps.example/shop', title: '' }];
+  ctx.ai.runAssistant = async options => {
+    calls.run.push({});
+    options.onEvent({ type: 'tool', name: 'web_search', summary: 'Searched the web for “kettle shop hours”', usedThreads: true });
+    options.onEvent({ type: 'web_sources', items: [...sources, { url: 'javascript:alert(1)', title: 'bad' }] });
+    const message = { id: 'msg_w', role: 'assistant', text: 'Open 9 to 5.', proposals: [], tools: [{ name: 'web_search', summary: 'Searched the web for “kettle shop hours”' }], citations: [], webSources: sources, usedThreads: true };
+    return { conversation: { id: options.conversationId, title: 'Hours', messages: [{ id: 'q_w', role: 'user', text: 'When is it open?' }, message] }, message };
+  };
+  await send(ctx, 'When is it open?');
+  await ticks(() => !aiState(ctx).run);
+  const saved = aiState(ctx).conversation.messages.at(-1);
+  const out = flat(renderWebSourceList(ctx, saved));
+  assert.match(out, /From the web/);
+  assert.deepEqual([...out.matchAll(/<a class="ai-web-source" href="([^"]+)" target="_blank" rel="noopener noreferrer">/g)].map(match => match[1]), ['https://kettle.example/hours', 'https://maps.example/shop']);
+  assert.ok(out.includes('Opening &lt;b&gt;hours&lt;/b&gt;') && !out.includes('<b>hours</b>'), 'a title from the web is text');
+  assert.match(plainText(out), /maps\.example maps\.example/, 'a page without a title is named by its site');
+  assert.equal(String(renderWebSourceList(ctx, { id: 'm', webSources: [{ url: 'javascript:alert(1)', title: 'x' }] })), '', 'an address that is not a web address is never a link');
+  assert.equal(String(renderWebSourceList(ctx, { id: 'm' })), '');
+  // The answer still being written stops loading remote images the moment a search starts, before any page is named.
+  const live = fakeCtx();
+  let during = null;
+  live.ctx.ai.runAssistant = async options => {
+    const before = aiState(live.ctx).run.message.usedThreads;
+    options.onEvent({ type: 'web_seen' });
+    during = { before, after: aiState(live.ctx).run.message.usedThreads };
+    const message = { id: 'msg_s', role: 'assistant', text: 'Open 9 to 5.', proposals: [], tools: [], citations: [], usedThreads: true };
+    return { conversation: { id: options.conversationId, title: 'Hours', messages: [{ id: 'q_s', role: 'user', text: 'When is it open?' }, message] }, message };
+  };
+  await send(live.ctx, 'When is it open?');
+  await ticks(() => !aiState(live.ctx).run);
+  assert.deepEqual(during, { before: undefined, after: true });
+  // More than four are folded behind a button.
+  const many = flat(renderWebSourceList(ctx, { id: 'many', webSources: Array.from({ length: 7 }, (_, index) => ({ url: `https://e.example/${index}`, title: `Page ${index}` })) }));
+  assert.equal(many.match(/class="ai-web-source"/g).length, 4);
+  assert.match(many, /3 more sources/);
 });

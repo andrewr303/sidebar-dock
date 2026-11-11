@@ -19,6 +19,7 @@ import { createConversationStore } from './conversations.js';
 import { createImports } from './imports.js';
 import { getProvider as catalogProvider } from './catalog.js';
 import { createResearch } from './research/run.js';
+import { detectLocalWindow } from './local-context.js';
 import { createBrowserClient } from './browser-client.js';
 import { createBrowserTools } from './browser-tools.js';
 import { normalizeBrowserSettings } from '../browser/settings.js';
@@ -102,7 +103,7 @@ function engine() {
   const search = createSearch({ getLibrary: currentLibrary, vectorStore, isSemanticReady: () => indexer.isReady(), embedQuery: (query, options) => indexer.embedQuery(query, options) });
   const assistant = createAssistant({ streamChat: chatStream, resolveConnection: connections.resolveConnection, resolveChatTarget: connections.resolveChatTarget, modelInfo: connections.modelInfo,
     getAiSettings: aiSettings, getLibrary: currentLibrary, store, searchLibrary: search.searchLibrary, conversations, dashboard: () => runtime.dashboard, threads: threadsNow, chats: chatsNow,
-    external: externalProviders, browser: browserFor });
+    external: externalProviders, browser: browserFor, detectWindow: detectLocalWindow });
   const transforms = createTransforms({ streamChat: chatStream, resolveConnection: connections.resolveConnection, resolveChatTarget: connections.resolveChatTarget,
     getAiSettings: aiSettings, getLibrary: currentLibrary });
   const imports = createImports({ streamChat: chatStream, resolveChatTarget: connections.resolveChatTarget, resolveConnection: connections.resolveConnection, getProvider: catalogProvider });

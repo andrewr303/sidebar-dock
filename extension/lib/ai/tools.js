@@ -10,6 +10,7 @@
 import { getDescendantCollectionIds } from '../library-views.js';
 import { canonicalUrl, safeUrl, STICKY_COLORS, ITEM_TYPES } from '../store.js';
 import { plainText } from './search.js';
+import { fitText, readFrom } from './passages.js';
 import { allowedCategories, autoApproves, normalizePermissions, toolAutoApplies, MAX_AUTO_ITEMS } from './permissions.js';
 import { pageIndex, descendantIds } from '../pages.js';
 import { chatItemId } from '../threadkeeper/protocol.js';
@@ -84,8 +85,12 @@ export const LIBRARY_TOOLS = Object.freeze([
       tag: { type: 'string', description: 'Only items with this tag.' },
       limit: { type: 'integer', description: 'Maximum results, 1 to 50. Default 12.' },
     }, ['query']) },
-  { name: 'get_items', access: 'read', description: 'Read saved items in full by id: description, the user’s note, captured article text, highlights, tags, collection, pinned, read and reminder state, and linked item ids. Up to 20 ids per call.',
-    inputSchema: schema({ ids: ids('Item ids from search results or earlier tool results.') }, ['ids']) },
+  { name: 'get_items', access: 'read', description: 'Read saved items in full by id: description, the user’s note, captured article text, highlights, tags, collection, pinned, read and reminder state, and linked item ids. Up to 20 ids per call. A text too long to return whole comes back as its opening (truncated: true); pass query to get the passages that match it, or offset to read on from a character position.',
+    inputSchema: schema({
+      ids: ids('Item ids from search results or earlier tool results.'),
+      query: { type: 'string', description: 'What you are looking for in these items. Long notes and articles are then returned as their opening plus the passages that match (passages, notePassages: [{ at, text }]).' },
+      offset: { type: 'integer', description: 'With exactly one id: the character position in its article to read from, such as a passage’s at or the nextOffset of an earlier read.' },
+    }, ['ids']) },
   { name: 'list_items', access: 'read', description: 'Browse saved items without a search query. Filter by collection, type, tag, favorite, pinned and state: active (default), archived, trash or all. Returns total and nextOffset for the next page.',
     inputSchema: schema({
       collectionId: str('Only items in this collection and its sub-collections. Use "inbox" for unsorted items.'),
@@ -823,10 +828,17 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       const library = await readLibrary();
       const index = new Map((library?.items || []).map(item => [item.id, item]));
       // Pair each hit with its item before dropping ids that vanished, so snippets stay with the right item.
+      // A list always has a last place: `match` says whether a row is close to the best match or far behind it, by
+      // the score of the ranking that found it (keyword or meaning), so the model does not read a weak row as an answer.
+      const top = key => Math.max(0, ...results.map(result => (Number.isFinite(result?.[key]) ? result[key] : 0)));
+      const [topLexical, topSemantic] = [top('lexicalScore'), top('semanticScore')];
+      const strength = result => (!topLexical && !topSemantic ? undefined
+        : (topLexical > 0 && (result.lexicalScore || 0) >= topLexical * 0.5) || (topSemantic > 0 && (result.semanticScore || 0) >= topSemantic * 0.9) ? 'strong' : 'weak');
       const items = results.map(result => ({ result, item: index.get(result.id) })).filter(entry => entry.item && !hiddenChat(entry.item)).map(({ result, item }) => {
         remember(item, library);
+        const match = strength(result);
         return { id: item.id, title: text(item.title), type: item.type, url: text(item.url), collection: collectionPath(library, text(item.collectionId)),
-          tags: item.tags || [], updatedAt: text(item.updatedAt), snippet: text(result.snippet) };
+          tags: item.tags || [], updatedAt: text(item.updatedAt), snippet: text(result.snippet), ...(match ? { match } : {}) };
       });
       // A chat's title and snippet (its Threadkeeper summary, gist) are thread text: untrusted, and the turn asks before applying.
       const chatHits = items.some(item => item.type === 'chat');
@@ -841,6 +853,10 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
       const index = new Map((library?.items || []).map(item => [item.id, item]));
       const chosen = wanted.slice(0, 20);
       const budget = Math.max(4000, Math.floor(60000 / chosen.length));
+      // query: long texts come back as their opening and the passages that match it. offset: read one item's article on
+      // from a character position.
+      const query = text(input.query).trim().slice(0, 500);
+      const offset = chosen.length === 1 && Number.isInteger(input.offset) && input.offset > 0 ? input.offset : 0;
       const items = [];
       const missing = [];
       for (const id of chosen) {
@@ -854,15 +870,24 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
         const article = item.type === 'chat' ? (stored?.record ? text(local.summaryMarkdown(stored.record, item)) : text(item.excerpt)) : text(item.articleContent);
         const noteBudget = article ? Math.min(note.length, Math.floor(budget / 2)) : budget;
         const articleBudget = Math.max(0, budget - Math.min(note.length, noteBudget));
+        const head = (value, room) => ({ text: value.slice(0, room), truncated: value.length > room });
+        const shownNote = query ? fitText(note, query, { budget: noteBudget }) : head(note, noteBudget);
+        // Reading on: the article from the offset, and where the next part begins.
+        const part = offset ? readFrom(article, offset, articleBudget) : null;
+        const shownArticle = part ? { text: part.text, truncated: part.next !== undefined } : query ? fitText(article, query, { budget: articleBudget }) : head(article, articleBudget);
+        // Where to read on from: after this part, or after the opening when the rest was cut.
+        const nextOffset = part ? part.next : shownArticle.truncated ? shownArticle.text.length : undefined;
         items.push({ id: item.id, title: text(item.title), type: item.type, url: text(item.url), collection: collectionPath(library, text(item.collectionId)), collectionId: text(item.collectionId),
           tags: item.tags || [], favorite: !!item.favorite, pinned: !!item.pinned, read: !!item.read, reminderAt: text(item.reminderAt) || null,
           archived: !!item.archived, inTrash: !!item.deletedAt, createdAt: text(item.createdAt), updatedAt: text(item.updatedAt),
           ...(item.sticky ? { sticky: text(item.sticky.color) || true } : {}),
-          description: text(item.excerpt).slice(0, 2000), note: note.slice(0, noteBudget), article: article.slice(0, articleBudget),
+          description: text(item.excerpt).slice(0, 2000), note: shownNote.text, ...(shownNote.passages ? { notePassages: shownNote.passages } : {}),
+          article: shownArticle.text, ...(shownArticle.passages ? { passages: shownArticle.passages } : {}),
+          ...(part ? { articleOffset: part.at } : {}), ...(article.length > articleBudget ? { articleLength: article.length } : {}), ...(nextOffset !== undefined ? { nextOffset } : {}),
           highlights: (item.highlights || []).slice(0, 40).map(h => ({ text: text(h.text).slice(0, 800), note: text(h.note).slice(0, 400) })),
           relatedIds: (item.relatedIds || []).slice(0, 50), fileName: text(item.fileName) || undefined, parentId: text(item.parentId) || undefined,
           ...(item.type === 'chat' ? { chat: chatFields(item, stored) } : {}),
-          truncated: note.length > noteBudget || article.length > articleBudget });
+          truncated: !!shownNote.truncated || !!shownArticle.truncated });
       }
       const chatNote = items.some(item => item.type === 'chat') ? { chatNote: `For chats, article is the chat’s summary and note is the user’s own notes; read the conversation with get_ai_threads. ${THREAD_NOTE}` } : {};
       return { summary: `Read ${plural(items.length, 'item')}`, data: { items, missing, ...(wanted.length > 20 ? { note: 'Only the first 20 ids were read.' } : {}), ...chatNote }, result: { count: items.length } };
@@ -1968,5 +1993,7 @@ export function createToolSession({ getLibrary, searchLibrary, store, page = nul
     ...[...externalTools.values(), ...actionTools.values()].map(({ definition }) => ({ ...definition, inputSchema: structuredClone(definition.inputSchema) }))];
   return { definitions, execute, sources, proposals,
     /** True once this turn read untrusted text (AI thread text in its context or from a thread tool, or page text from an action tool): its proposals always ask. */
-    get usedThreads() { return usedThreads; } };
+    get usedThreads() { return usedThreads; },
+    /** Untrusted text entered the turn another way (web search results the provider ran): from now on its proposals ask. */
+    markUntrusted() { usedThreads = true; } };
 }

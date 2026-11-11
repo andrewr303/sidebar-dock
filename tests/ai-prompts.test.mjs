@@ -24,8 +24,8 @@ test('the total text budget includes history and the draft, and archive is admit
  const prompt=assemblePrompt({query:'Keep this exact request',context,history:Array(16).fill({role:'assistant',content:'history'.repeat(1500)})});
  assert.ok(prompt.system.length+prompt.messages.reduce((n,m)=>n+m.content.length,0)<=12000);const payload=JSON.parse(prompt.messages.at(-1).content.split('\n').slice(1).join('\n'));assert.equal(payload.request,'Keep this exact request');assert.equal(payload.contextTruncated,true);
 });
-test('the library assistant prompt (3.1) teaches real links, verbatim URLs, dashboard widgets, fixes, citations and the proposal rules',()=>{
- assert.equal(ASSISTANT_PROMPT_VERSION,'still-assistant-3.1');
+test('the library assistant prompt (3.2) teaches real links, verbatim URLs, dashboard widgets, fixes, citations and the proposal rules',()=>{
+ assert.equal(ASSISTANT_PROMPT_VERSION,'still-assistant-3.2');
  const system=assistantSystemPrompt({tools:true,today:'2026-10-31'});
  for(const rule of [
   /save_links saves real links \(bookmarks\), which show in the collection’s links widget/,/Never store links as notes unless the user asks for notes/,
@@ -44,4 +44,35 @@ test('the library assistant prompt (3.1) teaches real links, verbatim URLs, dash
  for(const [name] of system.matchAll(/\b[a-z]+(?:_[a-z]+)+\b/g))if(name!=='item_id')assert.ok(names.has(name),name);
  const plain=assistantSystemPrompt({tools:false});
  assert.match(plain,/You have no tools in this conversation/);assert.ok(!/save_links/.test(plain));assert.match(plain,/Never use a citation in place of a name/);
+});
+test('the assistant prompt says how long texts arrive, how to search again and how to read on',()=>{
+ const system=assistantSystemPrompt({tools:true});
+ for(const rule of [
+  /A long text reaches you in parts: its opening, then the passages that match the request \(passages for an article, notePassages for the user’s note\)/,
+  /truncated: true means the rest was left out\. Quote and summarize only what you received, and never describe a part you did not see/,
+  /When sources disagree, say so and name each one/,/prefer the source with the later date and give that date/,
+  /Search with the words of the subject, not the whole sentence/,/a weak match is a lead to read, not an answer/,
+  /try other words \(a name, a synonym, a narrower phrase\) before you say the library has nothing/,
+  /pass query to get_items to get the passages about a topic, and offset to read on from a passage/,
+ ])assert.match(system,rule);
+ // Without tools the model still gets texts in parts, and is told nothing about tools it does not have.
+ const plain=assistantSystemPrompt({tools:false});
+ assert.match(plain,/A long text reaches you in parts/);assert.match(plain,/When sources disagree/);
+ assert.ok(!/get_items|search_library/.test(plain));
+});
+test('a lookup uses the provider’s web search first when both it and the browser are offered',()=>{
+ const browserOnly=assistantSystemPrompt({tools:true,browser:true});
+ assert.match(browserOnly,/open a search engine’s results page in a new tab \(browser_tabs with action "open" and the address\), read it with browser_read/);
+ assert.match(browserOnly,/A results page only points to pages: read a page before you rely on it/);
+ assert.match(browserOnly,/Link each page your answer uses as \[title\]\(address\), with the address exactly as the browser showed it/);
+ assert.ok(!/web_search/.test(browserOnly),'no word about a search tool that is not offered');
+ const both=assistantSystemPrompt({tools:true,browser:true,webSearch:true});
+ assert.match(both,/To look a fact up, use web_search first: it takes fewer steps and leaves the user’s tabs alone/);
+ assert.match(both,/Use the browser when the task needs the page itself/);
+ assert.ok(!/open a search engine’s results page/.test(both));
+ const searchOnly=assistantSystemPrompt({tools:true,webSearch:true});
+ assert.match(searchOnly,/You can search the web with web_search/);assert.ok(!/browser_/.test(searchOnly));
+ // Neither is offered without tools, whatever the caller passes.
+ const plain=assistantSystemPrompt({tools:false,browser:true,webSearch:true});
+ assert.ok(!/web_search|browser_/.test(plain));
 });

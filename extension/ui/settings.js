@@ -27,6 +27,7 @@ import { renderBrowserAutomation } from './settings/browser.js';
 import { renderThreadkeeper, attachThreadkeeper, detachThreadkeeper } from './settings/threadkeeper.js';
 import { PERMISSION_CATEGORIES, PERMISSION_LEVELS, PERMISSION_PRESETS } from '../lib/ai/permissions.js';
 import { BROWSER_LIMITS, BROWSER_MODES, BROWSER_PERMISSIONS, SITE_RULES, siteKey, withSiteRule } from '../lib/browser/settings.js';
+import { WEB_SEARCH_DEFAULTS, WEB_SEARCH_LIMITS } from '../lib/ai/web-search.js';
 import { MCP_TOOLS, MCP_SCOPES } from '../lib/mcp-tools.js';
 
 export { SETTINGS_SECTIONS, normalizeSection, ACCENTS };
@@ -939,6 +940,13 @@ function renderAiDefaults(ctx) {
       checked: settings.autoSuggestOnSave !== false, action: 'settings.ai-flag', data: { key: 'autoSuggestOnSave' } }),
     switchRow({ label: 'Include page text when asking about a page', description: 'Sends the readable text of the page you are on with your question.',
       checked: settings.includePageText !== false, action: 'settings.ai-flag', data: { key: 'includePageText' } }),
+    switchRow({ label: 'Let the assistant search the web', id: 'settings-web-search', keywords: 'web search internet online google current news look up sources citations',
+      description: 'Off by default. Works with an Anthropic or OpenAI API key: the provider runs the searches for the model and bills them to your key. What the assistant searches for leaves this device.',
+      checked: settings.webSearch?.enabled === true, action: 'settings.web-search-flag' }),
+    settings.webSearch?.enabled === true ? row({ label: 'Searches per answer', id: 'settings-web-search-uses', keywords: 'web search limit maximum cost',
+      description: 'The most searches one answer may use, where the provider takes a limit (Anthropic).',
+      control: select({ name: 'maxUses', value: String(settings.webSearch?.maxUses ?? WEB_SEARCH_DEFAULTS.maxUses), label: 'Searches per answer', action: 'settings.web-search-uses', className: 'settings-select is-narrow',
+        options: [1, 2, 3, 5, 8, 10].filter(uses => uses >= WEB_SEARCH_LIMITS.minUses && uses <= WEB_SEARCH_LIMITS.maxUses).map(uses => ({ value: String(uses), label: String(uses) })) }) }) : '',
     row({ label: 'Continue in', keywords: 'handoff open in claude chatgpt grok', description: 'Where “Open in” sends a question and its sources when you want to keep going in another app.',
       control: segmented({ name: 'handoff', value: handoff, action: 'settings.ai-handoff', ariaLabel: 'Continue in',
         options: targets.map(target => ({ value: target.id, label: target.name })) }) }),
@@ -1851,6 +1859,12 @@ registerActions({
   'settings.ai-quick': ({ ctx, el }) => setAi(ctx, { quick: parseChoice(el.value) }),
   'settings.ai-flag': ({ ctx, el, data: payload }) => setAi(ctx, { [payload.key]: !!el.checked }),
   'settings.ai-handoff': ({ ctx, data: payload }) => setAi(ctx, { handoffTarget: payload.value }),
+  // Web search by the model's provider (lib/ai/web-search.js).
+  'settings.web-search-flag': ({ ctx, el }) => setAi(ctx, { webSearch: { enabled: !!el.checked } }),
+  'settings.web-search-uses': ({ ctx, el }) => {
+    const uses = Number(el.value);
+    return Number.isInteger(uses) && uses >= WEB_SEARCH_LIMITS.minUses && uses <= WEB_SEARCH_LIMITS.maxUses ? setAi(ctx, { webSearch: { maxUses: uses } }) : undefined;
+  },
 
   // Assistant permissions
   'settings.ai-permission': ({ ctx, data: payload }) => {

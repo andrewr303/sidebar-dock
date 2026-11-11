@@ -163,6 +163,26 @@ test('browser automation settings default to off and Ask, merge one level deep a
   assert.deepEqual((await getAiSettings()).browser.sites, { token: 'block' }, 'a refused write changes nothing');
 });
 
+test('web search is off by default, stays on the device and accepts only values already in range', async t => {
+  reset(t, { chrome: { permissions: { request: async () => true, contains: async () => true } } });
+  assert.deepEqual((await getAiSettings()).webSearch, { enabled: false, maxUses: 5 });
+  assert.deepEqual((await setAiSettings({ webSearch: { enabled: true } })).webSearch, { enabled: true, maxUses: 5 });
+  assert.deepEqual((await setAiSettings({ webSearch: { maxUses: 8 } })).webSearch, { enabled: true, maxUses: 8 }, 'one level deep merge keeps the switch');
+  for (const patch of [{ enabled: 'yes' }, { maxUses: 0 }, { maxUses: 50 }, { maxUses: 2.5 }, { extra: true }]) {
+    await assert.rejects(setAiSettings({ webSearch: patch }), error => error.code === 'bad_request' && /Web search must be on or off/.test(error.message), JSON.stringify(patch));
+  }
+  await assert.rejects(setAiSettings({ webSearch: true }), /Web search must be on or off/);
+  const exported = await exportAiConfig();
+  assert.ok(!('webSearch' in exported.settings), 'not in a backup');
+  localStorage.clear();
+  const result = await importAiConfig({ ...exported, settings: { ...exported.settings, webSearch: { enabled: true, maxUses: 10 } } });
+  assert.ok(!result.settingsAdded.includes('webSearch'));
+  assert.deepEqual((await getAiSettings()).webSearch, { enabled: false, maxUses: 5 }, 'a backup file cannot turn web search on');
+  // A stored value this build cannot use is read as a safe one.
+  localStorage.setItem(AI_STORE_KEY, JSON.stringify({ version: 2, connections: [], overlays: {}, modelCache: {}, settings: { webSearch: { enabled: 1, maxUses: 999 } } }));
+  assert.deepEqual((await getAiSettings()).webSearch, { enabled: false, maxUses: 10 });
+});
+
 test('a stored browser section a build cannot use is read as safe values', async t => {
   reset(t);
   localStorage.setItem(AI_STORE_KEY, JSON.stringify({ version: 2, connections: [], overlays: {}, modelCache: {},

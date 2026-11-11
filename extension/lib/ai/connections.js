@@ -12,6 +12,7 @@ import { aiError, authHeaders, providerFetch, readJsonBody } from './http.js';
 import { DEFAULT_PERMISSIONS, PERMISSION_CATEGORIES, PERMISSION_LEVELS, normalizePermissions } from './permissions.js';
 import { RESEARCH_DEFAULTS, normalizeResearchSettings } from './research/settings.js';
 import { BROWSER_DEFAULTS, isNormalBrowserSettings, normalizeBrowserSettings } from '../browser/settings.js';
+import { WEB_SEARCH_DEFAULTS, isNormalWebSearch, normalizeWebSearch } from './web-search.js';
 import * as integrationsModule from '../integrations.js';
 import * as anthropicTransport from './transports/anthropic.js';
 import * as responsesTransport from './transports/openai-responses.js';
@@ -40,11 +41,13 @@ export const DEFAULT_AI_SETTINGS = Object.freeze({
   research: RESEARCH_DEFAULTS,
   // Whether and how the assistant may work in browser tabs (lib/browser/settings.js): off until the user turns it on.
   browser: BROWSER_DEFAULTS,
+  // Whether the model's provider may search the web for an answer (lib/ai/web-search.js): off until the user turns it on.
+  webSearch: WEB_SEARCH_DEFAULTS,
 });
 // Settings that never leave this device: backups do not carry them and importAiConfig never restores them, so a crafted
 // file cannot turn on auto-apply, give the research agent the right to edit originals, raise its spending cap, or let
-// the assistant work in browser tabs or change pages without asking.
-const DEVICE_ONLY_SETTINGS = new Set(['assistantPermissions', 'research', 'browser']);
+// the assistant work in browser tabs or change pages without asking, or let the model's provider search the web.
+const DEVICE_ONLY_SETTINGS = new Set(['assistantPermissions', 'research', 'browser', 'webSearch']);
 
 const AGENT_IDS = { claude: 'agent:claude-code', codex: 'agent:codex' };
 const LEGACY_IDS = { 'cli:codex': 'agent:codex', 'cli:claude': 'agent:claude-code' };
@@ -276,6 +279,7 @@ function mergeSettings(stored = {}) {
   result.assistantPermissions = normalizePermissions(result.assistantPermissions);
   result.research = normalizeResearchSettings(result.research);
   result.browser = normalizeBrowserSettings(result.browser);
+  result.webSearch = normalizeWebSearch(result.webSearch);
   return result;
 }
 
@@ -307,6 +311,7 @@ function validateSettings(settings) {
   // Valid means already in the form lib/browser/settings.js gives: a rule for something that is not a site, an unknown
   // mode or a step count out of range is refused rather than silently changed.
   if (!isNormalBrowserSettings(settings.browser)) throw aiError('Browser automation settings are not valid: choose Ask or Auto, and Allow, Ask or Block for each site.', { code: 'bad_request' });
+  if (!isNormalWebSearch(settings.webSearch)) throw aiError(`Web search must be on or off, with 1 to 10 searches per answer.`, { code: 'bad_request' });
 }
 
 const CATEGORY_IDS = new Set(PERMISSION_CATEGORIES.map(category => category.id));

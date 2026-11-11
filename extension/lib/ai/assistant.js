@@ -15,6 +15,9 @@ import {
   elideStale, hardLimit, isContextOverflow, outputReserve, planCompaction, requestChars, shortenResults, summaryRequest, transcriptOf,
 } from './context.js';
 import { withRetry } from './retry.js';
+import { fitText } from './passages.js';
+import { mergeWebSources, normalizeWebSearch, webSearchKind } from './web-search.js';
+import { isStopWord, reciprocalRankFusion, tokenize } from './search.js';
 
 export const MAX_TOOL_STEPS = 12;
 const SCOPES = ['page', 'item', 'items', 'collection', 'library'];
@@ -46,8 +49,13 @@ export function scopeRecord(context = {}) {
     ...(context?.page ? { page: { url: text(context.page.url), title: text(context.page.title) } } : {}) };
 }
 
-/** A saved item as reference data, trimmed to `limit` characters of note/article text. */
-export function sourceRecord(item, library, limit = 8000) {
+/**
+ * A saved item as reference data, trimmed to `limit` characters of note/article text.
+ * question: with one, a note or an article that does not fit is given as its opening plus the passages that match the
+ * question (`notePassages`, `passages`: [{ at, text }], `at` being the character offset; lib/ai/passages.js), not just
+ * its first characters. chunks: texts the semantic index found for this item, kept as passages too.
+ */
+export function sourceRecord(item, library, limit = 8000, { question = '', chunks = [] } = {}) {
   const note = text(item.content);
   const article = text(item.articleContent);
   const description = text(item.excerpt).slice(0, 1000);
@@ -55,10 +63,47 @@ export function sourceRecord(item, library, limit = 8000) {
   const room = Math.max(500, limit - description.length - JSON.stringify(highlights).length);
   const noteRoom = article ? Math.min(note.length, Math.max(Math.floor(room * 0.6), room - article.length)) : room;
   const articleRoom = Math.max(0, room - Math.min(note.length, noteRoom));
+  const head = (value, budget) => ({ text: value.slice(0, budget), truncated: value.length > budget });
+  const fittedNote = question ? fitText(note, question, { budget: noteRoom }) : head(note, noteRoom);
+  // A chunk of the note is already there when the note is whole.
+  const found = (Array.isArray(chunks) ? chunks : []).filter(chunk => typeof chunk === 'string' && chunk && !(fittedNote.truncated === false && note.includes(chunk.slice(0, 80))));
+  const fittedArticle = question ? fitText(article, question, { budget: articleRoom, chunks: found }) : head(article, articleRoom);
   return { id: item.id, title: text(item.title), type: text(item.type), url: text(item.url), collection: collectionPath(library, text(item.collectionId)),
     tags: (item.tags || []).slice(0, 30), updatedAt: text(item.updatedAt), ...(item.archived ? { archived: true } : {}),
-    ...(description ? { description } : {}), ...(note ? { note: note.slice(0, noteRoom) } : {}), ...(article ? { article: article.slice(0, articleRoom) } : {}),
-    ...(highlights.length ? { highlights } : {}), ...(note.length > noteRoom || article.length > articleRoom ? { truncated: true } : {}) };
+    ...(description ? { description } : {}), ...(note ? { note: fittedNote.text } : {}), ...(fittedNote.passages ? { notePassages: fittedNote.passages } : {}),
+    ...(article ? { article: fittedArticle.text } : {}), ...(fittedArticle.passages ? { passages: fittedArticle.passages } : {}),
+    ...(highlights.length ? { highlights } : {}), ...(fittedNote.truncated || fittedArticle.truncated ? { truncated: true } : {}) };
+}
+
+// Words that point back at the conversation instead of naming a subject.
+const POINTERS = /\b(?:it|its|that|this|those|these|they|them|their|one|ones|same|above|former|latter|he|she|his|her)\b/i;
+const CONTINUES = /^(?:and|also|but|so|then|ok|okay|now|what about|how about|tell me more|more|go on|continue|expand|elaborate|why|how so|which one|the (?:first|second|third|last|other) one)\b/i;
+
+/**
+ * True when a question leans on the one before it ("and the second one?", "tell me more about that"): searching for
+ * its own words alone would look for "more" and "that".
+ */
+export function isFollowUp(question) {
+  const value = text(question).trim();
+  if (!value) return false;
+  const meaningful = tokenize(value).filter(token => !isStopWord(token));
+  if (meaningful.length <= 2) return true;
+  if (CONTINUES.test(value)) return meaningful.length <= 8;
+  // A longer sentence that says "them" usually means something it has just named itself.
+  return POINTERS.test(value) && meaningful.length <= 3;
+}
+
+/**
+ * The hits worth sending as automatic context. A ranking always has a tenth-best match, however poor; with tools the
+ * model can search again, so a tail far below the best match is left out. The first `keep` always stay.
+ */
+export function relevantHits(hits, { keep = 3 } = {}) {
+  const list = Array.isArray(hits) ? hits : [];
+  const best = key => Math.max(0, ...list.map(hit => (Number.isFinite(hit?.[key]) ? hit[key] : 0)));
+  const [lexical, semantic] = [best('lexicalScore'), best('semanticScore')];
+  // Rows without either score (another search implementation) are all kept.
+  if (!lexical && !semantic) return list;
+  return list.filter((hit, index) => index < keep || (lexical > 0 && (hit.lexicalScore || 0) >= lexical * 0.3) || (semantic > 0 && (hit.semanticScore || 0) >= semantic * 0.85));
 }
 
 /**
@@ -151,9 +196,13 @@ export function chatSourceRecord(item, library, { limit = 8000, stored = null, s
  * browser (optional): browser({ settings, vision, hint, onPrompt, onWithdrawn, emit, signal }) resolves to the turn's
  * browser tools (lib/ai/browser-tools.js) or null when browser automation is off or Chrome does not allow it; index.js
  * supplies it. retry (optional): options for lib/ai/retry.js (tests pass a wait that does not sleep).
+ * Web search by the model's provider is offered when the person turned it on (settings.webSearch) and the connection
+ * can do it (lib/ai/web-search.js); the pages it used are saved with the answer as message.webSources.
+ * detectWindow (optional): detectWindow({ provider, baseUrl, apiKey, model, signal, fresh }) resolves to the context
+ * window a local server runs the model with, or 0 (lib/ai/local-context.js); used when the model's listing states none.
  */
 export function createAssistant({ streamChat, resolveConnection, resolveChatTarget = null, modelInfo, getAiSettings, getLibrary, store, searchLibrary, conversations, dashboard = null,
-  threads = null, chats = null, external = [], browser = null, retry = {}, uid = uidDefault, now = () => new Date().toISOString(), maxSteps = MAX_TOOL_STEPS, contextChars = 120000 } = {}) {
+  threads = null, chats = null, external = [], browser = null, retry = {}, detectWindow = null, uid = uidDefault, now = () => new Date().toISOString(), maxSteps = MAX_TOOL_STEPS, contextChars = 120000 } = {}) {
   const dashboardNow = () => { try { return (typeof dashboard === 'function' ? dashboard() : dashboard) || null; } catch { return null; } };
   const chatsNow = () => { try { const value = typeof chats === 'function' ? chats() : chats; return value && typeof value.readLocal === 'function' ? value : null; } catch { return null; } };
   const threadsNow = async () => {
@@ -185,7 +234,8 @@ export function createAssistant({ streamChat, resolveConnection, resolveChatTarg
    * The reference data for one question. threads/chats: this turn's adapters (optional); decide(): the memoized thread
    * decision (optional; defaults to the prefilter); emit(event): status events.
    */
-  async function gatherContext({ question, context, library, signal, threads: tk = null, chats: local = null, decide = null, emit = () => {}, budget: budgetChars = contextChars }) {
+  async function gatherContext({ question, context, library, signal, threads: tk = null, chats: local = null, decide = null, emit = () => {}, budget: budgetChars = contextChars,
+    previousQuestion = '', trim = false }) {
     const scope = SCOPES.includes(context?.scope) ? context.scope : 'library';
     const items = Array.isArray(library?.items) ? library.items : [];
     const index = new Map(items.map(item => [item.id, item]));
@@ -193,7 +243,7 @@ export function createAssistant({ streamChat, resolveConnection, resolveChatTarg
     const seen = new Set();
     let left = budgetChars;
     const push = (id, record) => { left -= JSON.stringify(record).length; seen.add(id); sources.push(record); };
-    const add = async (item, limit, extra = {}) => {
+    const add = async (item, limit, extra = {}, hit = null) => {
       if (!item || seen.has(item.id) || left < 800 || hiddenChat(item)) return;
       if (item.type === 'chat') {
         const stored = local ? await local.readLocal(item.id).catch(() => null) : null;
@@ -202,7 +252,20 @@ export function createAssistant({ streamChat, resolveConnection, resolveChatTarg
         push(item.id, { ...chatSourceRecord(item, library, { limit: Math.min(limit, left), stored, summary, question }), threadKey: text(item.chat?.threadKey), ...extra });
         return;
       }
-      push(item.id, { ...sourceRecord(item, library, Math.min(limit, left)), ...extra });
+      // A long note or article arrives as its opening and the passages that match the question, not only its start.
+      push(item.id, { ...sourceRecord(item, library, Math.min(limit, left), { question, chunks: hit?.chunks }), ...extra });
+    };
+    // The library search for this question, read as a question (a "#42" in it is not a tag filter). A question that
+    // leans on the one before it is searched together with that one, and the two rankings are fused.
+    const retrieve = async (limit, filter = {}) => {
+      if (!searchLibrary) return [];
+      const earlier = text(previousQuestion).trim();
+      const queries = [question, ...(earlier && isFollowUp(question) ? [`${earlier.slice(0, 600)} ${question}`] : [])];
+      const lists = await Promise.all(queries.map(query => searchLibrary(query, { limit, mode: 'hybrid', filter, operators: false, chunks: 2, signal })
+        .catch(error => { if (isAbort(error, signal)) throw error; return []; })));
+      if (lists.length === 1) return lists[0];
+      const rows = new Map(lists.flat().map(row => [row.id, row]));
+      return reciprocalRankFusion(lists).slice(0, limit).map(row => rows.get(row.id));
     };
     const live = item => item && !item.deletedAt;
     const payload = { scope };
@@ -250,8 +313,11 @@ export function createAssistant({ streamChat, resolveConnection, resolveChatTarg
       const started = prefilterThreads(question) === 'yes' ? automatic() : null;
       const body = text(context.page.text);
       const room = Math.min(60000, Math.floor(left / 2));
-      payload.page = { id: 'page:current', title: text(context.page.title), url: text(context.page.url), text: body.slice(0, room), ...(body.length > room ? { truncated: true } : {}) };
-      left -= payload.page.text.length;
+      // A page longer than its room is its opening and the passages that match the question.
+      const fitted = fitText(body, question, { budget: room });
+      payload.page = { id: 'page:current', title: text(context.page.title), url: text(context.page.url), text: fitted.text, ...(fitted.passages ? { passages: fitted.passages } : {}),
+        ...(fitted.truncated ? { truncated: true } : {}) };
+      left -= payload.page.text.length + (fitted.passages || []).reduce((sum, passage) => sum + passage.text.length, 0);
       const key = safeCanonical(context.page.url);
       if (key) {
         for (const item of items.filter(entry => live(entry) && entry.type !== 'note' && safeCanonical(entry.url) === key)) await add(item, 12000, { savedPage: true });
@@ -286,8 +352,8 @@ export function createAssistant({ streamChat, resolveConnection, resolveChatTarg
       left -= JSON.stringify(payload.collection).length;
       const chatKeys = members.filter(item => item.type === 'chat' && text(item.chat?.threadKey)).map(item => item.chat.threadKey);
       const scoped = scopedThreads(chatKeys);
-      const hits = searchLibrary ? await searchLibrary(question, { limit: 8, mode: 'hybrid', filter: { collectionId }, signal }).catch(error => { if (isAbort(error, signal)) throw error; return []; }) : [];
-      for (const hit of hits) await add(index.get(hit.id), 8000, hit.snippet ? { match: hit.snippet } : {});
+      const hits = await retrieve(8, { collectionId });
+      for (const hit of hits) await add(index.get(hit.id), 8000, hit.snippet ? { match: hit.snippet } : {}, hit);
       if (!hits.length) for (const item of members.slice(0, 8)) await add(item, 4000);
       const own = await scoped;
       if (own?.threads?.length) {
@@ -297,8 +363,16 @@ export function createAssistant({ streamChat, resolveConnection, resolveChatTarg
       }
     } else {
       const started = automatic();
-      const hits = searchLibrary ? await searchLibrary(question, { limit: 10, mode: 'hybrid', signal }).catch(error => { if (isAbort(error, signal)) throw error; return []; }) : [];
-      for (const hit of hits) await add(index.get(hit.id), 8000, hit.snippet ? { match: hit.snippet } : {});
+      const found = await retrieve(10);
+      // The same address saved twice says the same thing twice; the person's notes on it are their own text and stay.
+      const addresses = new Set();
+      for (const hit of trim ? relevantHits(found) : found) {
+        const item = index.get(hit.id);
+        const address = item && item.type !== 'note' && item.type !== 'chat' ? safeCanonical(item.url) : '';
+        if (address && addresses.has(address)) continue;
+        if (address) addresses.add(address);
+        await add(item, 8000, hit.snippet ? { match: hit.snippet } : {}, hit);
+      }
       await settleAutomatic(started);
     }
     if (threadHits?.length) {
@@ -364,6 +438,17 @@ export function createAssistant({ streamChat, resolveConnection, resolveChatTarg
     const usage = {};
     let session = null;
     let browserTools = null;
+    // The pages a provider-side web search used for this answer.
+    let webSources = [];
+    // Once the provider searched, the turn holds text from the web: its library changes always ask (the session's
+    // untrusted latch, lib/ai/tools.js) and its answer is shown without remote images (message.usedThreads).
+    // The view is told once, at that moment, so the answer it is still writing stops loading remote images too.
+    const webSeen = () => {
+      session?.markUntrusted?.();
+      if (message.usedThreads === true) return;
+      message.usedThreads = true;
+      emit({ type: 'web_seen' });
+    };
     let gathered = { sources: [] };
     let library = null;
     try {
@@ -383,8 +468,14 @@ export function createAssistant({ streamChat, resolveConnection, resolveChatTarg
       // What the model can hold. A window its listing states is exact: budgets follow it and a request past it is not
       // sent. A window Still does not know is a guess by kind of provider (a local server usually runs a small one), used
       // only to size the reference data.
-      const window = contextWindow(info, provider);
-      const windowKnown = Number.isFinite(info?.contextWindow) && info.contextWindow > 0;
+      // A local server decides the window when it loads the model, so it is asked (lib/ai/local-context.js).
+      const listedWindow = Number.isFinite(info?.contextWindow) && info.contextWindow > 0;
+      const askServer = !listedWindow && via === 'direct' && typeof detectWindow === 'function' && !!useModel;
+      const serverWindow = fresh => Promise.resolve().then(() => detectWindow({ provider, baseUrl: target?.baseUrl, apiKey: target?.apiKey, model: useModel, signal, fresh }))
+        .then(value => (Number.isInteger(value) && value > 0 ? value : 0), error => { if (isAbort(error, signal)) throw error; return 0; });
+      const detectedWindow = askServer ? await serverWindow(false) : 0;
+      const window = detectedWindow || contextWindow(info, provider);
+      const windowKnown = listedWindow || detectedWindow > 0;
       const reserve = outputReserve(info, provider, window);
       // The characters one request may hold in this window, by the same estimate the loop uses.
       const roomChars = Math.floor((hardLimit(window, reserve) * CHARS_PER_TOKEN) / countFactor(provider));
@@ -424,7 +515,9 @@ export function createAssistant({ streamChat, resolveConnection, resolveChatTarg
       // Reference data takes at most half of what the window has left after the instructions and tools, and never more
       // than the fixed budget.
       const budget = Math.max(4000, Math.min(contextChars, Math.floor((roomChars - overheadChars(!!browserTools)) / 2)));
-      gathered = await gatherContext({ question, context, library, signal, threads: tk, chats: local, decide, emit, budget });
+      // The question before this one, for a follow-up that leans on it ("and the second one?").
+      const previousQuestion = text(previous.findLast(entry => entry?.role === 'user')?.text);
+      gathered = await gatherContext({ question, context, library, signal, threads: tk, chats: local, decide, emit, budget, previousQuestion, trim: toolMode });
       const threadSources = (gathered.sources || []).filter(source => source.kind === 'ai_thread' || source.type === 'chat');
       const threadContext = threadSources.some(source => source.untrusted);
       if (threadContext) {
@@ -451,9 +544,13 @@ export function createAssistant({ streamChat, resolveConnection, resolveChatTarg
       // The turn's own request message: nothing at or before it is ever folded away.
       const turnStart = messages.length - 1;
       const paperclip = toolMode && session.definitions().some(definition => definition.name.startsWith('paperclip_'));
+      // Web search by the model's provider (lib/ai/web-search.js): only when the person turned it on, and only on a
+      // connection that goes straight to a provider that has it.
+      const searchSettings = normalizeWebSearch(settings.webSearch);
+      let webSearch = toolMode && searchSettings.enabled && webSearchKind(target) ? { maxUses: searchSettings.maxUses } : null;
       const promptOptions = { threads: threadTools, threadImport: !!tk, threadContext, paperclip, browser: !!browserTools,
         ...(browserTools ? { browserMode: settings.browser?.mode === 'auto' ? 'auto' : 'ask', vision: browserTools.definitions().some(definition => definition.name === 'browser_screenshot') } : {}) };
-      let system = assistantSystemPrompt({ tools: toolMode, today, permissions, ...promptOptions });
+      let system = assistantSystemPrompt({ tools: toolMode, today, permissions, ...promptOptions, webSearch: !!webSearch });
       // A request that works in the browser may take many small steps; a library request keeps the short budget.
       const stepBudget = browserTools ? Math.max(maxSteps, browserSteps(settings.browser)) : maxSteps;
       let stepsLeft = stepBudget;
@@ -467,7 +564,9 @@ export function createAssistant({ streamChat, resolveConnection, resolveChatTarg
       let limitWindow = windowKnown ? window : Math.max(window, DEFAULT_WINDOW.cloud);
       let cooldown = 0;
       let overflowStage = 0;
-      let overflowSeen = false;
+      // The window was learnt during the turn: from a refusal for size, or from a local server once it loaded the model.
+      let windowLearnt = false;
+      let askedAgain = false;
       let notes = '';
       let folded = [];
       let notesPair = 0;
@@ -513,7 +612,7 @@ export function createAssistant({ streamChat, resolveConnection, resolveChatTarg
           if (shortened.saved) { messages = shortened.messages; tokens = measure(messages); }
         }
         // Only a window that is known, or was learnt from a refusal, is a reason not to send.
-        if (tokens > limit && (windowKnown || overflowSeen)) throw Object.assign(new Error(CONTEXT_LIMIT), { code: 'context_limit' });
+        if (tokens > limit && (windowKnown || windowLearnt)) throw Object.assign(new Error(CONTEXT_LIMIT), { code: 'context_limit' });
       };
 
       for (let step = 0; ; step++) {
@@ -542,19 +641,42 @@ export function createAssistant({ streamChat, resolveConnection, resolveChatTarg
             emit({ type: 'thinking', delta });
           } else if (event?.type === 'tool_call') {
             streamed = true;
+          } else if (event?.type === 'web_search') {
+            streamed = true;
+            // Text from the web may reach the model from here on, so the latch closes before it writes another word:
+            // this turn's library changes ask, and its answer loads no remote images, even if the stream breaks off.
+            webSeen();
+            // "A search started" carries nothing to show; the query follows when the provider gives it.
+            if (event.started) { emit({ type: 'status', label: 'Searching the web' }); return; }
+            // The provider ran a search: it shows as a step, like a tool Still ran itself.
+            const query = text(event.query).replace(/\s+/g, ' ').trim().slice(0, 200);
+            const summary = event.error ? 'The web search did not work' : query ? `Searched the web for “${query}”` : 'Searched the web';
+            message.tools.push({ name: 'web_search', summary, ...(event.error ? { isError: true } : {}) });
+            emit({ type: 'tool', name: 'web_search', summary, isError: !!event.error, usedThreads: true });
+            emit({ type: 'status', label: 'Searching the web' });
           }
         };
         let result;
         const sentChars = requestChars({ system, tools: toolsNow(), messages });
         try {
           // A busy or briefly unreachable provider is tried again, as long as the model has said nothing yet.
-          result = await withRetry(() => streamChat({ connectionId: useConnection, model: useModel, system, messages, tools: toolsNow(), effort: useEffort, signal, onEvent: onStepEvent }),
+          result = await withRetry(() => streamChat({ connectionId: useConnection, model: useModel, system, messages, tools: toolsNow(), effort: useEffort, signal, onEvent: onStepEvent,
+            ...(webSearch ? { webSearch } : {}) }),
             { ...retry, signal, started: () => streamed,
               onRetry: ({ delayMs }) => emit({ type: 'status', label: `The model is busy. Trying again in ${Math.max(1, Math.round(delayMs / 1000))} s` }) });
         } catch (error) {
+          // A model that does not take the provider's web search refuses the whole request: carry on without searching.
+          if (webSearch && !streamed && !isAbort(error, signal) && !isContextOverflow(error) && error?.status === 400 && /web[_ ]?search/i.test(`${error?.message || ''} ${error?.detail || ''}`)) {
+            webSearch = null;
+            system = assistantSystemPrompt({ tools: toolMode, today, permissions, ...promptOptions, webSearch: false });
+            emit({ type: 'status', label: 'This model cannot search the web, so it will answer without searching.' });
+            step--;
+            continue;
+          }
           // Some local or custom models reject tool definitions: answer once without tools instead of failing.
           if (step === 0 && toolMode && !fullText && !isAbort(error, signal) && !isContextOverflow(error) && /\btools?\b|function/i.test(error?.message || '')) {
             toolMode = false;
+            webSearch = null;
             system = assistantSystemPrompt({ tools: false, today, ...promptOptions, browser: false });
             emit({ type: 'status', label: 'This model cannot use library tools, so it will answer without making changes.' });
             step = -1;
@@ -563,7 +685,7 @@ export function createAssistant({ streamChat, resolveConnection, resolveChatTarg
           // The provider refused the request for its size: the window is smaller than Still thought. Fold and try again.
           if (!streamed && !isAbort(error, signal) && isContextOverflow(error) && overflowStage < 2) {
             limitWindow = Math.min(limitWindow, Math.floor(sizer.estimate(sentChars) * 0.9));
-            overflowSeen = true;
+            windowLearnt = true;
             const before = messages;
             if (overflowStage === 0) await compact();
             if (messages === before) { const shortened = shortenResults(messages, turnStart); if (shortened.saved) messages = shortened.messages; }
@@ -579,6 +701,17 @@ export function createAssistant({ streamChat, resolveConnection, resolveChatTarg
         for (const [key, value] of Object.entries(result?.usage || {})) if (Number.isFinite(value)) usage[key] = (usage[key] || 0) + value;
         // The provider's own count of this request anchors the next estimate.
         sizer.report(reportedInput(result?.usage, provider), sentChars);
+        // The provider searched: text from the web is in the answer's context now, cited or not. The pages it used
+        // are kept with the answer.
+        const usedPages = Array.isArray(result?.webSources) && result.webSources.length > 0;
+        if (result?.webSearched || usedPages) webSeen();
+        if (usedPages) webSources = mergeWebSources(webSources, result.webSources);
+        // A local model that was not loaded when the turn began is loaded now: its window is known for the next steps.
+        if (askServer && !windowKnown && !askedAgain) {
+          askedAgain = true;
+          const loadedWindow = await serverWindow(true);
+          if (loadedWindow) { limitWindow = Math.min(limitWindow, loadedWindow); windowLearnt = true; }
+        }
         if (result?.stopReason) message.stopReason = result.stopReason;
         const calls = (Array.isArray(result?.toolCalls) ? result.toolCalls : []).filter(call => call && typeof call.name === 'string');
         // A turn the provider paused (its own tools ran long) continues from what it has.
@@ -638,6 +771,11 @@ export function createAssistant({ streamChat, resolveConnection, resolveChatTarg
         emit({ type: 'browser', activity, unverified });
       }
       await browserTools.close().catch(() => undefined);
+    }
+    // The web pages the answer used stay with it, so the person can open them.
+    if (webSources.length) {
+      message.webSources = webSources;
+      emit({ type: 'web_sources', items: webSources });
     }
 
     const finalLibrary = await Promise.resolve(getLibrary()).catch(() => library);

@@ -12,7 +12,7 @@ export const CONVERSATIONS_VERSION = 2;
 export const CONVERSATION_LIMITS = Object.freeze({ conversations: 300, messages: 400, messageChars: 200000, bytes: 4 * 1024 * 1024 });
 const ROLES = ['user', 'assistant'];
 const SCOPES = ['page', 'item', 'items', 'collection', 'library'];
-const MESSAGE_KEYS = ['id', 'role', 'text', 'thinking', 'citations', 'tools', 'proposals', 'error', 'createdAt', 'model', 'connectionId', 'stopReason', 'thinkingMs', 'usage', 'context', 'browser'];
+const MESSAGE_KEYS = ['id', 'role', 'text', 'thinking', 'citations', 'tools', 'proposals', 'error', 'createdAt', 'model', 'connectionId', 'stopReason', 'thinkingMs', 'usage', 'context', 'browser', 'webSources'];
 const CONVERSATION_KEYS = ['id', 'title', 'createdAt', 'updatedAt', 'connectionId', 'model', 'scope', 'messages'];
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 // Research conversations (kind 'research', lib/ai/research/run.js) keep a run record on the conversation and progress on
@@ -137,6 +137,10 @@ export function normalizeMessage(input = {}, now = new Date().toISOString()) {
   if (!message.context) delete message.context;
   const browser = browserRecord(input.browser);
   if (browser) message.browser = browser;
+  // The web pages an answer used (lib/ai/web-search.js): web addresses and titles only.
+  const webSources = (Array.isArray(input.webSources) ? input.webSources : []).filter(source => isObject(source) && /^https?:\/\//i.test(text(source.url))).slice(0, 40)
+    .map(source => ({ url: text(source.url, 2048), title: text(source.title, 300) }));
+  if (webSources.length) message.webSources = webSources;
   if ('research' in message) {
     if (!isObject(message.research)) delete message.research;
     else if (Array.isArray(message.research.steps) && message.research.steps.length > RESEARCH_RECORD_LIMITS.steps) message.research.steps = message.research.steps.slice(-RESEARCH_RECORD_LIMITS.steps);

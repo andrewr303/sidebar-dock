@@ -33,7 +33,7 @@ const seed = () => ({ schemaVersion: 1, collections: [], items: [{ id: 'kyoto', 
  * The assistant over a scripted model and a scripted layer. model(request, n) answers the n-th model request;
  * layerScript(tool, args, { layer, session }) answers each layer call. The browser stack is the real client and host.
  */
-async function harness({ model, layerScript = null, browser = { enabled: true, mode: 'ask' }, permissions, modelInfo, provider = {}, via = 'direct', maxSteps, retry, granted, images = true } = {}) {
+async function harness({ model, layerScript = null, browser = { enabled: true, mode: 'ask' }, permissions, modelInfo, provider = {}, via = 'direct', maxSteps, retry, granted, images = true, detectWindow } = {}) {
   const store = memoryStore(seed());
   await store.ready;
   const getLibrary = () => store.loadLibrary();
@@ -65,7 +65,7 @@ async function harness({ model, layerScript = null, browser = { enabled: true, m
   let counter = 0;
   const assistant = createAssistant({
     store, getLibrary, searchLibrary: search.searchLibrary, conversations, uid: prefix => `${prefix}_${++counter}`, now: () => '2026-11-11T09:30:00.000Z', browser: browserFor,
-    ...(maxSteps ? { maxSteps } : {}), ...(modelInfo ? { modelInfo } : {}), retry: retry || { wait: async () => {} },
+    ...(maxSteps ? { maxSteps } : {}), ...(modelInfo ? { modelInfo } : {}), ...(detectWindow ? { detectWindow } : {}), retry: retry || { wait: async () => {} },
     getAiSettings: async () => ({ chat: { connectionId: 'conn', model: 'model-x', effort: 'medium' }, browser, ...(permissions ? { assistantPermissions: permissions } : {}) }),
     resolveConnection: async id => ({ connection: { id, label: 'Provider', defaultModel: 'model-x' }, provider: { id: 'p', name: 'Provider', transport: 'openai-chat', supports: { tools: true, images }, ...provider }, via }),
     streamChat: async request => { calls.push({ ...request, messages: structuredClone(request.messages), onEvent: undefined, signal: undefined }); return model(request, calls.length); },
@@ -387,6 +387,57 @@ test('a known window that the request alone exceeds is refused before it is sent
   const { message } = await run(context.assistant);
   assert.equal(message.error, CONTEXT_LIMIT);
   assert.equal(context.calls.length, 0);
+});
+
+test('a local server is asked which window it loaded the model with, and the request is sized for it', async () => {
+  const asked = [];
+  const context = await harness({ provider: { id: 'ollama', local: true, transport: 'ollama' },
+    detectWindow: async options => { asked.push({ provider: options.provider.id, model: options.model, fresh: options.fresh }); return 8192; },
+    model: async ({ onEvent, tools, messages }) => {
+      assert.ok(!tools.some(tool => tool.name.startsWith('browser_')), 'an 8K window has no room for browser work');
+      assert.ok(JSON.stringify(messages).length < 12_000, 'the reference data is small');
+      return say(onEvent, 'Answer.');
+    } });
+  await context.store.saveItem({ id: 'long', type: 'article', title: 'Shop page price history', url: 'https://example.com/long', articleContent: 'price '.repeat(40_000) });
+  const { message, events } = await run(context.assistant, { context: { scope: 'item', ids: ['long'] } });
+  assert.equal(message.error, '');
+  assert.deepEqual(asked, [{ provider: 'ollama', model: 'model-x', fresh: false }], 'asked once: the window is known from the start');
+  assert.ok(events.some(event => event.type === 'status' && /too small to work in the browser/.test(event.label)));
+});
+
+test('a local model that loads during the turn has its window learnt after the first answer', async () => {
+  const asked = [];
+  let loaded = 0;
+  let last = null;
+  const context = await harness({ provider: { id: 'ollama', local: true, transport: 'ollama' },
+    detectWindow: async options => { asked.push(options.fresh); return loaded; },
+    layerScript: (tool, args, { layer }) => { const tab = (layer.revs = (layer.revs || 10) + 1); return ok(bigPage(`page-${tab}`), { page: page(tab, 1, 'full') }); },
+    model: async ({ onEvent, system, messages }) => {
+      if (system === SUMMARY_SYSTEM) return { text: '## Progress\nRead pages.', toolCalls: [], stopReason: 'end_turn' };
+      // The server loads the model for the first request; from then on it reports the window.
+      loaded = 20_000;
+      const step = context.calls.filter(call => call.system !== SUMMARY_SYSTEM).length;
+      if (step <= 14) return callTool(`b${step}`, 'browser_snapshot', {});
+      last = messages;
+      return say(onEvent, 'Done.');
+    } });
+  const { message, events } = await run(context.assistant);
+  assert.equal(message.error, '');
+  assert.deepEqual(asked, [false, true], 'asked at the start, and once more after the first answer');
+  assert.ok(events.some(event => event.type === 'status' && /make room|summed up|shortened/.test(event.label)), 'later steps are managed for the learnt window');
+  const results = last.flatMap(entry => (Array.isArray(entry.content) ? entry.content : [])).filter(part => part.type === 'tool_result');
+  assert.ok(results.length < 14, `${results.length} of 14 results remain`);
+});
+
+test('a provider that lists the window is not asked, and a detection that fails changes nothing', async () => {
+  let asked = 0;
+  const listed = await harness({ modelInfo: async () => ({ contextWindow: 200_000, capabilities: { tools: true } }), detectWindow: async () => { asked++; return 4096; },
+    model: async ({ onEvent, tools }) => { assert.ok(tools.some(tool => tool.name === 'browser_snapshot')); return say(onEvent, 'Ok.'); } });
+  assert.equal((await run(listed.assistant)).message.error, '');
+  assert.equal(asked, 0);
+  const failing = await harness({ detectWindow: async () => { throw new Error('connection refused'); },
+    model: async ({ onEvent, tools }) => { assert.ok(tools.some(tool => tool.name === 'browser_snapshot')); return say(onEvent, 'Ok.'); } });
+  assert.equal((await run(failing.assistant)).message.error, '');
 });
 
 // ---------------------------------------------------------------------------------------------------------- retry

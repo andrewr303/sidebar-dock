@@ -303,6 +303,54 @@ export function buildScenarios({ origin, port }) {
     },
 
     {
+      // Looking something up with the browser, for a model whose provider has no search of its own: a results page in
+      // a new tab, the page it points to, and an answer that links what it read. Reading and moving ask nothing.
+      name: 'assistant-lookup',
+      kind: 'assistant',
+      model: 'e2e-lookup',
+      input: 'Look up how to descale a kettle.',
+      settings: { browser: browserOn() },
+      script(body, index) {
+        if (index === 0) {
+          assert.match(systemOf(body), /To look something up, open a search engine’s results page in a new tab/);
+          assert.ok(!/web_search/.test(systemOf(body)), 'no search tool of the provider is promised to a model that has none');
+          return { toolCalls: [{ name: 'browser_tabs', arguments: { action: 'open', url: `${page('results.html')}?q=descale+kettle`, intent: 'search the web' } }] };
+        }
+        if (index === 1) return { toolCalls: [{ name: 'browser_read', arguments: {} }] };
+        if (index === 2) {
+          // The results page gives each result's address, so the model can go there without clicking.
+          const address = /\]\((http:\/\/[^)\s]+kettle-guide\.html)\)/.exec(lastTool(body))?.[1];
+          assert.ok(address, `the results name the guide's address: ${lastTool(body).slice(0, 700)}`);
+          return { toolCalls: [{ name: 'browser_navigate', arguments: { url: address, intent: 'open the guide' } }] };
+        }
+        if (index === 3) return { toolCalls: [{ name: 'browser_read', arguments: {} }] };
+        const read = lastTool(body);
+        return { text: /white vinegar/.test(read) && /30 minutes/.test(read)
+          ? `Boil equal parts water and white vinegar, leave it for 30 minutes, then boil fresh water twice ([How to descale a kettle](${page('kettle-guide.html')})).`
+          : 'The guide could not be read.' };
+      },
+      check(result, { server }) {
+        assert.equal(result.message.error, '', result.message.error);
+        assert.equal(result.message.text, `Boil equal parts water and white vinegar, leave it for 30 minutes, then boil fresh water twice ([How to descale a kettle](${page('kettle-guide.html')})).`);
+        assert.deepEqual(result.message.tools.map(tool => tool.name), ['browser_tabs', 'browser_read', 'browser_navigate', 'browser_read']);
+        assert.equal(result.prompts.length, 0, 'reading and moving between pages ask nothing');
+        assert.equal(result.proposals.length, 0);
+        assert.equal(result.message.usedThreads, true, 'the answer is built on page text, so it loads no remote images');
+        assert.equal(result.message.browser.unverified, undefined);
+        const bodies = callsOf(server, 'e2e-lookup');
+        assert.equal(bodies.length, 5);
+        const results = lastTool(bodies[2]);
+        assertBoundaries(results);
+        assert.match(results, /How to descale a kettle/);
+        const guide = lastTool(bodies[4]);
+        assertBoundaries(guide);
+        assert.match(guide, /Bring it to the boil, switch it off and leave it for 30 minutes/);
+        // Still's state block follows the page the model moved to, in the tab it opened.
+        assert.match(bodies[4].messages.at(-1).content, /^<browser-state>[\s\S]*«How to descale a kettle» «http:\/\/127\.0\.0\.1:\d+\/pages\/kettle-guide\.html»/);
+      },
+    },
+
+    {
       // A page that tries to give orders. The scripted model obeys it, as a model that was fooled would; what is checked
       // is what holds anyway: the page's text stays marked as data, and the change it asked for stops at a card even
       // though this user lets deletions apply without review.

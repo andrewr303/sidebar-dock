@@ -18,6 +18,7 @@ import { allowedCategories } from '../lib/ai/permissions.js';
 import { aiState, assistantUrl } from './ai-state.js';
 import { browserLine, renderBrowserCard, renderBrowserModeButton, renderBrowserModeMenu, renderBrowserNotice, renderUnverified } from './ai-browser.js';
 import { BROWSER_MODES, BROWSER_PERMISSIONS, withSiteRule } from '../lib/browser/settings.js';
+import { mergeWebSources, webSearchKind } from '../lib/ai/web-search.js';
 // The research view, not research.js: research.js (the research actions) imports this module.
 import {
   isResearchConversation, isResearchRunning, researchState, requestResearchAccess, handleResearchError, renderResearchBar, renderResearchSteps,
@@ -726,6 +727,18 @@ function onEvent(ctx, run, event) {
       m.browser = { activity: Array.isArray(event.activity) ? event.activity : [], ...(Array.isArray(event.unverified) && event.unverified.length ? { unverified: event.unverified } : {}) };
       render = true;
       break;
+    case 'web_seen':
+      // The provider started a web search: text from the web may be in the answer from here on, so the part still
+      // being written is shown without remote images, like the finished answer.
+      m.usedThreads = true;
+      render = true;
+      break;
+    case 'web_sources':
+      // The web pages a provider-side search used for this answer (lib/ai/web-search.js).
+      m.webSources = mergeWebSources(event.items);
+      m.usedThreads = true;
+      render = true;
+      break;
     case 'browser_permission':
       // Browser automation is on, but Chrome has not given Still the tab permissions: the composer offers to ask.
       st(ctx).browserNotice = { permissions: (Array.isArray(event.permissions) ? event.permissions : []).filter(name => BROWSER_PERMISSIONS.includes(name)) };
@@ -1281,13 +1294,16 @@ function renderDock(ctx, resolved) {
 }
 
 function footnote(ctx) {
-  const t = st(ctx).target;
+  const s = st(ctx);
+  const t = s.target;
   if (t === null) return 'Connect a model to ask here. Another app opens your question in a new tab.';
   if (!t) return 'Retrieved items are included as context.';
   const model = t.modelLabel || t.model;
   if (t.via === 'agent' || t.via === 'bridge') return `Sent to ${t.label || t.providerName} through the local bridge${model ? ` · ${model}` : ''}. Retrieved items are included as context.`;
   if (t.local) return `Runs on this computer with ${t.providerName}${model ? ` · ${model}` : ''}. Retrieved items are included as context.`;
-  return `Sent to ${t.providerName}${model ? ` · ${model}` : ''}. Retrieved items are included as context.`;
+  // Web search is the person's own switch (Settings > AI models); it only does anything on a connection that has it.
+  const web = s.settings?.webSearch?.enabled === true && t.via === 'direct' && webSearchKind({ provider: { id: t.providerId }, baseUrl: t.baseUrl }) ? ' It can search the web.' : '';
+  return `Sent to ${t.providerName}${model ? ` · ${model}` : ''}. Retrieved items are included as context.${web}`;
 }
 
 // Shown only while browser automation is on (Settings > Browser automation) and the chosen model can use tools.
@@ -1457,6 +1473,7 @@ function renderAnswer(ctx, view, message, { last }) {
     ${blocks}
     ${(message.browserCards || []).map(card => renderBrowserCard(card))}
     ${live ? '' : renderUnverified(message.browser?.unverified)}
+    ${live ? '' : renderWebSources(ctx, message)}
     ${(run?.notes || []).map(note => html`<p class="ai-note">${icon('info', { size: 14 })}<span>${note}</span></p>`)}
     ${showStatus ? html`<p class="ai-status"><span class="ai-shimmer">${statusLabel(message, run)}</span></p>` : ''}
     ${renderError(ctx, message, { last })}
@@ -1548,6 +1565,25 @@ function renderTools(ctx, message) {
     })}
     ${tools.length > TOOL_ROWS ? html`<button type="button" class="ai-tool-more" data-action="ai.toggle" data-open="tools:${message.id}" aria-expanded="${all ? 'true' : 'false'}">
       ${all ? 'Show fewer steps' : `${plural(tools.length - TOOL_ROWS, 'more step')}`}</button>` : ''}
+  </div>`;
+}
+
+/**
+ * The web pages an answer used, as links that open in a new tab. Addresses and titles come from the provider's search:
+ * they are shown as text, and only web addresses are linked (mergeWebSources drops the rest).
+ */
+function renderWebSources(ctx, message) {
+  const sources = mergeWebSources(message.webSources);
+  if (!sources.length) return '';
+  const key = `web:${message.id}`;
+  const all = st(ctx).open.has(key);
+  const shown = all ? sources : sources.slice(0, 4);
+  return html`<div class="ai-web-sources" data-key="${key}">
+    <p class="ai-web-sources-title">${icon('globe', { size: 14 })}<span>From the web</span></p>
+    <ul class="ai-web-sources-list" role="list">${shown.map(source => html`<li><a class="ai-web-source" href="${source.url}" target="_blank" rel="noopener noreferrer">
+      ${siteIcon(source.url, { size: 16 })}<span class="ai-source-title">${source.title}</span><span class="ai-source-meta">${domainOf(source.url)}</span></a></li>`)}</ul>
+    ${sources.length > 4 ? html`<button type="button" class="ai-tool-more" data-action="ai.toggle" data-open="${key}" aria-expanded="${all ? 'true' : 'false'}">
+      ${all ? 'Show fewer' : `${plural(sources.length - 4, 'more source')}`}</button>` : ''}
   </div>`;
 }
 
@@ -1898,6 +1934,8 @@ function renderReceipt(ctx, proposal, status) {
 
 /** A proposal as the transcript shows it: the card while it waits for a decision, the receipt after. */
 export const renderProposalCard = (ctx, proposal) => renderProposal(ctx, proposal);
+/** The web pages an answer used, as the transcript lists them under it. */
+export const renderWebSourceList = (ctx, message) => renderWebSources(ctx, message);
 
 // ------------------------------------------------------------------------------------------------ popovers
 

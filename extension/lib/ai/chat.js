@@ -6,6 +6,7 @@ import { aiError } from './http.js';
 import { redactError } from './secrets.js';
 import { abortError } from './stream.js';
 import * as bridgeTransport from './transports/bridge.js';
+import { normalizeWebSearch, webSearchKind } from './web-search.js';
 
 const ROLES = new Set(['user', 'assistant']);
 const PART_TYPES = new Set(['text', 'image', 'document', 'tool_use', 'tool_result']);
@@ -69,7 +70,13 @@ function finalizeError(caught, { text, thinking, secrets, signal }) {
   return error;
 }
 
-export function streamChat({ connectionId, model, system, messages, tools, effort, maxTokens, signal, onEvent } = {}) {
+/**
+ * webSearch (optional): { maxUses } lets the provider search the web for this request, where the connection is one of
+ * the providers that can (lib/ai/web-search.js); elsewhere it is ignored. The result then carries webSearched (the
+ * provider ran a search, so text from the web was in the model's context) and webSources (the pages it used), and
+ * `web_search` events say that a search started ({ started: true }) and what was searched for ({ query }).
+ */
+export function streamChat({ connectionId, model, system, messages, tools, effort, maxTokens, webSearch = null, signal, onEvent } = {}) {
   const emit = event => {
     if (typeof onEvent !== 'function') return;
     try { onEvent(event); } catch (error) { console.error(error); }
@@ -106,12 +113,15 @@ export function streamChat({ connectionId, model, system, messages, tools, effor
       const result = await transport.stream({
         ...resolved, model: chosen, modelInfo: info, system: systemText(system), messages: list, tools: toolList,
         effort: typeof effort === 'string' && effort ? effort : usesDefault ? settings.chat.effort : undefined, maxTokens: Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : undefined,
+        ...(webSearch && via === 'direct' && webSearchKind(resolved) ? { webSearch: { maxUses: normalizeWebSearch({ ...webSearch, enabled: true }).maxUses } } : {}),
         signal, emit: relay,
       });
       const final = {
         text: result.text ?? text, thinking: result.thinking ?? thinking, toolCalls: result.toolCalls || [], usage: result.usage || {},
         stopReason: result.stopReason || 'end_turn', rawStopReason: result.rawStopReason ?? null, notice: result.notice || null, fallback: result.fallback || null,
         assistantMessage: result.assistantMessage, model: result.model || chosen, connectionId: connection.id, providerId: provider.id,
+        ...(Array.isArray(result.webSources) && result.webSources.length ? { webSources: result.webSources } : {}),
+        ...(result.webSearched ? { webSearched: true } : {}),
       };
       if (Object.keys(final.usage).length) emit({ type: 'usage', usage: final.usage });
       emit({ type: 'done', ...final });

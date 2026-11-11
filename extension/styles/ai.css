@@ -439,6 +439,22 @@ button.ai-thought-toggle:hover:not(:disabled), button.ai-tool-row:hover { backgr
 .ai-unverified-title { color: var(--fg-default); font-weight: var(--weight-semibold); }
 .ai-unverified-list { display: flex; flex-direction: column; gap: var(--space-1); padding-inline-start: var(--space-6); list-style: disc; font-size: var(--text-xs); line-height: var(--lh-xs); overflow-wrap: anywhere; }
 
+/* The web pages an answer used (provider-side web search). */
+.ai-web-sources { display: flex; flex-direction: column; gap: var(--space-2); }
+.ai-web-sources-title { display: inline-flex; align-items: center; gap: var(--space-3); color: var(--fg-subtle); font-size: var(--text-xs); font-weight: var(--weight-medium); }
+.ai-web-sources-list { display: flex; flex-direction: column; }
+.ai-web-source {
+  display: flex; align-items: center; gap: var(--space-4);
+  min-height: var(--row-h);
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-sm);
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+  text-decoration: none;
+}
+.ai-web-source:hover { background: var(--bg-hover); }
+.ai-web-source > .ai-source-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ---------- Composer dock ---------- */
 .ai-dock { flex: none; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-2) var(--ai-gutter) var(--space-4); }
 .ai-panel[data-surface="full"] .ai-dock { padding-block-end: var(--space-6); }
