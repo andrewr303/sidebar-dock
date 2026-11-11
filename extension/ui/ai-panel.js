@@ -5,7 +5,7 @@
 // panel ('full') and the full-screen assistant view ('page', drawn by assistant-page.js around renderAiPanel).
 import { html, raw, cx, plural } from './html.js';
 import { icon, registerIcons } from './icons.js';
-import { button, iconButton, collectionIcon, siteIcon, domainOf, relativeDate, emptyState, spinner, badge, avatarTile, TYPE_ICONS } from './components.js';
+import { button, iconButton, collectionIcon, siteIcon, favicon, domainOf, relativeDate, emptyState, spinner, badge, avatarTile, TYPE_ICONS } from './components.js';
 import { registerActions, registerMount, registerShortcuts, hasAction } from './runtime.js';
 import { registerPopover } from './overlay.js';
 import { morph } from './morph.js';
@@ -1570,7 +1570,8 @@ function renderTools(ctx, message) {
 
 /**
  * The web pages an answer used, as links that open in a new tab. Addresses and titles come from the provider's search:
- * they are shown as text, and only web addresses are linked (mergeWebSources drops the rest).
+ * they are shown as text, and only web addresses are linked (mergeWebSources drops the rest). Each has the site's letter
+ * tile, not its icon: these are pages the person has mostly never opened, and Chrome answers with a grey globe for those.
  */
 function renderWebSources(ctx, message) {
   const sources = mergeWebSources(message.webSources);
@@ -1581,7 +1582,7 @@ function renderWebSources(ctx, message) {
   return html`<div class="ai-web-sources" data-key="${key}">
     <p class="ai-web-sources-title">${icon('globe', { size: 14 })}<span>From the web</span></p>
     <ul class="ai-web-sources-list" role="list">${shown.map(source => html`<li><a class="ai-web-source" href="${source.url}" target="_blank" rel="noopener noreferrer">
-      ${siteIcon(source.url, { size: 16 })}<span class="ai-source-title">${source.title}</span><span class="ai-source-meta">${domainOf(source.url)}</span></a></li>`)}</ul>
+      ${favicon(source.url, { size: 16 })}<span class="ai-source-title">${source.title}</span><span class="ai-source-meta">${domainOf(source.url)}</span></a></li>`)}</ul>
     ${sources.length > 4 ? html`<button type="button" class="ai-tool-more" data-action="ai.toggle" data-open="${key}" aria-expanded="${all ? 'true' : 'false'}">
       ${all ? 'Show fewer' : `${plural(sources.length - 4, 'more source')}`}</button>` : ''}
   </div>`;
