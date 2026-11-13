@@ -120,7 +120,7 @@ test('start pages and engines cover the schema values', () => {
 
 /* ------------------------------------------------------------------ Library & backup */
 
-const { renderLibrarySection, loadSnapshots, importReport, snapshotDetails } = await import('../extension/ui/settings.js');
+const { renderLibrarySection, loadSnapshots, importReport, snapshotDetails, dayDockReport } = await import('../extension/ui/settings.js');
 const { createSnapshot } = await import('../extension/lib/storage/snapshots.js');
 const libraryCtx = (open = []) => ({ library: { items: [], collections: [], settings: {} }, select: { counts: () => ({ trash: 0 }) }, env: { isExtension: false },
   state: { settings: { section: 'library', list: false, query: '', open: new Set(open) } }, render() {} });
@@ -136,6 +136,46 @@ test('Library & backup offers every export and says what a full backup holds and
   assert.match(out, /Automatic snapshots/);
   assert.match(out, /stay on this device only: removing Still or clearing its data deletes them, so keep a downloaded full backup somewhere else too/);
   assert.match(out, /Loading snapshots/, 'before the list arrives');
+});
+
+test('Library & backup starts with Move to DayDock: one export, a link to the import page and what is never written', () => {
+  resetIds();
+  const out = flat(renderLibrarySection(libraryCtx()));
+  assert.ok(out.indexOf('>Move to DayDock<') >= 0 && out.indexOf('>Move to DayDock<') < out.indexOf('>Backup<'), 'the group comes first');
+  assert.match(out, /DayDock is the online home for your library\. Export everything DayDock can import into one file, then choose it on DayDock&#39;s import page\./);
+  assert.match(out, /<button type="button" class="btn btn-primary btn-sm" data-action="settings\.daydock-export"[^>]*>.*?<span class="btn-label">Export for DayDock<\/span>/);
+  assert.match(out, /<a class="btn btn-secondary btn-sm" href="https:\/\/daydock\.tech\/library\/import" target="_blank" rel="noopener noreferrer"><span class="btn-label">Open DayDock import<\/span>/);
+  assert.match(out, /<p class="settings-note">.*?Nothing is uploaded by this step\. Passwords, API keys and connected accounts are never written to the file\.<\/span><\/p>/);
+  assert.ok(!out.includes('settings.daydock-dismiss'), 'no status before an export');
+  // Search finds the row by any of its words and drops the note and the other groups.
+  for (const query of ['daydock', 'migrate', 'transfer']) {
+    const found = renderFiltered(searchTerms(query), [], () => renderLibrarySection(libraryCtx()));
+    assert.equal(found.hits, 1, query);
+    assert.match(flat(found.content), /settings\.daydock-export/);
+    assert.ok(!flat(found.content).includes('Nothing is uploaded') && !flat(found.content).includes('settings.backup'), query);
+  }
+});
+
+test('the DayDock export report says what is in the file, what stays here, any warnings and the next step', () => {
+  const summary = { saves: 5, notes: 2, collections: 2, highlights: 3, boards: 2, widgets: 3, files: 1, fileBytes: 2048, trash: 2, deleted: 2, warnings: [],
+    left: ['1 assistant conversation', 'settings and wallpaper', 'connected accounts and API keys'] };
+  const report = dayDockReport(summary, 'still-for-daydock-2026-11-13.json');
+  assert.equal(report.title, 'Export for DayDock downloaded');
+  assert.deepEqual(report.lines, ['In the file: 5 saves, 2 notes, 2 collections, 3 highlights, 2 dashboards with 3 widgets, 1 file (2.0 KB).',
+    '2 items in Trash are in the file and stay in Trash.',
+    'Stays in this extension: 1 assistant conversation, settings and wallpaper, connected accounts and API keys.',
+    'Next, choose still-for-daydock-2026-11-13.json on DayDock\'s import page.']);
+  assert.equal(report.summary, 'Export for DayDock downloaded: 5 saves, 2 notes, 2 collections, 3 highlights, 2 dashboards with 3 widgets, 1 file (2.0 KB)');
+  const tight = dayDockReport({ ...summary, trash: 1, files: 0, fileBytes: 0, warnings: ['1 file did not fit: a backup can hold up to 200 MB. Download the largest files from your library to keep a copy.'] }, 'x.json');
+  assert.equal(tight.title, 'Export for DayDock downloaded, with these notes');
+  assert.equal(tight.lines[1], '1 item in Trash is in the file and stays in Trash.');
+  assert.match(tight.lines[3], /1 file did not fit/);
+  assert.equal(tight.lines.at(-1), 'Next, choose x.json on DayDock\'s import page.');
+  const empty = dayDockReport({ saves: 0, notes: 0, collections: 0, highlights: 0, boards: 0, widgets: 0, files: 0, fileBytes: 0, trash: 0, warnings: [], left: [] });
+  assert.deepEqual(empty.lines, ['This library is empty, so the file has nothing to import.', 'Next, choose the file on DayDock\'s import page.']);
+  assert.equal(empty.summary, 'Export for DayDock downloaded');
+  // Sentence case, straight quotes, no em dashes.
+  for (const text of [report.title, tight.title, ...report.lines, ...empty.lines]) assert.ok(!/[\u2014\u2018\u2019\u201c\u201d]/.test(text), text);
 });
 
 test('the snapshot list shows date, kind, contents, Restore and Delete, newest five first', async () => {

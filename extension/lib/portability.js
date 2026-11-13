@@ -394,6 +394,8 @@ const SOURCES = {
   deviceId: async () => getDeviceId(),
 };
 const sourceOf = (options, key) => (has(options, key) ? options[key] : SOURCES[key]());
+// The same lookup for lib/daydock-export.js, which counts what its file leaves behind from the stores a backup reads.
+export const backupSource = sourceOf;
 
 /* ------------------------------------------------------------------ full backup */
 

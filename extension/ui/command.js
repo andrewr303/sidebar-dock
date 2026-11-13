@@ -78,6 +78,7 @@ export const COMMANDS = [
   { id: 'threadkeeper', label: 'AI chat threads (Threadkeeper)', icon: 'messages-square', keywords: 'threadkeeper threads chats transcripts sync connect chatgpt claude gemini coding agents', action: 'shell.settings', data: { section: 'integrations', anchor: 'settings-threadkeeper' } },
   { id: 'agents', label: 'Connect Claude Code or Codex', icon: 'terminal', keywords: 'mcp agents bridge desktop', action: 'shell.settings', data: { section: 'agents' } },
   { id: 'backup', label: 'Back up or bring in bookmarks', icon: 'folder-input', keywords: 'import export backup raindrop chrome html csv', action: 'shell.settings', data: { section: 'library' } },
+  { id: 'daydock', label: 'Export for DayDock', icon: 'download', keywords: 'daydock move migrate export transfer', action: 'shell.settings', data: { section: 'library' } },
   { id: 'shortcuts', label: 'Keyboard shortcuts', icon: 'keyboard', keywords: 'keys hotkeys', shortcut: '?', action: 'shell.settings', data: { section: 'shortcuts' } },
   { id: 'help', label: 'Help', icon: 'circle-help', keywords: 'support docs guide search syntax', action: 'shell.settings', data: { section: 'help' } },
 ];

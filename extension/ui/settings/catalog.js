@@ -22,7 +22,7 @@ export const SETTINGS_SECTIONS = Object.freeze([
     description: 'How saving and the side panel behave.', keywords: 'save default collection inbox side panel toolbar trash delete confirm' },
   { id: 'library', group: 'library', label: 'Library & backup', icon: 'hard-drive', summary: 'Backup, snapshots, import, export, storage',
     description: 'Back up everything, restore snapshots, bring in bookmarks and manage storage on this device.',
-    keywords: 'backup restore import export bookmarks html csv markdown raindrop chrome storage trash files snapshot snapshots undo rollback history version chats conversations ai spreadsheet excel' },
+    keywords: 'backup restore import export bookmarks html csv markdown raindrop chrome storage trash files snapshot snapshots undo rollback history version chats conversations ai spreadsheet excel daydock move migrate transfer' },
   { id: 'ai', group: 'ai', label: 'AI models', icon: 'sparkles', summary: 'Providers, default models, local bridge',
     description: 'Connect the models Still uses for Ask, note writing tools and save suggestions.',
     keywords: 'ai model provider api key anthropic claude openai gpt chatgpt gemini ollama openrouter bridge assistant chat' },
