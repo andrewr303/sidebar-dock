@@ -110,6 +110,16 @@ Keep a backup before moving profiles or uninstalling Still. Uninstalling an exte
 
 Raindrop import and selected-item export require your own token and optional API permission. Read [integrations.md](integrations.md) for setup and the distinction between implemented connections and links to external integration guides.
 
+### Moving to DayDock
+
+DayDock (`https://daydock.tech`) keeps the library, dashboards and files in an online account. Its extension is a separate install with its own storage, so carry your data over with a file:
+
+1. Open **Settings → Library & backup**. **Move to DayDock** is the first group.
+2. Choose **Export for DayDock**. Still downloads `still-for-daydock-YYYY-MM-DD.json` and lists what is in it, what stays in this extension and any file that did not fit. Nothing is uploaded by this step.
+3. Choose **Open DayDock import** (`https://daydock.tech/library/import`) and choose the file there. DayDock shows a summary before it imports anything.
+
+The file holds items of every type with their highlights, tags, notes and Trash state, collections, dashboards and widgets, and attached files, within the backup limits (100 MB per file, 200 MB in all). Assistant chats, AI connections and Threadkeeper chat transcripts stay in this extension, and DayDock does not import settings. Passwords, API keys and connected accounts are never written to the file. Keep this extension installed until you have checked the import: the export changes nothing here, and Still can restore the same file like any backup.
+
 ## Optional AI companion and MCP
 
 Use an existing **Node.js 22+** installation. From the project folder:

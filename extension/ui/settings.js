@@ -13,6 +13,7 @@ import { renderCollectionPickerTrigger } from './pickers.js';
 import { navToggle } from './sidebar.js';
 import * as integrations from '../lib/integrations.js';
 import { createFullBackup, serializeBackup, importPortableFile, exportBookmarkHtml, exportNotesMarkdown, exportItemsCsv, exportChatsMarkdown } from '../lib/portability.js';
+import { createDayDockExport, countLeftBehind, summarizeDayDockExport, dayDockExportFileName, DAYDOCK_IMPORT_URL } from '../lib/daydock-export.js';
 import { listSnapshots, createSnapshot, restoreSnapshot, deleteSnapshot } from '../lib/storage/snapshots.js';
 import { REFERENCE_ASSETS } from '../lib/references.js';
 import { SETTINGS_SECTIONS, normalizeSection, isSection, sectionById, sectionFromView, settingsView, groupSections, adjacentSections,
@@ -294,6 +295,8 @@ const data = {
   importJob: null, raindrop: null, login: null,
   // snapshots: { list, error } once loaded; backupJob: { warnings } after a backup that left something out.
   snapshots: null, backupJob: null,
+  // daydockJob: { name, summary } after an export for DayDock (lib/daydock-export.js), or { error } when it failed.
+  daydockJob: null,
 };
 const drafts = { bridgeUrl: null, bridgeToken: '', raindropToken: '', browserSite: '', browserRule: 'ask', browserError: '' };
 let connectDraft = { apiKey: '', baseUrl: '', label: '', workspaceId: '', defaultModel: '' };
@@ -701,6 +704,13 @@ function renderLibrary(ctx) {
   const files = library.items.filter(item => item.attachmentId && !item.deletedAt).length;
   const job = data.importJob;
   return html`
+    ${group({ title: 'Move to DayDock', keywords: 'daydock move migrate export transfer', body: () => html`${card([
+      row({ label: 'Library, dashboards and files',
+        description: 'DayDock is the online home for your library. Export everything DayDock can import into one file, then choose it on DayDock\'s import page.',
+        control: html`${button({ label: 'Export for DayDock', icon: 'download', size: 'sm', variant: 'primary', action: 'settings.daydock-export', loading: isBusy('daydock-export') })}
+          ${linkButton({ label: 'Open DayDock import', href: DAYDOCK_IMPORT_URL })}` }),
+      data.daydockJob && !isSearching() ? dayDockStatus(data.daydockJob) : '',
+    ])}${isSearching() ? '' : note('lock', 'Nothing is uploaded by this step. Passwords, API keys and connected accounts are never written to the file.')}` })}
     ${group({ title: 'Backup', body: () => card([
       row({ label: 'Full backup', keywords: 'export download json everything settings dashboard wallpaper chats conversations ai connections',
         description: 'Everything in one JSON file: items, notes, highlights, collections and files, your settings and wallpaper, dashboards and widgets, assistant chats and AI connections, and AI chats from Threadkeeper with their summaries and transcripts. API keys, account tokens and passwords are never included.',
@@ -782,6 +792,31 @@ function importStatus(job) {
 function backupStatus(job) {
   return html`<div class="settings-row is-stacked settings-job">${callout({ tone: 'warning', live: true, title: 'Backup downloaded, with these notes',
     body: bulletList(job.warnings), actions: dismiss('settings.backup-dismiss') })}</div>`;
+}
+
+/** What an export for DayDock holds, in words: { title, lines, summary } for the status callout (lines) and the toast. */
+export function dayDockReport(summary = {}, name = 'the file') {
+  const count = (value, word) => (value ? plural(value, word) : '');
+  const parts = [count(summary.saves, 'save'), count(summary.notes, 'note'), count(summary.collections, 'collection'), count(summary.highlights, 'highlight'),
+    summary.boards ? `${plural(summary.boards, 'dashboard')} with ${plural(summary.widgets || 0, 'widget')}` : '',
+    summary.files ? `${plural(summary.files, 'file')} (${fileSize(summary.fileBytes)})` : ''].filter(Boolean);
+  const warnings = summary.warnings || [];
+  const lines = [parts.length ? `In the file: ${parts.join(', ')}.` : 'This library is empty, so the file has nothing to import.'];
+  if (summary.trash) lines.push(`${plural(summary.trash, 'item')} in Trash ${summary.trash === 1 ? 'is in the file and stays' : 'are in the file and stay'} in Trash.`);
+  if (summary.left?.length) lines.push(`Stays in this extension: ${summary.left.join(', ')}.`);
+  lines.push(...warnings, `Next, choose ${name} on DayDock's import page.`);
+  return { title: warnings.length ? 'Export for DayDock downloaded, with these notes' : 'Export for DayDock downloaded', lines,
+    summary: `Export for DayDock downloaded${parts.length ? `: ${parts.join(', ')}` : ''}` };
+}
+
+function dayDockStatus(job) {
+  if (job.error) {
+    return html`<div class="settings-row is-stacked settings-job">${callout({ tone: 'danger', title: 'The export for DayDock was not made', body: job.error, live: true,
+      actions: dismiss('settings.daydock-dismiss') })}</div>`;
+  }
+  const report = dayDockReport(job.summary, job.name);
+  return html`<div class="settings-row is-stacked settings-job">${callout({ tone: job.summary.warnings.length ? 'warning' : 'success', live: true, title: report.title,
+    body: bulletList(report.lines), actions: dismiss('settings.daydock-dismiss') })}</div>`;
 }
 
 // Automatic snapshots (lib/storage/snapshots.js): device-local copies the service worker keeps; listing never loads data.
@@ -1685,6 +1720,22 @@ registerActions({
     ctx.toast(`Backup downloaded: ${parts.join(', ')}`, { tone: warnings.length ? 'warning' : 'success' });
   }),
   'settings.backup-dismiss': ({ ctx }) => { data.backupJob = null; ctx.render(); },
+  'settings.daydock-export': ({ ctx }) => withBusy(ctx, 'daydock-export', async () => {
+    data.daydockJob = null;
+    try {
+      const backup = await createDayDockExport(ctx.store);
+      const name = dayDockExportFileName();
+      // As for a backup, the size limit is checked on exactly the text that is downloaded.
+      download(serializeBackup(backup).text, name, 'application/json');
+      const summary = summarizeDayDockExport(backup, await countLeftBehind(backup));
+      data.daydockJob = { name, summary };
+      ctx.toast(dayDockReport(summary, name).summary, { tone: summary.warnings.length ? 'warning' : 'success' });
+    } catch (error) {
+      console.error(error);
+      data.daydockJob = { error: error?.message || 'The file could not be made. Your library is unchanged.' };
+    }
+  }),
+  'settings.daydock-dismiss': ({ ctx }) => { data.daydockJob = null; ctx.render(); },
   'settings.import-choose': () => {
     const picker = document.getElementById('import-input');
     if (!picker) throw new Error('The file picker is not available here.');

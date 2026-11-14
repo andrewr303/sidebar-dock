@@ -176,6 +176,12 @@ Still also keeps **automatic snapshots** on this device (after an update, daily 
 
 HTML bookmark import/export preserves nested folders. CSV import and export support quoted multiline fields, notes, tags, descriptions, type, collection, dates, site, author, published date and language; CSV has no item IDs, so subpages come back as top-level notes. Markdown export retains personal notes, annotations and source connections, puts each subpage after its parent page and turns page blocks into links, and assistant chats export as Markdown too. Existing Chrome bookmarks can be imported after granting optional access.
 
+### Moving to DayDock
+
+[DayDock](https://daydock.tech) is the online home for the library: saves, collections, highlights, notes, dashboards and files live in an account there. The DayDock extension is a separate install with its own storage, so what this extension holds has to be carried over. **Settings → Library & backup → Move to DayDock → Export for DayDock** writes one file, `still-for-daydock-YYYY-MM-DD.json`, and **Open DayDock import** opens `https://daydock.tech/library/import`, where you choose that file. Exporting uploads nothing: the file leaves this device only when you choose it on that page.
+
+The file is a full backup without the parts DayDock does not import. It holds every item with its highlights, tags, notes and Trash state, the collection tree and its order, the record of items deleted forever, dashboards with their widgets, and original file bytes. Assistant chats, AI connections and Threadkeeper chat summaries and transcripts are left out and stay in this extension. Settings and the wallpaper are in the file, as in any backup, but DayDock does not import them. Passwords, API keys and connected accounts are never written to it. The backup limits apply (100 MB per file, 200 MB in all); a file that does not fit is left out and named in the summary shown after the export, with what stays behind. Still can restore the same file like any backup.
+
 ## References and provenance
 
 All **29 supplied reference images** are packaged in **Help → The reference room**, with captions. The [reference catalogue and Fabric expansion notes](docs/fabric-expansion.md) distinguish read-only browser observations and bounded static findings from functionality implemented here.

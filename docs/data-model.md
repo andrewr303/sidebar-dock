@@ -439,6 +439,26 @@ Writes use the Web Lock `still.meta.v1`, and unknown keys are kept.
     all, so they are the first thing left out when the file runs out of room (with a warning; Threadkeeper can send
     them again). `manifest.counts.chats` counts the chat items.
   - It never contains API keys, account or integration tokens, the Threadkeeper pairing, snapshots or caches.
+- **Export for DayDock** (`lib/daydock-export.js`, `createDayDockExport(store, options)`), the file DayDock's import page
+  (`https://daydock.tech/library/import`) reads when a library moves to a DayDock account. The download is named
+  `still-for-daydock-YYYY-MM-DD.json`. It is a full backup built by `createFullBackup` with the `conversations`,
+  `aiConfig` and `chatData` sources turned off, plus a marker as the fifth key, right after `manifest`:
+
+  ```
+  daydock: { exportVersion: 1, exportedFor: 'daydock', source: 'still-extension' }
+  ```
+
+  - It has no `conversations`, `aiConfig` or `chats` part, and `manifest.counts.conversations` and
+    `manifest.counts.aiConnections` are 0. Chat items (type `chat`) are still in `items`, without their summaries
+    and transcripts; `manifest.counts.chats` counts them.
+  - Everything else follows the full backup rules above: the same repairs and `manifest.warnings`, the same secret
+    stripping, the same size limits and file order, Trash as each item's `deletedAt`, and `tombstones`. `settings` and
+    the wallpaper attachment (`ref: 'wallpaper'`) are in the file because it is a backup; DayDock does not import them.
+  - Restore does not read top-level keys it does not know, so the marker is ignored and the file restores here like
+    any `backupVersion: 2` backup.
+  - `summarizeDayDockExport(backup, stays)` gives the numbers Settings shows after the export, and
+    `countLeftBehind(backup, options)` counts what stays in this extension (assistant chats, AI connections, AI chat
+    transcripts) from the stores a full backup would read. Building the file makes no network request.
 - **Other formats:** bookmarks as Netscape HTML, notes as Markdown, items as CSV (`url, title, tags, note, excerpt, type,
   collection, created, updated, site, author, published, language`; cells that start with `= + - @` get a leading
   apostrophe) and assistant chats as Markdown.
