@@ -145,7 +145,7 @@ test('Library & backup starts with Move to DayDock: one export, a link to the im
   assert.match(out, /DayDock is the online home for your library\. Export everything DayDock can import into one file, then choose it on DayDock&#39;s import page\./);
   assert.match(out, /<button type="button" class="btn btn-primary btn-sm" data-action="settings\.daydock-export"[^>]*>.*?<span class="btn-label">Export for DayDock<\/span>/);
   assert.match(out, /<a class="btn btn-secondary btn-sm" href="https:\/\/daydock\.tech\/library\/import" target="_blank" rel="noopener noreferrer"><span class="btn-label">Open DayDock import<\/span>/);
-  assert.match(out, /<p class="settings-note">.*?Nothing is uploaded by this step\. Passwords, API keys and connected accounts are never written to the file\.<\/span><\/p>/);
+  assert.match(out, /<p class="settings-note">.*?Nothing is uploaded by this step\. The API keys, passwords and connected accounts set up in Still are never written to the file\. Everything you saved is written as it is, so review it before you import it anywhere\.<\/span><\/p>/);
   assert.ok(!out.includes('settings.daydock-dismiss'), 'no status before an export');
   // Search finds the row by any of its words and drops the note and the other groups.
   for (const query of ['daydock', 'migrate', 'transfer']) {

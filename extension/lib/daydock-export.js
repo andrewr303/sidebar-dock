@@ -39,7 +39,8 @@ export async function countLeftBehind(backup, options = {}) {
   };
   const chatIds = new Set(list(backup?.items).filter(item => item?.type === 'chat').map(item => item.id));
   return {
-    conversations: await read('conversations', async source => (source.exportAll ? list((await source.exportAll())?.conversations).filter(isObject).length : 0)),
+    // From the index (listConversations), so no conversation body is loaded just to be counted.
+    conversations: await read('conversations', async source => (source.listConversations ? list(await source.listConversations()).filter(isObject).length : 0)),
     aiConnections: await read('aiConfig', async source => (source.exportAiConfig ? list((await source.exportAiConfig())?.connections).length : 0)),
     chatTranscripts: chatIds.size ? await read('chatData', async source => (source.list
       ? list(await source.list()).filter(record => isObject(record) && chatIds.has(record.id) && record.transcript).length : 0)) : 0,

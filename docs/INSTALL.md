@@ -118,7 +118,7 @@ DayDock (`https://daydock.tech`) keeps the library, dashboards and files in an o
 2. Choose **Export for DayDock**. Still downloads `still-for-daydock-YYYY-MM-DD.json` and lists what is in it, what stays in this extension and any file that did not fit. Nothing is uploaded by this step.
 3. Choose **Open DayDock import** (`https://daydock.tech/library/import`) and choose the file there. DayDock shows a summary before it imports anything.
 
-The file holds items of every type with their highlights, tags, notes and Trash state, collections, dashboards and widgets, and attached files, within the backup limits (100 MB per file, 200 MB in all). Assistant chats, AI connections and Threadkeeper chat transcripts stay in this extension, and DayDock does not import settings. Passwords, API keys and connected accounts are never written to the file. Keep this extension installed until you have checked the import: the export changes nothing here, and Still can restore the same file like any backup.
+The file holds items of every type with their highlights, tags, notes and Trash state, collections, dashboards and widgets, and attached files, within the backup limits (100 MB per file, 200 MB in all). Assistant chats, AI connections and Threadkeeper chat transcripts stay in this extension, and DayDock does not import settings. The API keys, passwords and connected accounts set up in Still are never written to the file. Everything you saved is written as it is, including saved text, notes, full link addresses and file contents, so review it before you import it anywhere. Keep this extension installed until you have checked the import: the export changes nothing here, and Still can restore the same file like any backup.
 
 ## Optional AI companion and MCP
 
