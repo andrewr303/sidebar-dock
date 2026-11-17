@@ -710,7 +710,7 @@ function renderLibrary(ctx) {
         control: html`${button({ label: 'Export for DayDock', icon: 'download', size: 'sm', variant: 'primary', action: 'settings.daydock-export', loading: isBusy('daydock-export') })}
           ${linkButton({ label: 'Open DayDock import', href: DAYDOCK_IMPORT_URL })}` }),
       data.daydockJob && !isSearching() ? dayDockStatus(data.daydockJob) : '',
-    ])}${isSearching() ? '' : note('lock', 'Nothing is uploaded by this step. Passwords, API keys and connected accounts are never written to the file.')}` })}
+    ])}${isSearching() ? '' : note('lock', 'Nothing is uploaded by this step. The API keys, passwords and connected accounts set up in Still are never written to the file. Everything you saved is written as it is, so review it before you import it anywhere.')}` })}
     ${group({ title: 'Backup', body: () => card([
       row({ label: 'Full backup', keywords: 'export download json everything settings dashboard wallpaper chats conversations ai connections',
         description: 'Everything in one JSON file: items, notes, highlights, collections and files, your settings and wallpaper, dashboards and widgets, assistant chats and AI connections, and AI chats from Threadkeeper with their summaries and transcripts. API keys, account tokens and passwords are never included.',

@@ -175,8 +175,12 @@ test('the summary counts what the file holds and names what stays in the extensi
   // Nothing to count (or sources turned off): the two fixed lines remain. A store that cannot be read keeps its line.
   assert.deepEqual(await countLeftBehind(backup, { conversations: null, aiConfig: null, chatData: null }), { conversations: 0, aiConnections: 0, chatTranscripts: 0 });
   assert.deepEqual(summarizeDayDockExport(backup).left, ['settings and wallpaper', 'connected accounts and API keys']);
-  const broken = await countLeftBehind(backup, { ...options, conversations: { exportAll: async () => { throw new Error('blocked'); } } });
+  const broken = await countLeftBehind(backup, { ...options, conversations: { listConversations: async () => { throw new Error('blocked'); } } });
   assert.equal(broken.conversations, null);
+  // Counting reads the index only: a store whose bodies cannot be loaded is still counted, and exportAll is never called.
+  const indexOnly = await countLeftBehind(backup, { ...options, conversations: {
+    listConversations: async () => [{ id: 'c1' }, { id: 'c2' }, null], exportAll: async () => { throw new Error('bodies were loaded'); } } });
+  assert.equal(indexOnly.conversations, 2);
   assert.equal(summarizeDayDockExport(backup, broken).left[0], 'assistant conversations');
   // An empty library and a backup without a dashboard still summarize.
   const empty = await createDayDockExport(device().store, { dashboard: null, deviceId: null });
